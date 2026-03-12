@@ -1,0 +1,12 @@
+Mar 12 06:00:01 instance-maiconburn sshd[1001]: Invalid user admin from 203.0.113.10 port 41234
+Mar 12 06:00:02 instance-maiconburn sshd[1001]: Failed password for invalid user admin from 203.0.113.10 port 41234 ssh2
+Mar 12 06:00:03 instance-maiconburn sshd[1002]: Failed password for root from 203.0.113.10 port 41235 ssh2
+Mar 12 06:00:04 instance-maiconburn sshd[1003]: Failed password for invalid user oracle from 198.51.100.5 port 9922 ssh2
+Mar 12 06:00:05 instance-maiconburn sshd[1004]: Failed password for root from 198.51.100.5 port 9923 ssh2
+Mar 12 06:00:06 instance-maiconburn sshd[1005]: Failed password for invalid user postgres from 198.51.100.5 port 9924 ssh2
+Mar 12 06:00:07 instance-maiconburn sshd[1006]: Accepted publickey for ubuntu from 10.0.0.1 port 54321 ssh2: RSA SHA256:abc123def
+Mar 12 06:00:08 instance-maiconburn sudo[1007]:   ubuntu : TTY=pts/0 ; PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/apt update
+Mar 12 06:00:09 instance-maiconburn sshd[1008]: Failed password for root from 203.0.113.10 port 41240 ssh2
+Mar 12 06:00:10 instance-maiconburn sshd[1009]: Failed password for invalid user test from 203.0.113.10 port 41241 ssh2
+Mar 12 06:00:11 instance-maiconburn sshd[1010]: Accepted password for deploy from 10.0.0.2 port 22 ssh2
+Mar 12 06:00:12 instance-maiconburn sshd[1011]: Failed password for root from 203.0.113.10 port 41242 ssh2

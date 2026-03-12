@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::path::Path;
 
 #[derive(Debug, Deserialize)]
@@ -8,9 +7,7 @@ pub struct Config {
     pub agent: AgentConfig,
     pub output: OutputConfig,
     #[serde(default)]
-    pub collectors: HashMap<String, toml::Value>,
-    #[serde(default)]
-    pub detectors: HashMap<String, toml::Value>,
+    pub collectors: CollectorsConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -25,15 +22,36 @@ pub struct OutputConfig {
     pub write_events: bool,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct CollectorsConfig {
+    #[serde(default)]
+    pub auth_log: AuthLogConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AuthLogConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_auth_log_path")]
+    pub path: String,
+}
+
+impl Default for AuthLogConfig {
+    fn default() -> Self {
+        Self { enabled: true, path: default_auth_log_path() }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
 
+fn default_auth_log_path() -> String {
+    "/var/log/auth.log".to_string()
+}
+
 pub fn load(path: &str) -> Result<Config> {
-    let path = Path::new(path);
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read config: {}", path.display()))?;
-    let config: Config =
-        toml::from_str(&content).with_context(|| "failed to parse config")?;
-    Ok(config)
+    let content = std::fs::read_to_string(Path::new(path))
+        .with_context(|| format!("failed to read config: {path}"))?;
+    toml::from_str(&content).with_context(|| "failed to parse config")
 }

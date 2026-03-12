@@ -1,0 +1,10 @@
+[agent]
+host_id = "test-host"
+
+[output]
+data_dir = "./data"
+write_events = true
+
+[collectors.auth_log]
+enabled = true
+path = "./testdata/sample-auth.log"

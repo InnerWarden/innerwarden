@@ -6,14 +6,10 @@ mod sinks;
 use std::path::Path;
 
 use anyhow::Result;
-use chrono::Utc;
 use clap::Parser;
-use innerwarden_core::{
-    entities::EntityRef,
-    event::{Event, Severity},
-    incident::Incident,
-};
+use collectors::auth_log::AuthLogCollector;
 use sinks::{jsonl::JsonlWriter, state::State};
+use tokio::sync::mpsc;
 use tracing::info;
 
 #[derive(Parser)]
@@ -49,49 +45,57 @@ async fn main() -> Result<()> {
     info!(cursors = state.cursors.len(), "state loaded");
 
     let mut writer = JsonlWriter::new(data_dir, cfg.output.write_events)?;
+    let (tx, mut rx) = mpsc::channel(1024);
 
-    // --- test: emit a fake event and a fake incident ---
-    let host = cfg.agent.host_id.clone();
+    // Spawn auth_log collector if enabled
+    if cfg.collectors.auth_log.enabled {
+        let offset = state.get_cursor("auth_log").and_then(|v| v.as_u64()).unwrap_or(0);
+        let collector = AuthLogCollector::new(
+            &cfg.collectors.auth_log.path,
+            &cfg.agent.host_id,
+            offset,
+        );
+        info!(path = %cfg.collectors.auth_log.path, offset, "starting auth_log collector");
+        tokio::spawn(async move {
+            if let Err(e) = collector.run(tx).await {
+                tracing::error!("auth_log collector error: {e:#}");
+            }
+        });
+    } else {
+        // No collectors active — drop sender so main loop exits cleanly
+        drop(tx);
+    }
 
-    let event = Event {
-        ts: Utc::now(),
-        host: host.clone(),
-        source: "auth.log".to_string(),
-        kind: "ssh.login_failed".to_string(),
-        severity: Severity::Info,
-        summary: "Invalid user root from 1.2.3.4".to_string(),
-        details: serde_json::json!({ "ip": "1.2.3.4", "user": "root" }),
-        tags: vec!["auth".to_string(), "ssh".to_string()],
-        entities: vec![EntityRef::ip("1.2.3.4"), EntityRef::user("root")],
-    };
-    writer.write_event(&event)?;
-    info!(kind = %event.kind, "event written");
-
-    let incident = Incident {
-        ts: Utc::now(),
-        host: host.clone(),
-        incident_id: format!("ssh_bruteforce:1.2.3.4:{}", Utc::now().format("%Y-%m-%dT%H:%MZ")),
-        severity: Severity::High,
-        title: "Possible SSH brute force".to_string(),
-        summary: "12 failed SSH attempts from 1.2.3.4 in 5 minutes".to_string(),
-        evidence: serde_json::json!([{ "kind": "ssh.login_failed", "count": 12 }]),
-        recommended_checks: vec![
-            "Check auth.log for successful logins".to_string(),
-            "Consider fail2ban".to_string(),
-        ],
-        tags: vec!["auth".to_string(), "ssh".to_string(), "bruteforce".to_string()],
-        entities: vec![EntityRef::ip("1.2.3.4")],
-    };
-    writer.write_incident(&incident)?;
-    info!(title = %incident.title, "incident written");
+    // Main loop: drain events until Ctrl+C or all collectors stop
+    let mut events_written = 0u64;
+    loop {
+        tokio::select! {
+            event = rx.recv() => {
+                match event {
+                    Some(ev) => {
+                        info!(kind = %ev.kind, summary = %ev.summary, "event");
+                        writer.write_event(&ev)?;
+                        events_written += 1;
+                    }
+                    None => {
+                        info!("all collectors stopped");
+                        break;
+                    }
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                info!("shutdown signal received");
+                break;
+            }
+        }
+    }
 
     writer.flush()?;
+    info!(events_written, "flushed output");
 
     state.set_cursor("auth_log", serde_json::json!(0));
     state.save(&state_path)?;
-    info!("state saved");
-
-    info!("check data/ for output files");
+    info!("state saved — check data/ for output files");
 
     Ok(())
 }
