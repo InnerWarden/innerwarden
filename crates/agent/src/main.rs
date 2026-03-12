@@ -3,11 +3,12 @@ mod config;
 mod detectors;
 mod sinks;
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
 use clap::Parser;
-use collectors::auth_log::AuthLogCollector;
+use collectors::{auth_log::AuthLogCollector, integrity::IntegrityCollector};
 use detectors::ssh_bruteforce::SshBruteforceDetector;
 use sinks::{jsonl::JsonlWriter, state::State};
 use tokio::sync::mpsc;
@@ -55,7 +56,7 @@ async fn main() -> Result<()> {
         SshBruteforceDetector::new(&cfg.agent.host_id, d.threshold, d.window_seconds)
     });
 
-    // Spawn auth_log collector if enabled
+    // Spawn auth_log collector
     if cfg.collectors.auth_log.enabled {
         let offset = state.get_cursor("auth_log").and_then(|v| v.as_u64()).unwrap_or(0);
         let collector = AuthLogCollector::new(
@@ -64,14 +65,35 @@ async fn main() -> Result<()> {
             offset,
         );
         info!(path = %cfg.collectors.auth_log.path, offset, "starting auth_log collector");
+        let tx2 = tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = collector.run(tx).await {
+            if let Err(e) = collector.run(tx2).await {
                 tracing::error!("auth_log collector error: {e:#}");
             }
         });
-    } else {
-        drop(tx);
     }
+
+    // Spawn integrity collector
+    if cfg.collectors.integrity.enabled && !cfg.collectors.integrity.paths.is_empty() {
+        let ic = &cfg.collectors.integrity;
+        let known_hashes: HashMap<String, String> = state
+            .get_cursor("integrity")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        let paths = ic.paths.iter().map(|p| Path::new(p).to_owned()).collect();
+        let collector = IntegrityCollector::new(paths, &cfg.agent.host_id, ic.poll_seconds, known_hashes);
+        info!(paths = ic.paths.len(), poll_secs = ic.poll_seconds, "starting integrity collector");
+        let tx3 = tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = collector.run(tx3).await {
+                tracing::error!("integrity collector error: {e:#}");
+            }
+        });
+    }
+
+    // Drop the original tx — each collector holds its own clone.
+    // When all collector tasks finish, all senders drop and rx.recv() returns None.
+    drop(tx);
 
     // Main loop: drain events, run detectors, write output
     let mut events_written = 0u64;
@@ -85,7 +107,6 @@ async fn main() -> Result<()> {
                         writer.write_event(&ev)?;
                         events_written += 1;
 
-                        // Run detectors against each event
                         if let Some(ref mut det) = ssh_detector {
                             if let Some(incident) = det.process(&ev) {
                                 info!(

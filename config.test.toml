@@ -9,6 +9,14 @@ write_events = true
 enabled = true
 path = "./testdata/sample-auth.log"
 
+[collectors.integrity]
+enabled = true
+poll_seconds = 2
+paths = [
+  "./testdata/watched/sshd_config",
+  "./testdata/watched/sudoers",
+]
+
 [detectors.ssh_bruteforce]
 enabled = true
 threshold = 5

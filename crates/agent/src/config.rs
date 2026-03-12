@@ -28,6 +28,24 @@ pub struct OutputConfig {
 pub struct CollectorsConfig {
     #[serde(default)]
     pub auth_log: AuthLogConfig,
+    #[serde(default)]
+    pub integrity: IntegrityConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IntegrityConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(default = "default_poll_seconds")]
+    pub poll_seconds: u64,
+}
+
+impl Default for IntegrityConfig {
+    fn default() -> Self {
+        Self { enabled: false, paths: vec![], poll_seconds: default_poll_seconds() }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,6 +94,10 @@ fn default_threshold() -> usize {
 
 fn default_window_seconds() -> u64 {
     300
+}
+
+fn default_poll_seconds() -> u64 {
+    60
 }
 
 fn default_auth_log_path() -> String {
