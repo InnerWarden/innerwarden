@@ -1,0 +1,40 @@
+[agent]
+# Unique id for this host
+host_id = "instance-maiconburn"
+
+[output]
+# Directory where JSONL + state live
+data_dir = "./data"
+# Keep raw events? (if false, only incidents)
+write_events = true
+
+[collectors.auth_log]
+enabled = true
+path = "/var/log/auth.log"
+
+[collectors.journald]
+enabled = true
+# Optional: only these systemd units
+units = ["ssh", "docker", "containerd"]
+
+[collectors.docker]
+enabled = true
+socket = "/var/run/docker.sock"
+
+[collectors.integrity]
+enabled = true
+paths = [
+  "/etc/ssh/sshd_config",
+  "/etc/sudoers",
+  "/etc/sudoers.d",
+  "/etc/cron.d",
+]
+
+[detectors.ssh_bruteforce]
+enabled = true
+# attempts per window triggers incident
+threshold = 8
+window_seconds = 300
+
+[detectors.file_change]
+enabled = true

@@ -1,0 +1,12 @@
+[Unit]
+Description=server-sentinel (draft)
+After=network.target
+
+[Service]
+Type=simple
+# ExecStart=/usr/local/bin/server-sentinel --config /etc/server-sentinel/config.toml
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
