@@ -16,6 +16,5 @@ pub struct PolicyDecision {
 /// - dedupe
 /// - group signals into incidents
 pub fn apply_policy(_signals: &[Signal]) -> Vec<PolicyDecision> {
-    // Draft: no-op
     Vec::new()
 }
