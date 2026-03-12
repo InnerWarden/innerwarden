@@ -1,10 +1,10 @@
 [Unit]
-Description=server-sentinel (draft)
+Description=innerwarden (draft)
 After=network.target
 
 [Service]
 Type=simple
-# ExecStart=/usr/local/bin/server-sentinel --config /etc/server-sentinel/config.toml
+# ExecStart=/usr/local/bin/innerwarden --config /etc/innerwarden/config.toml
 Restart=on-failure
 RestartSec=2
 
