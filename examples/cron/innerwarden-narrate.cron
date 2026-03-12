@@ -1,0 +1,5 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Generate a rolling summary every 30 minutes
+*/30 * * * * ubuntu bash -lc 'cd /home/ubuntu/innerwarden-project && python3 tools/narrator/narrate.py --window-min 30' >> /var/log/innerwarden-narrate.log 2>&1
