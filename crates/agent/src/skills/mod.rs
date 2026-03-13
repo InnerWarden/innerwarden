@@ -4,7 +4,6 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 
-use anyhow::Result;
 use innerwarden_core::incident::Incident;
 use serde::Serialize;
 use tracing::info;
@@ -25,6 +24,9 @@ pub enum SkillTier {
 }
 
 /// Context passed to a skill when it is executed.
+// Fields `incident` and `host` are public API for community skill implementations;
+// built-in skills only require `target_ip` today.
+#[allow(dead_code)]
 pub struct SkillContext {
     pub incident: Incident,
     /// Primary IP target, if applicable.
@@ -161,6 +163,7 @@ pub struct Blocklist {
 }
 
 impl Blocklist {
+    #[allow(dead_code)] // public API — used by algorithm gate and future skills
     pub fn contains(&self, ip: &str) -> bool {
         self.blocked.contains(ip)
     }
