@@ -13,11 +13,17 @@ use super::{AiAction, AiDecision, AiProvider, DecisionContext};
 pub struct OpenAiProvider {
     api_key: String,
     model: String,
+    /// Shared HTTP client — holds the connection pool across calls.
+    client: reqwest::Client,
 }
 
 impl OpenAiProvider {
     pub fn new(api_key: String, model: String) -> Self {
-        Self { api_key, model }
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .expect("failed to build reqwest client");
+        Self { api_key, model, client }
     }
 }
 
@@ -37,11 +43,6 @@ impl AiProvider for OpenAiProvider {
         let prompt = build_prompt(ctx);
         debug!(model = %self.model, "calling OpenAI API");
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .context("failed to build HTTP client")?;
-
         let body = json!({
             "model": self.model,
             "messages": [
@@ -53,7 +54,7 @@ impl AiProvider for OpenAiProvider {
             "max_tokens": 512,
         });
 
-        let resp = client
+        let resp = self.client
             .post("https://api.openai.com/v1/chat/completions")
             .bearer_auth(&self.api_key)
             .json(&body)

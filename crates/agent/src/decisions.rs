@@ -79,6 +79,8 @@ impl DecisionWriter {
         let line = serde_json::to_string(entry)
             .context("failed to serialize decision entry")?;
         writeln!(self.writer, "{line}").context("failed to write decision entry")?;
+        // Flush immediately — audit trail must survive a crash between decisions
+        self.writer.flush().context("failed to flush decision entry")?;
         Ok(())
     }
 

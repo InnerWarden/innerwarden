@@ -171,7 +171,9 @@ async fn main() -> Result<()> {
                         }
                         Err(e) => warn!("narrative tick error: {e:#}"),
                     }
-                    cursor.save(&state_path)?;
+                    if let Err(e) = cursor.save(&state_path) {
+                        warn!("failed to save cursor after narrative tick: {e:#}");
+                    }
                     false
                 }
                 _ = tokio::signal::ctrl_c() => {
@@ -202,7 +204,9 @@ async fn main() -> Result<()> {
                         }
                         Err(e) => warn!("narrative tick error: {e:#}"),
                     }
-                    cursor.save(&state_path)?;
+                    if let Err(e) = cursor.save(&state_path) {
+                        warn!("failed to save cursor after narrative tick: {e:#}");
+                    }
                     false
                 }
                 _ = tokio::signal::ctrl_c() => {
