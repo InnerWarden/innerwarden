@@ -41,6 +41,17 @@
   ],
   "isolation_profile": "strict_local",
   "forensics_file": "honeypot/listener-session-20260313T162200Z-1.2.3.4.jsonl",
+  "sandbox": {
+    "enabled": true,
+    "used": true,
+    "runner": "/usr/local/bin/innerwarden-agent"
+  },
+  "pcap_handoff": {
+    "enabled": true,
+    "attempted": true,
+    "success": true,
+    "pcap_file": "honeypot/listener-session-20260313T162200Z-1.2.3.4.pcap"
+  },
   "redirect_cleanup_verified": true,
   "redirect_rules": [
     {"service":"ssh","from_port":22,"to_port":2222,"applied":true,"cleanup_verified_absent":true}
@@ -63,3 +74,9 @@
   "protocol_guess": "http"
 }
 ```
+
+## Honeypot runtime files (data_dir/honeypot/)
+- `listener-session-*.json`: session metadata (status, redirect cleanup, sandbox/pcap status)
+- `listener-session-*.jsonl`: lifecycle + per-connection forensic evidence
+- `listener-session-*.pcap`: optional bounded handoff capture (`[honeypot.pcap_handoff]`)
+- `listener-active.lock`: active session lock (`lock_stale_secs` controls stale recovery)

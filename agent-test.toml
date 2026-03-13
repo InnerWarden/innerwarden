@@ -46,8 +46,19 @@ max_payload_bytes = 512
 isolation_profile = "strict_local"
 require_high_ports = true
 forensics_keep_days = 7
+forensics_max_total_mb = 128
 transcript_preview_bytes = 96
 lock_stale_secs = 1800
+
+[honeypot.sandbox]
+enabled = false
+runner_path = ""
+clear_env = true
+
+[honeypot.pcap_handoff]
+enabled = false
+timeout_secs = 15
+max_packets = 120
 
 [honeypot.redirect]
 enabled = false

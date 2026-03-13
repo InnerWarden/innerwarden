@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::process::Command;
@@ -19,16 +19,13 @@ const HTTP_BANNER: &[u8] =
     b"HTTP/1.1 302 Found\r\nLocation: /login\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 const PAYLOAD_READ_TIMEOUT_MS: u64 = 700;
 const DEFAULT_LOCK_FILE: &str = "listener-active.lock";
+const SANDBOX_GRACE_SECS: u64 = 30;
 
 /// Premium honeypot skill.
 ///
 /// Modes:
 /// - `demo`: controlled marker only.
 /// - `listener`: real bounded decoy listeners + selective redirect (optional) + forensics artifacts.
-///
-/// TODO(next hardening phase):
-/// - move listener runtime into stricter OS-level isolation (namespace/jail)
-/// - integrate richer protocol transcripts and pcap handoff
 pub struct Honeypot;
 
 #[derive(Debug, Clone)]
@@ -38,6 +35,14 @@ struct DecoyEndpoint {
     listen_port: u16,
     redirect_from_port: u16,
     banner: &'static [u8],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SandboxEndpointSpec {
+    service: String,
+    bind_addr: String,
+    listen_port: u16,
+    redirect_from_port: u16,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -68,7 +73,7 @@ struct SessionRuntime {
     evidence_path: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ListenerStats {
     service: String,
     bind_addr: String,
@@ -77,6 +82,57 @@ struct ListenerStats {
     rejected: u64,
     payload_bytes_captured: u64,
     read_timeouts: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SandboxWorkerSpec {
+    session_id: String,
+    target_ip: String,
+    strict_target_only: bool,
+    duration_secs: u64,
+    max_connections: usize,
+    max_payload_bytes: usize,
+    transcript_preview_bytes: usize,
+    isolation_profile: String,
+    evidence_path: PathBuf,
+    endpoints: Vec<SandboxEndpointSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SandboxWorkerResult {
+    session_id: String,
+    success: bool,
+    error: Option<String>,
+    service_stats: Vec<ListenerStats>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ForensicsCleanupStats {
+    removed_by_age: usize,
+    removed_by_size: usize,
+    total_before_bytes: u64,
+    total_after_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PcapHandoffStatus {
+    enabled: bool,
+    attempted: bool,
+    timeout_secs: u64,
+    max_packets: u64,
+    command: Option<String>,
+    pcap_file: Option<String>,
+    success: bool,
+    timed_out: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SandboxRunOutcome {
+    stats: Vec<ListenerStats>,
+    spec_path: PathBuf,
+    result_path: PathBuf,
+    runner: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -91,6 +147,30 @@ struct PayloadCapture {
 #[derive(Debug)]
 struct SessionLock {
     path: PathBuf,
+}
+
+impl From<&DecoyEndpoint> for SandboxEndpointSpec {
+    fn from(value: &DecoyEndpoint) -> Self {
+        Self {
+            service: value.service.clone(),
+            bind_addr: value.bind_addr.clone(),
+            listen_port: value.listen_port,
+            redirect_from_port: value.redirect_from_port,
+        }
+    }
+}
+
+impl SandboxEndpointSpec {
+    fn into_endpoint(self) -> Result<DecoyEndpoint, String> {
+        let banner = banner_for_service(&self.service)?;
+        Ok(DecoyEndpoint {
+            service: self.service,
+            bind_addr: self.bind_addr,
+            listen_port: self.listen_port,
+            redirect_from_port: self.redirect_from_port,
+            banner,
+        })
+    }
 }
 
 impl ResponseSkill for Honeypot {
@@ -241,17 +321,27 @@ impl ResponseSkill for Honeypot {
                 };
             }
 
-            let pruned_artifacts =
-                match cleanup_old_forensics(&session_dir, ctx.honeypot.forensics_keep_days).await {
-                    Ok(removed) => removed,
-                    Err(e) => {
-                        warn!(
-                            path = %session_dir.display(),
-                            "honeypot forensics cleanup failed (continuing fail-open): {e}"
-                        );
-                        0
+            let cleanup_stats = match cleanup_old_forensics(
+                &session_dir,
+                ctx.honeypot.forensics_keep_days,
+                ctx.honeypot.forensics_max_total_mb,
+            )
+            .await
+            {
+                Ok(stats) => stats,
+                Err(e) => {
+                    warn!(
+                        path = %session_dir.display(),
+                        "honeypot forensics cleanup failed (continuing fail-open): {e}"
+                    );
+                    ForensicsCleanupStats {
+                        removed_by_age: 0,
+                        removed_by_size: 0,
+                        total_before_bytes: 0,
+                        total_after_bytes: 0,
                     }
-                };
+                }
+            };
 
             let session_id = format!(
                 "{}-{}",
@@ -280,18 +370,20 @@ impl ResponseSkill for Honeypot {
 
             let mut bound = Vec::new();
             let mut bind_errors = Vec::new();
-            for endpoint in endpoints {
-                let bind_target = format!("{}:{}", endpoint.bind_addr, endpoint.listen_port);
-                match TcpListener::bind(&bind_target).await {
-                    Ok(listener) => {
-                        info!(service = %endpoint.service, bind = %bind_target, "honeypot listener bound");
-                        bound.push((endpoint, listener));
+            if !ctx.honeypot.sandbox_enabled {
+                for endpoint in &endpoints {
+                    let bind_target = format!("{}:{}", endpoint.bind_addr, endpoint.listen_port);
+                    match TcpListener::bind(&bind_target).await {
+                        Ok(listener) => {
+                            info!(service = %endpoint.service, bind = %bind_target, "honeypot listener bound");
+                            bound.push((endpoint.clone(), listener));
+                        }
+                        Err(e) => bind_errors.push(format!("{bind_target}: {e}")),
                     }
-                    Err(e) => bind_errors.push(format!("{bind_target}: {e}")),
                 }
             }
 
-            if bound.is_empty() {
+            if !ctx.honeypot.sandbox_enabled && bound.is_empty() {
                 return SkillResult {
                     success: false,
                     message: format!(
@@ -302,15 +394,7 @@ impl ResponseSkill for Honeypot {
             }
 
             let mut redirect_rules = if ctx.honeypot.redirect_enabled {
-                apply_redirect_rules(
-                    &bound
-                        .iter()
-                        .map(|(endpoint, _)| endpoint.clone())
-                        .collect::<Vec<_>>(),
-                    target_ip,
-                    &ctx.honeypot.redirect_backend,
-                )
-                .await
+                apply_redirect_rules(&endpoints, target_ip, &ctx.honeypot.redirect_backend).await
             } else {
                 vec![]
             };
@@ -324,7 +408,7 @@ impl ResponseSkill for Honeypot {
                 "target_ip": target_ip.to_string(),
                 "bind_addr": ctx.honeypot.bind_addr,
                 "duration_secs": ctx.honeypot.duration_secs,
-                "services": bound.iter().map(|(ep, _)| serde_json::json!({
+                "services": endpoints.iter().map(|ep| serde_json::json!({
                     "service": ep.service.clone(),
                     "listen_port": ep.listen_port,
                     "redirect_from_port": ep.redirect_from_port,
@@ -335,10 +419,21 @@ impl ResponseSkill for Honeypot {
                 "isolation_profile": isolation_profile,
                 "require_high_ports": ctx.honeypot.require_high_ports,
                 "forensics_keep_days": ctx.honeypot.forensics_keep_days,
+                "forensics_max_total_mb": ctx.honeypot.forensics_max_total_mb,
                 "transcript_preview_bytes": ctx.honeypot.transcript_preview_bytes,
                 "lock_stale_secs": ctx.honeypot.lock_stale_secs,
                 "lock_file": lock_path,
-                "forensics_pruned_files": pruned_artifacts,
+                "forensics_cleanup": cleanup_stats,
+                "sandbox": {
+                    "enabled": ctx.honeypot.sandbox_enabled,
+                    "runner_path": ctx.honeypot.sandbox_runner_path,
+                    "clear_env": ctx.honeypot.sandbox_clear_env,
+                },
+                "pcap_handoff": {
+                    "enabled": ctx.honeypot.pcap_handoff_enabled,
+                    "timeout_secs": ctx.honeypot.pcap_handoff_timeout_secs,
+                    "max_packets": ctx.honeypot.pcap_handoff_max_packets,
+                },
                 "redirect": {
                     "enabled": ctx.honeypot.redirect_enabled,
                     "backend": ctx.honeypot.redirect_backend,
@@ -364,7 +459,9 @@ impl ResponseSkill for Honeypot {
                     "session_id": session_id.clone(),
                     "target_ip": target_ip.to_string(),
                     "isolation_profile": isolation_profile,
-                    "forensics_pruned_files": pruned_artifacts,
+                    "forensics_cleanup": cleanup_stats,
+                    "sandbox_enabled": ctx.honeypot.sandbox_enabled,
+                    "pcap_handoff_enabled": ctx.honeypot.pcap_handoff_enabled,
                 }),
             )
             .await
@@ -386,28 +483,84 @@ impl ResponseSkill for Honeypot {
 
             let metadata_path_bg = metadata_path.clone();
             let evidence_path_bg = evidence_path.clone();
+            let session_dir_bg = session_dir.clone();
+            let endpoints_bg = endpoints.clone();
+            let sandbox_enabled = ctx.honeypot.sandbox_enabled;
+            let sandbox_runner_path = ctx.honeypot.sandbox_runner_path.clone();
+            let sandbox_clear_env = ctx.honeypot.sandbox_clear_env;
+            let pcap_handoff_enabled = ctx.honeypot.pcap_handoff_enabled;
+            let pcap_handoff_timeout_secs = ctx.honeypot.pcap_handoff_timeout_secs;
+            let pcap_handoff_max_packets = ctx.honeypot.pcap_handoff_max_packets;
             tokio::spawn(async move {
                 let _session_lock = session_lock;
-                let mut task_stats = Vec::new();
-                let mut tasks = Vec::new();
-                for (endpoint, listener) in bound {
-                    let runtime = runtime.clone();
-                    tasks.push(tokio::spawn(async move {
-                        run_listener(endpoint, listener, runtime).await
-                    }));
-                }
-
-                for task in tasks {
-                    match task.await {
-                        Ok(stats) => task_stats.push(stats),
-                        Err(e) => warn!("honeypot listener task join error: {e}"),
+                let mut sandbox_error = None::<String>;
+                let mut sandbox_info = serde_json::json!({
+                    "enabled": sandbox_enabled,
+                    "used": sandbox_enabled,
+                });
+                let task_stats = if sandbox_enabled {
+                    match run_sandbox_session(
+                        runtime.clone(),
+                        endpoints_bg,
+                        &session_dir_bg,
+                        &sandbox_runner_path,
+                        sandbox_clear_env,
+                    )
+                    .await
+                    {
+                        Ok(outcome) => {
+                            sandbox_info = serde_json::json!({
+                                "enabled": true,
+                                "used": true,
+                                "runner": outcome.runner,
+                                "spec_file": outcome.spec_path,
+                                "result_file": outcome.result_path,
+                                "clear_env": sandbox_clear_env,
+                            });
+                            outcome.stats
+                        }
+                        Err(e) => {
+                            sandbox_error = Some(e.clone());
+                            sandbox_info = serde_json::json!({
+                                "enabled": true,
+                                "used": true,
+                                "clear_env": sandbox_clear_env,
+                                "error": e,
+                            });
+                            vec![]
+                        }
                     }
-                }
+                } else {
+                    run_bound_listeners(bound, runtime.clone()).await
+                };
 
                 cleanup_redirect_rules(&mut redirect_rules).await;
                 let redirect_cleanup_verified = redirect_rules
                     .iter()
                     .all(|rule| rule.cleanup_verified_absent.unwrap_or(true));
+
+                let pcap_handoff = if pcap_handoff_enabled {
+                    run_pcap_handoff(
+                        &session_dir_bg,
+                        &runtime.session_id,
+                        runtime.target_ip,
+                        pcap_handoff_timeout_secs,
+                        pcap_handoff_max_packets,
+                    )
+                    .await
+                } else {
+                    PcapHandoffStatus {
+                        enabled: false,
+                        attempted: false,
+                        timeout_secs: pcap_handoff_timeout_secs,
+                        max_packets: pcap_handoff_max_packets,
+                        command: None,
+                        pcap_file: None,
+                        success: false,
+                        timed_out: false,
+                        error: None,
+                    }
+                };
 
                 if let Err(e) = append_json_line(
                     &evidence_path_bg,
@@ -417,6 +570,9 @@ impl ResponseSkill for Honeypot {
                         "session_id": runtime.session_id.clone(),
                         "services": task_stats,
                         "redirect_cleanup_verified": redirect_cleanup_verified,
+                        "sandbox": sandbox_info,
+                        "sandbox_error": sandbox_error,
+                        "pcap_handoff": pcap_handoff,
                     }),
                 )
                 .await
@@ -426,7 +582,7 @@ impl ResponseSkill for Honeypot {
 
                 let final_metadata = serde_json::json!({
                     "ts": Utc::now().to_rfc3339(),
-                    "status": "completed",
+                    "status": if sandbox_error.is_none() { "completed" } else { "completed_with_errors" },
                     "session_id": runtime.session_id.clone(),
                     "target_ip": runtime.target_ip.to_string(),
                     "strict_target_only": runtime.strict_target_only,
@@ -435,8 +591,11 @@ impl ResponseSkill for Honeypot {
                     "max_payload_bytes": runtime.max_payload_bytes,
                     "isolation_profile": runtime.isolation_profile,
                     "service_stats": task_stats,
+                    "sandbox": sandbox_info,
+                    "sandbox_error": sandbox_error,
                     "redirect_rules": redirect_rules,
                     "redirect_cleanup_verified": redirect_cleanup_verified,
+                    "pcap_handoff": pcap_handoff,
                     "forensics_file": evidence_path_bg,
                 });
                 if let Err(e) = write_json_file(&metadata_path_bg, &final_metadata).await {
@@ -453,7 +612,12 @@ impl ResponseSkill for Honeypot {
             SkillResult {
                 success: true,
                 message: format!(
-                    "Honeypot listeners started (session {session_id}, profile {isolation_profile}, pruned {pruned_artifacts}). metadata: {} evidence: {}{}",
+                    "Honeypot listeners started (session {session_id}, profile {isolation_profile}, pruned age={} size={}, cap={}MB, sandbox={}, pcap_handoff={}). metadata: {} evidence: {}{}",
+                    cleanup_stats.removed_by_age,
+                    cleanup_stats.removed_by_size,
+                    ctx.honeypot.forensics_max_total_mb,
+                    ctx.honeypot.sandbox_enabled,
+                    ctx.honeypot.pcap_handoff_enabled,
                     metadata_path.display(),
                     evidence_path.display(),
                     warning_suffix
@@ -461,6 +625,308 @@ impl ResponseSkill for Honeypot {
             }
         })
     }
+}
+
+pub(crate) async fn run_sandbox_worker(spec_path: &Path, result_path: &Path) -> anyhow::Result<()> {
+    let mut session_id = "unknown".to_string();
+    let execution = async {
+        let spec_body = tokio::fs::read_to_string(spec_path).await?;
+        let spec: SandboxWorkerSpec = serde_json::from_str(&spec_body)?;
+        session_id = spec.session_id.clone();
+        let target_ip: IpAddr = spec.target_ip.parse()?;
+        let mut endpoints = Vec::with_capacity(spec.endpoints.len());
+        for endpoint in spec.endpoints {
+            endpoints.push(endpoint.into_endpoint().map_err(|e| anyhow::anyhow!(e))?);
+        }
+        let runtime = SessionRuntime {
+            session_id: spec.session_id.clone(),
+            target_ip,
+            strict_target_only: spec.strict_target_only,
+            duration_secs: spec.duration_secs,
+            max_connections: spec.max_connections,
+            max_payload_bytes: spec.max_payload_bytes,
+            transcript_preview_bytes: spec.transcript_preview_bytes,
+            isolation_profile: spec.isolation_profile,
+            evidence_path: spec.evidence_path,
+        };
+
+        let stats = run_listeners_from_endpoints(endpoints, runtime)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+        Ok::<Vec<ListenerStats>, anyhow::Error>(stats)
+    }
+    .await;
+
+    let result = match execution {
+        Ok(stats) => SandboxWorkerResult {
+            session_id,
+            success: true,
+            error: None,
+            service_stats: stats,
+        },
+        Err(e) => SandboxWorkerResult {
+            session_id,
+            success: false,
+            error: Some(e.to_string()),
+            service_stats: vec![],
+        },
+    };
+
+    let value = serde_json::to_value(&result)?;
+    write_json_file(result_path, &value).await?;
+    if result.success {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "sandbox worker failed: {}",
+            result.error.as_deref().unwrap_or("unknown error")
+        )
+    }
+}
+
+async fn run_bound_listeners(
+    bound: Vec<(DecoyEndpoint, TcpListener)>,
+    runtime: SessionRuntime,
+) -> Vec<ListenerStats> {
+    let mut task_stats = Vec::new();
+    let mut tasks = Vec::new();
+    for (endpoint, listener) in bound {
+        let runtime = runtime.clone();
+        tasks.push(tokio::spawn(async move {
+            run_listener(endpoint, listener, runtime).await
+        }));
+    }
+
+    for task in tasks {
+        match task.await {
+            Ok(stats) => task_stats.push(stats),
+            Err(e) => warn!("honeypot listener task join error: {e}"),
+        }
+    }
+    task_stats
+}
+
+async fn run_listeners_from_endpoints(
+    endpoints: Vec<DecoyEndpoint>,
+    runtime: SessionRuntime,
+) -> Result<Vec<ListenerStats>, String> {
+    let mut bound = Vec::new();
+    let mut bind_errors = Vec::new();
+    for endpoint in endpoints {
+        let bind_target = format!("{}:{}", endpoint.bind_addr, endpoint.listen_port);
+        match TcpListener::bind(&bind_target).await {
+            Ok(listener) => {
+                info!(
+                    service = %endpoint.service,
+                    bind = %bind_target,
+                    "honeypot sandbox listener bound"
+                );
+                bound.push((endpoint, listener));
+            }
+            Err(e) => {
+                warn!(
+                    service = %endpoint.service,
+                    bind = %bind_target,
+                    "honeypot sandbox listener bind failed: {e}"
+                );
+                bind_errors.push(format!("{bind_target}: {e}"));
+            }
+        }
+    }
+    if bound.is_empty() {
+        return Err(format!(
+            "sandbox worker: failed to bind all decoys: {}",
+            bind_errors.join("; ")
+        ));
+    }
+    Ok(run_bound_listeners(bound, runtime).await)
+}
+
+async fn run_sandbox_session(
+    runtime: SessionRuntime,
+    endpoints: Vec<DecoyEndpoint>,
+    session_dir: &Path,
+    runner_path: &str,
+    clear_env: bool,
+) -> Result<SandboxRunOutcome, String> {
+    let runner = if runner_path.trim().is_empty() {
+        std::env::current_exe()
+            .map_err(|e| format!("sandbox runner: cannot resolve current executable: {e}"))?
+    } else {
+        PathBuf::from(runner_path)
+    };
+    let runner_label = runner.display().to_string();
+    let spec_path = session_dir.join(format!(
+        "listener-session-{}.sandbox-spec.json",
+        runtime.session_id
+    ));
+    let result_path = session_dir.join(format!(
+        "listener-session-{}.sandbox-result.json",
+        runtime.session_id
+    ));
+    let spec = SandboxWorkerSpec {
+        session_id: runtime.session_id.clone(),
+        target_ip: runtime.target_ip.to_string(),
+        strict_target_only: runtime.strict_target_only,
+        duration_secs: runtime.duration_secs,
+        max_connections: runtime.max_connections,
+        max_payload_bytes: runtime.max_payload_bytes,
+        transcript_preview_bytes: runtime.transcript_preview_bytes,
+        isolation_profile: runtime.isolation_profile.clone(),
+        evidence_path: runtime.evidence_path.clone(),
+        endpoints: endpoints.iter().map(SandboxEndpointSpec::from).collect(),
+    };
+    let spec_value = serde_json::to_value(spec)
+        .map_err(|e| format!("sandbox runner: spec serialize failed: {e}"))?;
+    write_json_file(&spec_path, &spec_value)
+        .await
+        .map_err(|e| {
+            format!(
+                "sandbox runner: failed writing spec {}: {e}",
+                spec_path.display()
+            )
+        })?;
+
+    let mut cmd = Command::new(&runner);
+    cmd.arg("--honeypot-sandbox-runner")
+        .arg("--honeypot-sandbox-spec")
+        .arg(&spec_path)
+        .arg("--honeypot-sandbox-result")
+        .arg(&result_path);
+
+    if clear_env {
+        cmd.env_clear();
+        cmd.env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("sandbox runner: failed to spawn {}: {e}", runner.display()))?;
+
+    let wait_timeout =
+        Duration::from_secs(runtime.duration_secs.saturating_add(SANDBOX_GRACE_SECS));
+    let waited = tokio::time::timeout(wait_timeout, child.wait()).await;
+    let status = match waited {
+        Ok(Ok(status)) => status,
+        Ok(Err(e)) => {
+            let _ = child.kill().await;
+            return Err(format!("sandbox runner: wait failed: {e}"));
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            return Err(format!(
+                "sandbox runner: timed out after {}s",
+                runtime.duration_secs.saturating_add(SANDBOX_GRACE_SECS)
+            ));
+        }
+    };
+
+    let result_body = tokio::fs::read_to_string(&result_path).await.map_err(|e| {
+        format!(
+            "sandbox runner: missing result {}: {e}",
+            result_path.display()
+        )
+    })?;
+    let result: SandboxWorkerResult = serde_json::from_str(&result_body).map_err(|e| {
+        format!(
+            "sandbox runner: invalid result JSON {}: {e}",
+            result_path.display()
+        )
+    })?;
+
+    if !status.success() {
+        let _ = tokio::fs::remove_file(&spec_path).await;
+        let _ = tokio::fs::remove_file(&result_path).await;
+        return Err(format!(
+            "sandbox runner exited with status {} ({})",
+            status,
+            result
+                .error
+                .unwrap_or_else(|| "no error details from worker".to_string())
+        ));
+    }
+    if !result.success {
+        let _ = tokio::fs::remove_file(&spec_path).await;
+        let _ = tokio::fs::remove_file(&result_path).await;
+        return Err(result
+            .error
+            .unwrap_or_else(|| "sandbox worker reported failure".to_string()));
+    }
+
+    Ok(SandboxRunOutcome {
+        stats: result.service_stats,
+        spec_path,
+        result_path,
+        runner: runner_label,
+    })
+}
+
+async fn run_pcap_handoff(
+    session_dir: &Path,
+    session_id: &str,
+    target_ip: IpAddr,
+    timeout_secs: u64,
+    max_packets: u64,
+) -> PcapHandoffStatus {
+    if timeout_secs == 0 || max_packets == 0 {
+        return PcapHandoffStatus {
+            enabled: true,
+            attempted: false,
+            timeout_secs,
+            max_packets,
+            command: None,
+            pcap_file: None,
+            success: false,
+            timed_out: false,
+            error: Some("pcap handoff skipped: timeout_secs or max_packets is zero".to_string()),
+        };
+    }
+
+    let pcap_path = session_dir.join(format!("listener-session-{session_id}.pcap"));
+    let cmd = format!(
+        "sudo timeout {timeout_secs}s tcpdump -nn -i any host {target_ip} -c {max_packets} -w {}",
+        pcap_path.display()
+    );
+    let mut status = PcapHandoffStatus {
+        enabled: true,
+        attempted: true,
+        timeout_secs,
+        max_packets,
+        command: Some(cmd),
+        pcap_file: Some(pcap_path.display().to_string()),
+        success: false,
+        timed_out: false,
+        error: None,
+    };
+    let args = vec![
+        "timeout".to_string(),
+        format!("{timeout_secs}s"),
+        "tcpdump".to_string(),
+        "-nn".to_string(),
+        "-i".to_string(),
+        "any".to_string(),
+        "host".to_string(),
+        target_ip.to_string(),
+        "-c".to_string(),
+        max_packets.to_string(),
+        "-w".to_string(),
+        pcap_path.display().to_string(),
+    ];
+    match Command::new("sudo").args(&args).output().await {
+        Ok(out) => {
+            let code = out.status.code().unwrap_or_default();
+            if out.status.success() || code == 124 {
+                status.success = true;
+                status.timed_out = code == 124;
+            } else {
+                status.error = Some(String::from_utf8_lossy(&out.stderr).trim().to_string());
+            }
+        }
+        Err(e) => {
+            status.error = Some(e.to_string());
+        }
+    }
+    status
 }
 
 async fn run_listener(
@@ -686,14 +1152,14 @@ fn build_endpoints(
                 bind_addr: bind_addr.to_string(),
                 listen_port: runtime.port,
                 redirect_from_port: 22,
-                banner: SSH_BANNER,
+                banner: banner_for_service("ssh")?,
             }),
             "http" => endpoints.push(DecoyEndpoint {
                 service,
                 bind_addr: bind_addr.to_string(),
                 listen_port: runtime.http_port,
                 redirect_from_port: 80,
-                banner: HTTP_BANNER,
+                banner: banner_for_service("http")?,
             }),
             other => {
                 return Err(format!(
@@ -719,6 +1185,16 @@ fn build_endpoints(
     Ok(endpoints)
 }
 
+fn banner_for_service(service: &str) -> Result<&'static [u8], String> {
+    match service.to_ascii_lowercase().as_str() {
+        "ssh" => Ok(SSH_BANNER),
+        "http" => Ok(HTTP_BANNER),
+        other => Err(format!(
+            "unsupported service '{other}' (supported: ssh, http)"
+        )),
+    }
+}
+
 fn is_loopback_bind(bind_addr: &str) -> bool {
     bind_addr
         .parse::<IpAddr>()
@@ -734,27 +1210,92 @@ fn normalize_isolation_profile(profile: &str) -> &'static str {
     }
 }
 
-async fn cleanup_old_forensics(session_dir: &Path, keep_days: usize) -> std::io::Result<usize> {
-    let mut removed = 0usize;
+async fn cleanup_old_forensics(
+    session_dir: &Path,
+    keep_days: usize,
+    max_total_mb: usize,
+) -> std::io::Result<ForensicsCleanupStats> {
     let cutoff = Utc::now().date_naive() - chrono::Duration::days(keep_days as i64);
+    let candidates = list_forensics_files(session_dir).await?;
+    let total_before_bytes = candidates.iter().map(|f| f.size).sum::<u64>();
 
+    let mut removed_by_age = 0usize;
+    let mut remaining = Vec::new();
+    for file in candidates {
+        let remove_for_age = file
+            .name
+            .as_deref()
+            .and_then(extract_listener_artifact_date)
+            .map(|file_date| file_date < cutoff)
+            .unwrap_or(false);
+        if remove_for_age {
+            if tokio::fs::remove_file(&file.path).await.is_ok() {
+                removed_by_age += 1;
+                continue;
+            }
+        }
+        remaining.push(file);
+    }
+
+    let max_bytes = (max_total_mb as u64).saturating_mul(1024 * 1024);
+    let mut removed_by_size = 0usize;
+    let mut total_after_bytes = remaining.iter().map(|f| f.size).sum::<u64>();
+    if max_bytes > 0 && total_after_bytes > max_bytes {
+        remaining.sort_by_key(|f| f.modified);
+        for file in remaining {
+            if total_after_bytes <= max_bytes {
+                break;
+            }
+            if tokio::fs::remove_file(&file.path).await.is_ok() {
+                removed_by_size += 1;
+                total_after_bytes = total_after_bytes.saturating_sub(file.size);
+            }
+        }
+    }
+
+    Ok(ForensicsCleanupStats {
+        removed_by_age,
+        removed_by_size,
+        total_before_bytes,
+        total_after_bytes,
+    })
+}
+
+#[derive(Debug)]
+struct ForensicsFile {
+    path: PathBuf,
+    name: Option<String>,
+    size: u64,
+    modified: std::time::SystemTime,
+}
+
+async fn list_forensics_files(session_dir: &Path) -> std::io::Result<Vec<ForensicsFile>> {
+    let mut out = Vec::new();
     let mut entries = tokio::fs::read_dir(session_dir).await?;
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        let Some(file_date) = extract_listener_artifact_date(name) else {
+        let name = name.to_string();
+        if !name.starts_with("listener-session-") {
             continue;
-        };
-        if file_date < cutoff {
-            if tokio::fs::remove_file(&path).await.is_ok() {
-                removed += 1;
-            }
         }
+        if !path.is_file() {
+            continue;
+        }
+        let meta = match entry.metadata().await {
+            Ok(meta) => meta,
+            Err(_) => continue,
+        };
+        out.push(ForensicsFile {
+            path,
+            name: Some(name),
+            size: meta.len(),
+            modified: meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+        });
     }
-
-    Ok(removed)
+    Ok(out)
 }
 
 fn extract_listener_artifact_date(name: &str) -> Option<chrono::NaiveDate> {
@@ -1051,6 +1592,7 @@ mod tests {
     use super::*;
     use crate::skills::HoneypotRuntimeConfig;
     use innerwarden_core::{event::Severity, incident::Incident};
+    use tempfile::tempdir;
 
     fn ctx(mode: &str) -> SkillContext {
         SkillContext {
@@ -1083,8 +1625,15 @@ mod tests {
                 isolation_profile: "strict_local".to_string(),
                 require_high_ports: true,
                 forensics_keep_days: 7,
+                forensics_max_total_mb: 128,
                 transcript_preview_bytes: 96,
                 lock_stale_secs: 1800,
+                sandbox_enabled: false,
+                sandbox_runner_path: String::new(),
+                sandbox_clear_env: true,
+                pcap_handoff_enabled: false,
+                pcap_handoff_timeout_secs: 15,
+                pcap_handoff_max_packets: 120,
                 redirect_enabled: false,
                 redirect_backend: "iptables".to_string(),
             },
@@ -1170,5 +1719,35 @@ mod tests {
         let date = extract_listener_artifact_date("listener-session-20260313T162200Z-1.2.3.4.json")
             .expect("date should parse");
         assert_eq!(date.format("%Y-%m-%d").to_string(), "2026-03-13");
+    }
+
+    #[tokio::test]
+    async fn forensics_cleanup_applies_size_cap() {
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+        let file_a = base.join("listener-session-20260313T162200Z-a.jsonl");
+        let file_b = base.join("listener-session-20260313T162300Z-b.jsonl");
+        tokio::fs::write(&file_a, vec![b'a'; 700_000])
+            .await
+            .unwrap();
+        tokio::fs::write(&file_b, vec![b'b'; 700_000])
+            .await
+            .unwrap();
+
+        let stats = cleanup_old_forensics(base, 365, 1).await.unwrap();
+        assert_eq!(stats.removed_by_age, 0);
+        assert_eq!(stats.removed_by_size, 1);
+        assert!(stats.total_after_bytes <= 1_048_576);
+    }
+
+    #[tokio::test]
+    async fn forensics_cleanup_removes_old_artifacts() {
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+        let old = base.join("listener-session-20240101T000000Z-old.json");
+        tokio::fs::write(&old, b"{}").await.unwrap();
+
+        let stats = cleanup_old_forensics(base, 1, 128).await.unwrap();
+        assert_eq!(stats.removed_by_age, 1);
     }
 }

@@ -40,4 +40,7 @@ lock_stale_secs = 1800
 
 ## Next step
 
-Move to dedicated sandbox runtime track (Phase 8.4) for stronger process isolation and deeper forensic handoff.
+Delivered in `docs/phase-8-honeypot-sandbox-runtime.md` (Phase 8.4):
+- dedicated sandbox worker runtime for decoys
+- optional bounded pcap handoff
+- stricter forensic retention budget

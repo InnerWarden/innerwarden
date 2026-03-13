@@ -67,10 +67,24 @@ pub struct HoneypotRuntimeConfig {
     pub require_high_ports: bool,
     /// Retain honeypot forensics artifacts for this many days.
     pub forensics_keep_days: usize,
+    /// Hard cap for total honeypot forensics storage in MB.
+    pub forensics_max_total_mb: usize,
     /// Max bytes rendered in transcript preview fields.
     pub transcript_preview_bytes: usize,
     /// Active session lock stale threshold in seconds.
     pub lock_stale_secs: u64,
+    /// Run listeners in dedicated subprocess workers.
+    pub sandbox_enabled: bool,
+    /// Optional runner binary path.
+    pub sandbox_runner_path: String,
+    /// Clear environment for runner subprocesses.
+    pub sandbox_clear_env: bool,
+    /// Run bounded pcap handoff capture at session end.
+    pub pcap_handoff_enabled: bool,
+    /// Handoff capture timeout in seconds.
+    pub pcap_handoff_timeout_secs: u64,
+    /// Handoff capture max packets.
+    pub pcap_handoff_max_packets: u64,
     /// Optional selective redirection.
     pub redirect_enabled: bool,
     /// Redirect backend identifier.
@@ -93,8 +107,15 @@ impl Default for HoneypotRuntimeConfig {
             isolation_profile: "strict_local".to_string(),
             require_high_ports: true,
             forensics_keep_days: 7,
+            forensics_max_total_mb: 128,
             transcript_preview_bytes: 96,
             lock_stale_secs: 1800,
+            sandbox_enabled: false,
+            sandbox_runner_path: String::new(),
+            sandbox_clear_env: true,
+            pcap_handoff_enabled: false,
+            pcap_handoff_timeout_secs: 15,
+            pcap_handoff_max_packets: 120,
             redirect_enabled: false,
             redirect_backend: "iptables".to_string(),
         }

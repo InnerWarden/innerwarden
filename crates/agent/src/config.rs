@@ -281,6 +281,10 @@ pub struct HoneypotConfig {
     #[serde(default = "default_honeypot_forensics_keep_days")]
     pub forensics_keep_days: usize,
 
+    /// Hard cap for total honeypot forensics storage in MB.
+    #[serde(default = "default_honeypot_forensics_max_total_mb")]
+    pub forensics_max_total_mb: usize,
+
     /// Max bytes to render as readable transcript preview in evidence lines.
     #[serde(default = "default_honeypot_transcript_preview_bytes")]
     pub transcript_preview_bytes: usize,
@@ -290,7 +294,64 @@ pub struct HoneypotConfig {
     pub lock_stale_secs: u64,
 
     #[serde(default)]
+    pub sandbox: HoneypotSandboxConfig,
+
+    #[serde(default)]
+    pub pcap_handoff: HoneypotPcapHandoffConfig,
+
+    #[serde(default)]
     pub redirect: HoneypotRedirectConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HoneypotSandboxConfig {
+    /// Run decoy listeners in dedicated subprocess workers.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Optional absolute path to runner binary.
+    /// Empty means current innerwarden-agent executable.
+    #[serde(default)]
+    pub runner_path: String,
+
+    /// Clear environment for sandbox workers.
+    #[serde(default = "default_true")]
+    pub clear_env: bool,
+}
+
+impl Default for HoneypotSandboxConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            runner_path: String::new(),
+            clear_env: true,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HoneypotPcapHandoffConfig {
+    /// Run bounded pcap capture at session end.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Capture timeout in seconds.
+    #[serde(default = "default_honeypot_pcap_timeout_secs")]
+    pub timeout_secs: u64,
+
+    /// Max captured packets.
+    #[serde(default = "default_honeypot_pcap_max_packets")]
+    pub max_packets: u64,
+}
+
+impl Default for HoneypotPcapHandoffConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_secs: default_honeypot_pcap_timeout_secs(),
+            max_packets: default_honeypot_pcap_max_packets(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -329,8 +390,11 @@ impl Default for HoneypotConfig {
             isolation_profile: default_honeypot_isolation_profile(),
             require_high_ports: default_true(),
             forensics_keep_days: default_honeypot_forensics_keep_days(),
+            forensics_max_total_mb: default_honeypot_forensics_max_total_mb(),
             transcript_preview_bytes: default_honeypot_transcript_preview_bytes(),
             lock_stale_secs: default_honeypot_lock_stale_secs(),
+            sandbox: HoneypotSandboxConfig::default(),
+            pcap_handoff: HoneypotPcapHandoffConfig::default(),
             redirect: HoneypotRedirectConfig::default(),
         }
     }
@@ -484,12 +548,24 @@ fn default_honeypot_forensics_keep_days() -> usize {
     7
 }
 
+fn default_honeypot_forensics_max_total_mb() -> usize {
+    128
+}
+
 fn default_honeypot_transcript_preview_bytes() -> usize {
     96
 }
 
 fn default_honeypot_lock_stale_secs() -> u64 {
     1800
+}
+
+fn default_honeypot_pcap_timeout_secs() -> u64 {
+    15
+}
+
+fn default_honeypot_pcap_max_packets() -> u64 {
+    120
 }
 
 fn default_honeypot_redirect_backend() -> String {
@@ -531,8 +607,15 @@ mod tests {
         assert_eq!(cfg.honeypot.isolation_profile, "strict_local");
         assert!(cfg.honeypot.require_high_ports);
         assert_eq!(cfg.honeypot.forensics_keep_days, 7);
+        assert_eq!(cfg.honeypot.forensics_max_total_mb, 128);
         assert_eq!(cfg.honeypot.transcript_preview_bytes, 96);
         assert_eq!(cfg.honeypot.lock_stale_secs, 1800);
+        assert!(!cfg.honeypot.sandbox.enabled);
+        assert!(cfg.honeypot.sandbox.runner_path.is_empty());
+        assert!(cfg.honeypot.sandbox.clear_env);
+        assert!(!cfg.honeypot.pcap_handoff.enabled);
+        assert_eq!(cfg.honeypot.pcap_handoff.timeout_secs, 15);
+        assert_eq!(cfg.honeypot.pcap_handoff.max_packets, 120);
         assert!(!cfg.honeypot.redirect.enabled);
         assert_eq!(cfg.honeypot.redirect.backend, "iptables");
     }
@@ -575,8 +658,19 @@ max_payload_bytes = 256
 isolation_profile = "standard"
 require_high_ports = false
 forensics_keep_days = 14
+forensics_max_total_mb = 512
 transcript_preview_bytes = 192
 lock_stale_secs = 600
+
+[honeypot.sandbox]
+enabled = true
+runner_path = "/usr/local/bin/innerwarden-agent"
+clear_env = false
+
+[honeypot.pcap_handoff]
+enabled = true
+timeout_secs = 20
+max_packets = 200
 
 [honeypot.redirect]
 enabled = true
@@ -612,8 +706,18 @@ backend = "iptables"
         assert_eq!(cfg.honeypot.isolation_profile, "standard");
         assert!(!cfg.honeypot.require_high_ports);
         assert_eq!(cfg.honeypot.forensics_keep_days, 14);
+        assert_eq!(cfg.honeypot.forensics_max_total_mb, 512);
         assert_eq!(cfg.honeypot.transcript_preview_bytes, 192);
         assert_eq!(cfg.honeypot.lock_stale_secs, 600);
+        assert!(cfg.honeypot.sandbox.enabled);
+        assert_eq!(
+            cfg.honeypot.sandbox.runner_path,
+            "/usr/local/bin/innerwarden-agent"
+        );
+        assert!(!cfg.honeypot.sandbox.clear_env);
+        assert!(cfg.honeypot.pcap_handoff.enabled);
+        assert_eq!(cfg.honeypot.pcap_handoff.timeout_secs, 20);
+        assert_eq!(cfg.honeypot.pcap_handoff.max_packets, 200);
         assert!(cfg.honeypot.redirect.enabled);
         assert_eq!(cfg.honeypot.redirect.backend, "iptables");
     }

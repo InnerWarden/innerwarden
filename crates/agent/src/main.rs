@@ -44,6 +44,18 @@ struct Cli {
     /// Poll interval in seconds for the narrative slow loop (default: 30)
     #[arg(long, default_value = "30")]
     interval: u64,
+
+    /// Internal: run honeypot sandbox worker mode.
+    #[arg(long, hide = true)]
+    honeypot_sandbox_runner: bool,
+
+    /// Internal: path to honeypot sandbox runner spec JSON.
+    #[arg(long, hide = true)]
+    honeypot_sandbox_spec: Option<PathBuf>,
+
+    /// Internal: path to honeypot sandbox runner result JSON.
+    #[arg(long, hide = true)]
+    honeypot_sandbox_result: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -84,6 +96,19 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    if cli.honeypot_sandbox_runner {
+        let spec = cli
+            .honeypot_sandbox_spec
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("missing --honeypot-sandbox-spec"))?;
+        let result = cli
+            .honeypot_sandbox_result
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("missing --honeypot-sandbox-result"))?;
+        skills::builtin::run_honeypot_sandbox_worker(spec, result).await?;
+        return Ok(());
+    }
+
     if cli.report {
         let out = report::generate(&cli.data_dir)?;
         info!(
@@ -121,6 +146,10 @@ async fn main() -> Result<()> {
         honeypot_ssh_port = cfg.honeypot.port,
         honeypot_http_port = cfg.honeypot.http_port,
         honeypot_isolation_profile = %cfg.honeypot.isolation_profile,
+        honeypot_forensics_keep_days = cfg.honeypot.forensics_keep_days,
+        honeypot_forensics_max_total_mb = cfg.honeypot.forensics_max_total_mb,
+        honeypot_sandbox = cfg.honeypot.sandbox.enabled,
+        honeypot_pcap_handoff = cfg.honeypot.pcap_handoff.enabled,
         honeypot_redirect = cfg.honeypot.redirect.enabled,
         responder = cfg.responder.enabled,
         dry_run = cfg.responder.dry_run,
@@ -725,8 +754,15 @@ fn honeypot_runtime(cfg: &config::AgentConfig) -> skills::HoneypotRuntimeConfig 
         isolation_profile: cfg.honeypot.isolation_profile.clone(),
         require_high_ports: cfg.honeypot.require_high_ports,
         forensics_keep_days: cfg.honeypot.forensics_keep_days,
+        forensics_max_total_mb: cfg.honeypot.forensics_max_total_mb,
         transcript_preview_bytes: cfg.honeypot.transcript_preview_bytes,
         lock_stale_secs: cfg.honeypot.lock_stale_secs,
+        sandbox_enabled: cfg.honeypot.sandbox.enabled,
+        sandbox_runner_path: cfg.honeypot.sandbox.runner_path.clone(),
+        sandbox_clear_env: cfg.honeypot.sandbox.clear_env,
+        pcap_handoff_enabled: cfg.honeypot.pcap_handoff.enabled,
+        pcap_handoff_timeout_secs: cfg.honeypot.pcap_handoff.timeout_secs,
+        pcap_handoff_max_packets: cfg.honeypot.pcap_handoff.max_packets,
         redirect_enabled: cfg.honeypot.redirect.enabled,
         redirect_backend: cfg.honeypot.redirect.backend.clone(),
     }
@@ -810,8 +846,11 @@ async fn append_honeypot_marker_event(
             "listener_isolation_profile": runtime.isolation_profile,
             "listener_require_high_ports": runtime.require_high_ports,
             "listener_forensics_keep_days": runtime.forensics_keep_days,
+            "listener_forensics_max_total_mb": runtime.forensics_max_total_mb,
             "listener_transcript_preview_bytes": runtime.transcript_preview_bytes,
             "listener_lock_stale_secs": runtime.lock_stale_secs,
+            "listener_sandbox_enabled": runtime.sandbox_enabled,
+            "listener_pcap_handoff_enabled": runtime.pcap_handoff_enabled,
             "listener_redirect_enabled": runtime.redirect_enabled,
             "listener_redirect_backend": runtime.redirect_backend,
             "note": if is_listener {
