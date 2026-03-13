@@ -13,11 +13,12 @@ use axum::routing::get;
 use axum::{Json, Router};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rand_core::OsRng;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::correlation::build_clusters;
 use crate::decisions::DecisionEntry;
 use crate::telemetry::TelemetrySnapshot;
 use innerwarden_core::entities::EntityType;
@@ -100,6 +101,30 @@ struct JourneyQuery {
     date: Option<String>,
     severity_min: Option<String>,
     detector: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClusterQuery {
+    limit: Option<usize>,
+    date: Option<String>,
+    severity_min: Option<String>,
+    detector: Option<String>,
+    window_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExportQuery {
+    date: Option<String>,
+    format: Option<String>,
+    subject_type: Option<String>,
+    subject: Option<String>,
+    // Backward compatibility with D2.1 clients
+    ip: Option<String>,
+    severity_min: Option<String>,
+    detector: Option<String>,
+    group_by: Option<String>,
+    limit: Option<usize>,
+    window_seconds: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +251,40 @@ struct PivotResponse {
     items: Vec<PivotItem>,
 }
 
+#[derive(Debug, Serialize)]
+struct ClusterItem {
+    cluster_id: String,
+    pivot: String,
+    pivot_type: String,
+    pivot_value: String,
+    start_ts: DateTime<Utc>,
+    end_ts: DateTime<Utc>,
+    incident_count: usize,
+    detector_kinds: Vec<String>,
+    incident_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ClusterResponse {
+    date: String,
+    total: usize,
+    items: Vec<ClusterItem>,
+}
+
+#[derive(Debug, Serialize)]
+struct InvestigationExport {
+    generated_at: DateTime<Utc>,
+    date: String,
+    filters: serde_json::Value,
+    group_by: String,
+    subject_type: Option<String>,
+    subject: Option<String>,
+    overview: OverviewResponse,
+    pivots: Vec<PivotItem>,
+    clusters: Vec<ClusterItem>,
+    journey: Option<JourneyResponse>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PivotKind {
     Ip,
@@ -322,7 +381,9 @@ pub async fn serve(data_dir: PathBuf, bind: String, auth: DashboardAuth) -> Resu
         .route("/api/decisions", get(api_decisions))
         .route("/api/entities", get(api_entities))
         .route("/api/pivots", get(api_pivots))
+        .route("/api/clusters", get(api_clusters))
         .route("/api/journey", get(api_journey))
+        .route("/api/export", get(api_export))
         .layer(auth_layer)
         .with_state(state);
 
@@ -515,6 +576,23 @@ async fn api_pivots(
     })
 }
 
+async fn api_clusters(
+    State(state): State<DashboardState>,
+    Query(query): Query<ClusterQuery>,
+) -> Json<ClusterResponse> {
+    let date = resolve_date(query.date.as_deref());
+    let limit = normalize_limit(query.limit);
+    let window_seconds = query.window_seconds.unwrap_or(300).clamp(30, 3600);
+    let filters =
+        InvestigationFilters::from_query(query.severity_min.as_deref(), query.detector.as_deref());
+    let items = build_cluster_items(&state.data_dir, &date, &filters, limit, window_seconds);
+    Json(ClusterResponse {
+        date,
+        total: items.len(),
+        items,
+    })
+}
+
 async fn api_journey(
     State(state): State<DashboardState>,
     Query(query): Query<JourneyQuery>,
@@ -549,6 +627,76 @@ async fn api_journey(
         &subject,
         &filters,
     ))
+}
+
+async fn api_export(
+    State(state): State<DashboardState>,
+    Query(query): Query<ExportQuery>,
+) -> Response {
+    let date = resolve_date(query.date.as_deref());
+    let format = query
+        .format
+        .as_deref()
+        .unwrap_or("json")
+        .trim()
+        .to_ascii_lowercase();
+    let subject_type = PivotKind::parse(query.subject_type.as_deref());
+    let subject = query.subject.or(query.ip).map(|s| s.trim().to_string());
+    let filters =
+        InvestigationFilters::from_query(query.severity_min.as_deref(), query.detector.as_deref());
+    let group_by = PivotKind::parse(query.group_by.as_deref());
+    let limit = normalize_limit(query.limit);
+    let window_seconds = query.window_seconds.unwrap_or(300).clamp(30, 3600);
+
+    let overview = compute_overview(&state.data_dir, &date);
+    let pivots = build_pivots(&state.data_dir, &date, group_by, &filters, limit);
+    let clusters = build_cluster_items(&state.data_dir, &date, &filters, limit, window_seconds);
+    let journey = subject
+        .as_ref()
+        .filter(|s| !s.is_empty())
+        .map(|s| build_journey(&state.data_dir, &date, subject_type, s, &filters));
+
+    let snapshot = InvestigationExport {
+        generated_at: Utc::now(),
+        date: date.clone(),
+        filters: serde_json::json!({
+            "date": date,
+            "severity_min": query.severity_min,
+            "detector": query.detector,
+            "group_by": group_by.as_str(),
+            "window_seconds": window_seconds,
+            "limit": limit,
+        }),
+        group_by: group_by.as_str().to_string(),
+        subject_type: subject.as_ref().map(|_| subject_type.as_str().to_string()),
+        subject,
+        overview,
+        pivots,
+        clusters,
+        journey,
+    };
+
+    if format == "md" || format == "markdown" {
+        let markdown = render_markdown_snapshot(&snapshot);
+        return (
+            [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
+            markdown,
+        )
+            .into_response();
+    }
+
+    match serde_json::to_string_pretty(&snapshot) {
+        Ok(body) => (
+            [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+            body,
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to serialize export snapshot",
+        )
+            .into_response(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -713,6 +861,51 @@ fn build_pivots(
     });
     items.truncate(limit);
     items
+}
+
+fn build_cluster_items(
+    data_dir: &Path,
+    date: &str,
+    filters: &InvestigationFilters,
+    limit: usize,
+    window_seconds: u64,
+) -> Vec<ClusterItem> {
+    let incidents = read_jsonl::<innerwarden_core::incident::Incident>(&dated_path(
+        data_dir,
+        "incidents",
+        date,
+    ));
+
+    let filtered: Vec<innerwarden_core::incident::Incident> = incidents
+        .into_iter()
+        .filter(|incident| incident_matches_filters(incident, filters))
+        .collect();
+    if filtered.is_empty() {
+        return Vec::new();
+    }
+
+    let mut clusters = build_clusters(&filtered, window_seconds);
+    clusters.truncate(limit);
+
+    clusters
+        .into_iter()
+        .enumerate()
+        .map(|(idx, cluster)| {
+            let (pivot_type, pivot_value) = parse_cluster_pivot(&cluster.pivot);
+            let incident_count = cluster.incident_ids.len();
+            ClusterItem {
+                cluster_id: format!("cluster-{:03}", idx + 1),
+                pivot: cluster.pivot,
+                pivot_type,
+                pivot_value,
+                start_ts: cluster.start_ts,
+                end_ts: cluster.end_ts,
+                incident_count,
+                detector_kinds: cluster.detector_kinds,
+                incident_ids: cluster.incident_ids,
+            }
+        })
+        .collect()
 }
 
 /// Build the full journey timeline for a selected subject on a given date.
@@ -953,6 +1146,88 @@ fn scan_honeypot_sessions(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn parse_cluster_pivot(pivot: &str) -> (String, String) {
+    if let Some((kind, value)) = pivot.split_once(':') {
+        return (kind.to_string(), value.to_string());
+    }
+    ("detector".to_string(), pivot.to_string())
+}
+
+fn render_markdown_snapshot(snapshot: &InvestigationExport) -> String {
+    let mut out = String::new();
+    out.push_str("# InnerWarden Investigation Snapshot\n\n");
+    out.push_str(&format!("- Generated at: `{}`\n", snapshot.generated_at));
+    out.push_str(&format!("- Date: `{}`\n", snapshot.date));
+    out.push_str(&format!("- Group by: `{}`\n", snapshot.group_by));
+    if let (Some(subject_type), Some(subject)) = (&snapshot.subject_type, &snapshot.subject) {
+        out.push_str(&format!("- Subject: `{subject_type}:{subject}`\n"));
+    }
+    out.push('\n');
+
+    out.push_str("## Overview\n\n");
+    out.push_str(&format!(
+        "- Events: **{}**\n- Incidents: **{}**\n- Decisions: **{}**\n\n",
+        snapshot.overview.events_count,
+        snapshot.overview.incidents_count,
+        snapshot.overview.decisions_count
+    ));
+
+    out.push_str("## Top Pivots\n\n");
+    if snapshot.pivots.is_empty() {
+        out.push_str("_No pivots for current filters._\n\n");
+    } else {
+        for pivot in &snapshot.pivots {
+            out.push_str(&format!(
+                "- `{}` · severity `{}` · incidents `{}` · events `{}` · outcome `{}`\n",
+                pivot.value,
+                pivot.max_severity,
+                pivot.incident_count,
+                pivot.event_count,
+                pivot.outcome
+            ));
+        }
+        out.push('\n');
+    }
+
+    out.push_str("## Correlation Clusters\n\n");
+    if snapshot.clusters.is_empty() {
+        out.push_str("_No clusters for current filters._\n\n");
+    } else {
+        for cluster in &snapshot.clusters {
+            out.push_str(&format!(
+                "- {} · pivot `{}` · incidents `{}` · detectors `{}` · `{}` → `{}`\n",
+                cluster.cluster_id,
+                cluster.pivot,
+                cluster.incident_count,
+                cluster.detector_kinds.join(", "),
+                cluster.start_ts,
+                cluster.end_ts
+            ));
+        }
+        out.push('\n');
+    }
+
+    out.push_str("## Journey\n\n");
+    match &snapshot.journey {
+        Some(journey) => {
+            out.push_str(&format!(
+                "- Subject: `{}`:`{}`\n- Outcome: `{}`\n- Entries: `{}`\n\n",
+                journey.subject_type,
+                journey.subject,
+                journey.outcome,
+                journey.entries.len()
+            ));
+            for entry in &journey.entries {
+                out.push_str(&format!("- `{}` · **{}**\n", entry.ts, entry.kind));
+            }
+            out.push('\n');
+        }
+        None => out.push_str("_No journey selected for export._\n\n"),
+    }
+
+    out
+}
 
 fn extract_ip_entities(entities: &[innerwarden_core::entities::EntityRef]) -> Vec<String> {
     extract_entity_values(entities, EntityType::Ip)
@@ -1323,6 +1598,21 @@ const INDEX_HTML: &str = r#"<!doctype html>
     .card-counts { color: var(--muted); }
     .card-time { font-size: 0.65rem; color: var(--muted); font-family: "IBM Plex Mono", monospace; }
 
+    .cluster-card {
+      background: rgba(86, 200, 255, 0.08);
+      border: 1px solid rgba(86, 200, 255, 0.24);
+      border-radius: 7px;
+      padding: 8px 10px;
+      margin-bottom: 5px;
+      cursor: pointer;
+    }
+    .cluster-card:hover { background: rgba(86, 200, 255, 0.12); }
+    .cluster-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    .cluster-id { font-size: 0.66rem; color: var(--accent); letter-spacing: 0.04em; text-transform: uppercase; }
+    .cluster-pivot { font-family: "IBM Plex Mono", monospace; font-size: 0.72rem; color: var(--text); }
+    .cluster-meta { font-size: 0.67rem; color: var(--muted); margin-top: 3px; }
+    .cluster-dets { font-size: 0.65rem; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
     /* Detector list */
     .det-row {
       display: flex; justify-content: space-between; font-size: 0.75rem;
@@ -1352,6 +1642,25 @@ const INDEX_HTML: &str = r#"<!doctype html>
     }
     .journey-time { font-size: 0.75rem; color: var(--muted); }
     .journey-subtitle { font-size: 0.78rem; color: var(--muted); margin-bottom: 18px; }
+
+    .journey-actions {
+      display: flex; gap: 6px; margin: 0 0 12px;
+    }
+    .journey-btn {
+      border: 1px solid var(--line);
+      background: rgba(9, 19, 30, 0.85);
+      color: var(--muted);
+      border-radius: 6px;
+      padding: 5px 9px;
+      font-size: 0.66rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .journey-btn:hover {
+      color: var(--accent);
+      border-color: rgba(86, 200, 255, 0.35);
+    }
 
     /* ── Timeline ────────────────────────────────────────────────── */
     .timeline { position: relative; }
@@ -1487,6 +1796,10 @@ const INDEX_HTML: &str = r#"<!doctype html>
       <div class="section-title" id="entityTitle">Attackers (IP)</div>
       <div id="attackerList"><div class="empty">Loading…</div></div>
 
+      <!-- Correlation clusters -->
+      <div class="section-title" style="margin-top:14px">Correlation Clusters</div>
+      <div id="clusterList"><div class="empty">—</div></div>
+
       <!-- Top detectors -->
       <div class="section-title" style="margin-top:14px">Top Detectors</div>
       <div id="topDetectors"><div class="empty">—</div></div>
@@ -1533,6 +1846,23 @@ const INDEX_HTML: &str = r#"<!doctype html>
     const r = await fetch(url, {cache: 'no-store'});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return r.json();
+  }
+
+  async function loadText(url) {
+    const r = await fetch(url, {cache: 'no-store'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.text();
+  }
+
+  function downloadBlob(name, contentType, text) {
+    const blob = new Blob([text], { type: contentType });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }
 
   // ── Kind badge ─────────────────────────────────────────────────────────
@@ -1644,6 +1974,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
     pivot: 'ip',
     selected: { type: 'ip', value: null },
     filters: { date: '', severity_min: '', detector: '' },
+    clusters: [],
   };
 
   const pivotTitle = (pivot) => ({
@@ -1651,6 +1982,12 @@ const INDEX_HTML: &str = r#"<!doctype html>
     user: 'Users (Pivot)',
     detector: 'Detectors (Pivot)',
   }[pivot] || 'Entities');
+
+  function parsePivotToken(token) {
+    const i = String(token || '').indexOf(':');
+    if (i <= 0) return { type: 'detector', value: String(token || '') };
+    return { type: token.slice(0, i), value: token.slice(i + 1) };
+  }
 
   function buildQuery(params) {
     const q = new URLSearchParams();
@@ -1706,6 +2043,10 @@ const INDEX_HTML: &str = r#"<!doctype html>
           <span class="journey-time">${esc(first)} → ${esc(last)}</span>
         </div>
         <div class="journey-subtitle">${esc((j.subject_type || subjectType).toUpperCase())} journey · ${j.entries.length} timeline entries · click any row to expand</div>
+        <div class="journey-actions">
+          <button type="button" class="journey-btn" onclick="downloadSnapshot('json')">Export JSON</button>
+          <button type="button" class="journey-btn" onclick="downloadSnapshot('md')">Export Markdown</button>
+        </div>
         <div class="timeline">`;
 
       if (j.entries.length === 0) {
@@ -1745,6 +2086,49 @@ const INDEX_HTML: &str = r#"<!doctype html>
       </div>`;
   }
 
+  function renderClusterCard(cluster) {
+    return `
+      <div class="cluster-card" onclick="openCluster('${esc(cluster.pivot)}')">
+        <div class="cluster-row">
+          <span class="cluster-id">${esc(cluster.cluster_id)}</span>
+          <span class="cluster-meta">${cluster.incident_count} incidents</span>
+        </div>
+        <div class="cluster-pivot">${esc(cluster.pivot)}</div>
+        <div class="cluster-dets">${esc((cluster.detector_kinds || []).join(', '))}</div>
+        <div class="cluster-meta">${esc(fmtTime(cluster.start_ts))} → ${esc(fmtTime(cluster.end_ts))}</div>
+      </div>`;
+  }
+
+  function openCluster(pivotToken) {
+    const parsed = parsePivotToken(pivotToken);
+    loadJourney(parsed.type, parsed.value);
+  }
+
+  async function downloadSnapshot(format) {
+    try {
+      syncFiltersFromUi();
+      const qs = buildQuery({
+        format,
+        date: state.filters.date,
+        severity_min: state.filters.severity_min,
+        detector: state.filters.detector,
+        group_by: state.pivot,
+        subject_type: state.selected.value ? state.selected.type : '',
+        subject: state.selected.value ? state.selected.value : '',
+      });
+      const body = await loadText('/api/export?' + qs);
+      const ext = format === 'md' ? 'md' : 'json';
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      downloadBlob(
+        `innerwarden-snapshot-${stamp}.${ext}`,
+        format === 'md' ? 'text/markdown; charset=utf-8' : 'application/json; charset=utf-8',
+        body
+      );
+    } catch (e) {
+      document.getElementById('refreshStatus').textContent = 'export err: ' + e.message;
+    }
+  }
+
   async function refreshLeft(forceRefreshJourney = false) {
     try {
       syncFiltersFromUi();
@@ -1756,8 +2140,13 @@ const INDEX_HTML: &str = r#"<!doctype html>
         detector: state.filters.detector,
         group_by: state.pivot,
       });
+      const clusterQs = buildQuery({
+        date: state.filters.date,
+        severity_min: state.filters.severity_min,
+        detector: state.filters.detector,
+      });
 
-      const [ov, entityData] = await Promise.all([
+      const [ov, entityData, clusterData] = await Promise.all([
         loadJson('/api/overview' + (overviewQs ? '?' + overviewQs : '')),
         state.pivot === 'ip'
           ? loadJson('/api/entities?' + entityQs).then((r) => ({
@@ -1768,9 +2157,11 @@ const INDEX_HTML: &str = r#"<!doctype html>
               })),
             }))
           : loadJson('/api/pivots?' + entityQs),
+        loadJson('/api/clusters?' + clusterQs),
       ]);
 
       const items = entityData.items || [];
+      state.clusters = clusterData.items || [];
 
       document.getElementById('kpi-date').textContent      = ov.date;
       document.getElementById('kpi-events').textContent    = ov.events_count;
@@ -1783,6 +2174,13 @@ const INDEX_HTML: &str = r#"<!doctype html>
         list.innerHTML = '<div class="empty">No records for the selected filters.</div>';
       } else {
         list.innerHTML = items.map((item) => renderCard(item)).join('');
+      }
+
+      const clusterList = document.getElementById('clusterList');
+      if (!state.clusters.length) {
+        clusterList.innerHTML = '<div class="empty">No clusters for current filters.</div>';
+      } else {
+        clusterList.innerHTML = state.clusters.map(renderClusterCard).join('');
       }
 
       if (ov.top_detectors && ov.top_detectors.length) {
@@ -2237,6 +2635,113 @@ mod tests {
         assert!(journey.entries.iter().any(|e| e.kind == "incident"));
         assert!(journey.entries.iter().any(|e| e.kind == "decision"));
         assert_eq!(journey.outcome, "blocked");
+    }
+
+    #[test]
+    fn clusters_group_related_incidents() {
+        let dir = TempDir::new().unwrap();
+        let date = "2026-03-13";
+        let ts = Utc::now();
+
+        let inc1 = Incident {
+            ts,
+            host: "h".to_string(),
+            incident_id: "port_scan:203.0.113.10:a".to_string(),
+            severity: Severity::High,
+            title: "scan".to_string(),
+            summary: "s".to_string(),
+            evidence: serde_json::json!({}),
+            recommended_checks: vec![],
+            tags: vec![],
+            entities: vec![EntityRef::ip("203.0.113.10")],
+        };
+        let inc2 = Incident {
+            ts: ts + chrono::Duration::seconds(40),
+            host: "h".to_string(),
+            incident_id: "ssh_bruteforce:203.0.113.10:b".to_string(),
+            severity: Severity::Critical,
+            title: "bf".to_string(),
+            summary: "s".to_string(),
+            evidence: serde_json::json!({}),
+            recommended_checks: vec![],
+            tags: vec![],
+            entities: vec![EntityRef::ip("203.0.113.10"), EntityRef::user("root")],
+        };
+
+        std::fs::write(
+            dated_path(dir.path(), "incidents", date),
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&inc1).unwrap(),
+                serde_json::to_string(&inc2).unwrap()
+            ),
+        )
+        .unwrap();
+
+        let filters = InvestigationFilters::from_query(None, None);
+        let clusters = build_cluster_items(dir.path(), date, &filters, 20, 300);
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].incident_count, 2);
+        assert_eq!(clusters[0].pivot_type, "ip");
+        assert_eq!(clusters[0].pivot_value, "203.0.113.10");
+    }
+
+    #[test]
+    fn markdown_export_contains_sections() {
+        let snapshot = InvestigationExport {
+            generated_at: Utc::now(),
+            date: "2026-03-13".to_string(),
+            filters: serde_json::json!({"severity_min":"high"}),
+            group_by: "ip".to_string(),
+            subject_type: Some("ip".to_string()),
+            subject: Some("203.0.113.10".to_string()),
+            overview: OverviewResponse {
+                date: "2026-03-13".to_string(),
+                events_count: 10,
+                incidents_count: 2,
+                decisions_count: 1,
+                top_detectors: vec![],
+                latest_telemetry: None,
+            },
+            pivots: vec![PivotItem {
+                group_by: "ip".to_string(),
+                value: "203.0.113.10".to_string(),
+                first_seen: Utc::now(),
+                last_seen: Utc::now(),
+                max_severity: "critical".to_string(),
+                incident_count: 2,
+                event_count: 8,
+                outcome: "active".to_string(),
+                detectors: vec!["ssh_bruteforce".to_string()],
+            }],
+            clusters: vec![ClusterItem {
+                cluster_id: "cluster-001".to_string(),
+                pivot: "ip:203.0.113.10".to_string(),
+                pivot_type: "ip".to_string(),
+                pivot_value: "203.0.113.10".to_string(),
+                start_ts: Utc::now(),
+                end_ts: Utc::now(),
+                incident_count: 2,
+                detector_kinds: vec!["ssh_bruteforce".to_string()],
+                incident_ids: vec!["x".to_string(), "y".to_string()],
+            }],
+            journey: Some(JourneyResponse {
+                subject_type: "ip".to_string(),
+                subject: "203.0.113.10".to_string(),
+                date: "2026-03-13".to_string(),
+                first_seen: Some(Utc::now()),
+                last_seen: Some(Utc::now()),
+                outcome: "active".to_string(),
+                entries: vec![],
+            }),
+        };
+
+        let markdown = render_markdown_snapshot(&snapshot);
+        assert!(markdown.contains("# InnerWarden Investigation Snapshot"));
+        assert!(markdown.contains("## Correlation Clusters"));
+        assert!(markdown.contains("cluster-001"));
+        assert!(markdown.contains("## Journey"));
+        assert!(markdown.contains("Subject: `ip:203.0.113.10`"));
     }
 
     #[test]
