@@ -1724,7 +1724,7 @@ fn read_jsonl<T: DeserializeOwned>(path: &Path) -> Vec<T> {
 // UI
 // ---------------------------------------------------------------------------
 
-const INDEX_HTML: &str = r#"<!doctype html>
+const INDEX_HTML: &str = r##"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -2187,11 +2187,26 @@ const INDEX_HTML: &str = r#"<!doctype html>
   <header class="app-header">
     <div class="app-title">
       <span class="logo" aria-hidden="true">
-        <!-- Crossed swords (pre-rotated 180° in the SVG) -->
-        <svg viewBox="0 0 64 64" width="18" height="18" xmlns="http://www.w3.org/2000/svg">
-          <g transform="rotate(180 32 32)">
-            <path fill="currentColor" d="M50.2 9.7c-.6-.6-1.7-.6-2.3 0l-9 9-2.4-2.4c-.6-.6-1.7-.6-2.3 0l-4.3 4.3c-.6.6-.6 1.7 0 2.3l2.4 2.4L18.1 39.8l-2.4-2.4c-.6-.6-1.7-.6-2.3 0l-4.3 4.3c-.6.6-.6 1.7 0 2.3l2.4 2.4-2 2c-1 1-1 2.7 0 3.7l1.1 1.1c1 1 2.7 1 3.7 0l2-2 2.4 2.4c.6.6 1.7.6 2.3 0l4.3-4.3c.6-.6.6-1.7 0-2.3l-2.4-2.4 14.2-14.2 2.4 2.4c.6.6 1.7.6 2.3 0l4.3-4.3c.6-.6.6-1.7 0-2.3l-2.4-2.4 9-9c.7-.7.7-1.8.1-2.4z"/>
-            <path fill="currentColor" opacity="0.75" d="M13.8 10.7c.6-.6 1.7-.6 2.3 0l9 9 2.4-2.4c.6-.6 1.7-.6 2.3 0l4.3 4.3c.6.6.6 1.7 0 2.3l-2.4 2.4 14.2 14.2 2.4-2.4c.6-.6 1.7-.6 2.3 0l4.3 4.3c.6.6.6 1.7 0 2.3l-2.4 2.4 2 2c1 1 1 2.7 0 3.7l-1.1 1.1c-1 1-2.7 1-3.7 0l-2-2-2.4 2.4c-.6.6-1.7.6-2.3 0l-4.3-4.3c-.6-.6-.6-1.7 0-2.3l2.4-2.4-14.2-14.2-2.4 2.4c-.6.6-1.7.6-2.3 0l-4.3-4.3c-.6-.6-.6-1.7 0-2.3l2.4-2.4-9-9c-.7-.7-.7-1.8-.1-2.4z"/>
+        <svg width="18" height="18" viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="steel" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#e6edf5"/>
+              <stop offset="100%" stop-color="#7d93a8"/>
+            </linearGradient>
+          </defs>
+
+          <!-- left sword -->
+          <g transform="rotate(-45 110 110)">
+            <rect x="106" y="50" width="8" height="120" rx="3" fill="url(#steel)"/>
+            <rect x="96" y="90" width="28" height="8" rx="2" fill="#2e6fa3"/>
+            <rect x="108" y="98" width="4" height="28" rx="2" fill="#2e6fa3"/>
+          </g>
+
+          <!-- right sword -->
+          <g transform="rotate(45 110 110)">
+            <rect x="106" y="50" width="8" height="120" rx="3" fill="url(#steel)"/>
+            <rect x="96" y="90" width="28" height="8" rx="2" fill="#2e6fa3"/>
+            <rect x="108" y="98" width="4" height="28" rx="2" fill="#2e6fa3"/>
           </g>
         </svg>
       </span>
@@ -2807,7 +2822,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
 </script>
 </body>
 </html>
-"#;
+"##;
 
 // ---------------------------------------------------------------------------
 // Tests
