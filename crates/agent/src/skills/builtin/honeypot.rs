@@ -133,6 +133,45 @@ struct SandboxRunOutcome {
     spec_path: PathBuf,
     result_path: PathBuf,
     runner: String,
+    containment: ContainmentStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ContainmentStatus {
+    requested_mode: String,
+    effective_mode: String,
+    require_success: bool,
+    namespace_runner: String,
+    namespace_args: Vec<String>,
+    check_passed: bool,
+    fallback_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ExternalHandoffStatus {
+    enabled: bool,
+    attempted: bool,
+    command: Option<String>,
+    args: Vec<String>,
+    timeout_secs: u64,
+    require_success: bool,
+    success: bool,
+    timed_out: bool,
+    exit_code: Option<i32>,
+    error: Option<String>,
+    stdout_preview: Option<String>,
+    stderr_preview: Option<String>,
+    result_file: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ArtifactLifecycleStatus {
+    metadata_exists: bool,
+    metadata_bytes: u64,
+    evidence_exists: bool,
+    evidence_bytes: u64,
+    pcap_exists: Option<bool>,
+    pcap_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -289,8 +328,10 @@ impl ResponseSkill for Honeypot {
                 return SkillResult {
                     success: true,
                     message: format!(
-                        "DRY RUN: would start honeypot listeners ({services}) for {}s targeting {target_ip}; profile={isolation_profile}; {redirect_note}",
+                        "DRY RUN: would start honeypot listeners ({services}) for {}s targeting {target_ip}; profile={isolation_profile}; containment={}; external_handoff={}; {redirect_note}",
                         ctx.honeypot.duration_secs,
+                        ctx.honeypot.containment_mode,
+                        ctx.honeypot.external_handoff_enabled,
                     ),
                 };
             }
@@ -429,10 +470,24 @@ impl ResponseSkill for Honeypot {
                     "runner_path": ctx.honeypot.sandbox_runner_path,
                     "clear_env": ctx.honeypot.sandbox_clear_env,
                 },
+                "containment": {
+                    "mode": ctx.honeypot.containment_mode,
+                    "require_success": ctx.honeypot.containment_require_success,
+                    "namespace_runner": ctx.honeypot.containment_namespace_runner,
+                    "namespace_args": ctx.honeypot.containment_namespace_args,
+                },
                 "pcap_handoff": {
                     "enabled": ctx.honeypot.pcap_handoff_enabled,
                     "timeout_secs": ctx.honeypot.pcap_handoff_timeout_secs,
                     "max_packets": ctx.honeypot.pcap_handoff_max_packets,
+                },
+                "external_handoff": {
+                    "enabled": ctx.honeypot.external_handoff_enabled,
+                    "command": ctx.honeypot.external_handoff_command,
+                    "args": ctx.honeypot.external_handoff_args,
+                    "timeout_secs": ctx.honeypot.external_handoff_timeout_secs,
+                    "require_success": ctx.honeypot.external_handoff_require_success,
+                    "clear_env": ctx.honeypot.external_handoff_clear_env,
                 },
                 "redirect": {
                     "enabled": ctx.honeypot.redirect_enabled,
@@ -488,9 +543,19 @@ impl ResponseSkill for Honeypot {
             let sandbox_enabled = ctx.honeypot.sandbox_enabled;
             let sandbox_runner_path = ctx.honeypot.sandbox_runner_path.clone();
             let sandbox_clear_env = ctx.honeypot.sandbox_clear_env;
+            let containment_mode = ctx.honeypot.containment_mode.clone();
+            let containment_require_success = ctx.honeypot.containment_require_success;
+            let containment_namespace_runner = ctx.honeypot.containment_namespace_runner.clone();
+            let containment_namespace_args = ctx.honeypot.containment_namespace_args.clone();
             let pcap_handoff_enabled = ctx.honeypot.pcap_handoff_enabled;
             let pcap_handoff_timeout_secs = ctx.honeypot.pcap_handoff_timeout_secs;
             let pcap_handoff_max_packets = ctx.honeypot.pcap_handoff_max_packets;
+            let external_handoff_enabled = ctx.honeypot.external_handoff_enabled;
+            let external_handoff_command = ctx.honeypot.external_handoff_command.clone();
+            let external_handoff_args = ctx.honeypot.external_handoff_args.clone();
+            let external_handoff_timeout_secs = ctx.honeypot.external_handoff_timeout_secs;
+            let external_handoff_require_success = ctx.honeypot.external_handoff_require_success;
+            let external_handoff_clear_env = ctx.honeypot.external_handoff_clear_env;
             tokio::spawn(async move {
                 let _session_lock = session_lock;
                 let mut sandbox_error = None::<String>;
@@ -505,6 +570,10 @@ impl ResponseSkill for Honeypot {
                         &session_dir_bg,
                         &sandbox_runner_path,
                         sandbox_clear_env,
+                        &containment_mode,
+                        containment_require_success,
+                        &containment_namespace_runner,
+                        &containment_namespace_args,
                     )
                     .await
                     {
@@ -516,6 +585,7 @@ impl ResponseSkill for Honeypot {
                                 "spec_file": outcome.spec_path,
                                 "result_file": outcome.result_path,
                                 "clear_env": sandbox_clear_env,
+                                "containment": outcome.containment,
                             });
                             outcome.stats
                         }
@@ -525,6 +595,7 @@ impl ResponseSkill for Honeypot {
                                 "enabled": true,
                                 "used": true,
                                 "clear_env": sandbox_clear_env,
+                                "containment_mode": containment_mode,
                                 "error": e,
                             });
                             vec![]
@@ -562,6 +633,59 @@ impl ResponseSkill for Honeypot {
                     }
                 };
 
+                let artifact_checks = collect_artifact_lifecycle(
+                    &metadata_path_bg,
+                    &evidence_path_bg,
+                    pcap_handoff.pcap_file.as_deref(),
+                )
+                .await;
+
+                let external_handoff = if external_handoff_enabled {
+                    run_external_handoff(
+                        &session_dir_bg,
+                        &runtime,
+                        &metadata_path_bg,
+                        &evidence_path_bg,
+                        pcap_handoff.pcap_file.as_deref(),
+                        &external_handoff_command,
+                        &external_handoff_args,
+                        external_handoff_timeout_secs,
+                        external_handoff_require_success,
+                        external_handoff_clear_env,
+                    )
+                    .await
+                } else {
+                    ExternalHandoffStatus {
+                        enabled: false,
+                        attempted: false,
+                        command: None,
+                        args: vec![],
+                        timeout_secs: external_handoff_timeout_secs,
+                        require_success: external_handoff_require_success,
+                        success: false,
+                        timed_out: false,
+                        exit_code: None,
+                        error: None,
+                        stdout_preview: None,
+                        stderr_preview: None,
+                        result_file: None,
+                    }
+                };
+
+                if external_handoff.require_success
+                    && external_handoff.attempted
+                    && !external_handoff.success
+                {
+                    let reason = external_handoff
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "external handoff failed".to_string());
+                    sandbox_error = Some(match sandbox_error {
+                        Some(prev) => format!("{prev}; external handoff: {reason}"),
+                        None => format!("external handoff: {reason}"),
+                    });
+                }
+
                 if let Err(e) = append_json_line(
                     &evidence_path_bg,
                     &serde_json::json!({
@@ -572,7 +696,9 @@ impl ResponseSkill for Honeypot {
                         "redirect_cleanup_verified": redirect_cleanup_verified,
                         "sandbox": sandbox_info,
                         "sandbox_error": sandbox_error,
+                        "artifact_checks": artifact_checks,
                         "pcap_handoff": pcap_handoff,
+                        "external_handoff": external_handoff,
                     }),
                 )
                 .await
@@ -595,7 +721,9 @@ impl ResponseSkill for Honeypot {
                     "sandbox_error": sandbox_error,
                     "redirect_rules": redirect_rules,
                     "redirect_cleanup_verified": redirect_cleanup_verified,
+                    "artifact_checks": artifact_checks,
                     "pcap_handoff": pcap_handoff,
+                    "external_handoff": external_handoff,
                     "forensics_file": evidence_path_bg,
                 });
                 if let Err(e) = write_json_file(&metadata_path_bg, &final_metadata).await {
@@ -612,12 +740,14 @@ impl ResponseSkill for Honeypot {
             SkillResult {
                 success: true,
                 message: format!(
-                    "Honeypot listeners started (session {session_id}, profile {isolation_profile}, pruned age={} size={}, cap={}MB, sandbox={}, pcap_handoff={}). metadata: {} evidence: {}{}",
+                    "Honeypot listeners started (session {session_id}, profile {isolation_profile}, pruned age={} size={}, cap={}MB, sandbox={}, containment={}, pcap_handoff={}, external_handoff={}). metadata: {} evidence: {}{}",
                     cleanup_stats.removed_by_age,
                     cleanup_stats.removed_by_size,
                     ctx.honeypot.forensics_max_total_mb,
                     ctx.honeypot.sandbox_enabled,
+                    ctx.honeypot.containment_mode,
                     ctx.honeypot.pcap_handoff_enabled,
+                    ctx.honeypot.external_handoff_enabled,
                     metadata_path.display(),
                     evidence_path.display(),
                     warning_suffix
@@ -748,6 +878,10 @@ async fn run_sandbox_session(
     session_dir: &Path,
     runner_path: &str,
     clear_env: bool,
+    containment_mode: &str,
+    containment_require_success: bool,
+    containment_namespace_runner: &str,
+    containment_namespace_args: &[String],
 ) -> Result<SandboxRunOutcome, String> {
     let runner = if runner_path.trim().is_empty() {
         std::env::current_exe()
@@ -756,6 +890,23 @@ async fn run_sandbox_session(
         PathBuf::from(runner_path)
     };
     let runner_label = runner.display().to_string();
+    let requested_mode = normalize_containment_mode(containment_mode).to_string();
+    let mut effective_mode = requested_mode.clone();
+    let mut fallback_reason = None::<String>;
+    let namespace_runner = if containment_namespace_runner.trim().is_empty() {
+        "unshare".to_string()
+    } else {
+        containment_namespace_runner.trim().to_string()
+    };
+    let namespace_args = if containment_namespace_args.is_empty() {
+        vec![
+            "--fork".to_string(),
+            "--pid".to_string(),
+            "--mount-proc".to_string(),
+        ]
+    } else {
+        containment_namespace_args.to_vec()
+    };
     let spec_path = session_dir.join(format!(
         "listener-session-{}.sandbox-spec.json",
         runtime.session_id
@@ -787,12 +938,38 @@ async fn run_sandbox_session(
             )
         })?;
 
-    let mut cmd = Command::new(&runner);
-    cmd.arg("--honeypot-sandbox-runner")
-        .arg("--honeypot-sandbox-spec")
+    let mut cmd = if requested_mode == "namespace" {
+        if binary_exists(&namespace_runner) {
+            let mut namespace_cmd = Command::new(&namespace_runner);
+            namespace_cmd
+                .args(&namespace_args)
+                .arg(&runner)
+                .arg("--honeypot-sandbox-runner");
+            namespace_cmd
+        } else if containment_require_success {
+            let _ = tokio::fs::remove_file(&spec_path).await;
+            return Err(format!(
+                "sandbox containment requested namespace mode but runner '{}' was not found",
+                namespace_runner
+            ));
+        } else {
+            effective_mode = "process".to_string();
+            fallback_reason = Some(format!(
+                "namespace runner '{}' not found; falling back to process mode",
+                namespace_runner
+            ));
+            Command::new(&runner)
+        }
+    } else {
+        Command::new(&runner)
+    };
+    cmd.arg("--honeypot-sandbox-spec")
         .arg(&spec_path)
         .arg("--honeypot-sandbox-result")
         .arg(&result_path);
+    if effective_mode == "process" {
+        cmd.arg("--honeypot-sandbox-runner");
+    }
 
     if clear_env {
         cmd.env_clear();
@@ -858,6 +1035,15 @@ async fn run_sandbox_session(
         spec_path,
         result_path,
         runner: runner_label,
+        containment: ContainmentStatus {
+            requested_mode: requested_mode.clone(),
+            effective_mode: effective_mode.clone(),
+            require_success: containment_require_success,
+            namespace_runner,
+            namespace_args,
+            check_passed: requested_mode == effective_mode,
+            fallback_reason,
+        },
     })
 }
 
@@ -927,6 +1113,180 @@ async fn run_pcap_handoff(
         }
     }
     status
+}
+
+async fn collect_artifact_lifecycle(
+    metadata_path: &Path,
+    evidence_path: &Path,
+    pcap_path: Option<&str>,
+) -> ArtifactLifecycleStatus {
+    let (metadata_exists, metadata_bytes) = file_exists_with_size(metadata_path).await;
+    let (evidence_exists, evidence_bytes) = file_exists_with_size(evidence_path).await;
+    let (pcap_exists, pcap_bytes) = match pcap_path {
+        Some(path) if !path.is_empty() => {
+            let p = PathBuf::from(path);
+            let (exists, bytes) = file_exists_with_size(&p).await;
+            (Some(exists), Some(bytes))
+        }
+        _ => (None, None),
+    };
+
+    ArtifactLifecycleStatus {
+        metadata_exists,
+        metadata_bytes,
+        evidence_exists,
+        evidence_bytes,
+        pcap_exists,
+        pcap_bytes,
+    }
+}
+
+async fn file_exists_with_size(path: &Path) -> (bool, u64) {
+    match tokio::fs::metadata(path).await {
+        Ok(meta) => (true, meta.len()),
+        Err(_) => (false, 0),
+    }
+}
+
+async fn run_external_handoff(
+    session_dir: &Path,
+    runtime: &SessionRuntime,
+    metadata_path: &Path,
+    evidence_path: &Path,
+    pcap_path: Option<&str>,
+    command: &str,
+    args: &[String],
+    timeout_secs: u64,
+    require_success: bool,
+    clear_env: bool,
+) -> ExternalHandoffStatus {
+    let result_path = session_dir.join(format!(
+        "listener-session-{}.external-handoff.json",
+        runtime.session_id
+    ));
+    let mut status = ExternalHandoffStatus {
+        enabled: true,
+        attempted: false,
+        command: None,
+        args: vec![],
+        timeout_secs,
+        require_success,
+        success: false,
+        timed_out: false,
+        exit_code: None,
+        error: None,
+        stdout_preview: None,
+        stderr_preview: None,
+        result_file: Some(result_path.display().to_string()),
+    };
+
+    if timeout_secs == 0 {
+        status.error = Some("external handoff skipped: timeout_secs is zero".to_string());
+        let _ = write_json_file(
+            &result_path,
+            &serde_json::to_value(&status).unwrap_or_default(),
+        )
+        .await;
+        return status;
+    }
+    if command.trim().is_empty() {
+        status.error = Some("external handoff enabled but command is empty".to_string());
+        let _ = write_json_file(
+            &result_path,
+            &serde_json::to_value(&status).unwrap_or_default(),
+        )
+        .await;
+        return status;
+    }
+
+    status.attempted = true;
+    status.command = Some(command.to_string());
+
+    let pcap_path_value = pcap_path.unwrap_or("").to_string();
+    let expanded_args = args
+        .iter()
+        .map(|arg| {
+            apply_handoff_placeholders(
+                arg,
+                &runtime.session_id,
+                &runtime.target_ip.to_string(),
+                metadata_path,
+                evidence_path,
+                &pcap_path_value,
+            )
+        })
+        .collect::<Vec<_>>();
+    status.args = expanded_args.clone();
+
+    let mut cmd = Command::new(command);
+    cmd.args(&expanded_args);
+    if clear_env {
+        cmd.env_clear();
+        cmd.env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+    }
+
+    let waited = tokio::time::timeout(Duration::from_secs(timeout_secs), cmd.output()).await;
+    match waited {
+        Ok(Ok(out)) => {
+            status.exit_code = out.status.code();
+            status.success = out.status.success();
+            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            if !stdout.is_empty() {
+                status.stdout_preview = Some(truncate_preview(&stdout, 512));
+            }
+            if !stderr.is_empty() {
+                status.stderr_preview = Some(truncate_preview(&stderr, 512));
+            }
+            if !status.success {
+                status.error = Some(format!(
+                    "external handoff command exited with status {}",
+                    out.status
+                ));
+            }
+        }
+        Ok(Err(e)) => {
+            status.error = Some(e.to_string());
+        }
+        Err(_) => {
+            status.timed_out = true;
+            status.error = Some(format!(
+                "external handoff timed out after {}s",
+                timeout_secs
+            ));
+        }
+    }
+
+    let _ = write_json_file(
+        &result_path,
+        &serde_json::to_value(&status).unwrap_or_default(),
+    )
+    .await;
+    status
+}
+
+fn apply_handoff_placeholders(
+    value: &str,
+    session_id: &str,
+    target_ip: &str,
+    metadata_path: &Path,
+    evidence_path: &Path,
+    pcap_path: &str,
+) -> String {
+    value
+        .replace("{session_id}", session_id)
+        .replace("{target_ip}", target_ip)
+        .replace("{metadata_path}", &metadata_path.display().to_string())
+        .replace("{evidence_path}", &evidence_path.display().to_string())
+        .replace("{pcap_path}", pcap_path)
+}
+
+fn truncate_preview(value: &str, max_chars: usize) -> String {
+    let mut out = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars {
+        out.push_str("...");
+    }
+    out
 }
 
 async fn run_listener(
@@ -1208,6 +1568,29 @@ fn normalize_isolation_profile(profile: &str) -> &'static str {
     } else {
         "strict_local"
     }
+}
+
+fn normalize_containment_mode(mode: &str) -> &'static str {
+    if mode.eq_ignore_ascii_case("namespace") {
+        "namespace"
+    } else {
+        "process"
+    }
+}
+
+fn binary_exists(bin: &str) -> bool {
+    let path = Path::new(bin);
+    if path.is_absolute() {
+        return path.exists();
+    }
+    std::env::var("PATH")
+        .ok()
+        .map(|p| {
+            p.split(':')
+                .filter(|part| !part.is_empty())
+                .any(|part| Path::new(part).join(bin).exists())
+        })
+        .unwrap_or(false)
 }
 
 async fn cleanup_old_forensics(
@@ -1634,6 +2017,20 @@ mod tests {
                 pcap_handoff_enabled: false,
                 pcap_handoff_timeout_secs: 15,
                 pcap_handoff_max_packets: 120,
+                containment_mode: "process".to_string(),
+                containment_require_success: false,
+                containment_namespace_runner: "unshare".to_string(),
+                containment_namespace_args: vec![
+                    "--fork".to_string(),
+                    "--pid".to_string(),
+                    "--mount-proc".to_string(),
+                ],
+                external_handoff_enabled: false,
+                external_handoff_command: String::new(),
+                external_handoff_args: vec![],
+                external_handoff_timeout_secs: 20,
+                external_handoff_require_success: false,
+                external_handoff_clear_env: true,
                 redirect_enabled: false,
                 redirect_backend: "iptables".to_string(),
             },
@@ -1749,5 +2146,32 @@ mod tests {
 
         let stats = cleanup_old_forensics(base, 1, 128).await.unwrap();
         assert_eq!(stats.removed_by_age, 1);
+    }
+
+    #[test]
+    fn containment_mode_normalization_is_stable() {
+        assert_eq!(normalize_containment_mode("namespace"), "namespace");
+        assert_eq!(normalize_containment_mode("NAMESPACE"), "namespace");
+        assert_eq!(normalize_containment_mode("process"), "process");
+        assert_eq!(normalize_containment_mode("unknown"), "process");
+    }
+
+    #[test]
+    fn handoff_placeholder_expansion_works() {
+        let metadata = PathBuf::from("/tmp/meta.json");
+        let evidence = PathBuf::from("/tmp/evidence.jsonl");
+        let expanded = apply_handoff_placeholders(
+            "--session={session_id} --target={target_ip} --meta={metadata_path} --ev={evidence_path} --pcap={pcap_path}",
+            "s1",
+            "1.2.3.4",
+            &metadata,
+            &evidence,
+            "/tmp/sample.pcap",
+        );
+        assert!(expanded.contains("--session=s1"));
+        assert!(expanded.contains("--target=1.2.3.4"));
+        assert!(expanded.contains("--meta=/tmp/meta.json"));
+        assert!(expanded.contains("--ev=/tmp/evidence.jsonl"));
+        assert!(expanded.contains("--pcap=/tmp/sample.pcap"));
     }
 }

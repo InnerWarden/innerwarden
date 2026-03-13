@@ -85,6 +85,26 @@ pub struct HoneypotRuntimeConfig {
     pub pcap_handoff_timeout_secs: u64,
     /// Handoff capture max packets.
     pub pcap_handoff_max_packets: u64,
+    /// Containment mode (`process` | `namespace`).
+    pub containment_mode: String,
+    /// If true, fail when requested containment mode is unavailable.
+    pub containment_require_success: bool,
+    /// Namespace wrapper runner (e.g., `unshare`) when containment mode is `namespace`.
+    pub containment_namespace_runner: String,
+    /// Arguments passed to namespace wrapper before the agent runner.
+    pub containment_namespace_args: Vec<String>,
+    /// Execute optional external handoff command after session completion.
+    pub external_handoff_enabled: bool,
+    /// External handoff command.
+    pub external_handoff_command: String,
+    /// External handoff arguments with placeholder support.
+    pub external_handoff_args: Vec<String>,
+    /// External handoff timeout in seconds.
+    pub external_handoff_timeout_secs: u64,
+    /// Mark session as error if external handoff fails.
+    pub external_handoff_require_success: bool,
+    /// Clear environment before launching external handoff.
+    pub external_handoff_clear_env: bool,
     /// Optional selective redirection.
     pub redirect_enabled: bool,
     /// Redirect backend identifier.
@@ -116,6 +136,20 @@ impl Default for HoneypotRuntimeConfig {
             pcap_handoff_enabled: false,
             pcap_handoff_timeout_secs: 15,
             pcap_handoff_max_packets: 120,
+            containment_mode: "process".to_string(),
+            containment_require_success: false,
+            containment_namespace_runner: "unshare".to_string(),
+            containment_namespace_args: vec![
+                "--fork".to_string(),
+                "--pid".to_string(),
+                "--mount-proc".to_string(),
+            ],
+            external_handoff_enabled: false,
+            external_handoff_command: String::new(),
+            external_handoff_args: vec![],
+            external_handoff_timeout_secs: 20,
+            external_handoff_require_success: false,
+            external_handoff_clear_env: true,
             redirect_enabled: false,
             redirect_backend: "iptables".to_string(),
         }

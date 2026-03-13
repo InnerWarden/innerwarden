@@ -34,7 +34,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ **Sistema de skills plugável** (open-core: tiers Open e Premium)
 - ✅ Skills built-in: `block-ip-ufw`, `block-ip-iptables`, `block-ip-nftables`
 - ✅ Skill premium real: `monitor-ip` (captura de tráfego limitada em `.pcap` + metadata)
-- ✅ Skill premium `honeypot` com hardening 8.4: sandbox runtime dedicado (subprocess worker), handoff opcional de `.pcap` e retenção forense por idade + budget total
+- ✅ Skill premium `honeypot` com hardening 8.5: containment avançado (`process|namespace`), handoff forense externo controlado e checagens de lifecycle de artefatos
 - ✅ Dry-run por padrão (seguro para produção até o usuário habilitar)
 - ✅ Blocklist em memória (evita bloquear o mesmo IP duas vezes)
 - ✅ **Audit trail** append-only: `decisions-YYYY-MM-DD.jsonl`
@@ -172,6 +172,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 | `honeypot/listener-session-*.json` | agent | Metadados de sessão do honeypot listener (serviços, redirecionamento, stats) |
 | `honeypot/listener-session-*.jsonl` | agent | Evidências por conexão/sessão no honeypot listener |
 | `honeypot/listener-session-*.pcap` | agent | Captura limitada opcional de handoff forense (`[honeypot.pcap_handoff]`) |
+| `honeypot/listener-session-*.external-handoff.json` | agent | Resultado da integração externa de forense (`[honeypot.external_handoff]`) |
 | `honeypot/listener-active.lock` | agent | Lock de sessão ativa (controle de concorrência + stale recovery) |
 | `summary-YYYY-MM-DD.md` | agent | Narrativa Markdown diária (eventos, incidentes, IPs top) |
 | `state.json` | sensor | Cursors dos collectors (offsets, hashes, timestamps) |
@@ -224,7 +225,7 @@ crates/
           block_ip_iptables.rs — Open ✅
           block_ip_nftables.rs — Open ✅
           monitor_ip.rs      — Premium ✅ (captura limitada via tcpdump + sidecar metadata)
-          honeypot.rs        — Premium ✅ (hardening 8.4: sandbox worker, pcap handoff opcional e retenção por budget)
+          honeypot.rs        — Premium ✅ (hardening 8.5: containment avançado + handoff externo controlado)
 examples/
   systemd/innerwarden-sensor.service
 scripts/
@@ -238,7 +239,7 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 97 testes (40 sensor + 57 agent)
+make test             # 99 testes (40 sensor + 59 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -394,6 +395,20 @@ enabled = false
 timeout_secs = 15
 max_packets = 120
 
+[honeypot.containment]
+mode = "process"             # process | namespace
+require_success = false
+namespace_runner = "unshare"
+namespace_args = ["--fork", "--pid", "--mount-proc"]
+
+[honeypot.external_handoff]
+enabled = false
+command = "/usr/local/bin/iw-handoff"
+args = ["--session-id", "{session_id}", "--target", "{target_ip}", "--metadata", "{metadata_path}", "--evidence", "{evidence_path}", "--pcap", "{pcap_path}"]
+timeout_secs = 20
+require_success = false
+clear_env = true
+
 [honeypot.redirect]
 enabled = false
 backend = "iptables"
@@ -419,7 +434,7 @@ Open   │ block-ip-ufw        │ ✅ executável
 Open   │ block-ip-iptables   │ ✅ executável
 Open   │ block-ip-nftables   │ ✅ executável
 Premium│ monitor-ip          │ ✅ executável — captura limitada (`tcpdump`) + metadata
-Premium│ honeypot            │ ✅ hardening 8.4 (sandbox worker + pcap handoff opcional + retenção por budget)
+Premium│ honeypot            │ ✅ hardening 8.5 (containment `process|namespace` + handoff externo controlado + lifecycle checks)
 ```
 
 Para adicionar uma skill da comunidade:
@@ -495,6 +510,7 @@ data_dir/
   honeypot/listener-session-*.json  — metadados de sessão do honeypot listener
   honeypot/listener-session-*.jsonl — evidências por conexão/sessão do honeypot listener
   honeypot/listener-session-*.pcap  — captura limitada opcional de handoff forense
+  honeypot/listener-session-*.external-handoff.json — resultado da integração externa de forense
   honeypot/listener-active.lock     — lock de sessão honeypot ativa
   summary-YYYY-MM-DD.md         — narrativa diária em Markdown
   state.json                    — cursors do sensor
@@ -508,7 +524,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 97 testes (40 sensor + 57 agent) — todos devem passar
+make test   # 99 testes (40 sensor + 59 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -592,6 +608,7 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase 8.2 (concluída): honeypot real bounded (multi-serviço, redirecionamento seletivo opcional, isolamento e forensics JSON/JSONL)
 - Fase 8.3 (concluída): hardening de isolamento + profundidade forense (session lock, retenção e transcript)
 - Fase 8.4 (concluída): sandbox runtime dedicado + handoff forense opcional + retenção por budget total
-- Fase 8.5 (planejada): isolamento avançado com runtime dedicado (namespace/jail) + handoff forense externo controlado
+- Fase 8.5 (concluída): containment avançado (`process|namespace`) + handoff forense externo controlado + checks de lifecycle
+- Fase 8.6 (planejada): isolamento avançado em runtime dedicado (namespace/jail fortalecido) + handoff externo assinado
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
-- Referência do roadmap: `docs/development-plan.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md`, `docs/phase-8-honeypot-real-rebuild.md`, `docs/phase-8-honeypot-hardening.md` e `docs/phase-8-honeypot-sandbox-runtime.md`
+- Referência do roadmap: `docs/development-plan.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md`, `docs/phase-8-honeypot-real-rebuild.md`, `docs/phase-8-honeypot-hardening.md`, `docs/phase-8-honeypot-sandbox-runtime.md` e `docs/phase-8-honeypot-advanced-containment.md`

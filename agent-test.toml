@@ -60,6 +60,20 @@ enabled = false
 timeout_secs = 15
 max_packets = 120
 
+[honeypot.containment]
+mode = "process"             # process | namespace
+require_success = false
+namespace_runner = "unshare"
+namespace_args = ["--fork", "--pid", "--mount-proc"]
+
+[honeypot.external_handoff]
+enabled = false
+command = "/usr/local/bin/iw-handoff"
+args = ["--session-id", "{session_id}", "--target", "{target_ip}", "--metadata", "{metadata_path}", "--evidence", "{evidence_path}", "--pcap", "{pcap_path}"]
+timeout_secs = 20
+require_success = false
+clear_env = true
+
 [honeypot.redirect]
 enabled = false
 backend = "iptables"

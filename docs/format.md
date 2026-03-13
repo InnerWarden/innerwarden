@@ -44,13 +44,36 @@
   "sandbox": {
     "enabled": true,
     "used": true,
-    "runner": "/usr/local/bin/innerwarden-agent"
+    "runner": "/usr/local/bin/innerwarden-agent",
+    "containment": {
+      "requested_mode": "namespace",
+      "effective_mode": "process",
+      "check_passed": false,
+      "fallback_reason": "namespace runner 'unshare' not found; falling back to process mode"
+    }
   },
   "pcap_handoff": {
     "enabled": true,
     "attempted": true,
     "success": true,
     "pcap_file": "honeypot/listener-session-20260313T162200Z-1.2.3.4.pcap"
+  },
+  "artifact_checks": {
+    "metadata_exists": true,
+    "metadata_bytes": 1472,
+    "evidence_exists": true,
+    "evidence_bytes": 3821,
+    "pcap_exists": true,
+    "pcap_bytes": 9120
+  },
+  "external_handoff": {
+    "enabled": true,
+    "attempted": true,
+    "success": true,
+    "command": "/usr/local/bin/iw-handoff",
+    "args": ["--session-id","20260313T162200Z-1.2.3.4"],
+    "timeout_secs": 20,
+    "result_file": "honeypot/listener-session-20260313T162200Z-1.2.3.4.external-handoff.json"
   },
   "redirect_cleanup_verified": true,
   "redirect_rules": [
@@ -79,4 +102,5 @@
 - `listener-session-*.json`: session metadata (status, redirect cleanup, sandbox/pcap status)
 - `listener-session-*.jsonl`: lifecycle + per-connection forensic evidence
 - `listener-session-*.pcap`: optional bounded handoff capture (`[honeypot.pcap_handoff]`)
+- `listener-session-*.external-handoff.json`: optional external handoff result (`[honeypot.external_handoff]`)
 - `listener-active.lock`: active session lock (`lock_stale_secs` controls stale recovery)

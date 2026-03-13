@@ -300,6 +300,12 @@ pub struct HoneypotConfig {
     pub pcap_handoff: HoneypotPcapHandoffConfig,
 
     #[serde(default)]
+    pub containment: HoneypotContainmentConfig,
+
+    #[serde(default)]
+    pub external_handoff: HoneypotExternalHandoffConfig,
+
+    #[serde(default)]
     pub redirect: HoneypotRedirectConfig,
 }
 
@@ -355,6 +361,79 @@ impl Default for HoneypotPcapHandoffConfig {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct HoneypotContainmentConfig {
+    /// Containment mode:
+    /// - `process`: standard subprocess runner (default)
+    /// - `namespace`: try OS namespace wrapper (e.g., `unshare`)
+    #[serde(default = "default_honeypot_containment_mode")]
+    pub mode: String,
+
+    /// Fail execution if requested containment mode cannot be used.
+    #[serde(default)]
+    pub require_success: bool,
+
+    /// Wrapper binary used in `namespace` mode.
+    #[serde(default = "default_honeypot_namespace_runner")]
+    pub namespace_runner: String,
+
+    /// Arguments passed to namespace wrapper before the runner binary.
+    #[serde(default = "default_honeypot_namespace_args")]
+    pub namespace_args: Vec<String>,
+}
+
+impl Default for HoneypotContainmentConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_honeypot_containment_mode(),
+            require_success: false,
+            namespace_runner: default_honeypot_namespace_runner(),
+            namespace_args: default_honeypot_namespace_args(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HoneypotExternalHandoffConfig {
+    /// Execute optional external handoff command after session completion.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// External command path/binary to execute.
+    #[serde(default)]
+    pub command: String,
+
+    /// Command arguments. Supports placeholders:
+    /// `{session_id}`, `{target_ip}`, `{metadata_path}`, `{evidence_path}`, `{pcap_path}`.
+    #[serde(default)]
+    pub args: Vec<String>,
+
+    /// Timeout for external handoff command.
+    #[serde(default = "default_honeypot_external_handoff_timeout_secs")]
+    pub timeout_secs: u64,
+
+    /// Mark session as error if handoff command fails.
+    #[serde(default)]
+    pub require_success: bool,
+
+    /// Clear environment variables before launching handoff command.
+    #[serde(default = "default_true")]
+    pub clear_env: bool,
+}
+
+impl Default for HoneypotExternalHandoffConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            command: String::new(),
+            args: Vec::new(),
+            timeout_secs: default_honeypot_external_handoff_timeout_secs(),
+            require_success: false,
+            clear_env: true,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 pub struct HoneypotRedirectConfig {
     /// Enable selective redirection rules for target IP.
     #[serde(default)]
@@ -395,6 +474,8 @@ impl Default for HoneypotConfig {
             lock_stale_secs: default_honeypot_lock_stale_secs(),
             sandbox: HoneypotSandboxConfig::default(),
             pcap_handoff: HoneypotPcapHandoffConfig::default(),
+            containment: HoneypotContainmentConfig::default(),
+            external_handoff: HoneypotExternalHandoffConfig::default(),
             redirect: HoneypotRedirectConfig::default(),
         }
     }
@@ -568,6 +649,26 @@ fn default_honeypot_pcap_max_packets() -> u64 {
     120
 }
 
+fn default_honeypot_containment_mode() -> String {
+    "process".to_string()
+}
+
+fn default_honeypot_namespace_runner() -> String {
+    "unshare".to_string()
+}
+
+fn default_honeypot_namespace_args() -> Vec<String> {
+    vec![
+        "--fork".to_string(),
+        "--pid".to_string(),
+        "--mount-proc".to_string(),
+    ]
+}
+
+fn default_honeypot_external_handoff_timeout_secs() -> u64 {
+    20
+}
+
 fn default_honeypot_redirect_backend() -> String {
     "iptables".to_string()
 }
@@ -616,6 +717,23 @@ mod tests {
         assert!(!cfg.honeypot.pcap_handoff.enabled);
         assert_eq!(cfg.honeypot.pcap_handoff.timeout_secs, 15);
         assert_eq!(cfg.honeypot.pcap_handoff.max_packets, 120);
+        assert_eq!(cfg.honeypot.containment.mode, "process");
+        assert!(!cfg.honeypot.containment.require_success);
+        assert_eq!(cfg.honeypot.containment.namespace_runner, "unshare");
+        assert_eq!(
+            cfg.honeypot.containment.namespace_args,
+            vec![
+                "--fork".to_string(),
+                "--pid".to_string(),
+                "--mount-proc".to_string()
+            ]
+        );
+        assert!(!cfg.honeypot.external_handoff.enabled);
+        assert!(cfg.honeypot.external_handoff.command.is_empty());
+        assert!(cfg.honeypot.external_handoff.args.is_empty());
+        assert_eq!(cfg.honeypot.external_handoff.timeout_secs, 20);
+        assert!(!cfg.honeypot.external_handoff.require_success);
+        assert!(cfg.honeypot.external_handoff.clear_env);
         assert!(!cfg.honeypot.redirect.enabled);
         assert_eq!(cfg.honeypot.redirect.backend, "iptables");
     }
@@ -672,6 +790,20 @@ enabled = true
 timeout_secs = 20
 max_packets = 200
 
+[honeypot.containment]
+mode = "namespace"
+require_success = true
+namespace_runner = "/usr/bin/unshare"
+namespace_args = ["--fork", "--pid", "--mount-proc", "--net"]
+
+[honeypot.external_handoff]
+enabled = true
+command = "/usr/local/bin/iw-handoff"
+args = ["--session-id", "{{session_id}}", "--metadata", "{{metadata_path}}", "--evidence", "{{evidence_path}}", "--pcap", "{{pcap_path}}"]
+timeout_secs = 25
+require_success = true
+clear_env = false
+
 [honeypot.redirect]
 enabled = true
 backend = "iptables"
@@ -718,6 +850,42 @@ backend = "iptables"
         assert!(cfg.honeypot.pcap_handoff.enabled);
         assert_eq!(cfg.honeypot.pcap_handoff.timeout_secs, 20);
         assert_eq!(cfg.honeypot.pcap_handoff.max_packets, 200);
+        assert_eq!(cfg.honeypot.containment.mode, "namespace");
+        assert!(cfg.honeypot.containment.require_success);
+        assert_eq!(
+            cfg.honeypot.containment.namespace_runner,
+            "/usr/bin/unshare"
+        );
+        assert_eq!(
+            cfg.honeypot.containment.namespace_args,
+            vec![
+                "--fork".to_string(),
+                "--pid".to_string(),
+                "--mount-proc".to_string(),
+                "--net".to_string()
+            ]
+        );
+        assert!(cfg.honeypot.external_handoff.enabled);
+        assert_eq!(
+            cfg.honeypot.external_handoff.command,
+            "/usr/local/bin/iw-handoff"
+        );
+        assert_eq!(
+            cfg.honeypot.external_handoff.args,
+            vec![
+                "--session-id".to_string(),
+                "{session_id}".to_string(),
+                "--metadata".to_string(),
+                "{metadata_path}".to_string(),
+                "--evidence".to_string(),
+                "{evidence_path}".to_string(),
+                "--pcap".to_string(),
+                "{pcap_path}".to_string(),
+            ]
+        );
+        assert_eq!(cfg.honeypot.external_handoff.timeout_secs, 25);
+        assert!(cfg.honeypot.external_handoff.require_success);
+        assert!(!cfg.honeypot.external_handoff.clear_env);
         assert!(cfg.honeypot.redirect.enabled);
         assert_eq!(cfg.honeypot.redirect.backend, "iptables");
     }
