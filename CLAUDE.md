@@ -33,7 +33,8 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Auto-execução condicional: só age se `auto_execute=true` AND `confidence ≥ threshold`
 - ✅ **Sistema de skills plugável** (open-core: tiers Open e Premium)
 - ✅ Skills built-in: `block-ip-ufw`, `block-ip-iptables`, `block-ip-nftables`
-- ✅ Stubs premium com mensagens amigáveis: `monitor-ip`, `honeypot`
+- ✅ Skill premium real: `monitor-ip` (captura de tráfego limitada em `.pcap` + metadata)
+- ✅ Stub premium com mensagem amigável: `honeypot`
 - ✅ Dry-run por padrão (seguro para produção até o usuário habilitar)
 - ✅ Blocklist em memória (evita bloquear o mesmo IP duas vezes)
 - ✅ **Audit trail** append-only: `decisions-YYYY-MM-DD.jsonl`
@@ -138,7 +139,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 ║  ║            ┌─────────────────┼──────────────────┐              ║   ║
 ║  ║            │                 │                  │              ║   ║
 ║  ║       block_ip          monitor_ip          honeypot           ║   ║
-║  ║   ┌────────────────┐  (premium stub)    (premium stub)        ║   ║
+║  ║   ┌────────────────┐  (premium capture) (premium stub)        ║   ║
 ║  ║   │ block-ip-ufw   │                                           ║   ║
 ║  ║   │ block-ip-ipt   │  + request_confirmation                   ║   ║
 ║  ║   │ block-ip-nft   │    └→ webhook POST com payload            ║   ║
@@ -212,7 +213,7 @@ crates/
           block_ip_ufw.rs    — Open ✅
           block_ip_iptables.rs — Open ✅
           block_ip_nftables.rs — Open ✅
-          monitor_ip.rs      — Premium stub 🔵
+          monitor_ip.rs      — Premium ✅ (captura limitada via tcpdump + sidecar metadata)
           honeypot.rs        — Premium stub 🔵
 examples/
   systemd/innerwarden-sensor.service
@@ -226,7 +227,7 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 72 testes (40 sensor + 32 agent)
+make test             # 76 testes (40 sensor + 36 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -360,7 +361,7 @@ Tier   │ ID                  │ Status
 Open   │ block-ip-ufw        │ ✅ executável
 Open   │ block-ip-iptables   │ ✅ executável
 Open   │ block-ip-nftables   │ ✅ executável
-Premium│ monitor-ip          │ 🔵 stub — logs + "coming soon"
+Premium│ monitor-ip          │ ✅ executável — captura limitada (`tcpdump`) + metadata
 Premium│ honeypot            │ 🔵 stub — logs + "coming soon"
 ```
 
@@ -413,6 +414,11 @@ echo "innerwarden ALL=(ALL) NOPASSWD: /sbin/iptables -A INPUT *" \
 # nftables (alternativa):
 echo "innerwarden ALL=(ALL) NOPASSWD: /usr/sbin/nft add element *" \
   | sudo tee /etc/sudoers.d/innerwarden
+
+# monitor-ip (premium, opcional):
+# requer permissão sudo para timeout+tcpdump; ajuste paths conforme distro.
+# Exemplo mínimo (revise com cuidado antes de usar em produção):
+# innerwarden ALL=(ALL) NOPASSWD: /usr/bin/timeout *, /usr/sbin/tcpdump *
 ```
 
 O `data_dir` no config.toml **deve** bater com `ReadWritePaths` no service file.
@@ -440,7 +446,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 72 testes (40 sensor + 32 agent) — todos devem passar
+make test   # 76 testes (40 sensor + 36 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -514,6 +520,6 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase 2 (concluída): Sensor — detector `credential_stuffing`
 - Fase 3 (concluída): Replay QA harness para validação end-to-end
 - Fase 4 (deferida): Agent `--report` v2 (tendências e anomalias adicionais)
-- Fase 5 (planejada): Skill `monitor-ip` real (execução continua segura por config)
+- Fase 5 (concluída): Skill `monitor-ip` real (execução continua segura por config)
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
 - Referência do roadmap: `docs/development-plan.md`
