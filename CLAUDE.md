@@ -46,6 +46,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Modo `--once` para processamento batch
 - ✅ Modo `--report`: gera relatório operacional do trial (`trial-report-YYYY-MM-DD.{md,json}`) sem alterar estado
 - ✅ Carregamento automático de `.env` na inicialização (dotenvy, fail-silent)
+- ✅ Replay QA harness end-to-end (`make replay-qa`) com assertions estáveis de artefatos
 
 ---
 
@@ -215,6 +216,8 @@ crates/
           honeypot.rs        — Premium stub 🔵
 examples/
   systemd/innerwarden-sensor.service
+scripts/
+  replay_qa.sh — harness de replay fim-a-fim (fixture log → sensor → agent --once → --report)
 ```
 
 ---
@@ -238,6 +241,7 @@ make build-agent      # só o agent
 make run-sensor       # sensor com config.test.toml
 make run-agent        # agent lendo ./data/
 innerwarden-agent --report --data-dir ./data  # gera trial-report-YYYY-MM-DD.{md,json}
+make replay-qa        # replay end-to-end com assertions estáveis de artefatos
 
 # Cross-compile para Linux arm64 (requer cargo-zigbuild + zig)
 make build-linux      # → target/aarch64-unknown-linux-gnu/release/innerwarden-{sensor,agent}
@@ -449,6 +453,7 @@ make run-sensor                              # grava em ./data/
 make run-agent                              # lê de ./data/
 innerwarden-agent --data-dir ./data --once  # roda uma vez e sai
 innerwarden-agent --report --data-dir ./data # gera relatório operacional do trial
+make replay-qa                               # valida fluxo fixture → sensor → agent → report
 
 # Smoke test com AI em dry_run (seguro):
 # 1. Coloque OPENAI_API_KEY no .env
@@ -507,7 +512,7 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 
 - Fase 1 (concluída): Sensor — detector `port_scan`
 - Fase 2 (concluída): Sensor — detector `credential_stuffing`
-- Fase 3 (ativa): Replay QA harness para validação end-to-end
+- Fase 3 (concluída): Replay QA harness para validação end-to-end
 - Fase 4 (deferida): Agent `--report` v2 (tendências e anomalias adicionais)
 - Fase 5 (planejada): Skill `monitor-ip` real (execução continua segura por config)
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)

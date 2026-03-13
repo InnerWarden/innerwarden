@@ -30,6 +30,10 @@ run-sensor:
 run-agent:
 	$(CARGO) run -p innerwarden-agent -- --data-dir ./data
 
+.PHONY: replay-qa
+replay-qa:
+	./scripts/replay_qa.sh
+
 # ─── Cross-compile for Linux arm64 ───────────────────────────────────────────
 
 .PHONY: build-linux
