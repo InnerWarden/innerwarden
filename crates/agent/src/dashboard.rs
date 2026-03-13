@@ -1766,7 +1766,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
       padding: 10px 16px; border-bottom: 1px solid var(--line);
       flex-shrink: 0;
     }
-    .app-title { font-weight: 700; font-size: 1rem; letter-spacing: -0.01em; }
+    .app-title { font-weight: 700; font-size: 1rem; letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }
+    .logo { display: inline-flex; align-items: center; justify-content: center; color: var(--accent); }
     .app-badge {
       font-size: 0.68rem; color: var(--muted); letter-spacing: 0.02em;
       border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px;
@@ -2184,7 +2185,18 @@ const INDEX_HTML: &str = r#"<!doctype html>
 
   <!-- Header -->
   <header class="app-header">
-    <div class="app-title">⚔ Inner Warden</div>
+    <div class="app-title">
+      <span class="logo" aria-hidden="true">
+        <!-- Crossed swords (pre-rotated 180° in the SVG) -->
+        <svg viewBox="0 0 64 64" width="18" height="18" xmlns="http://www.w3.org/2000/svg">
+          <g transform="rotate(180 32 32)">
+            <path fill="currentColor" d="M50.2 9.7c-.6-.6-1.7-.6-2.3 0l-9 9-2.4-2.4c-.6-.6-1.7-.6-2.3 0l-4.3 4.3c-.6.6-.6 1.7 0 2.3l2.4 2.4L18.1 39.8l-2.4-2.4c-.6-.6-1.7-.6-2.3 0l-4.3 4.3c-.6.6-.6 1.7 0 2.3l2.4 2.4-2 2c-1 1-1 2.7 0 3.7l1.1 1.1c1 1 2.7 1 3.7 0l2-2 2.4 2.4c.6.6 1.7.6 2.3 0l4.3-4.3c.6-.6.6-1.7 0-2.3l-2.4-2.4 14.2-14.2 2.4 2.4c.6.6 1.7.6 2.3 0l4.3-4.3c.6-.6.6-1.7 0-2.3l-2.4-2.4 9-9c.7-.7.7-1.8.1-2.4z"/>
+            <path fill="currentColor" opacity="0.75" d="M13.8 10.7c.6-.6 1.7-.6 2.3 0l9 9 2.4-2.4c.6-.6 1.7-.6 2.3 0l4.3 4.3c.6.6.6 1.7 0 2.3l-2.4 2.4 14.2 14.2 2.4-2.4c.6-.6 1.7-.6 2.3 0l4.3 4.3c.6.6.6 1.7 0 2.3l-2.4 2.4 2 2c1 1 1 2.7 0 3.7l-1.1 1.1c-1 1-2.7 1-3.7 0l-2-2-2.4 2.4c-.6.6-1.7.6-2.3 0l-4.3-4.3c-.6-.6-.6-1.7 0-2.3l2.4-2.4-14.2-14.2-2.4 2.4c-.6.6-1.7.6-2.3 0l-4.3-4.3c-.6-.6-.6-1.7 0-2.3l2.4-2.4-9-9c-.7-.7-.7-1.8-.1-2.4z"/>
+          </g>
+        </svg>
+      </span>
+      Inner Warden
+    </div>
     <div class="app-badge">read-only · no actions</div>
     <span id="refreshStatus"></span>
   </header>
