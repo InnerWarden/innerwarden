@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use tracing::{info, warn};
+use tracing::{info, warn, debug};
 
 #[derive(Parser)]
 #[command(name = "innerwarden-agent", version, about = "Interpretive layer — reads sensor JSONL, generates narratives, and auto-responds to incidents")]
@@ -53,6 +53,13 @@ struct AgentState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load .env file if present (fail-silent — production uses real env vars)
+    match dotenvy::dotenv() {
+        Ok(path) => debug!("loaded env from {}", path.display()),
+        Err(dotenvy::Error::Io(_)) => {} // no .env file — that's fine
+        Err(e) => warn!("could not parse .env file: {e}"),
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
