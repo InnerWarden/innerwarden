@@ -48,6 +48,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Modo `--report` v2: gera relatório operacional do trial com deltas dia-a-dia + anomaly hints (`trial-report-YYYY-MM-DD.{md,json}`) sem alterar estado
 - ✅ Carregamento automático de `.env` na inicialização (dotenvy, fail-silent)
 - ✅ Replay QA harness end-to-end (`make replay-qa`) com assertions estáveis de artefatos
+- ✅ Playbook de rollout hardening + smoke checks remotos (`make rollout-precheck/postcheck`)
 
 ---
 
@@ -219,6 +220,7 @@ examples/
   systemd/innerwarden-sensor.service
 scripts/
   replay_qa.sh — harness de replay fim-a-fim (fixture log → sensor → agent --once → --report)
+  rollout_smoke.sh — pre/post smoke checks + plano de rollback rápido para produção
 ```
 
 ---
@@ -251,6 +253,12 @@ make build-linux      # → target/aarch64-unknown-linux-gnu/release/innerwarden
 make deploy HOST=ubuntu@1.2.3.4
 make deploy-config HOST=ubuntu@1.2.3.4
 make deploy-service HOST=ubuntu@1.2.3.4
+
+# Rollout hardening (pré/pós deploy + rollback)
+make rollout-precheck HOST=ubuntu@1.2.3.4
+make rollout-postcheck HOST=ubuntu@1.2.3.4
+make rollout-rollback HOST=ubuntu@1.2.3.4
+make rollout-stop-agent HOST=ubuntu@1.2.3.4
 
 # Logs remotos
 make logs HOST=ubuntu@1.2.3.4
@@ -521,5 +529,9 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase 3 (concluída): Replay QA harness para validação end-to-end
 - Fase 4 (concluída): Agent `--report` v2 (tendências e anomalias adicionais)
 - Fase 5 (concluída): Skill `monitor-ip` real (execução continua segura por config)
+- Fase 7.1 (concluída): Production rollout hardening (playbook + smoke checks + rollback rápido)
+- Fase 7.2 (ativa): correlação temporal simples por janela + entidade
+- Fase 7.3 (planejada): telemetria operacional leve
+- Fase 7.4 (planejada): honeypot demo only (simulação controlada)
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
 - Referência do roadmap: `docs/development-plan.md`

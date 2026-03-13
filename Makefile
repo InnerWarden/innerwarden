@@ -76,6 +76,22 @@ deploy-service:
 	ssh $(HOST) "sudo install -o root -g root -m 644 /tmp/innerwarden-sensor.service /etc/systemd/system/innerwarden-sensor.service"
 	ssh $(HOST) "sudo systemctl daemon-reload && sudo systemctl enable innerwarden-sensor"
 
+.PHONY: rollout-precheck
+rollout-precheck:
+	ssh $(HOST) 'bash -s -- pre' < scripts/rollout_smoke.sh
+
+.PHONY: rollout-postcheck
+rollout-postcheck:
+	ssh $(HOST) 'bash -s -- post' < scripts/rollout_smoke.sh
+
+.PHONY: rollout-rollback
+rollout-rollback:
+	ssh $(HOST) 'bash -s -- rollback' < scripts/rollout_smoke.sh
+
+.PHONY: rollout-stop-agent
+rollout-stop-agent:
+	ssh $(HOST) "sudo systemctl stop innerwarden-agent && sudo systemctl status innerwarden-agent --no-pager || true"
+
 # ─── Remote ops ──────────────────────────────────────────────────────────────
 
 .PHONY: logs
