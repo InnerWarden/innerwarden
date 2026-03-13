@@ -32,6 +32,12 @@ max_related_incidents = 8
 [telemetry]
 enabled = true
 
+[honeypot]
+mode = "demo"
+bind_addr = "127.0.0.1"
+port = 2222
+duration_secs = 300
+
 [responder]
 enabled = true
 dry_run = true              # SAFE: logs "DRY RUN: would execute..." — no real blocks

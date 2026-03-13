@@ -2,6 +2,7 @@ pub mod builtin;
 
 use std::collections::HashSet;
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 
 use innerwarden_core::incident::Incident;
@@ -32,6 +33,33 @@ pub struct SkillContext {
     /// Primary IP target, if applicable.
     pub target_ip: Option<String>,
     pub host: String,
+    /// Shared data dir used by sensor/agent artifacts.
+    pub data_dir: PathBuf,
+    /// Runtime honeypot config (used only by honeypot skill).
+    pub honeypot: HoneypotRuntimeConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct HoneypotRuntimeConfig {
+    /// `demo` | `listener`
+    pub mode: String,
+    /// Listener bind address when mode = `listener`
+    pub bind_addr: String,
+    /// Listener port when mode = `listener`
+    pub port: u16,
+    /// Listener lifetime in seconds when mode = `listener`
+    pub duration_secs: u64,
+}
+
+impl Default for HoneypotRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            mode: "demo".to_string(),
+            bind_addr: "127.0.0.1".to_string(),
+            port: 2222,
+            duration_secs: 300,
+        }
+    }
 }
 
 /// Result of a skill execution.
@@ -258,6 +286,8 @@ mod tests {
             },
             target_ip: Some("1.2.3.4".into()),
             host: "h".into(),
+            data_dir: std::env::temp_dir(),
+            honeypot: HoneypotRuntimeConfig::default(),
         };
         let result = BlockIpUfw.execute(&ctx, true).await;
         assert!(result.success);

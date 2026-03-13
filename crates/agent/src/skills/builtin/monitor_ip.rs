@@ -211,6 +211,8 @@ mod tests {
             },
             target_ip: ip.map(|v| v.to_string()),
             host: "host-a".to_string(),
+            data_dir: std::env::temp_dir(),
+            honeypot: crate::skills::HoneypotRuntimeConfig::default(),
         }
     }
 

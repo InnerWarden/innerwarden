@@ -21,6 +21,8 @@ pub struct AgentConfig {
     #[serde(default)]
     pub telemetry: TelemetryConfig,
     #[serde(default)]
+    pub honeypot: HoneypotConfig,
+    #[serde(default)]
     pub responder: ResponderConfig,
 }
 
@@ -213,6 +215,42 @@ impl Default for TelemetryConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Honeypot
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct HoneypotConfig {
+    /// Honeypot mode:
+    /// - `demo`: synthetic marker only (safe default)
+    /// - `listener`: starts bounded decoy TCP listener
+    #[serde(default = "default_honeypot_mode")]
+    pub mode: String,
+
+    /// Bind address used in listener mode
+    #[serde(default = "default_honeypot_bind_addr")]
+    pub bind_addr: String,
+
+    /// Listener port used in listener mode
+    #[serde(default = "default_honeypot_port")]
+    pub port: u16,
+
+    /// Listener lifetime in seconds used in listener mode
+    #[serde(default = "default_honeypot_duration_secs")]
+    pub duration_secs: u64,
+}
+
+impl Default for HoneypotConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_honeypot_mode(),
+            bind_addr: default_honeypot_bind_addr(),
+            port: default_honeypot_port(),
+            duration_secs: default_honeypot_duration_secs(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Responder
 // ---------------------------------------------------------------------------
 
@@ -320,6 +358,22 @@ fn default_allowed_skills() -> Vec<String> {
     vec!["block-ip-ufw".to_string(), "monitor-ip".to_string()]
 }
 
+fn default_honeypot_mode() -> String {
+    "demo".to_string()
+}
+
+fn default_honeypot_bind_addr() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_honeypot_port() -> u16 {
+    2222
+}
+
+fn default_honeypot_duration_secs() -> u64 {
+    300
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -342,6 +396,10 @@ mod tests {
         assert_eq!(cfg.correlation.window_seconds, 300);
         assert_eq!(cfg.correlation.max_related_incidents, 8);
         assert!(cfg.telemetry.enabled);
+        assert_eq!(cfg.honeypot.mode, "demo");
+        assert_eq!(cfg.honeypot.bind_addr, "127.0.0.1");
+        assert_eq!(cfg.honeypot.port, 2222);
+        assert_eq!(cfg.honeypot.duration_secs, 300);
     }
 
     #[test]
@@ -367,6 +425,12 @@ max_related_incidents = 4
 
 [telemetry]
 enabled = true
+
+[honeypot]
+mode = "listener"
+bind_addr = "0.0.0.0"
+port = 2223
+duration_secs = 120
 "#
         )
         .unwrap();
@@ -382,6 +446,10 @@ enabled = true
         assert_eq!(cfg.correlation.window_seconds, 120);
         assert_eq!(cfg.correlation.max_related_incidents, 4);
         assert!(cfg.telemetry.enabled);
+        assert_eq!(cfg.honeypot.mode, "listener");
+        assert_eq!(cfg.honeypot.bind_addr, "0.0.0.0");
+        assert_eq!(cfg.honeypot.port, 2223);
+        assert_eq!(cfg.honeypot.duration_secs, 120);
     }
 
     #[test]

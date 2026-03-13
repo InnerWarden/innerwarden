@@ -111,6 +111,9 @@ async fn main() -> Result<()> {
         correlation = cfg.correlation.enabled,
         correlation_window_secs = cfg.correlation.window_seconds,
         telemetry = cfg.telemetry.enabled,
+        honeypot_mode = %cfg.honeypot.mode,
+        honeypot_bind_addr = %cfg.honeypot.bind_addr,
+        honeypot_port = cfg.honeypot.port,
         responder = cfg.responder.enabled,
         dry_run = cfg.responder.dry_run,
         "innerwarden-agent v{} starting",
@@ -596,6 +599,8 @@ async fn execute_decision(
                         incident: incident.clone(),
                         target_ip: Some(ip.clone()),
                         host: incident.host.clone(),
+                        data_dir: data_dir.to_path_buf(),
+                        honeypot: honeypot_runtime(cfg),
                     };
                     let result = skill.execute(&ctx, cfg.responder.dry_run).await;
                     if result.success && !cfg.responder.dry_run {
@@ -612,6 +617,8 @@ async fn execute_decision(
                     incident: incident.clone(),
                     target_ip: Some(ip.clone()),
                     host: incident.host.clone(),
+                    data_dir: data_dir.to_path_buf(),
+                    honeypot: honeypot_runtime(cfg),
                 };
                 skill.execute(&ctx, cfg.responder.dry_run).await.message
             } else {
@@ -620,24 +627,35 @@ async fn execute_decision(
         }
         AiAction::Honeypot { ip } => {
             if let Some(skill) = state.skill_registry.get("honeypot") {
+                let runtime = honeypot_runtime(cfg);
                 let ctx = skills::SkillContext {
                     incident: incident.clone(),
                     target_ip: Some(ip.clone()),
                     host: incident.host.clone(),
+                    data_dir: data_dir.to_path_buf(),
+                    honeypot: runtime.clone(),
                 };
                 let result = skill.execute(&ctx, cfg.responder.dry_run).await;
                 if result.success {
-                    match append_honeypot_demo_event(data_dir, incident, ip, cfg.responder.dry_run).await {
+                    match append_honeypot_marker_event(
+                        data_dir,
+                        incident,
+                        ip,
+                        cfg.responder.dry_run,
+                        &runtime,
+                    )
+                    .await
+                    {
                         Ok(path) => format!(
-                            "{} | demo marker written to {}",
+                            "{} | honeypot marker written to {}",
                             result.message,
                             path.display()
                         ),
                         Err(e) => {
-                            state.telemetry.observe_error("honeypot_demo_writer");
-                            warn!("failed to write honeypot demo marker: {e:#}");
+                            state.telemetry.observe_error("honeypot_marker_writer");
+                            warn!("failed to write honeypot marker event: {e:#}");
                             format!(
-                                "{} | warning: failed to write honeypot demo marker: {e}",
+                                "{} | warning: failed to write honeypot marker event: {e}",
                                 result.message
                             )
                         }
@@ -672,11 +690,32 @@ async fn execute_decision(
     }
 }
 
-async fn append_honeypot_demo_event(
+fn honeypot_runtime(cfg: &config::AgentConfig) -> skills::HoneypotRuntimeConfig {
+    let mode = cfg.honeypot.mode.trim().to_ascii_lowercase();
+    let normalized_mode = match mode.as_str() {
+        "demo" | "listener" => mode,
+        other => {
+            warn!(
+                mode = other,
+                "unknown honeypot mode; falling back to demo"
+            );
+            "demo".to_string()
+        }
+    };
+    skills::HoneypotRuntimeConfig {
+        mode: normalized_mode,
+        bind_addr: cfg.honeypot.bind_addr.clone(),
+        port: cfg.honeypot.port,
+        duration_secs: cfg.honeypot.duration_secs,
+    }
+}
+
+async fn append_honeypot_marker_event(
     data_dir: &Path,
     incident: &innerwarden_core::incident::Incident,
     ip: &str,
     dry_run: bool,
+    runtime: &skills::HoneypotRuntimeConfig,
 ) -> Result<std::path::PathBuf> {
     use tokio::io::AsyncWriteExt;
 
@@ -686,29 +725,54 @@ async fn append_honeypot_demo_event(
         .to_string();
     let events_path = data_dir.join(format!("events-{today}.jsonl"));
 
+    let is_listener = runtime.mode == "listener" && !dry_run;
+    let (source, kind, summary) = if is_listener {
+        (
+            "agent.honeypot_listener",
+            "honeypot.listener_session_started",
+            format!(
+                "Honeypot listener session started for attacker {ip} at {}:{}",
+                runtime.bind_addr, runtime.port
+            ),
+        )
+    } else {
+        (
+            "agent.honeypot_demo",
+            "honeypot.demo_decoy_hit",
+            format!(
+                "DEMO/SIMULATION/DECOY: attacker {ip} marked as honeypot hit (controlled marker only)"
+            ),
+        )
+    };
+
     let event = innerwarden_core::event::Event {
         ts: chrono::Utc::now(),
         host: incident.host.clone(),
-        source: "agent.honeypot_demo".to_string(),
-        kind: "honeypot.demo_decoy_hit".to_string(),
+        source: source.to_string(),
+        kind: kind.to_string(),
         severity: innerwarden_core::event::Severity::Info,
-        summary: format!(
-            "DEMO/SIMULATION/DECOY: attacker {ip} marked as honeypot hit (controlled marker only)"
-        ),
+        summary,
         details: serde_json::json!({
-            "mode": "demo",
-            "simulation": true,
+            "mode": runtime.mode,
+            "simulation": !is_listener,
             "decoy": true,
             "target_ip": ip,
             "incident_id": incident.incident_id,
             "dry_run": dry_run,
-            "note": "No real honeypot infrastructure is deployed in this phase."
+            "listener_bind_addr": runtime.bind_addr,
+            "listener_port": runtime.port,
+            "listener_duration_secs": runtime.duration_secs,
+            "note": if is_listener {
+                "Minimal real listener mode. Dedicated full honeypot rebuild remains planned."
+            } else {
+                "Demo-only marker; no real honeypot infrastructure is deployed in this mode."
+            }
         }),
         tags: vec![
             "honeypot".to_string(),
-            "demo".to_string(),
-            "simulation".to_string(),
             "decoy".to_string(),
+            if is_listener { "listener".to_string() } else { "demo".to_string() },
+            if is_listener { "foundation".to_string() } else { "simulation".to_string() },
         ],
         entities: vec![innerwarden_core::entities::EntityRef::ip(ip)],
     };

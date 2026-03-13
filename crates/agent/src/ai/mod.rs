@@ -29,8 +29,10 @@ pub enum AiAction {
     /// Premium feature stub; community can implement full tracking.
     Monitor { ip: String },
 
-    /// Trigger a controlled honeypot demo marker (DEMO/SIMULATION/DECOY).
-    /// Real honeypot infrastructure is intentionally out of scope for this phase.
+    /// Trigger honeypot response.
+    /// Behavior depends on runtime mode:
+    /// - `demo`: synthetic marker
+    /// - `listener`: bounded decoy listener foundation
     Honeypot { ip: String },
 
     /// Send a confirmation request to the operator webhook before acting.

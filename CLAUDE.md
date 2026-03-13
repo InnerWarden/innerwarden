@@ -34,7 +34,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ **Sistema de skills plugável** (open-core: tiers Open e Premium)
 - ✅ Skills built-in: `block-ip-ufw`, `block-ip-iptables`, `block-ip-nftables`
 - ✅ Skill premium real: `monitor-ip` (captura de tráfego limitada em `.pcap` + metadata)
-- ✅ Skill premium demo: `honeypot` (marcador controlado `DEMO/SIMULATION/DECOY`, sem infraestrutura real)
+- ✅ Skill premium `honeypot` com modos: `demo` (marker controlado) + `listener` (decoy TCP mínimo e limitado)
 - ✅ Dry-run por padrão (seguro para produção até o usuário habilitar)
 - ✅ Blocklist em memória (evita bloquear o mesmo IP duas vezes)
 - ✅ **Audit trail** append-only: `decisions-YYYY-MM-DD.jsonl`
@@ -142,7 +142,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 ║  ║            ┌─────────────────┼──────────────────┐              ║   ║
 ║  ║            │                 │                  │              ║   ║
 ║  ║       block_ip          monitor_ip          honeypot           ║   ║
-║  ║   ┌────────────────┐  (premium capture) (premium demo)        ║   ║
+║  ║   ┌────────────────┐  (premium capture) (premium demo/listener)║   ║
 ║  ║   │ block-ip-ufw   │                                           ║   ║
 ║  ║   │ block-ip-ipt   │  + request_confirmation                   ║   ║
 ║  ║   │ block-ip-nft   │    └→ webhook POST com payload            ║   ║
@@ -169,6 +169,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 | `incidents-YYYY-MM-DD.jsonl` | sensor | Incidentes detectados (brute-force, etc.) |
 | `decisions-YYYY-MM-DD.jsonl` | agent | Decisões da AI com confidence, ação e resultado |
 | `telemetry-YYYY-MM-DD.jsonl` | agent | Snapshots operacionais (coletores, detectores, gate, AI, latência, erros, dry-run/real) |
+| `honeypot/listener-session-*.json` | agent | Metadados de sessões no modo `listener` da skill `honeypot` |
 | `summary-YYYY-MM-DD.md` | agent | Narrativa Markdown diária (eventos, incidentes, IPs top) |
 | `state.json` | sensor | Cursors dos collectors (offsets, hashes, timestamps) |
 | `agent-state.json` | agent | Byte offsets de leitura JSONL por data |
@@ -199,7 +200,7 @@ crates/
   agent/    — binário innerwarden-agent
     src/
       main.rs                — CLI + dois loops (AI 2s + narrative 30s) + SIGTERM
-      config.rs              — AgentConfig: narrative, webhook, ai, correlation, telemetry, responder
+      config.rs              — AgentConfig: narrative, webhook, ai, correlation, telemetry, honeypot, responder
       reader.rs              — JSONL incremental reader + AgentCursor persistence
       correlation.rs         — correlação temporal leve + clusterização de incidentes
       telemetry.rs           — telemetria operacional leve (snapshot JSONL por tick)
@@ -220,7 +221,7 @@ crates/
           block_ip_iptables.rs — Open ✅
           block_ip_nftables.rs — Open ✅
           monitor_ip.rs      — Premium ✅ (captura limitada via tcpdump + sidecar metadata)
-          honeypot.rs        — Premium demo ✅ (marcador controlado, TODO real rebuild)
+          honeypot.rs        — Premium ✅ (demo + listener foundation; rebuild completo planejado)
 examples/
   systemd/innerwarden-sensor.service
 scripts/
@@ -234,7 +235,7 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 86 testes (40 sensor + 46 agent)
+make test             # 88 testes (40 sensor + 48 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -362,11 +363,17 @@ max_related_incidents = 8  # contexto correlacionado enviado para AI
 [telemetry]
 enabled = true             # escreve telemetry-YYYY-MM-DD.jsonl (default: true)
 
+[honeypot]
+mode = "demo"              # demo | listener (default: demo)
+bind_addr = "127.0.0.1"    # listener mode
+port = 2222                # listener mode
+duration_secs = 300        # listener mode (janela limitada)
+
 [responder]
 enabled = true
 dry_run = true             # SEGURANÇA: começa sempre em dry_run
 block_backend = "ufw"      # ufw | iptables | nftables
-allowed_skills = ["block-ip-ufw", "monitor-ip"]
+allowed_skills = ["block-ip-ufw", "monitor-ip"]  # adicione "honeypot" para permitir execução dessa skill
 ```
 
 Config de teste local: `config.test.toml` (aponta para `./testdata/`).
@@ -383,7 +390,7 @@ Open   │ block-ip-ufw        │ ✅ executável
 Open   │ block-ip-iptables   │ ✅ executável
 Open   │ block-ip-nftables   │ ✅ executável
 Premium│ monitor-ip          │ ✅ executável — captura limitada (`tcpdump`) + metadata
-Premium│ honeypot            │ ✅ demo only — marcador `DEMO/SIMULATION/DECOY` (sem honeypot real)
+Premium│ honeypot            │ ✅ demo + listener foundation (rebuild completo em fase dedicada)
 ```
 
 Para adicionar uma skill da comunidade:
@@ -456,6 +463,7 @@ data_dir/
   incidents-YYYY-MM-DD.jsonl    — incidentes detectados
   decisions-YYYY-MM-DD.jsonl    — decisões da AI (audit trail)
   telemetry-YYYY-MM-DD.jsonl    — snapshots de telemetria operacional do agent
+  honeypot/listener-session-*.json — metadados de sessões da skill honeypot em modo listener
   summary-YYYY-MM-DD.md         — narrativa diária em Markdown
   state.json                    — cursors do sensor
   agent-state.json              — cursors do agent (byte offsets)
@@ -468,7 +476,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 86 testes (40 sensor + 46 agent) — todos devem passar
+make test   # 88 testes (40 sensor + 48 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -548,6 +556,7 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase 7.2 (concluída): correlação temporal simples por janela + entidade
 - Fase 7.3 (concluída): telemetria operacional leve
 - Fase 7.4 (concluída): honeypot demo only (simulação controlada)
-- Próxima trilha (planejada): rebuild do honeypot real (fase dedicada, separado do demo)
+- Fase 8.1 (concluída): honeypot rebuild foundation (`listener` mínimo, gated por config)
+- Fase 8.2 (planejada): honeypot real completo (redirecionamento, isolamento e pipeline forense)
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
-- Referência do roadmap: `docs/development-plan.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md` e `docs/phase-7-honeypot-demo.md`
+- Referência do roadmap: `docs/development-plan.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md` e `docs/phase-8-honeypot-rebuild-foundation.md`
