@@ -4,7 +4,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::ai::{AiDecision};
@@ -13,7 +13,7 @@ use crate::ai::{AiDecision};
 // Decision log entry
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DecisionEntry {
     pub ts: DateTime<Utc>,
     pub incident_id: String,

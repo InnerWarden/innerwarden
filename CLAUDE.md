@@ -42,6 +42,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ `reqwest::Client` reutilizado entre chamadas AI (connection pool real, sem overhead de TLS por chamada)
 - ✅ Audit trail com flush imediato por decisão — sobrevive a crash entre execução e shutdown
 - ✅ Modo `--once` para processamento batch
+- ✅ Modo `--report`: gera relatório operacional do trial (`trial-report-YYYY-MM-DD.{md,json}`) sem alterar estado
 - ✅ Carregamento automático de `.env` na inicialização (dotenvy, fail-silent)
 
 ---
@@ -189,6 +190,7 @@ crates/
       main.rs                — CLI + dois loops (AI 2s + narrative 30s) + SIGTERM
       config.rs              — AgentConfig: narrative, webhook, ai, responder
       reader.rs              — JSONL incremental reader + AgentCursor persistence
+      report.rs              — geração de relatório operacional (`--report`) a partir dos artefatos
       narrative.rs           — geração de Markdown diário (generate/write/cleanup)
       webhook.rs             — HTTP POST de notificações de incidente
       decisions.rs           — DecisionWriter + DecisionEntry (audit trail JSONL)
@@ -216,7 +218,7 @@ examples/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 57 testes (27 sensor + 30 agent)
+make test             # 59 testes (27 sensor + 32 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -230,6 +232,7 @@ make build-agent      # só o agent
 # Rodar localmente
 make run-sensor       # sensor com config.test.toml
 make run-agent        # agent lendo ./data/
+innerwarden-agent --report --data-dir ./data  # gera trial-report-YYYY-MM-DD.{md,json}
 
 # Cross-compile para Linux arm64 (requer cargo-zigbuild + zig)
 make build-linux      # → target/aarch64-unknown-linux-gnu/release/innerwarden-{sensor,agent}
@@ -418,7 +421,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 57 testes (27 sensor + 30 agent) — todos devem passar
+make test   # 59 testes (27 sensor + 32 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -430,6 +433,7 @@ Testes de integração local:
 make run-sensor                              # grava em ./data/
 make run-agent                              # lê de ./data/
 innerwarden-agent --data-dir ./data --once  # roda uma vez e sai
+innerwarden-agent --report --data-dir ./data # gera relatório operacional do trial
 
 # Smoke test com AI em dry_run (seguro):
 # 1. Coloque OPENAI_API_KEY no .env

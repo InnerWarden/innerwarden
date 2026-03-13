@@ -2,6 +2,7 @@ mod ai;
 mod config;
 mod decisions;
 mod narrative;
+mod report;
 mod reader;
 mod skills;
 mod webhook;
@@ -28,6 +29,10 @@ struct Cli {
     /// Run once (process new entries then exit) instead of continuous mode
     #[arg(long)]
     once: bool,
+
+    /// Generate a trial operational report from existing artifacts and exit
+    #[arg(long)]
+    report: bool,
 
     /// Poll interval in seconds for the narrative slow loop (default: 30)
     #[arg(long, default_value = "30")]
@@ -68,6 +73,22 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    if cli.report {
+        let out = report::generate(&cli.data_dir)?;
+        info!(
+            analyzed_date = %out.report.analyzed_date,
+            markdown = %out.markdown_path.display(),
+            json = %out.json_path.display(),
+            "trial report generated"
+        );
+        println!(
+            "Trial report generated:\n  {}\n  {}",
+            out.markdown_path.display(),
+            out.json_path.display()
+        );
+        return Ok(());
+    }
 
     // Load config (optional — all fields have sensible defaults)
     let cfg = match &cli.config {
