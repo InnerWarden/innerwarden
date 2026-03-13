@@ -204,6 +204,11 @@ strict_target_only = true
 allow_public_listener = false
 max_connections = 64
 max_payload_bytes = 512
+isolation_profile = "strict_local"
+require_high_ports = true
+forensics_keep_days = 7
+transcript_preview_bytes = 96
+lock_stale_secs = 1800
 
 [honeypot.redirect]
 enabled = false

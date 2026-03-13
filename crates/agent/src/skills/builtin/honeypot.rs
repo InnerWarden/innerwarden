@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -18,6 +18,7 @@ const SSH_BANNER: &[u8] = b"SSH-2.0-OpenSSH_9.2p1 Ubuntu-4ubuntu0.5\r\n";
 const HTTP_BANNER: &[u8] =
     b"HTTP/1.1 302 Found\r\nLocation: /login\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 const PAYLOAD_READ_TIMEOUT_MS: u64 = 700;
+const DEFAULT_LOCK_FILE: &str = "listener-active.lock";
 
 /// Premium honeypot skill.
 ///
@@ -42,6 +43,7 @@ struct DecoyEndpoint {
 #[derive(Debug, Clone, Serialize)]
 struct RedirectRuleStatus {
     service: String,
+    target_ip: String,
     from_port: u16,
     to_port: u16,
     add_command: String,
@@ -50,6 +52,7 @@ struct RedirectRuleStatus {
     apply_error: Option<String>,
     cleanup_ok: Option<bool>,
     cleanup_error: Option<String>,
+    cleanup_verified_absent: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +63,8 @@ struct SessionRuntime {
     duration_secs: u64,
     max_connections: usize,
     max_payload_bytes: usize,
+    transcript_preview_bytes: usize,
+    isolation_profile: String,
     evidence_path: PathBuf,
 }
 
@@ -72,6 +77,20 @@ struct ListenerStats {
     rejected: u64,
     payload_bytes_captured: u64,
     read_timeouts: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PayloadCapture {
+    bytes_captured: usize,
+    payload_hex: String,
+    transcript_preview: String,
+    protocol_guess: String,
+    read_timed_out: bool,
+}
+
+#[derive(Debug)]
+struct SessionLock {
+    path: PathBuf,
 }
 
 impl ResponseSkill for Honeypot {
@@ -126,6 +145,20 @@ impl ResponseSkill for Honeypot {
                 }
             };
 
+            let isolation_profile = normalize_isolation_profile(&ctx.honeypot.isolation_profile);
+            let strict_profile = isolation_profile == "strict_local";
+
+            if strict_profile
+                && (!ctx.honeypot.strict_target_only
+                    || ctx.honeypot.allow_public_listener
+                    || !ctx.honeypot.require_high_ports)
+            {
+                return SkillResult {
+                    success: false,
+                    message: "honeypot listener: strict_local profile requires strict_target_only=true, allow_public_listener=false and require_high_ports=true".to_string(),
+                };
+            }
+
             if !ctx.honeypot.allow_public_listener && !is_loopback_bind(&ctx.honeypot.bind_addr) {
                 return SkillResult {
                     success: false,
@@ -145,6 +178,15 @@ impl ResponseSkill for Honeypot {
                     };
                 }
             };
+
+            if ctx.honeypot.require_high_ports
+                && endpoints.iter().any(|endpoint| endpoint.listen_port < 1024)
+            {
+                return SkillResult {
+                    success: false,
+                    message: "honeypot listener: high-port guard enabled (set honeypot.require_high_ports=false to override)".to_string(),
+                };
+            }
 
             let redirect_preview = preview_redirect_commands(
                 &endpoints,
@@ -167,8 +209,8 @@ impl ResponseSkill for Honeypot {
                 return SkillResult {
                     success: true,
                     message: format!(
-                        "DRY RUN: would start honeypot listeners ({services}) for {}s targeting {target_ip}; {redirect_note}",
-                        ctx.honeypot.duration_secs
+                        "DRY RUN: would start honeypot listeners ({services}) for {}s targeting {target_ip}; profile={isolation_profile}; {redirect_note}",
+                        ctx.honeypot.duration_secs,
                     ),
                 };
             }
@@ -199,6 +241,18 @@ impl ResponseSkill for Honeypot {
                 };
             }
 
+            let pruned_artifacts =
+                match cleanup_old_forensics(&session_dir, ctx.honeypot.forensics_keep_days).await {
+                    Ok(removed) => removed,
+                    Err(e) => {
+                        warn!(
+                            path = %session_dir.display(),
+                            "honeypot forensics cleanup failed (continuing fail-open): {e}"
+                        );
+                        0
+                    }
+                };
+
             let session_id = format!(
                 "{}-{}",
                 Utc::now().format("%Y%m%dT%H%M%SZ"),
@@ -206,6 +260,23 @@ impl ResponseSkill for Honeypot {
             );
             let metadata_path = session_dir.join(format!("listener-session-{session_id}.json"));
             let evidence_path = session_dir.join(format!("listener-session-{session_id}.jsonl"));
+
+            let lock_path = session_dir.join(DEFAULT_LOCK_FILE);
+            let session_lock = match SessionLock::acquire(
+                lock_path.clone(),
+                &session_id,
+                ctx.honeypot.lock_stale_secs,
+            )
+            .await
+            {
+                Ok(lock) => lock,
+                Err(e) => {
+                    return SkillResult {
+                        success: false,
+                        message: format!("honeypot listener: {e}"),
+                    };
+                }
+            };
 
             let mut bound = Vec::new();
             let mut bind_errors = Vec::new();
@@ -261,6 +332,13 @@ impl ResponseSkill for Honeypot {
                 "strict_target_only": ctx.honeypot.strict_target_only,
                 "max_connections": ctx.honeypot.max_connections,
                 "max_payload_bytes": ctx.honeypot.max_payload_bytes,
+                "isolation_profile": isolation_profile,
+                "require_high_ports": ctx.honeypot.require_high_ports,
+                "forensics_keep_days": ctx.honeypot.forensics_keep_days,
+                "transcript_preview_bytes": ctx.honeypot.transcript_preview_bytes,
+                "lock_stale_secs": ctx.honeypot.lock_stale_secs,
+                "lock_file": lock_path,
+                "forensics_pruned_files": pruned_artifacts,
                 "redirect": {
                     "enabled": ctx.honeypot.redirect_enabled,
                     "backend": ctx.honeypot.redirect_backend,
@@ -285,6 +363,8 @@ impl ResponseSkill for Honeypot {
                     "type": "session_started",
                     "session_id": session_id.clone(),
                     "target_ip": target_ip.to_string(),
+                    "isolation_profile": isolation_profile,
+                    "forensics_pruned_files": pruned_artifacts,
                 }),
             )
             .await
@@ -299,12 +379,15 @@ impl ResponseSkill for Honeypot {
                 duration_secs: ctx.honeypot.duration_secs,
                 max_connections: ctx.honeypot.max_connections,
                 max_payload_bytes: ctx.honeypot.max_payload_bytes,
+                transcript_preview_bytes: ctx.honeypot.transcript_preview_bytes,
+                isolation_profile: isolation_profile.to_string(),
                 evidence_path: evidence_path.clone(),
             };
 
             let metadata_path_bg = metadata_path.clone();
             let evidence_path_bg = evidence_path.clone();
             tokio::spawn(async move {
+                let _session_lock = session_lock;
                 let mut task_stats = Vec::new();
                 let mut tasks = Vec::new();
                 for (endpoint, listener) in bound {
@@ -322,6 +405,9 @@ impl ResponseSkill for Honeypot {
                 }
 
                 cleanup_redirect_rules(&mut redirect_rules).await;
+                let redirect_cleanup_verified = redirect_rules
+                    .iter()
+                    .all(|rule| rule.cleanup_verified_absent.unwrap_or(true));
 
                 if let Err(e) = append_json_line(
                     &evidence_path_bg,
@@ -330,6 +416,7 @@ impl ResponseSkill for Honeypot {
                         "type": "session_finished",
                         "session_id": runtime.session_id.clone(),
                         "services": task_stats,
+                        "redirect_cleanup_verified": redirect_cleanup_verified,
                     }),
                 )
                 .await
@@ -346,8 +433,10 @@ impl ResponseSkill for Honeypot {
                     "duration_secs": runtime.duration_secs,
                     "max_connections": runtime.max_connections,
                     "max_payload_bytes": runtime.max_payload_bytes,
+                    "isolation_profile": runtime.isolation_profile,
                     "service_stats": task_stats,
                     "redirect_rules": redirect_rules,
+                    "redirect_cleanup_verified": redirect_cleanup_verified,
                     "forensics_file": evidence_path_bg,
                 });
                 if let Err(e) = write_json_file(&metadata_path_bg, &final_metadata).await {
@@ -364,7 +453,7 @@ impl ResponseSkill for Honeypot {
             SkillResult {
                 success: true,
                 message: format!(
-                    "Honeypot listeners started (session {session_id}). metadata: {} evidence: {}{}",
+                    "Honeypot listeners started (session {session_id}, profile {isolation_profile}, pruned {pruned_artifacts}). metadata: {} evidence: {}{}",
                     metadata_path.display(),
                     evidence_path.display(),
                     warning_suffix
@@ -420,13 +509,17 @@ async fn run_listener(
         let is_target = peer.ip() == runtime.target_ip;
         let allowed = !runtime.strict_target_only || is_target;
 
-        let (bytes_captured, payload_hex, read_timed_out) =
-            capture_payload(&mut socket, runtime.max_payload_bytes).await;
+        let payload = capture_payload(
+            &mut socket,
+            runtime.max_payload_bytes,
+            runtime.transcript_preview_bytes,
+        )
+        .await;
 
-        if read_timed_out {
+        if payload.read_timed_out {
             stats.read_timeouts += 1;
         }
-        stats.payload_bytes_captured += bytes_captured as u64;
+        stats.payload_bytes_captured += payload.bytes_captured as u64;
 
         if allowed {
             stats.accepted += 1;
@@ -447,8 +540,12 @@ async fn run_listener(
             "target_ip": runtime.target_ip.to_string(),
             "target_match": is_target,
             "accepted": allowed,
-            "bytes_captured": bytes_captured,
-            "payload_hex": payload_hex,
+            "bytes_captured": payload.bytes_captured,
+            "payload_hex": payload.payload_hex,
+            "transcript_preview": payload.transcript_preview,
+            "protocol_guess": payload.protocol_guess,
+            "read_timed_out": payload.read_timed_out,
+            "isolation_profile": runtime.isolation_profile.clone(),
         });
         if let Err(e) = append_json_line(&runtime.evidence_path, &entry).await {
             warn!(path = %runtime.evidence_path.display(), "failed to append honeypot evidence line: {e}");
@@ -467,9 +564,16 @@ async fn run_listener(
 async fn capture_payload(
     socket: &mut tokio::net::TcpStream,
     max_bytes: usize,
-) -> (usize, String, bool) {
+    transcript_preview_bytes: usize,
+) -> PayloadCapture {
     if max_bytes == 0 {
-        return (0, String::new(), false);
+        return PayloadCapture {
+            bytes_captured: 0,
+            payload_hex: String::new(),
+            transcript_preview: String::new(),
+            protocol_guess: "none".to_string(),
+            read_timed_out: false,
+        };
     }
 
     let read_cap = max_bytes.min(4096);
@@ -482,10 +586,29 @@ async fn capture_payload(
     {
         Ok(Ok(n)) => {
             let n = n.min(read_cap);
-            (n, bytes_to_hex(&buf[..n]), false)
+            let payload = &buf[..n];
+            PayloadCapture {
+                bytes_captured: n,
+                payload_hex: bytes_to_hex(payload),
+                transcript_preview: sanitize_transcript(payload, transcript_preview_bytes),
+                protocol_guess: guess_protocol(payload),
+                read_timed_out: false,
+            }
         }
-        Ok(Err(_)) => (0, String::new(), false),
-        Err(_) => (0, String::new(), true),
+        Ok(Err(_)) => PayloadCapture {
+            bytes_captured: 0,
+            payload_hex: String::new(),
+            transcript_preview: String::new(),
+            protocol_guess: "unknown".to_string(),
+            read_timed_out: false,
+        },
+        Err(_) => PayloadCapture {
+            bytes_captured: 0,
+            payload_hex: String::new(),
+            transcript_preview: String::new(),
+            protocol_guess: "unknown".to_string(),
+            read_timed_out: true,
+        },
     }
 }
 
@@ -496,6 +619,46 @@ fn bytes_to_hex(data: &[u8]) -> String {
         let _ = write!(&mut out, "{b:02x}");
     }
     out
+}
+
+fn sanitize_transcript(data: &[u8], preview_limit: usize) -> String {
+    let mut out = String::new();
+    for &b in data.iter().take(preview_limit) {
+        match b {
+            b'\r' => out.push_str("\\r"),
+            b'\n' => out.push_str("\\n"),
+            b'\t' => out.push_str("\\t"),
+            0x20..=0x7e => out.push(char::from(b)),
+            _ => out.push('.'),
+        }
+    }
+    out
+}
+
+fn guess_protocol(data: &[u8]) -> String {
+    if data.is_empty() {
+        return "none".to_string();
+    }
+    if data.starts_with(b"SSH-") {
+        return "ssh".to_string();
+    }
+    if data.starts_with(b"GET ")
+        || data.starts_with(b"POST ")
+        || data.starts_with(b"HEAD ")
+        || data.windows(5).any(|w| w == b"HTTP/")
+    {
+        return "http".to_string();
+    }
+
+    let printable = data
+        .iter()
+        .filter(|&&b| matches!(b, 0x20..=0x7e | b'\r' | b'\n' | b'\t'))
+        .count();
+    if printable * 100 / data.len().max(1) >= 70 {
+        "text".to_string()
+    } else {
+        "binary".to_string()
+    }
 }
 
 fn build_endpoints(
@@ -561,6 +724,47 @@ fn is_loopback_bind(bind_addr: &str) -> bool {
         .parse::<IpAddr>()
         .map(|ip| ip.is_loopback())
         .unwrap_or(false)
+}
+
+fn normalize_isolation_profile(profile: &str) -> &'static str {
+    if profile.eq_ignore_ascii_case("standard") {
+        "standard"
+    } else {
+        "strict_local"
+    }
+}
+
+async fn cleanup_old_forensics(session_dir: &Path, keep_days: usize) -> std::io::Result<usize> {
+    let mut removed = 0usize;
+    let cutoff = Utc::now().date_naive() - chrono::Duration::days(keep_days as i64);
+
+    let mut entries = tokio::fs::read_dir(session_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(file_date) = extract_listener_artifact_date(name) else {
+            continue;
+        };
+        if file_date < cutoff {
+            if tokio::fs::remove_file(&path).await.is_ok() {
+                removed += 1;
+            }
+        }
+    }
+
+    Ok(removed)
+}
+
+fn extract_listener_artifact_date(name: &str) -> Option<chrono::NaiveDate> {
+    if !name.starts_with("listener-session-") {
+        return None;
+    }
+    let ts = name.trim_start_matches("listener-session-");
+    let ts = ts.split('-').next()?;
+    let parsed = chrono::NaiveDateTime::parse_from_str(ts, "%Y%m%dT%H%M%SZ").ok()?;
+    Some(parsed.date())
 }
 
 fn preview_redirect_commands(
@@ -636,6 +840,7 @@ async fn apply_redirect_rules(
         let status = match output {
             Ok(out) if out.status.success() => RedirectRuleStatus {
                 service: endpoint.service.clone(),
+                target_ip: target_ip.to_string(),
                 from_port: endpoint.redirect_from_port,
                 to_port: endpoint.listen_port,
                 add_command: add_cmd,
@@ -644,9 +849,11 @@ async fn apply_redirect_rules(
                 apply_error: None,
                 cleanup_ok: None,
                 cleanup_error: None,
+                cleanup_verified_absent: None,
             },
             Ok(out) => RedirectRuleStatus {
                 service: endpoint.service.clone(),
+                target_ip: target_ip.to_string(),
                 from_port: endpoint.redirect_from_port,
                 to_port: endpoint.listen_port,
                 add_command: add_cmd,
@@ -655,9 +862,11 @@ async fn apply_redirect_rules(
                 apply_error: Some(String::from_utf8_lossy(&out.stderr).trim().to_string()),
                 cleanup_ok: None,
                 cleanup_error: None,
+                cleanup_verified_absent: None,
             },
             Err(e) => RedirectRuleStatus {
                 service: endpoint.service.clone(),
+                target_ip: target_ip.to_string(),
                 from_port: endpoint.redirect_from_port,
                 to_port: endpoint.listen_port,
                 add_command: add_cmd,
@@ -666,6 +875,7 @@ async fn apply_redirect_rules(
                 apply_error: Some(e.to_string()),
                 cleanup_ok: None,
                 cleanup_error: None,
+                cleanup_verified_absent: None,
             },
         };
 
@@ -684,12 +894,7 @@ async fn cleanup_redirect_rules(rules: &mut [RedirectRuleStatus]) {
             continue;
         }
 
-        let del_args: Vec<String> = rule
-            .remove_command
-            .split_whitespace()
-            .skip(1)
-            .map(ToString::to_string)
-            .collect();
+        let del_args = redirect_rule_args(rule, "D");
         match Command::new("sudo").args(&del_args).output().await {
             Ok(out) if out.status.success() => {
                 rule.cleanup_ok = Some(true);
@@ -704,7 +909,127 @@ async fn cleanup_redirect_rules(rules: &mut [RedirectRuleStatus]) {
                 rule.cleanup_error = Some(e.to_string());
             }
         }
+
+        let check_args = redirect_rule_args(rule, "C");
+        match Command::new("sudo").args(&check_args).output().await {
+            Ok(out) if out.status.success() => {
+                rule.cleanup_verified_absent = Some(false);
+                if rule.cleanup_error.is_none() {
+                    rule.cleanup_error =
+                        Some("redirect rule still present after cleanup".to_string());
+                }
+            }
+            Ok(_) => {
+                rule.cleanup_verified_absent = Some(true);
+            }
+            Err(e) => {
+                rule.cleanup_verified_absent = None;
+                if rule.cleanup_error.is_none() {
+                    rule.cleanup_error = Some(format!("redirect cleanup verification failed: {e}"));
+                }
+            }
+        }
     }
+}
+
+fn redirect_rule_args(rule: &RedirectRuleStatus, op: &str) -> Vec<String> {
+    vec![
+        "iptables".to_string(),
+        "-t".to_string(),
+        "nat".to_string(),
+        format!("-{op}"),
+        "PREROUTING".to_string(),
+        "-p".to_string(),
+        "tcp".to_string(),
+        "-s".to_string(),
+        rule.target_ip.clone(),
+        "--dport".to_string(),
+        rule.from_port.to_string(),
+        "-j".to_string(),
+        "REDIRECT".to_string(),
+        "--to-ports".to_string(),
+        rule.to_port.to_string(),
+    ]
+}
+
+impl SessionLock {
+    async fn acquire(path: PathBuf, session_id: &str, stale_secs: u64) -> Result<Self, String> {
+        let lock_body = serde_json::json!({
+            "ts": Utc::now().to_rfc3339(),
+            "session_id": session_id,
+        });
+        for attempt in 0..2 {
+            match tokio::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&path)
+                .await
+            {
+                Ok(mut file) => {
+                    if let Err(e) = file.write_all(format!("{lock_body}\n").as_bytes()).await {
+                        return Err(format!(
+                            "failed to write session lock {}: {e}",
+                            path.display()
+                        ));
+                    }
+                    return Ok(Self { path });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if attempt == 0 && is_lock_stale(&path, stale_secs).await {
+                        warn!(path = %path.display(), "stale honeypot session lock detected; removing");
+                        let _ = tokio::fs::remove_file(&path).await;
+                        continue;
+                    }
+                    return Err(format!(
+                        "another honeypot listener session is active (lock: {})",
+                        path.display()
+                    ));
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "failed to create session lock {}: {e}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+        Err(format!(
+            "another honeypot listener session is active (lock: {})",
+            path.display()
+        ))
+    }
+}
+
+impl Drop for SessionLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+async fn is_lock_stale(path: &Path, stale_secs: u64) -> bool {
+    if stale_secs == 0 {
+        return false;
+    }
+
+    if let Ok(content) = tokio::fs::read_to_string(path).await {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(ts) = value.get("ts").and_then(|v| v.as_str()) {
+                if let Ok(parsed) = DateTime::parse_from_rfc3339(ts) {
+                    let age = Utc::now() - parsed.with_timezone(&Utc);
+                    return age.num_seconds() > stale_secs as i64;
+                }
+            }
+        }
+    }
+
+    if let Ok(meta) = tokio::fs::metadata(path).await {
+        if let Ok(modified) = meta.modified() {
+            if let Ok(elapsed) = modified.elapsed() {
+                return elapsed.as_secs() > stale_secs;
+            }
+        }
+    }
+    false
 }
 
 async fn append_json_line(path: &Path, value: &serde_json::Value) -> std::io::Result<()> {
@@ -755,6 +1080,11 @@ mod tests {
                 allow_public_listener: false,
                 max_connections: 8,
                 max_payload_bytes: 256,
+                isolation_profile: "strict_local".to_string(),
+                require_high_ports: true,
+                forensics_keep_days: 7,
+                transcript_preview_bytes: 96,
+                lock_stale_secs: 1800,
                 redirect_enabled: false,
                 redirect_backend: "iptables".to_string(),
             },
@@ -805,5 +1135,40 @@ mod tests {
         };
         let err = build_endpoints(&runtime, "127.0.0.1").unwrap_err();
         assert!(err.contains("unsupported service"));
+    }
+
+    #[tokio::test]
+    async fn strict_profile_enforces_listener_guards() {
+        let mut context = ctx("listener");
+        context.honeypot.allow_public_listener = true;
+        let result = Honeypot.execute(&context, false).await;
+        assert!(!result.success);
+        assert!(result.message.contains("strict_local profile"));
+    }
+
+    #[tokio::test]
+    async fn high_port_guard_blocks_privileged_listener_ports() {
+        let mut context = ctx("listener");
+        context.honeypot.port = 22;
+        context.honeypot.require_high_ports = true;
+        let result = Honeypot.execute(&context, false).await;
+        assert!(!result.success);
+        assert!(result.message.contains("high-port guard"));
+    }
+
+    #[test]
+    fn transcript_preview_and_protocol_guess() {
+        let payload = b"GET /admin HTTP/1.1\r\nHost: demo\r\n";
+        let transcript = sanitize_transcript(payload, 12);
+        assert!(transcript.contains("GET /admin"));
+        assert_eq!(guess_protocol(payload), "http");
+        assert_eq!(guess_protocol(b"SSH-2.0-test"), "ssh");
+    }
+
+    #[test]
+    fn parses_listener_artifact_date() {
+        let date = extract_listener_artifact_date("listener-session-20260313T162200Z-1.2.3.4.json")
+            .expect("date should parse");
+        assert_eq!(date.format("%Y-%m-%d").to_string(), "2026-03-13");
     }
 }

@@ -61,6 +61,16 @@ pub struct HoneypotRuntimeConfig {
     pub max_connections: usize,
     /// Max payload bytes captured per connection.
     pub max_payload_bytes: usize,
+    /// Isolation profile (`strict_local` | `standard`).
+    pub isolation_profile: String,
+    /// Require non-privileged listener ports (>= 1024).
+    pub require_high_ports: bool,
+    /// Retain honeypot forensics artifacts for this many days.
+    pub forensics_keep_days: usize,
+    /// Max bytes rendered in transcript preview fields.
+    pub transcript_preview_bytes: usize,
+    /// Active session lock stale threshold in seconds.
+    pub lock_stale_secs: u64,
     /// Optional selective redirection.
     pub redirect_enabled: bool,
     /// Redirect backend identifier.
@@ -80,6 +90,11 @@ impl Default for HoneypotRuntimeConfig {
             allow_public_listener: false,
             max_connections: 64,
             max_payload_bytes: 512,
+            isolation_profile: "strict_local".to_string(),
+            require_high_ports: true,
+            forensics_keep_days: 7,
+            transcript_preview_bytes: 96,
+            lock_stale_secs: 1800,
             redirect_enabled: false,
             redirect_backend: "iptables".to_string(),
         }

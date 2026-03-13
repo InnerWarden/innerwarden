@@ -39,8 +39,11 @@
   "service_stats": [
     {"service":"ssh","listen_port":2222,"accepted":3,"rejected":0}
   ],
+  "isolation_profile": "strict_local",
+  "forensics_file": "honeypot/listener-session-20260313T162200Z-1.2.3.4.jsonl",
+  "redirect_cleanup_verified": true,
   "redirect_rules": [
-    {"service":"ssh","from_port":22,"to_port":2222,"applied":true}
+    {"service":"ssh","from_port":22,"to_port":2222,"applied":true,"cleanup_verified_absent":true}
   ]
 }
 ```
@@ -55,6 +58,8 @@
   "peer_ip": "1.2.3.4",
   "accepted": true,
   "bytes_captured": 48,
-  "payload_hex": "5353482d322e30"
+  "payload_hex": "474554202f20485454502f312e31",
+  "transcript_preview": "GET / HTTP/1.1\\r\\n",
+  "protocol_guess": "http"
 }
 ```

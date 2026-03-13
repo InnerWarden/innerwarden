@@ -34,7 +34,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ **Sistema de skills plugável** (open-core: tiers Open e Premium)
 - ✅ Skills built-in: `block-ip-ufw`, `block-ip-iptables`, `block-ip-nftables`
 - ✅ Skill premium real: `monitor-ip` (captura de tráfego limitada em `.pcap` + metadata)
-- ✅ Skill premium `honeypot` com modos: `demo` (marker controlado) + `listener` real bounded (decoys `ssh/http`, redirecionamento seletivo opcional e pipeline forense leve)
+- ✅ Skill premium `honeypot` com hardening 8.3: perfil de isolamento (`strict_local|standard`), session lock, retenção forense, transcript preview/protocol guess e validação de cleanup de redirect
 - ✅ Dry-run por padrão (seguro para produção até o usuário habilitar)
 - ✅ Blocklist em memória (evita bloquear o mesmo IP duas vezes)
 - ✅ **Audit trail** append-only: `decisions-YYYY-MM-DD.jsonl`
@@ -171,6 +171,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 | `telemetry-YYYY-MM-DD.jsonl` | agent | Snapshots operacionais (coletores, detectores, gate, AI, latência, erros, dry-run/real) |
 | `honeypot/listener-session-*.json` | agent | Metadados de sessão do honeypot listener (serviços, redirecionamento, stats) |
 | `honeypot/listener-session-*.jsonl` | agent | Evidências por conexão/sessão no honeypot listener |
+| `honeypot/listener-active.lock` | agent | Lock de sessão ativa (controle de concorrência + stale recovery) |
 | `summary-YYYY-MM-DD.md` | agent | Narrativa Markdown diária (eventos, incidentes, IPs top) |
 | `state.json` | sensor | Cursors dos collectors (offsets, hashes, timestamps) |
 | `agent-state.json` | agent | Byte offsets de leitura JSONL por data |
@@ -222,7 +223,7 @@ crates/
           block_ip_iptables.rs — Open ✅
           block_ip_nftables.rs — Open ✅
           monitor_ip.rs      — Premium ✅ (captura limitada via tcpdump + sidecar metadata)
-          honeypot.rs        — Premium ✅ (listener real bounded: multi-service + redirect opcional + forensics leve)
+          honeypot.rs        — Premium ✅ (hardening 8.3: isolamento, lock, retenção, transcript e cleanup verificado)
 examples/
   systemd/innerwarden-sensor.service
 scripts/
@@ -236,7 +237,7 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 91 testes (40 sensor + 51 agent)
+make test             # 95 testes (40 sensor + 55 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -375,6 +376,11 @@ strict_target_only = true
 allow_public_listener = false
 max_connections = 64
 max_payload_bytes = 512
+isolation_profile = "strict_local" # strict_local | standard
+require_high_ports = true
+forensics_keep_days = 7
+transcript_preview_bytes = 96
+lock_stale_secs = 1800
 
 [honeypot.redirect]
 enabled = false
@@ -401,7 +407,7 @@ Open   │ block-ip-ufw        │ ✅ executável
 Open   │ block-ip-iptables   │ ✅ executável
 Open   │ block-ip-nftables   │ ✅ executável
 Premium│ monitor-ip          │ ✅ executável — captura limitada (`tcpdump`) + metadata
-Premium│ honeypot            │ ✅ listener real bounded (`ssh/http`, redirect opcional, forensics JSON/JSONL)
+Premium│ honeypot            │ ✅ hardening 8.3 (`strict_local`, session lock, retenção, transcript, cleanup verificado)
 ```
 
 Para adicionar uma skill da comunidade:
@@ -476,6 +482,7 @@ data_dir/
   telemetry-YYYY-MM-DD.jsonl    — snapshots de telemetria operacional do agent
   honeypot/listener-session-*.json  — metadados de sessão do honeypot listener
   honeypot/listener-session-*.jsonl — evidências por conexão/sessão do honeypot listener
+  honeypot/listener-active.lock     — lock de sessão honeypot ativa
   summary-YYYY-MM-DD.md         — narrativa diária em Markdown
   state.json                    — cursors do sensor
   agent-state.json              — cursors do agent (byte offsets)
@@ -488,7 +495,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 91 testes (40 sensor + 51 agent) — todos devem passar
+make test   # 95 testes (40 sensor + 55 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -570,6 +577,7 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase 7.4 (concluída): honeypot demo only (simulação controlada)
 - Fase 8.1 (concluída): honeypot rebuild foundation (`listener` mínimo, gated por config)
 - Fase 8.2 (concluída): honeypot real bounded (multi-serviço, redirecionamento seletivo opcional, isolamento e forensics JSON/JSONL)
-- Fase 8.3 (planejada): hardening avançado de isolamento + profundidade forense
+- Fase 8.3 (concluída): hardening de isolamento + profundidade forense (session lock, retenção e transcript)
+- Fase 8.4 (planejada): sandbox runtime dedicado + handoff forense avançado
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
-- Referência do roadmap: `docs/development-plan.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md` e `docs/phase-8-honeypot-real-rebuild.md`
+- Referência do roadmap: `docs/development-plan.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md`, `docs/phase-8-honeypot-real-rebuild.md` e `docs/phase-8-honeypot-hardening.md`

@@ -267,6 +267,28 @@ pub struct HoneypotConfig {
     #[serde(default = "default_honeypot_max_payload_bytes")]
     pub max_payload_bytes: usize,
 
+    /// Isolation profile for listener mode:
+    /// - `strict_local` (default): hard guardrails for safer operation
+    /// - `standard`: keeps only baseline guards
+    #[serde(default = "default_honeypot_isolation_profile")]
+    pub isolation_profile: String,
+
+    /// Require non-privileged listener ports (>= 1024).
+    #[serde(default = "default_true")]
+    pub require_high_ports: bool,
+
+    /// Retain honeypot forensics artifacts for this many days.
+    #[serde(default = "default_honeypot_forensics_keep_days")]
+    pub forensics_keep_days: usize,
+
+    /// Max bytes to render as readable transcript preview in evidence lines.
+    #[serde(default = "default_honeypot_transcript_preview_bytes")]
+    pub transcript_preview_bytes: usize,
+
+    /// Consider active session lock stale after this many seconds.
+    #[serde(default = "default_honeypot_lock_stale_secs")]
+    pub lock_stale_secs: u64,
+
     #[serde(default)]
     pub redirect: HoneypotRedirectConfig,
 }
@@ -304,6 +326,11 @@ impl Default for HoneypotConfig {
             allow_public_listener: false,
             max_connections: default_honeypot_max_connections(),
             max_payload_bytes: default_honeypot_max_payload_bytes(),
+            isolation_profile: default_honeypot_isolation_profile(),
+            require_high_ports: default_true(),
+            forensics_keep_days: default_honeypot_forensics_keep_days(),
+            transcript_preview_bytes: default_honeypot_transcript_preview_bytes(),
+            lock_stale_secs: default_honeypot_lock_stale_secs(),
             redirect: HoneypotRedirectConfig::default(),
         }
     }
@@ -449,6 +476,22 @@ fn default_honeypot_max_payload_bytes() -> usize {
     512
 }
 
+fn default_honeypot_isolation_profile() -> String {
+    "strict_local".to_string()
+}
+
+fn default_honeypot_forensics_keep_days() -> usize {
+    7
+}
+
+fn default_honeypot_transcript_preview_bytes() -> usize {
+    96
+}
+
+fn default_honeypot_lock_stale_secs() -> u64 {
+    1800
+}
+
 fn default_honeypot_redirect_backend() -> String {
     "iptables".to_string()
 }
@@ -485,6 +528,11 @@ mod tests {
         assert!(!cfg.honeypot.allow_public_listener);
         assert_eq!(cfg.honeypot.max_connections, 64);
         assert_eq!(cfg.honeypot.max_payload_bytes, 512);
+        assert_eq!(cfg.honeypot.isolation_profile, "strict_local");
+        assert!(cfg.honeypot.require_high_ports);
+        assert_eq!(cfg.honeypot.forensics_keep_days, 7);
+        assert_eq!(cfg.honeypot.transcript_preview_bytes, 96);
+        assert_eq!(cfg.honeypot.lock_stale_secs, 1800);
         assert!(!cfg.honeypot.redirect.enabled);
         assert_eq!(cfg.honeypot.redirect.backend, "iptables");
     }
@@ -524,6 +572,11 @@ strict_target_only = true
 allow_public_listener = true
 max_connections = 10
 max_payload_bytes = 256
+isolation_profile = "standard"
+require_high_ports = false
+forensics_keep_days = 14
+transcript_preview_bytes = 192
+lock_stale_secs = 600
 
 [honeypot.redirect]
 enabled = true
@@ -556,6 +609,11 @@ backend = "iptables"
         assert!(cfg.honeypot.allow_public_listener);
         assert_eq!(cfg.honeypot.max_connections, 10);
         assert_eq!(cfg.honeypot.max_payload_bytes, 256);
+        assert_eq!(cfg.honeypot.isolation_profile, "standard");
+        assert!(!cfg.honeypot.require_high_ports);
+        assert_eq!(cfg.honeypot.forensics_keep_days, 14);
+        assert_eq!(cfg.honeypot.transcript_preview_bytes, 192);
+        assert_eq!(cfg.honeypot.lock_stale_secs, 600);
         assert!(cfg.honeypot.redirect.enabled);
         assert_eq!(cfg.honeypot.redirect.backend, "iptables");
     }

@@ -52,4 +52,4 @@ backend = "iptables"
 
 ## Next step
 
-Move from bounded listener runtime to harder isolation + deeper forensics in a dedicated hardening phase (Phase 8.3).
+Hardening phase delivered in `docs/phase-8-honeypot-hardening.md` (Phase 8.3).
