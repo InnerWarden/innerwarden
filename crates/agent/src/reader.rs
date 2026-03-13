@@ -91,8 +91,21 @@ impl AgentCursor {
         }
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        serde_json::from_str(&content)
-            .with_context(|| format!("failed to parse {}", path.display()))
+        // Fall back to a fresh cursor on parse errors (e.g. power loss mid-write).
+        // Consequence: incidents since the last saved offset are re-analyzed by AI.
+        // The blocklist prevents duplicate real blocks; dry-run mode may see duplicate
+        // AI calls for already-seen incidents — acceptable vs. crashing the agent.
+        match serde_json::from_str::<Self>(&content) {
+            Ok(cursor) => Ok(cursor),
+            Err(e) => {
+                warn!(
+                    path = %path.display(),
+                    "agent-state.json corrupted ({e}) — starting with empty cursor, \
+                     some incidents may be re-analyzed"
+                );
+                Ok(Self::default())
+            }
+        }
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -199,6 +212,17 @@ mod tests {
         let result = read_new_entries::<innerwarden_core::event::Event>(f.path(), 0).unwrap();
         assert_eq!(result.entries.len(), 1);
         assert_eq!(result.entries[0].summary, "ok");
+    }
+
+    #[test]
+    fn corrupted_cursor_falls_back_to_default() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("agent-state.json");
+        std::fs::write(&path, "not valid json at all {{{{").unwrap();
+        // Must not return Err — falls back to empty cursor
+        let cursor = AgentCursor::load(&path).unwrap();
+        assert_eq!(cursor.events_offset("2026-03-13"), 0);
+        assert_eq!(cursor.incidents_offset("2026-03-13"), 0);
     }
 
     #[test]

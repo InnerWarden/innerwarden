@@ -20,11 +20,14 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 
 ### Agent (`innerwarden-agent`)
 - ✅ Leitura incremental de JSONL via byte-offset cursors (sem re-leitura)
+- ✅ Cursor fail-open: `agent-state.json` corrompido faz fallback para cursor vazio (sem crash)
 - ✅ Config TOML com defaults sensatos — `--config` é opcional
 - ✅ **Algorithm gate** — pré-filtra incidentes sem custo de API (severity, IP privado, já bloqueado)
+- ✅ Deduplicação intra-tick por IP: evita chamadas AI duplicadas no mesmo tick de 2s
 - ✅ **Multi-provider AI** — OpenAI real (MVP), Anthropic/Ollama como stubs extensíveis
 - ✅ Análise AI em tempo real de incidentes High/Critical
 - ✅ AI seleciona a melhor ação com confidence score (0.0–1.0)
+- ✅ Sanitização de decisão AI: `block_ip` sem `target_ip` é rebaixado para `ignore`
 - ✅ Auto-execução condicional: só age se `auto_execute=true` AND `confidence ≥ threshold`
 - ✅ **Sistema de skills plugável** (open-core: tiers Open e Premium)
 - ✅ Skills built-in: `block-ip-ufw`, `block-ip-iptables`, `block-ip-nftables`
@@ -213,7 +216,7 @@ examples/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 54 testes (27 sensor + 27 agent)
+make test             # 57 testes (27 sensor + 30 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -409,7 +412,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 54 testes (27 sensor + 27 agent) — todos devem passar
+make test   # 57 testes (27 sensor + 30 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:

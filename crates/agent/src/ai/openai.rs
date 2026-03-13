@@ -202,10 +202,22 @@ fn parse_decision(content: &str) -> Result<AiDecision> {
 
     let action = match raw.action.as_str() {
         "block_ip" => {
-            let ip = raw
-                .target_ip
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string());
+            // target_ip is mandatory for block_ip — a missing IP would produce
+            // a bogus `sudo ufw deny from unknown` command. Downgrade to Ignore
+            // so the audit trail captures the event without executing a bad command.
+            let Some(ip) = raw.target_ip.clone() else {
+                warn!("AI returned block_ip with no target_ip — downgrading to ignore");
+                return Ok(AiDecision {
+                    action: AiAction::Ignore {
+                        reason: "block_ip action had no target IP".to_string(),
+                    },
+                    confidence: raw.confidence.clamp(0.0, 1.0),
+                    auto_execute: false,
+                    reason: raw.reason,
+                    alternatives: raw.alternatives,
+                    estimated_threat: raw.estimated_threat,
+                });
+            };
             let skill_id = raw
                 .skill_id
                 .clone()
@@ -282,6 +294,24 @@ mod tests {
 
         let d = parse_decision(json).unwrap();
         assert!(matches!(d.action, AiAction::Ignore { .. }));
+    }
+
+    #[test]
+    fn block_ip_without_target_ip_downgrades_to_ignore() {
+        let json = r#"{
+            "action": "block_ip",
+            "target_ip": null,
+            "skill_id": "block-ip-ufw",
+            "confidence": 0.92,
+            "auto_execute": true,
+            "reason": "Should block but IP is missing",
+            "alternatives": ["ignore"],
+            "estimated_threat": "high"
+        }"#;
+
+        let d = parse_decision(json).unwrap();
+        assert!(matches!(d.action, AiAction::Ignore { .. }));
+        assert!(!d.auto_execute, "downgraded decision must never auto-execute");
     }
 
     #[test]

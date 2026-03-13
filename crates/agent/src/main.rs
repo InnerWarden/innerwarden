@@ -280,7 +280,7 @@ async fn process_incidents(
 
     // Pre-compute AI context (only if AI is configured)
     let ai_enabled = cfg.ai.enabled && state.ai_provider.is_some();
-    let (all_events, skill_infos, ai_provider, provider_name, already_blocked, blocked_set) =
+    let (all_events, skill_infos, ai_provider, provider_name, already_blocked, mut blocked_set) =
         if ai_enabled {
             let events_path = data_dir.join(format!("events-{today}.jsonl"));
             let events =
@@ -292,6 +292,8 @@ async fn process_incidents(
             let prov: Arc<dyn ai::AiProvider> = state.ai_provider.as_ref().unwrap().clone();
             let pname = prov.name();
             let blocked = state.blocklist.as_vec();
+            // Mutable so we can update it mid-tick to prevent duplicate AI calls
+            // for the same IP when multiple incidents arrive in the same 2s window.
             let blocked_set: HashSet<String> = blocked.iter().cloned().collect();
             (events, infos, Some(prov), pname, blocked, blocked_set)
         } else {
@@ -386,6 +388,14 @@ async fn process_incidents(
                 continue;
             }
         };
+
+        // Update the in-memory blocked_set immediately after a BlockIp decision.
+        // This prevents a second incident from the same IP (arriving in the same 2s tick)
+        // from triggering a duplicate AI call. The actual blocklist persists separately;
+        // this is only a per-tick deduplication guard.
+        if let ai::AiAction::BlockIp { ip, .. } = &decision.action {
+            blocked_set.insert(ip.clone());
+        }
 
         info!(
             incident_id = %incident.incident_id,
@@ -595,7 +605,10 @@ async fn process_narrative_tick(
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     use tempfile::TempDir;
 
     // ------------------------------------------------------------------
@@ -612,6 +625,22 @@ mod tests {
             "mock"
         }
         async fn decide(&self, _ctx: &ai::DecisionContext<'_>) -> anyhow::Result<ai::AiDecision> {
+            Ok(self.decision.clone())
+        }
+    }
+
+    struct CountingMockAiProvider {
+        decision: ai::AiDecision,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl ai::AiProvider for CountingMockAiProvider {
+        fn name(&self) -> &'static str {
+            "mock-counting"
+        }
+        async fn decide(&self, _ctx: &ai::DecisionContext<'_>) -> anyhow::Result<ai::AiDecision> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.decision.clone())
         }
     }
@@ -790,5 +819,76 @@ mod tests {
         // The execution used the ufw fallback, not iptables.
         // The audit trail still records the IP the AI identified.
         assert!(content.contains(attacker_ip));
+    }
+
+    #[tokio::test]
+    async fn same_ip_in_same_tick_triggers_single_ai_call() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let attacker_ip = "9.8.7.6";
+        let incidents_path = dir.path().join(format!("incidents-{today}.jsonl"));
+        let mut f = std::fs::File::create(&incidents_path).unwrap();
+        writeln!(f, "{}", incident_line(attacker_ip)).unwrap();
+        writeln!(f, "{}", incident_line(attacker_ip)).unwrap();
+        drop(f);
+
+        let cfg = config::AgentConfig {
+            ai: config::AiConfig {
+                enabled: true,
+                confidence_threshold: 0.5,
+                context_events: 5,
+                ..config::AiConfig::default()
+            },
+            responder: config::ResponderConfig {
+                enabled: true,
+                dry_run: true,
+                block_backend: "ufw".to_string(),
+                allowed_skills: vec!["block-ip-ufw".to_string()],
+            },
+            ..config::AgentConfig::default()
+        };
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mock = Arc::new(CountingMockAiProvider {
+            decision: ai::AiDecision {
+                action: ai::AiAction::BlockIp {
+                    ip: attacker_ip.to_string(),
+                    skill_id: "block-ip-ufw".to_string(),
+                },
+                confidence: 0.95,
+                auto_execute: true,
+                reason: "duplicate IP in same tick".to_string(),
+                alternatives: vec![],
+                estimated_threat: "high".to_string(),
+            },
+            calls: calls.clone(),
+        });
+
+        let mut state = AgentState {
+            skill_registry: skills::SkillRegistry::default_builtin(),
+            blocklist: skills::Blocklist::default(),
+            ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
+            decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
+        };
+
+        let mut cursor = reader::AgentCursor::default();
+        let handled = process_incidents(dir.path(), &mut cursor, &cfg, &mut state).await;
+        assert_eq!(handled, 2, "both incidents should be accounted for");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "same IP in same tick must call AI only once"
+        );
+
+        if let Some(w) = &mut state.decision_writer {
+            w.flush();
+        }
+        let decisions_path = dir.path().join(format!("decisions-{today}.jsonl"));
+        let content = std::fs::read_to_string(&decisions_path).unwrap();
+        assert_eq!(content.lines().count(), 1, "only one decision should be recorded");
     }
 }
