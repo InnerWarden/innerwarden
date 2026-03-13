@@ -1,7 +1,9 @@
 mod ai;
 mod config;
+mod decisions;
 mod narrative;
 mod reader;
+mod skills;
 mod webhook;
 
 use std::path::{Path, PathBuf};
