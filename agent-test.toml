@@ -67,6 +67,7 @@ namespace_runner = "unshare"
 namespace_args = ["--fork", "--pid", "--mount-proc"]
 jail_runner = "bwrap"
 jail_args = []
+jail_profile = "standard"    # standard | strict
 allow_namespace_fallback = true
 
 [honeypot.external_handoff]
@@ -80,6 +81,10 @@ allowed_commands = ["/usr/local/bin/iw-handoff"]
 enforce_allowlist = false
 signature_enabled = false
 signature_key_env = "INNERWARDEN_HANDOFF_SIGNING_KEY"
+attestation_enabled = false
+attestation_key_env = "INNERWARDEN_HANDOFF_ATTESTATION_KEY"
+attestation_prefix = "IW_ATTEST"
+attestation_expected_receiver = ""
 
 [honeypot.redirect]
 enabled = false

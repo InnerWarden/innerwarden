@@ -389,6 +389,12 @@ pub struct HoneypotContainmentConfig {
     #[serde(default)]
     pub jail_args: Vec<String>,
 
+    /// Jail policy preset:
+    /// - `standard`: keep configured `jail_args` as-is
+    /// - `strict`: append a hardened baseline profile for bwrap-style runners
+    #[serde(default = "default_honeypot_jail_profile")]
+    pub jail_profile: String,
+
     /// If true, `jail` mode can gracefully fall back to `namespace` mode.
     #[serde(default = "default_true")]
     pub allow_namespace_fallback: bool,
@@ -403,6 +409,7 @@ impl Default for HoneypotContainmentConfig {
             namespace_args: default_honeypot_namespace_args(),
             jail_runner: default_honeypot_jail_runner(),
             jail_args: Vec::new(),
+            jail_profile: default_honeypot_jail_profile(),
             allow_namespace_fallback: true,
         }
     }
@@ -450,6 +457,22 @@ pub struct HoneypotExternalHandoffConfig {
     /// Environment variable name containing handoff signing key.
     #[serde(default = "default_honeypot_external_handoff_signature_key_env")]
     pub signature_key_env: String,
+
+    /// Enable receiver attestation checks on external handoff output.
+    #[serde(default)]
+    pub attestation_enabled: bool,
+
+    /// Environment variable name containing the shared attestation key.
+    #[serde(default = "default_honeypot_external_handoff_attestation_key_env")]
+    pub attestation_key_env: String,
+
+    /// Prefix used by receiver attestation lines on stdout/stderr.
+    #[serde(default = "default_honeypot_external_handoff_attestation_prefix")]
+    pub attestation_prefix: String,
+
+    /// Optional pinned receiver identifier required by attestation.
+    #[serde(default)]
+    pub attestation_expected_receiver: String,
 }
 
 impl Default for HoneypotExternalHandoffConfig {
@@ -465,6 +488,10 @@ impl Default for HoneypotExternalHandoffConfig {
             enforce_allowlist: false,
             signature_enabled: false,
             signature_key_env: default_honeypot_external_handoff_signature_key_env(),
+            attestation_enabled: false,
+            attestation_key_env: default_honeypot_external_handoff_attestation_key_env(),
+            attestation_prefix: default_honeypot_external_handoff_attestation_prefix(),
+            attestation_expected_receiver: String::new(),
         }
     }
 }
@@ -713,6 +740,18 @@ fn default_honeypot_jail_runner() -> String {
     "bwrap".to_string()
 }
 
+fn default_honeypot_jail_profile() -> String {
+    "standard".to_string()
+}
+
+fn default_honeypot_external_handoff_attestation_key_env() -> String {
+    "INNERWARDEN_HANDOFF_ATTESTATION_KEY".to_string()
+}
+
+fn default_honeypot_external_handoff_attestation_prefix() -> String {
+    "IW_ATTEST".to_string()
+}
+
 fn default_honeypot_redirect_backend() -> String {
     "iptables".to_string()
 }
@@ -774,6 +813,7 @@ mod tests {
         );
         assert_eq!(cfg.honeypot.containment.jail_runner, "bwrap");
         assert!(cfg.honeypot.containment.jail_args.is_empty());
+        assert_eq!(cfg.honeypot.containment.jail_profile, "standard");
         assert!(cfg.honeypot.containment.allow_namespace_fallback);
         assert!(!cfg.honeypot.external_handoff.enabled);
         assert!(cfg.honeypot.external_handoff.command.is_empty());
@@ -788,6 +828,20 @@ mod tests {
             cfg.honeypot.external_handoff.signature_key_env,
             "INNERWARDEN_HANDOFF_SIGNING_KEY"
         );
+        assert!(!cfg.honeypot.external_handoff.attestation_enabled);
+        assert_eq!(
+            cfg.honeypot.external_handoff.attestation_key_env,
+            "INNERWARDEN_HANDOFF_ATTESTATION_KEY"
+        );
+        assert_eq!(
+            cfg.honeypot.external_handoff.attestation_prefix,
+            "IW_ATTEST"
+        );
+        assert!(cfg
+            .honeypot
+            .external_handoff
+            .attestation_expected_receiver
+            .is_empty());
         assert!(!cfg.honeypot.redirect.enabled);
         assert_eq!(cfg.honeypot.redirect.backend, "iptables");
     }
@@ -851,6 +905,7 @@ namespace_runner = "/usr/bin/unshare"
 namespace_args = ["--fork", "--pid", "--mount-proc", "--net"]
 jail_runner = "/usr/bin/bwrap"
 jail_args = ["--die-with-parent", "--unshare-all"]
+jail_profile = "strict"
 allow_namespace_fallback = false
 
 [honeypot.external_handoff]
@@ -864,6 +919,10 @@ allowed_commands = ["/usr/local/bin/iw-handoff", "/usr/local/bin/iw-alt"]
 enforce_allowlist = true
 signature_enabled = true
 signature_key_env = "IW_HANDOFF_KEY"
+attestation_enabled = true
+attestation_key_env = "IW_HANDOFF_ATTEST_KEY"
+attestation_prefix = "IW_ATTEST"
+attestation_expected_receiver = "receiver-a"
 
 [honeypot.redirect]
 enabled = true
@@ -931,6 +990,7 @@ backend = "iptables"
             cfg.honeypot.containment.jail_args,
             vec!["--die-with-parent".to_string(), "--unshare-all".to_string()]
         );
+        assert_eq!(cfg.honeypot.containment.jail_profile, "strict");
         assert!(!cfg.honeypot.containment.allow_namespace_fallback);
         assert!(cfg.honeypot.external_handoff.enabled);
         assert_eq!(
@@ -965,6 +1025,19 @@ backend = "iptables"
         assert_eq!(
             cfg.honeypot.external_handoff.signature_key_env,
             "IW_HANDOFF_KEY"
+        );
+        assert!(cfg.honeypot.external_handoff.attestation_enabled);
+        assert_eq!(
+            cfg.honeypot.external_handoff.attestation_key_env,
+            "IW_HANDOFF_ATTEST_KEY"
+        );
+        assert_eq!(
+            cfg.honeypot.external_handoff.attestation_prefix,
+            "IW_ATTEST"
+        );
+        assert_eq!(
+            cfg.honeypot.external_handoff.attestation_expected_receiver,
+            "receiver-a"
         );
         assert!(cfg.honeypot.redirect.enabled);
         assert_eq!(cfg.honeypot.redirect.backend, "iptables");

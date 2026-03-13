@@ -50,6 +50,8 @@
       "effective_mode": "namespace",
       "check_passed": false,
       "fallback_reason": "jail runner 'bwrap' not found; falling back to namespace runner 'unshare'",
+      "jail_profile_requested": "strict",
+      "jail_profile_effective": "standard",
       "namespace_runner": "unshare",
       "jail_runner": "bwrap"
     }
@@ -77,6 +79,15 @@
     "allowlist_match": true,
     "signature_enabled": true,
     "signature_file": "honeypot/listener-session-20260313T162200Z-1.2.3.4.external-handoff.sig",
+    "attestation": {
+      "enabled": true,
+      "key_env": "INNERWARDEN_HANDOFF_ATTESTATION_KEY",
+      "prefix": "IW_ATTEST",
+      "expected_receiver": "receiver-a",
+      "challenge": "8aa2d012e2d8f0dca2132f4d3ae4a9f6",
+      "receiver_id": "receiver-a",
+      "matched": true
+    },
     "command": "/usr/local/bin/iw-handoff",
     "args": ["--session-id","20260313T162200Z-1.2.3.4"],
     "timeout_secs": 20,

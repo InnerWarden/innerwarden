@@ -147,9 +147,23 @@ struct ContainmentStatus {
     namespace_args: Vec<String>,
     jail_runner: String,
     jail_args: Vec<String>,
+    jail_profile_requested: String,
+    jail_profile_effective: String,
     allow_namespace_fallback: bool,
     check_passed: bool,
     fallback_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AttestationStatus {
+    enabled: bool,
+    key_env: Option<String>,
+    prefix: Option<String>,
+    expected_receiver: Option<String>,
+    challenge: Option<String>,
+    receiver_id: Option<String>,
+    matched: Option<bool>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -171,6 +185,7 @@ struct ExternalHandoffStatus {
     signature_payload_sha256: Option<String>,
     signature_file: Option<String>,
     signature_error: Option<String>,
+    attestation: AttestationStatus,
     success: bool,
     timed_out: bool,
     exit_code: Option<i32>,
@@ -178,6 +193,13 @@ struct ExternalHandoffStatus {
     stdout_preview: Option<String>,
     stderr_preview: Option<String>,
     result_file: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedAttestationLine {
+    receiver_id: String,
+    challenge: String,
+    hmac_hex: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -344,10 +366,12 @@ impl ResponseSkill for Honeypot {
                 return SkillResult {
                     success: true,
                     message: format!(
-                        "DRY RUN: would start honeypot listeners ({services}) for {}s targeting {target_ip}; profile={isolation_profile}; containment={}; external_handoff={}; {redirect_note}",
+                        "DRY RUN: would start honeypot listeners ({services}) for {}s targeting {target_ip}; profile={isolation_profile}; containment={}/{}; external_handoff={}; external_attestation={}; {redirect_note}",
                         ctx.honeypot.duration_secs,
                         ctx.honeypot.containment_mode,
+                        ctx.honeypot.containment_jail_profile,
                         ctx.honeypot.external_handoff_enabled,
+                        ctx.honeypot.external_handoff_attestation_enabled,
                     ),
                 };
             }
@@ -493,6 +517,7 @@ impl ResponseSkill for Honeypot {
                     "namespace_args": ctx.honeypot.containment_namespace_args,
                     "jail_runner": ctx.honeypot.containment_jail_runner,
                     "jail_args": ctx.honeypot.containment_jail_args,
+                    "jail_profile": ctx.honeypot.containment_jail_profile,
                     "allow_namespace_fallback": ctx.honeypot.containment_allow_namespace_fallback,
                 },
                 "pcap_handoff": {
@@ -511,6 +536,10 @@ impl ResponseSkill for Honeypot {
                     "enforce_allowlist": ctx.honeypot.external_handoff_enforce_allowlist,
                     "signature_enabled": ctx.honeypot.external_handoff_signature_enabled,
                     "signature_key_env": ctx.honeypot.external_handoff_signature_key_env,
+                    "attestation_enabled": ctx.honeypot.external_handoff_attestation_enabled,
+                    "attestation_key_env": ctx.honeypot.external_handoff_attestation_key_env,
+                    "attestation_prefix": ctx.honeypot.external_handoff_attestation_prefix,
+                    "attestation_expected_receiver": ctx.honeypot.external_handoff_attestation_expected_receiver,
                 },
                 "redirect": {
                     "enabled": ctx.honeypot.redirect_enabled,
@@ -572,6 +601,7 @@ impl ResponseSkill for Honeypot {
             let containment_namespace_args = ctx.honeypot.containment_namespace_args.clone();
             let containment_jail_runner = ctx.honeypot.containment_jail_runner.clone();
             let containment_jail_args = ctx.honeypot.containment_jail_args.clone();
+            let containment_jail_profile = ctx.honeypot.containment_jail_profile.clone();
             let containment_allow_namespace_fallback =
                 ctx.honeypot.containment_allow_namespace_fallback;
             let pcap_handoff_enabled = ctx.honeypot.pcap_handoff_enabled;
@@ -591,6 +621,16 @@ impl ResponseSkill for Honeypot {
                 ctx.honeypot.external_handoff_signature_enabled;
             let external_handoff_signature_key_env =
                 ctx.honeypot.external_handoff_signature_key_env.clone();
+            let external_handoff_attestation_enabled =
+                ctx.honeypot.external_handoff_attestation_enabled;
+            let external_handoff_attestation_key_env =
+                ctx.honeypot.external_handoff_attestation_key_env.clone();
+            let external_handoff_attestation_prefix =
+                ctx.honeypot.external_handoff_attestation_prefix.clone();
+            let external_handoff_attestation_expected_receiver = ctx
+                .honeypot
+                .external_handoff_attestation_expected_receiver
+                .clone();
             tokio::spawn(async move {
                 let _session_lock = session_lock;
                 let mut sandbox_error = None::<String>;
@@ -611,6 +651,7 @@ impl ResponseSkill for Honeypot {
                         &containment_namespace_args,
                         &containment_jail_runner,
                         &containment_jail_args,
+                        &containment_jail_profile,
                         containment_allow_namespace_fallback,
                     )
                     .await
@@ -634,6 +675,7 @@ impl ResponseSkill for Honeypot {
                                 "used": true,
                                 "clear_env": sandbox_clear_env,
                                 "containment_mode": containment_mode,
+                                "containment_jail_profile": containment_jail_profile,
                                 "error": e,
                             });
                             vec![]
@@ -694,6 +736,10 @@ impl ResponseSkill for Honeypot {
                         external_handoff_enforce_allowlist,
                         external_handoff_signature_enabled,
                         &external_handoff_signature_key_env,
+                        external_handoff_attestation_enabled,
+                        &external_handoff_attestation_key_env,
+                        &external_handoff_attestation_prefix,
+                        &external_handoff_attestation_expected_receiver,
                     )
                     .await
                 } else {
@@ -719,6 +765,31 @@ impl ResponseSkill for Honeypot {
                         signature_payload_sha256: None,
                         signature_file: None,
                         signature_error: None,
+                        attestation: AttestationStatus {
+                            enabled: external_handoff_attestation_enabled,
+                            key_env: if external_handoff_attestation_key_env.trim().is_empty() {
+                                None
+                            } else {
+                                Some(external_handoff_attestation_key_env.clone())
+                            },
+                            prefix: if external_handoff_attestation_prefix.trim().is_empty() {
+                                None
+                            } else {
+                                Some(external_handoff_attestation_prefix.clone())
+                            },
+                            expected_receiver: if external_handoff_attestation_expected_receiver
+                                .trim()
+                                .is_empty()
+                            {
+                                None
+                            } else {
+                                Some(external_handoff_attestation_expected_receiver.clone())
+                            },
+                            challenge: None,
+                            receiver_id: None,
+                            matched: None,
+                            error: None,
+                        },
                         success: false,
                         timed_out: false,
                         exit_code: None,
@@ -797,14 +868,16 @@ impl ResponseSkill for Honeypot {
             SkillResult {
                 success: true,
                 message: format!(
-                    "Honeypot listeners started (session {session_id}, profile {isolation_profile}, pruned age={} size={}, cap={}MB, sandbox={}, containment={}, pcap_handoff={}, external_handoff={}). metadata: {} evidence: {}{}",
+                    "Honeypot listeners started (session {session_id}, profile {isolation_profile}, pruned age={} size={}, cap={}MB, sandbox={}, containment={}/{}, pcap_handoff={}, external_handoff={}, external_attestation={}). metadata: {} evidence: {}{}",
                     cleanup_stats.removed_by_age,
                     cleanup_stats.removed_by_size,
                     ctx.honeypot.forensics_max_total_mb,
                     ctx.honeypot.sandbox_enabled,
                     ctx.honeypot.containment_mode,
+                    ctx.honeypot.containment_jail_profile,
                     ctx.honeypot.pcap_handoff_enabled,
                     ctx.honeypot.external_handoff_enabled,
+                    ctx.honeypot.external_handoff_attestation_enabled,
                     metadata_path.display(),
                     evidence_path.display(),
                     warning_suffix
@@ -941,6 +1014,7 @@ async fn run_sandbox_session(
     containment_namespace_args: &[String],
     containment_jail_runner: &str,
     containment_jail_args: &[String],
+    containment_jail_profile: &str,
     containment_allow_namespace_fallback: bool,
 ) -> Result<SandboxRunOutcome, String> {
     let runner = if runner_path.trim().is_empty() {
@@ -972,7 +1046,28 @@ async fn run_sandbox_session(
     } else {
         containment_jail_runner.trim().to_string()
     };
-    let jail_args = containment_jail_args.to_vec();
+    let requested_jail_profile = normalize_jail_profile(containment_jail_profile).to_string();
+    let mut effective_jail_profile = requested_jail_profile.clone();
+    let mut jail_args = containment_jail_args.to_vec();
+    if requested_mode == "jail" && requested_jail_profile == "strict" {
+        if is_bwrap_runner(&jail_runner) {
+            append_unique_args(&mut jail_args, &strict_jail_profile_args());
+        } else if containment_require_success {
+            return Err(format!(
+                "sandbox containment strict jail profile requires bwrap-compatible runner, got '{}'",
+                jail_runner
+            ));
+        } else {
+            effective_jail_profile = "standard".to_string();
+            push_fallback_reason(
+                &mut fallback_reason,
+                format!(
+                    "strict jail profile requested but runner '{}' is not bwrap-compatible; using standard profile",
+                    jail_runner
+                ),
+            );
+        }
+    }
     let spec_path = session_dir.join(format!(
         "listener-session-{}.sandbox-spec.json",
         runtime.session_id
@@ -1009,10 +1104,13 @@ async fn run_sandbox_session(
             build_jail_command(&jail_runner, &jail_args, &runner)
         } else if containment_allow_namespace_fallback && binary_exists(&namespace_runner) {
             effective_mode = "namespace".to_string();
-            fallback_reason = Some(format!(
-                "jail runner '{}' not found; falling back to namespace runner '{}'",
-                jail_runner, namespace_runner
-            ));
+            push_fallback_reason(
+                &mut fallback_reason,
+                format!(
+                    "jail runner '{}' not found; falling back to namespace runner '{}'",
+                    jail_runner, namespace_runner
+                ),
+            );
             build_namespace_command(&namespace_runner, &namespace_args, &runner)
         } else if containment_require_success {
             let _ = tokio::fs::remove_file(&spec_path).await;
@@ -1022,10 +1120,13 @@ async fn run_sandbox_session(
             ));
         } else {
             effective_mode = "process".to_string();
-            fallback_reason = Some(format!(
-                "jail runner '{}' not found; falling back to process mode",
-                jail_runner
-            ));
+            push_fallback_reason(
+                &mut fallback_reason,
+                format!(
+                    "jail runner '{}' not found; falling back to process mode",
+                    jail_runner
+                ),
+            );
             Command::new(&runner)
         }
     } else if requested_mode == "namespace" {
@@ -1039,10 +1140,13 @@ async fn run_sandbox_session(
             ));
         } else {
             effective_mode = "process".to_string();
-            fallback_reason = Some(format!(
-                "namespace runner '{}' not found; falling back to process mode",
-                namespace_runner
-            ));
+            push_fallback_reason(
+                &mut fallback_reason,
+                format!(
+                    "namespace runner '{}' not found; falling back to process mode",
+                    namespace_runner
+                ),
+            );
             Command::new(&runner)
         }
     } else {
@@ -1128,8 +1232,11 @@ async fn run_sandbox_session(
             namespace_args,
             jail_runner,
             jail_args,
+            jail_profile_requested: requested_jail_profile.clone(),
+            jail_profile_effective: effective_jail_profile.clone(),
             allow_namespace_fallback: containment_allow_namespace_fallback,
-            check_passed: requested_mode == effective_mode,
+            check_passed: requested_mode == effective_mode
+                && requested_jail_profile == effective_jail_profile,
             fallback_reason,
         },
     })
@@ -1274,11 +1381,22 @@ async fn run_external_handoff(
     enforce_allowlist: bool,
     signature_enabled: bool,
     signature_key_env: &str,
+    attestation_enabled: bool,
+    attestation_key_env: &str,
+    attestation_prefix: &str,
+    attestation_expected_receiver: &str,
 ) -> ExternalHandoffStatus {
     let result_path = session_dir.join(format!(
         "listener-session-{}.external-handoff.json",
         runtime.session_id
     ));
+    let attestation_key_env_name = normalize_attestation_key_env(attestation_key_env);
+    let attestation_prefix_value = normalize_attestation_prefix(attestation_prefix);
+    let attestation_expected_receiver_value = if attestation_expected_receiver.trim().is_empty() {
+        None
+    } else {
+        Some(attestation_expected_receiver.trim().to_string())
+    };
     let mut status = ExternalHandoffStatus {
         enabled: true,
         attempted: false,
@@ -1301,6 +1419,24 @@ async fn run_external_handoff(
         signature_payload_sha256: None,
         signature_file: None,
         signature_error: None,
+        attestation: AttestationStatus {
+            enabled: attestation_enabled,
+            key_env: if attestation_enabled {
+                Some(attestation_key_env_name.clone())
+            } else {
+                None
+            },
+            prefix: if attestation_enabled {
+                Some(attestation_prefix_value.clone())
+            } else {
+                None
+            },
+            expected_receiver: attestation_expected_receiver_value.clone(),
+            challenge: None,
+            receiver_id: None,
+            matched: None,
+            error: None,
+        },
         success: false,
         timed_out: false,
         exit_code: None,
@@ -1364,25 +1500,75 @@ async fn run_external_handoff(
         .collect::<Vec<_>>();
     status.args = expanded_args.clone();
 
+    let mut attestation_key = None::<String>;
+    if attestation_enabled {
+        match std::env::var(&attestation_key_env_name) {
+            Ok(value) if !value.trim().is_empty() => {
+                attestation_key = Some(value);
+            }
+            Ok(_) => {
+                status.attestation.error = Some(format!(
+                    "attestation key env var '{}' is empty",
+                    attestation_key_env_name
+                ));
+                status.error = Some("external handoff attestation key is empty".to_string());
+                let _ = write_json_file(
+                    &result_path,
+                    &serde_json::to_value(&status).unwrap_or_default(),
+                )
+                .await;
+                return status;
+            }
+            Err(_) => {
+                status.attestation.error = Some(format!(
+                    "missing attestation key in env var '{}'",
+                    attestation_key_env_name
+                ));
+                status.error = Some("external handoff attestation key is missing".to_string());
+                let _ = write_json_file(
+                    &result_path,
+                    &serde_json::to_value(&status).unwrap_or_default(),
+                )
+                .await;
+                return status;
+            }
+        }
+        status.attestation.challenge = Some(build_attestation_challenge(runtime));
+    }
+
     let mut cmd = Command::new(command);
     cmd.args(&expanded_args);
     if clear_env {
         cmd.env_clear();
         cmd.env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
     }
+    if attestation_enabled {
+        if let Some(challenge) = status.attestation.challenge.as_deref() {
+            cmd.env("INNERWARDEN_HANDOFF_ATTEST_CHALLENGE", challenge);
+            cmd.env(
+                "INNERWARDEN_HANDOFF_ATTEST_PREFIX",
+                &attestation_prefix_value,
+            );
+        }
+        if let Some(key) = attestation_key.as_deref() {
+            cmd.env(&attestation_key_env_name, key);
+        }
+    }
 
+    let mut stdout_raw = String::new();
+    let mut stderr_raw = String::new();
     let waited = tokio::time::timeout(Duration::from_secs(timeout_secs), cmd.output()).await;
     match waited {
         Ok(Ok(out)) => {
             status.exit_code = out.status.code();
             status.command_success = Some(out.status.success());
-            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            if !stdout.is_empty() {
-                status.stdout_preview = Some(truncate_preview(&stdout, 512));
+            stdout_raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            stderr_raw = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            if !stdout_raw.is_empty() {
+                status.stdout_preview = Some(truncate_preview(&stdout_raw, 512));
             }
-            if !stderr.is_empty() {
-                status.stderr_preview = Some(truncate_preview(&stderr, 512));
+            if !stderr_raw.is_empty() {
+                status.stderr_preview = Some(truncate_preview(&stderr_raw, 512));
             }
             if !out.status.success() {
                 status.error = Some(format!(
@@ -1435,7 +1621,35 @@ async fn run_external_handoff(
             }
         }
     }
-    status.trusted = allowlist_ok && signature_ok;
+    let mut attestation_ok = !attestation_enabled;
+    if attestation_enabled {
+        let challenge = status.attestation.challenge.clone().unwrap_or_default();
+        let key = attestation_key.unwrap_or_default();
+        match verify_attestation_output(
+            &stdout_raw,
+            &stderr_raw,
+            &attestation_prefix_value,
+            attestation_expected_receiver_value.as_deref(),
+            &challenge,
+            &key,
+            runtime,
+        ) {
+            Ok(parsed) => {
+                status.attestation.receiver_id = Some(parsed.receiver_id);
+                status.attestation.matched = Some(true);
+                attestation_ok = true;
+            }
+            Err(e) => {
+                status.attestation.matched = Some(false);
+                status.attestation.error = Some(e.clone());
+                attestation_ok = false;
+                if status.error.is_none() {
+                    status.error = Some(format!("external handoff attestation failed: {e}"));
+                }
+            }
+        }
+    }
+    status.trusted = allowlist_ok && signature_ok && attestation_ok;
     status.success = status.command_success.unwrap_or(false) && status.trusted;
     if !status.success && status.error.is_none() {
         status.error = Some("external handoff failed trust checks".to_string());
@@ -1474,8 +1688,6 @@ async fn sign_external_handoff(
     status: &ExternalHandoffStatus,
     signature_key_env: &str,
 ) -> Result<(String, String, String), String> {
-    type HmacSha256 = Hmac<Sha256>;
-
     let key_env = if signature_key_env.trim().is_empty() {
         "INNERWARDEN_HANDOFF_SIGNING_KEY"
     } else {
@@ -1504,11 +1716,8 @@ async fn sign_external_handoff(
     let payload_bytes =
         serde_json::to_vec(&payload).map_err(|e| format!("failed to serialize payload: {e}"))?;
     let payload_sha256 = sha256_hex(&payload_bytes);
-
-    let mut mac = HmacSha256::new_from_slice(signing_key.as_bytes())
+    let signature = hmac_sha256_hex(signing_key.as_bytes(), &payload_bytes)
         .map_err(|e| format!("failed to initialize HMAC signer: {e}"))?;
-    mac.update(&payload_bytes);
-    let signature = bytes_to_hex(&mac.finalize().into_bytes());
 
     let signature_path = session_dir.join(format!(
         "listener-session-{}.external-handoff.sig",
@@ -1535,6 +1744,101 @@ async fn sign_external_handoff(
         payload_sha256,
         signature_path.display().to_string(),
     ))
+}
+
+fn normalize_attestation_key_env(value: &str) -> String {
+    if value.trim().is_empty() {
+        "INNERWARDEN_HANDOFF_ATTESTATION_KEY".to_string()
+    } else {
+        value.trim().to_string()
+    }
+}
+
+fn normalize_attestation_prefix(value: &str) -> String {
+    if value.trim().is_empty() {
+        "IW_ATTEST".to_string()
+    } else {
+        value.trim().to_string()
+    }
+}
+
+fn build_attestation_challenge(runtime: &SessionRuntime) -> String {
+    let seed = format!(
+        "{}:{}:{}:{}",
+        runtime.session_id,
+        runtime.target_ip,
+        Utc::now().to_rfc3339(),
+        std::process::id()
+    );
+    sha256_hex(seed.as_bytes())
+}
+
+fn parse_attestation_line(line: &str, prefix: &str) -> Option<ParsedAttestationLine> {
+    let needle = format!("{prefix}:");
+    let body = line.trim().strip_prefix(&needle)?;
+    let mut parts = body.splitn(3, ':');
+    let receiver_id = parts.next()?.trim();
+    let challenge = parts.next()?.trim();
+    let hmac_hex = parts.next()?.trim();
+    if receiver_id.is_empty() || challenge.is_empty() || hmac_hex.is_empty() {
+        return None;
+    }
+    Some(ParsedAttestationLine {
+        receiver_id: receiver_id.to_string(),
+        challenge: challenge.to_string(),
+        hmac_hex: hmac_hex.to_string(),
+    })
+}
+
+fn verify_attestation_output(
+    stdout: &str,
+    stderr: &str,
+    prefix: &str,
+    expected_receiver: Option<&str>,
+    challenge: &str,
+    key: &str,
+    runtime: &SessionRuntime,
+) -> Result<ParsedAttestationLine, String> {
+    let parsed = stdout
+        .lines()
+        .find_map(|line| parse_attestation_line(line, prefix))
+        .or_else(|| {
+            stderr
+                .lines()
+                .find_map(|line| parse_attestation_line(line, prefix))
+        })
+        .ok_or_else(|| format!("missing attestation line (expected prefix '{prefix}:')"))?;
+
+    if parsed.challenge != challenge {
+        return Err("attestation challenge mismatch".to_string());
+    }
+    if let Some(expected) = expected_receiver {
+        if !expected.trim().is_empty() && parsed.receiver_id != expected.trim() {
+            return Err(format!(
+                "attestation receiver mismatch: expected '{}' got '{}'",
+                expected.trim(),
+                parsed.receiver_id
+            ));
+        }
+    }
+
+    let payload = format!(
+        "{}:{}:{}:{}",
+        parsed.receiver_id, challenge, runtime.session_id, runtime.target_ip
+    );
+    let expected_hmac = hmac_sha256_hex(key.as_bytes(), payload.as_bytes())
+        .map_err(|e| format!("attestation HMAC init failed: {e}"))?;
+    if expected_hmac != parsed.hmac_hex {
+        return Err("attestation HMAC mismatch".to_string());
+    }
+    Ok(parsed)
+}
+
+fn hmac_sha256_hex(key: &[u8], payload: &[u8]) -> Result<String, hmac::digest::InvalidLength> {
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = HmacSha256::new_from_slice(key)?;
+    mac.update(payload);
+    Ok(bytes_to_hex(&mac.finalize().into_bytes()))
 }
 
 fn is_command_allowed(command: &str, allowed_commands: &[String]) -> bool {
@@ -1860,6 +2164,52 @@ fn normalize_containment_mode(mode: &str) -> &'static str {
         "jail"
     } else {
         "process"
+    }
+}
+
+fn normalize_jail_profile(profile: &str) -> &'static str {
+    if profile.eq_ignore_ascii_case("strict") {
+        "strict"
+    } else {
+        "standard"
+    }
+}
+
+fn strict_jail_profile_args() -> Vec<String> {
+    vec![
+        "--die-with-parent".to_string(),
+        "--new-session".to_string(),
+        "--unshare-user".to_string(),
+        "--unshare-pid".to_string(),
+        "--unshare-uts".to_string(),
+        "--unshare-ipc".to_string(),
+    ]
+}
+
+fn is_bwrap_runner(runner: &str) -> bool {
+    let runner_name = Path::new(runner)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    runner_name == "bwrap" || runner_name == "bubblewrap"
+}
+
+fn append_unique_args(target: &mut Vec<String>, extras: &[String]) {
+    for arg in extras {
+        if !target.iter().any(|existing| existing == arg) {
+            target.push(arg.clone());
+        }
+    }
+}
+
+fn push_fallback_reason(fallback_reason: &mut Option<String>, new_reason: String) {
+    match fallback_reason {
+        Some(prev) => {
+            prev.push_str("; ");
+            prev.push_str(&new_reason);
+        }
+        None => *fallback_reason = Some(new_reason),
     }
 }
 
@@ -2312,6 +2662,7 @@ mod tests {
                 ],
                 containment_jail_runner: "bwrap".to_string(),
                 containment_jail_args: vec![],
+                containment_jail_profile: "standard".to_string(),
                 containment_allow_namespace_fallback: true,
                 external_handoff_enabled: false,
                 external_handoff_command: String::new(),
@@ -2323,6 +2674,11 @@ mod tests {
                 external_handoff_enforce_allowlist: false,
                 external_handoff_signature_enabled: false,
                 external_handoff_signature_key_env: "INNERWARDEN_HANDOFF_SIGNING_KEY".to_string(),
+                external_handoff_attestation_enabled: false,
+                external_handoff_attestation_key_env: "INNERWARDEN_HANDOFF_ATTESTATION_KEY"
+                    .to_string(),
+                external_handoff_attestation_prefix: "IW_ATTEST".to_string(),
+                external_handoff_attestation_expected_receiver: String::new(),
                 redirect_enabled: false,
                 redirect_backend: "iptables".to_string(),
             },
@@ -2451,6 +2807,22 @@ mod tests {
     }
 
     #[test]
+    fn jail_profile_normalization_is_stable() {
+        assert_eq!(normalize_jail_profile("strict"), "strict");
+        assert_eq!(normalize_jail_profile("STRICT"), "strict");
+        assert_eq!(normalize_jail_profile("standard"), "standard");
+        assert_eq!(normalize_jail_profile("unknown"), "standard");
+    }
+
+    #[test]
+    fn strict_jail_profile_args_are_present() {
+        let args = strict_jail_profile_args();
+        assert!(args.contains(&"--die-with-parent".to_string()));
+        assert!(args.contains(&"--new-session".to_string()));
+        assert!(args.contains(&"--unshare-user".to_string()));
+    }
+
+    #[test]
     fn handoff_placeholder_expansion_works() {
         let metadata = PathBuf::from("/tmp/meta.json");
         let evidence = PathBuf::from("/tmp/evidence.jsonl");
@@ -2483,6 +2855,61 @@ mod tests {
             "/usr/local/bin/iw-handoff",
             &["other-cmd".to_string()]
         ));
+    }
+
+    #[test]
+    fn attestation_line_parsing_works() {
+        let line = "IW_ATTEST:receiver-a:challenge-1:abc123";
+        let parsed = parse_attestation_line(line, "IW_ATTEST").expect("attestation should parse");
+        assert_eq!(parsed.receiver_id, "receiver-a");
+        assert_eq!(parsed.challenge, "challenge-1");
+        assert_eq!(parsed.hmac_hex, "abc123");
+    }
+
+    #[test]
+    fn attestation_verification_checks_hmac_and_receiver() {
+        let runtime = SessionRuntime {
+            session_id: "s1".to_string(),
+            target_ip: "1.2.3.4".parse().unwrap(),
+            strict_target_only: true,
+            duration_secs: 30,
+            max_connections: 8,
+            max_payload_bytes: 128,
+            transcript_preview_bytes: 64,
+            isolation_profile: "strict_local".to_string(),
+            evidence_path: PathBuf::from("/tmp/evidence.jsonl"),
+        };
+        let challenge = "challenge-1";
+        let receiver = "receiver-a";
+        let payload = format!(
+            "{}:{}:{}:{}",
+            receiver, challenge, runtime.session_id, runtime.target_ip
+        );
+        let hmac = hmac_sha256_hex(b"attest-key", payload.as_bytes()).unwrap();
+        let stdout = format!("IW_ATTEST:{receiver}:{challenge}:{hmac}");
+        let parsed = verify_attestation_output(
+            &stdout,
+            "",
+            "IW_ATTEST",
+            Some("receiver-a"),
+            challenge,
+            "attest-key",
+            &runtime,
+        )
+        .expect("attestation should validate");
+        assert_eq!(parsed.receiver_id, "receiver-a");
+
+        let err = verify_attestation_output(
+            &stdout,
+            "",
+            "IW_ATTEST",
+            Some("receiver-b"),
+            challenge,
+            "attest-key",
+            &runtime,
+        )
+        .unwrap_err();
+        assert!(err.contains("receiver mismatch"));
     }
 
     #[test]

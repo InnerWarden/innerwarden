@@ -97,6 +97,8 @@ pub struct HoneypotRuntimeConfig {
     pub containment_jail_runner: String,
     /// Arguments passed to jail wrapper before the agent runner.
     pub containment_jail_args: Vec<String>,
+    /// Jail profile preset (`standard` | `strict`).
+    pub containment_jail_profile: String,
     /// Allow fallback from `jail` to `namespace` when jail runner is unavailable.
     pub containment_allow_namespace_fallback: bool,
     /// Execute optional external handoff command after session completion.
@@ -119,6 +121,14 @@ pub struct HoneypotRuntimeConfig {
     pub external_handoff_signature_enabled: bool,
     /// Env var name containing signing key.
     pub external_handoff_signature_key_env: String,
+    /// Validate receiver attestation output from handoff command.
+    pub external_handoff_attestation_enabled: bool,
+    /// Env var name containing attestation key.
+    pub external_handoff_attestation_key_env: String,
+    /// Prefix used in attestation output lines.
+    pub external_handoff_attestation_prefix: String,
+    /// Optional pinned receiver identifier for attestation.
+    pub external_handoff_attestation_expected_receiver: String,
     /// Optional selective redirection.
     pub redirect_enabled: bool,
     /// Redirect backend identifier.
@@ -160,6 +170,7 @@ impl Default for HoneypotRuntimeConfig {
             ],
             containment_jail_runner: "bwrap".to_string(),
             containment_jail_args: vec![],
+            containment_jail_profile: "standard".to_string(),
             containment_allow_namespace_fallback: true,
             external_handoff_enabled: false,
             external_handoff_command: String::new(),
@@ -171,6 +182,10 @@ impl Default for HoneypotRuntimeConfig {
             external_handoff_enforce_allowlist: false,
             external_handoff_signature_enabled: false,
             external_handoff_signature_key_env: "INNERWARDEN_HANDOFF_SIGNING_KEY".to_string(),
+            external_handoff_attestation_enabled: false,
+            external_handoff_attestation_key_env: "INNERWARDEN_HANDOFF_ATTESTATION_KEY".to_string(),
+            external_handoff_attestation_prefix: "IW_ATTEST".to_string(),
+            external_handoff_attestation_expected_receiver: String::new(),
             redirect_enabled: false,
             redirect_backend: "iptables".to_string(),
         }

@@ -34,7 +34,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ **Sistema de skills plugável** (open-core: tiers Open e Premium)
 - ✅ Skills built-in: `block-ip-ufw`, `block-ip-iptables`, `block-ip-nftables`
 - ✅ Skill premium real: `monitor-ip` (captura de tráfego limitada em `.pcap` + metadata)
-- ✅ Skill premium `honeypot` com hardening 8.6: containment avançado (`process|namespace|jail`) com fallback controlado + handoff externo confiável (allowlist + assinatura HMAC)
+- ✅ Skill premium `honeypot` com hardening 8.7: perfis de jail (`standard|strict`) + handoff externo attested (receiver challenge/HMAC + pin opcional de `receiver_id`)
 - ✅ Dry-run por padrão (seguro para produção até o usuário habilitar)
 - ✅ Blocklist em memória (evita bloquear o mesmo IP duas vezes)
 - ✅ **Audit trail** append-only: `decisions-YYYY-MM-DD.jsonl`
@@ -226,7 +226,7 @@ crates/
           block_ip_iptables.rs — Open ✅
           block_ip_nftables.rs — Open ✅
           monitor_ip.rs      — Premium ✅ (captura limitada via tcpdump + sidecar metadata)
-          honeypot.rs        — Premium ✅ (hardening 8.6: jail runtime + handoff externo confiável assinado)
+          honeypot.rs        — Premium ✅ (hardening 8.7: jail profile presets + receiver attestation no handoff externo)
 examples/
   systemd/innerwarden-sensor.service
 scripts/
@@ -240,7 +240,7 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 101 testes (40 sensor + 61 agent)
+make test             # 105 testes (40 sensor + 65 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -403,6 +403,7 @@ namespace_runner = "unshare"
 namespace_args = ["--fork", "--pid", "--mount-proc"]
 jail_runner = "bwrap"
 jail_args = []
+jail_profile = "standard"    # standard | strict
 allow_namespace_fallback = true
 
 [honeypot.external_handoff]
@@ -416,6 +417,10 @@ allowed_commands = ["/usr/local/bin/iw-handoff"]
 enforce_allowlist = false
 signature_enabled = false
 signature_key_env = "INNERWARDEN_HANDOFF_SIGNING_KEY"
+attestation_enabled = false
+attestation_key_env = "INNERWARDEN_HANDOFF_ATTESTATION_KEY"
+attestation_prefix = "IW_ATTEST"
+attestation_expected_receiver = ""
 
 [honeypot.redirect]
 enabled = false
@@ -442,7 +447,7 @@ Open   │ block-ip-ufw        │ ✅ executável
 Open   │ block-ip-iptables   │ ✅ executável
 Open   │ block-ip-nftables   │ ✅ executável
 Premium│ monitor-ip          │ ✅ executável — captura limitada (`tcpdump`) + metadata
-Premium│ honeypot            │ ✅ hardening 8.6 (containment `process|namespace|jail` + handoff confiável allowlist+assinatura)
+Premium│ honeypot            │ ✅ hardening 8.7 (containment `process|namespace|jail` + jail_profile + handoff externo attested)
 ```
 
 Para adicionar uma skill da comunidade:
@@ -533,7 +538,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 101 testes (40 sensor + 61 agent) — todos devem passar
+make test   # 105 testes (40 sensor + 65 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -619,6 +624,7 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase 8.4 (concluída): sandbox runtime dedicado + handoff forense opcional + retenção por budget total
 - Fase 8.5 (concluída): containment avançado (`process|namespace`) + handoff forense externo controlado + checks de lifecycle
 - Fase 8.6 (concluída): isolamento avançado em runtime dedicado (`namespace|jail`) + handoff externo confiável assinado
-- Fase 8.7 (planejada): perfis de jail mais restritivos + receiver attestation no handoff externo
+- Fase 8.7 (concluída): perfis de jail mais restritivos + receiver attestation no handoff externo
+- Honeypot roadmap (pausado): sem fase 8.8 ativa; evolução segue em maintenance mode até novo objetivo explícito
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
-- Referência do roadmap: `docs/development-plan.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md`, `docs/phase-8-honeypot-real-rebuild.md`, `docs/phase-8-honeypot-hardening.md`, `docs/phase-8-honeypot-sandbox-runtime.md`, `docs/phase-8-honeypot-advanced-containment.md` e `docs/phase-8-honeypot-runtime-jail-trusted-handoff.md`
+- Referência do roadmap: `docs/development-plan.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md`, `docs/phase-8-honeypot-real-rebuild.md`, `docs/phase-8-honeypot-hardening.md`, `docs/phase-8-honeypot-sandbox-runtime.md`, `docs/phase-8-honeypot-advanced-containment.md`, `docs/phase-8-honeypot-runtime-jail-trusted-handoff.md` e `docs/phase-8-honeypot-runtime-profile-attested-handoff.md`

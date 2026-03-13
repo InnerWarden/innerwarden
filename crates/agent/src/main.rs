@@ -151,9 +151,11 @@ async fn main() -> Result<()> {
         honeypot_sandbox = cfg.honeypot.sandbox.enabled,
         honeypot_containment_mode = %cfg.honeypot.containment.mode,
         honeypot_containment_jail_runner = %cfg.honeypot.containment.jail_runner,
+        honeypot_containment_jail_profile = %cfg.honeypot.containment.jail_profile,
         honeypot_external_handoff = cfg.honeypot.external_handoff.enabled,
         honeypot_external_handoff_allowlist = cfg.honeypot.external_handoff.enforce_allowlist,
         honeypot_external_handoff_signature = cfg.honeypot.external_handoff.signature_enabled,
+        honeypot_external_handoff_attestation = cfg.honeypot.external_handoff.attestation_enabled,
         honeypot_pcap_handoff = cfg.honeypot.pcap_handoff.enabled,
         honeypot_redirect = cfg.honeypot.redirect.enabled,
         responder = cfg.responder.enabled,
@@ -774,6 +776,7 @@ fn honeypot_runtime(cfg: &config::AgentConfig) -> skills::HoneypotRuntimeConfig 
         containment_namespace_args: cfg.honeypot.containment.namespace_args.clone(),
         containment_jail_runner: cfg.honeypot.containment.jail_runner.clone(),
         containment_jail_args: cfg.honeypot.containment.jail_args.clone(),
+        containment_jail_profile: cfg.honeypot.containment.jail_profile.clone(),
         containment_allow_namespace_fallback: cfg.honeypot.containment.allow_namespace_fallback,
         external_handoff_enabled: cfg.honeypot.external_handoff.enabled,
         external_handoff_command: cfg.honeypot.external_handoff.command.clone(),
@@ -785,6 +788,22 @@ fn honeypot_runtime(cfg: &config::AgentConfig) -> skills::HoneypotRuntimeConfig 
         external_handoff_enforce_allowlist: cfg.honeypot.external_handoff.enforce_allowlist,
         external_handoff_signature_enabled: cfg.honeypot.external_handoff.signature_enabled,
         external_handoff_signature_key_env: cfg.honeypot.external_handoff.signature_key_env.clone(),
+        external_handoff_attestation_enabled: cfg.honeypot.external_handoff.attestation_enabled,
+        external_handoff_attestation_key_env: cfg
+            .honeypot
+            .external_handoff
+            .attestation_key_env
+            .clone(),
+        external_handoff_attestation_prefix: cfg
+            .honeypot
+            .external_handoff
+            .attestation_prefix
+            .clone(),
+        external_handoff_attestation_expected_receiver: cfg
+            .honeypot
+            .external_handoff
+            .attestation_expected_receiver
+            .clone(),
         redirect_enabled: cfg.honeypot.redirect.enabled,
         redirect_backend: cfg.honeypot.redirect.backend.clone(),
     }
@@ -874,9 +893,11 @@ async fn append_honeypot_marker_event(
             "listener_sandbox_enabled": runtime.sandbox_enabled,
             "listener_containment_mode": runtime.containment_mode,
             "listener_containment_jail_runner": runtime.containment_jail_runner,
+            "listener_containment_jail_profile": runtime.containment_jail_profile,
             "listener_external_handoff_enabled": runtime.external_handoff_enabled,
             "listener_external_handoff_allowlist": runtime.external_handoff_enforce_allowlist,
             "listener_external_handoff_signature": runtime.external_handoff_signature_enabled,
+            "listener_external_handoff_attestation": runtime.external_handoff_attestation_enabled,
             "listener_pcap_handoff_enabled": runtime.pcap_handoff_enabled,
             "listener_redirect_enabled": runtime.redirect_enabled,
             "listener_redirect_backend": runtime.redirect_backend,
