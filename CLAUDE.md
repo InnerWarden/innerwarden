@@ -45,11 +45,12 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ `reqwest::Client` reutilizado entre chamadas AI (connection pool real, sem overhead de TLS por chamada)
 - ✅ Audit trail com flush imediato por decisão — sobrevive a crash entre execução e shutdown
 - ✅ Modo `--once` para processamento batch
-- ✅ Modo `--report` v2: gera relatório operacional do trial com deltas dia-a-dia + anomaly hints (`trial-report-YYYY-MM-DD.{md,json}`) sem alterar estado
+- ✅ Modo `--report` v2: gera relatório operacional do trial com deltas dia-a-dia + anomaly hints + seção de telemetria (`trial-report-YYYY-MM-DD.{md,json}`) sem alterar estado
 - ✅ Carregamento automático de `.env` na inicialização (dotenvy, fail-silent)
 - ✅ Replay QA harness end-to-end (`make replay-qa`) com assertions estáveis de artefatos
 - ✅ Playbook de rollout hardening + smoke checks remotos (`make rollout-precheck/postcheck`)
 - ✅ Correlação temporal leve de incidentes por janela + pivôs (`ip`, `user`, `detector`) com contexto para AI e clusters narráveis
+- ✅ Telemetria operacional leve (JSONL) com métricas de ingestão, detectores, gate, AI, latência, erros e dry-run vs execução real
 
 ---
 
@@ -167,6 +168,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 | `events-YYYY-MM-DD.jsonl` | sensor | Um evento por linha (SSH, Docker, integrity, journald) |
 | `incidents-YYYY-MM-DD.jsonl` | sensor | Incidentes detectados (brute-force, etc.) |
 | `decisions-YYYY-MM-DD.jsonl` | agent | Decisões da AI com confidence, ação e resultado |
+| `telemetry-YYYY-MM-DD.jsonl` | agent | Snapshots operacionais (coletores, detectores, gate, AI, latência, erros, dry-run/real) |
 | `summary-YYYY-MM-DD.md` | agent | Narrativa Markdown diária (eventos, incidentes, IPs top) |
 | `state.json` | sensor | Cursors dos collectors (offsets, hashes, timestamps) |
 | `agent-state.json` | agent | Byte offsets de leitura JSONL por data |
@@ -197,10 +199,11 @@ crates/
   agent/    — binário innerwarden-agent
     src/
       main.rs                — CLI + dois loops (AI 2s + narrative 30s) + SIGTERM
-      config.rs              — AgentConfig: narrative, webhook, ai, correlation, responder
+      config.rs              — AgentConfig: narrative, webhook, ai, correlation, telemetry, responder
       reader.rs              — JSONL incremental reader + AgentCursor persistence
       correlation.rs         — correlação temporal leve + clusterização de incidentes
-      report.rs              — relatório operacional v2 (`--report`) com tendências e anomaly hints
+      telemetry.rs           — telemetria operacional leve (snapshot JSONL por tick)
+      report.rs              — relatório operacional v2 (`--report`) com tendências, anomaly hints e telemetria
       narrative.rs           — geração de Markdown diário (generate/write/cleanup)
       webhook.rs             — HTTP POST de notificações de incidente
       decisions.rs           — DecisionWriter + DecisionEntry (audit trail JSONL)
@@ -221,7 +224,7 @@ crates/
 examples/
   systemd/innerwarden-sensor.service
 scripts/
-  replay_qa.sh — harness de replay fim-a-fim (fixture log → sensor → agent --once → --report)
+  replay_qa.sh — harness de replay fim-a-fim (fixture log → sensor → agent --once → --report + telemetry assertions)
   rollout_smoke.sh — pre/post smoke checks + plano de rollback rápido para produção
 ```
 
@@ -231,7 +234,7 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 82 testes (40 sensor + 42 agent)
+make test             # 85 testes (40 sensor + 45 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -356,6 +359,9 @@ enabled = true
 window_seconds = 300       # janela temporal para correlacionar incidentes
 max_related_incidents = 8  # contexto correlacionado enviado para AI
 
+[telemetry]
+enabled = true             # escreve telemetry-YYYY-MM-DD.jsonl (default: true)
+
 [responder]
 enabled = true
 dry_run = true             # SEGURANÇA: começa sempre em dry_run
@@ -449,6 +455,7 @@ data_dir/
   events-YYYY-MM-DD.jsonl       — eventos brutos
   incidents-YYYY-MM-DD.jsonl    — incidentes detectados
   decisions-YYYY-MM-DD.jsonl    — decisões da AI (audit trail)
+  telemetry-YYYY-MM-DD.jsonl    — snapshots de telemetria operacional do agent
   summary-YYYY-MM-DD.md         — narrativa diária em Markdown
   state.json                    — cursors do sensor
   agent-state.json              — cursors do agent (byte offsets)
@@ -461,7 +468,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 82 testes (40 sensor + 42 agent) — todos devem passar
+make test   # 85 testes (40 sensor + 45 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -483,6 +490,7 @@ make replay-qa                               # valida fluxo fixture → sensor �
 innerwarden-agent --data-dir ./data --config agent-test.toml
 # Deve logar: "DRY RUN: would execute: sudo ufw deny from X"
 # Decisões ficam em: ./data/decisions-YYYY-MM-DD.jsonl
+# Telemetria fica em: ./data/telemetry-YYYY-MM-DD.jsonl
 ```
 
 ---
@@ -538,7 +546,7 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase 5 (concluída): Skill `monitor-ip` real (execução continua segura por config)
 - Fase 7.1 (concluída): Production rollout hardening (playbook + smoke checks + rollback rápido)
 - Fase 7.2 (concluída): correlação temporal simples por janela + entidade
-- Fase 7.3 (ativa): telemetria operacional leve
+- Fase 7.3 (concluída): telemetria operacional leve
 - Fase 7.4 (planejada): honeypot demo only (simulação controlada)
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
-- Referência do roadmap: `docs/development-plan.md` e `docs/phase-7-temporal-correlation.md`
+- Referência do roadmap: `docs/development-plan.md`, `docs/phase-7-temporal-correlation.md` e `docs/phase-7-operational-telemetry.md`

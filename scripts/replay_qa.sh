@@ -38,6 +38,7 @@ DATE="$(date +%F)"
 EVENTS_FILE="$DATA_DIR/events-$DATE.jsonl"
 INCIDENTS_FILE="$DATA_DIR/incidents-$DATE.jsonl"
 DECISIONS_FILE="$DATA_DIR/decisions-$DATE.jsonl"
+TELEMETRY_FILE="$DATA_DIR/telemetry-$DATE.jsonl"
 SUMMARY_FILE="$DATA_DIR/summary-$DATE.md"
 REPORT_MD="$DATA_DIR/trial-report-$DATE.md"
 REPORT_JSON="$DATA_DIR/trial-report-$DATE.json"
@@ -134,6 +135,9 @@ context_events = 20
 confidence_threshold = 0.8
 incident_poll_secs = 2
 
+[telemetry]
+enabled = true
+
 [responder]
 enabled = false
 dry_run = true
@@ -174,6 +178,7 @@ echo "[replay] validating artifacts"
 assert_file_nonempty "$EVENTS_FILE"
 assert_file_nonempty "$INCIDENTS_FILE"
 assert_file_nonempty "$DECISIONS_FILE"
+assert_file_nonempty "$TELEMETRY_FILE"
 assert_file_nonempty "$SUMMARY_FILE"
 assert_file_nonempty "$STATE_FILE"
 assert_file_nonempty "$AGENT_STATE_FILE"
@@ -192,10 +197,15 @@ if ! grep -Eq '"agent_state_json_readable"[[:space:]]*:[[:space:]]*true' "$REPOR
   echo "assertion failed: agent_state_json_readable should be true"
   exit 1
 fi
+if ! grep -Eq '"available"[[:space:]]*:[[:space:]]*true' "$REPORT_JSON"; then
+  echo "assertion failed: operational telemetry should be available"
+  exit 1
+fi
 
 assert_json_metric_positive "$REPORT_JSON" "total_events"
 assert_json_metric_positive "$REPORT_JSON" "total_incidents"
 assert_json_metric_positive "$REPORT_JSON" "total_decisions"
+assert_json_metric_positive "$REPORT_JSON" "ai_decision_count"
 
 if ! grep -q '"ai_provider":"anthropic"' "$DECISIONS_FILE"; then
   echo "assertion failed: decisions must include anthropic provider entries"
@@ -207,4 +217,5 @@ echo "  data_dir: $DATA_DIR"
 echo "  events:   $(wc -l < "$EVENTS_FILE" | tr -d ' ')"
 echo "  incidents:$(wc -l < "$INCIDENTS_FILE" | tr -d ' ')"
 echo "  decisions:$(wc -l < "$DECISIONS_FILE" | tr -d ' ')"
+echo "  telemetry:$(wc -l < "$TELEMETRY_FILE" | tr -d ' ')"
 echo "  report:   $REPORT_MD"

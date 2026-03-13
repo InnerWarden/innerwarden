@@ -12,6 +12,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::decisions::DecisionEntry;
+use crate::telemetry;
 
 #[derive(Debug, Serialize)]
 pub struct GeneratedReport {
@@ -26,6 +27,7 @@ pub struct TrialReport {
     pub analyzed_date: String,
     pub data_dir: String,
     pub operational_health: OperationalHealth,
+    pub operational_telemetry: OperationalTelemetry,
     pub detection_summary: DetectionSummary,
     pub agent_ai_summary: AgentAiSummary,
     pub trend_summary: TrendSummary,
@@ -52,6 +54,22 @@ pub struct FileHealth {
     pub jsonl_valid: Option<bool>,
     pub lines: Option<u64>,
     pub malformed_lines: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OperationalTelemetry {
+    pub available: bool,
+    pub last_tick: Option<String>,
+    pub events_by_collector: BTreeMap<String, u64>,
+    pub incidents_by_detector: BTreeMap<String, u64>,
+    pub gate_pass_count: u64,
+    pub ai_sent_count: u64,
+    pub ai_decision_count: u64,
+    pub avg_decision_latency_ms: f64,
+    pub errors_by_component: BTreeMap<String, u64>,
+    pub decisions_by_action: BTreeMap<String, u64>,
+    pub dry_run_execution_count: u64,
+    pub real_execution_count: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -222,6 +240,7 @@ pub fn generate(data_dir: &Path) -> Result<GeneratedReport> {
     let expected_files_present = files.iter().all(|f| f.exists);
     let state_json_readable = state_info.exists && state_info.readable;
     let agent_state_json_readable = agent_state_info.exists && agent_state_info.readable;
+    let operational_telemetry = build_operational_telemetry(data_dir, &analyzed_date);
 
     let detection_summary = DetectionSummary {
         total_events: counters.total_events,
@@ -279,6 +298,7 @@ pub fn generate(data_dir: &Path) -> Result<GeneratedReport> {
         analyzed_date,
         data_dir: data_dir.display().to_string(),
         operational_health,
+        operational_telemetry,
         detection_summary,
         agent_ai_summary,
         trend_summary,
@@ -338,6 +358,39 @@ fn collect_available_dates(data_dir: &Path) -> Vec<String> {
     }
 
     dates.into_iter().collect()
+}
+
+fn build_operational_telemetry(data_dir: &Path, analyzed_date: &str) -> OperationalTelemetry {
+    match telemetry::read_latest_snapshot(data_dir, analyzed_date) {
+        Some(snapshot) => OperationalTelemetry {
+            available: true,
+            last_tick: Some(snapshot.tick),
+            events_by_collector: snapshot.events_by_collector,
+            incidents_by_detector: snapshot.incidents_by_detector,
+            gate_pass_count: snapshot.gate_pass_count,
+            ai_sent_count: snapshot.ai_sent_count,
+            ai_decision_count: snapshot.ai_decision_count,
+            avg_decision_latency_ms: snapshot.avg_decision_latency_ms,
+            errors_by_component: snapshot.errors_by_component,
+            decisions_by_action: snapshot.decisions_by_action,
+            dry_run_execution_count: snapshot.dry_run_execution_count,
+            real_execution_count: snapshot.real_execution_count,
+        },
+        None => OperationalTelemetry {
+            available: false,
+            last_tick: None,
+            events_by_collector: BTreeMap::new(),
+            incidents_by_detector: BTreeMap::new(),
+            gate_pass_count: 0,
+            ai_sent_count: 0,
+            ai_decision_count: 0,
+            avg_decision_latency_ms: 0.0,
+            errors_by_component: BTreeMap::new(),
+            decisions_by_action: BTreeMap::new(),
+            dry_run_execution_count: 0,
+            real_execution_count: 0,
+        },
+    }
 }
 
 fn extract_date(name: &str, prefix: &str, suffix: &str) -> Option<String> {
@@ -917,6 +970,27 @@ fn build_suggestions(report: &TrialReport) -> Vec<String> {
                 .to_string(),
         );
     }
+    if !report.operational_telemetry.available {
+        suggestions.push(
+            "Operational telemetry snapshot not found; run agent with telemetry enabled to improve rollout confidence."
+                .to_string(),
+        );
+    } else {
+        if !report.operational_telemetry.errors_by_component.is_empty() {
+            suggestions.push(
+                "Operational telemetry reports component errors; inspect error counters before widening rollout."
+                    .to_string(),
+            );
+        }
+        if report.operational_telemetry.ai_decision_count > 0
+            && report.operational_telemetry.avg_decision_latency_ms > 2000.0
+        {
+            suggestions.push(
+                "AI decision latency is high (>2s avg); review provider/network latency before enabling broader active response."
+                    .to_string(),
+            );
+        }
+    }
     if !report.anomaly_hints.is_empty() {
         suggestions.push(
             "Review anomaly hints for day-over-day spikes and behavior shifts before changing responder settings."
@@ -1063,6 +1137,73 @@ fn render_markdown(report: &TrialReport) -> String {
     } else {
         for (k, v) in &report.agent_ai_summary.skills_used {
             let _ = writeln!(&mut out, "  - {}: {}", k, v);
+        }
+    }
+    let _ = writeln!(&mut out);
+
+    let _ = writeln!(&mut out, "## Operational telemetry");
+    let _ = writeln!(
+        &mut out,
+        "- Available: {}",
+        yes_no(report.operational_telemetry.available)
+    );
+    if let Some(last_tick) = &report.operational_telemetry.last_tick {
+        let _ = writeln!(&mut out, "- Last tick snapshot: {}", last_tick);
+    } else {
+        let _ = writeln!(&mut out, "- Last tick snapshot: none");
+    }
+    let _ = writeln!(
+        &mut out,
+        "- Gate pass count: {}",
+        report.operational_telemetry.gate_pass_count
+    );
+    let _ = writeln!(
+        &mut out,
+        "- AI sent count: {}",
+        report.operational_telemetry.ai_sent_count
+    );
+    let _ = writeln!(
+        &mut out,
+        "- AI decision count: {}",
+        report.operational_telemetry.ai_decision_count
+    );
+    let _ = writeln!(
+        &mut out,
+        "- Avg decision latency (ms): {:.2}",
+        report.operational_telemetry.avg_decision_latency_ms
+    );
+    let _ = writeln!(
+        &mut out,
+        "- Dry-run executions: {}",
+        report.operational_telemetry.dry_run_execution_count
+    );
+    let _ = writeln!(
+        &mut out,
+        "- Real executions: {}",
+        report.operational_telemetry.real_execution_count
+    );
+    let _ = writeln!(&mut out, "- Events by collector:");
+    if report.operational_telemetry.events_by_collector.is_empty() {
+        let _ = writeln!(&mut out, "  - none");
+    } else {
+        for (collector, count) in &report.operational_telemetry.events_by_collector {
+            let _ = writeln!(&mut out, "  - {}: {}", collector, count);
+        }
+    }
+    let _ = writeln!(&mut out, "- Incidents by detector:");
+    if report.operational_telemetry.incidents_by_detector.is_empty() {
+        let _ = writeln!(&mut out, "  - none");
+    } else {
+        for (detector, count) in &report.operational_telemetry.incidents_by_detector {
+            let _ = writeln!(&mut out, "  - {}: {}", detector, count);
+        }
+    }
+    let _ = writeln!(&mut out, "- Errors by component:");
+    if report.operational_telemetry.errors_by_component.is_empty() {
+        let _ = writeln!(&mut out, "  - none");
+    } else {
+        for (component, count) in &report.operational_telemetry.errors_by_component {
+            let _ = writeln!(&mut out, "  - {}: {}", component, count);
         }
     }
     let _ = writeln!(&mut out);
@@ -1236,8 +1377,9 @@ fn map_or_none(items: &BTreeMap<String, u64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use std::collections::{BTreeMap, HashSet};
 
+    use crate::telemetry::TelemetrySnapshot;
     use chrono::Utc;
     use innerwarden_core::{
         entities::EntityRef,
@@ -1571,5 +1713,126 @@ mod tests {
         assert!(anomaly_codes.contains("confidence_drop"));
         assert!(anomaly_codes.contains("ignore_saturation"));
         assert!(anomaly_codes.contains("new_incident_type"));
+    }
+
+    #[test]
+    fn reads_operational_telemetry_snapshot() {
+        let dir = TempDir::new().unwrap();
+        let date = "2026-03-13";
+
+        fs::write(
+            dir.path().join(format!("events-{date}.jsonl")),
+            format!(
+                "{}\n",
+                serde_json::to_string(&Event {
+                    ts: Utc::now(),
+                    host: "h".to_string(),
+                    source: "auth.log".to_string(),
+                    kind: "ssh.login_failed".to_string(),
+                    severity: Severity::Info,
+                    summary: "event".to_string(),
+                    details: serde_json::json!({}),
+                    tags: vec![],
+                    entities: vec![EntityRef::ip("1.2.3.4")],
+                })
+                .unwrap()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(format!("incidents-{date}.jsonl")),
+            format!(
+                "{}\n",
+                serde_json::to_string(&Incident {
+                    ts: Utc::now(),
+                    host: "h".to_string(),
+                    incident_id: "ssh_bruteforce:1.2.3.4:test".to_string(),
+                    severity: Severity::High,
+                    title: "bruteforce".to_string(),
+                    summary: "summary".to_string(),
+                    evidence: serde_json::json!({}),
+                    recommended_checks: vec![],
+                    tags: vec![],
+                    entities: vec![EntityRef::ip("1.2.3.4")],
+                })
+                .unwrap()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(format!("decisions-{date}.jsonl")),
+            format!(
+                "{}\n",
+                serde_json::to_string(&DecisionEntry {
+                    ts: Utc::now(),
+                    incident_id: "ssh_bruteforce:1.2.3.4:test".to_string(),
+                    host: "h".to_string(),
+                    ai_provider: "openai".to_string(),
+                    action_type: "ignore".to_string(),
+                    target_ip: None,
+                    skill_id: None,
+                    confidence: 0.9,
+                    auto_executed: false,
+                    dry_run: true,
+                    reason: "test".to_string(),
+                    estimated_threat: "low".to_string(),
+                    execution_result: "skipped".to_string(),
+                })
+                .unwrap()
+            ),
+        )
+        .unwrap();
+        fs::write(dir.path().join(format!("summary-{date}.md")), "# summary\n").unwrap();
+        fs::write(dir.path().join("state.json"), "{}").unwrap();
+        fs::write(dir.path().join("agent-state.json"), "{}").unwrap();
+
+        let mut events_by_collector = BTreeMap::new();
+        events_by_collector.insert("auth.log".to_string(), 12);
+        let mut incidents_by_detector = BTreeMap::new();
+        incidents_by_detector.insert("ssh_bruteforce".to_string(), 4);
+        let mut errors_by_component = BTreeMap::new();
+        errors_by_component.insert("webhook".to_string(), 1);
+        let mut decisions_by_action = BTreeMap::new();
+        decisions_by_action.insert("block_ip".to_string(), 3);
+
+        let snapshot = TelemetrySnapshot {
+            ts: Utc::now(),
+            tick: "incident_tick".to_string(),
+            events_by_collector,
+            incidents_by_detector,
+            gate_pass_count: 4,
+            ai_sent_count: 4,
+            ai_decision_count: 4,
+            avg_decision_latency_ms: 210.0,
+            errors_by_component,
+            decisions_by_action,
+            dry_run_execution_count: 3,
+            real_execution_count: 0,
+        };
+        fs::write(
+            dir.path().join(format!("telemetry-{date}.jsonl")),
+            format!("{}\n", serde_json::to_string(&snapshot).unwrap()),
+        )
+        .unwrap();
+
+        let out = generate(dir.path()).unwrap();
+        assert!(out.report.operational_telemetry.available);
+        assert_eq!(
+            out.report
+                .operational_telemetry
+                .events_by_collector
+                .get("auth.log")
+                .copied(),
+            Some(12)
+        );
+        assert_eq!(out.report.operational_telemetry.gate_pass_count, 4);
+        assert_eq!(
+            out.report
+                .operational_telemetry
+                .errors_by_component
+                .get("webhook")
+                .copied(),
+            Some(1)
+        );
     }
 }

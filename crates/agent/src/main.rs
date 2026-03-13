@@ -6,11 +6,13 @@ mod narrative;
 mod report;
 mod reader;
 mod skills;
+mod telemetry;
 mod webhook;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use clap::Parser;
@@ -48,6 +50,8 @@ struct AgentState {
     skill_registry: skills::SkillRegistry,
     blocklist: skills::Blocklist,
     correlator: correlation::TemporalCorrelator,
+    telemetry: telemetry::TelemetryState,
+    telemetry_writer: Option<telemetry::TelemetryWriter>,
     /// Wrapped in Arc so we can clone a handle for use within a loop iteration
     /// without holding a borrow of `state` across async calls that need `&mut state`.
     ai_provider: Option<Arc<dyn ai::AiProvider>>,
@@ -106,6 +110,7 @@ async fn main() -> Result<()> {
         ai = cfg.ai.enabled,
         correlation = cfg.correlation.enabled,
         correlation_window_secs = cfg.correlation.window_seconds,
+        telemetry = cfg.telemetry.enabled,
         responder = cfg.responder.enabled,
         dry_run = cfg.responder.dry_run,
         "innerwarden-agent v{} starting",
@@ -128,6 +133,18 @@ async fn main() -> Result<()> {
             skills::Blocklist::default()
         },
         correlator: correlation::TemporalCorrelator::new(cfg.correlation.window_seconds, 4096),
+        telemetry: telemetry::TelemetryState::default(),
+        telemetry_writer: if cfg.telemetry.enabled {
+            match telemetry::TelemetryWriter::new(&cli.data_dir) {
+                Ok(w) => Some(w),
+                Err(e) => {
+                    warn!("failed to create telemetry writer: {e:#}");
+                    None
+                }
+            }
+        } else {
+            None
+        },
         ai_provider: if cfg.ai.enabled {
             Some(Arc::from(ai::build_provider(&cfg.ai)))
         } else {
@@ -151,8 +168,11 @@ async fn main() -> Result<()> {
 
     if cli.once {
         let handled = process_incidents(&cli.data_dir, &mut cursor, &cfg, &mut state).await;
-        let new_events = process_narrative_tick(&cli.data_dir, &mut cursor, &cfg).await?;
+        let new_events = process_narrative_tick(&cli.data_dir, &mut cursor, &cfg, &mut state).await?;
         if let Some(w) = &mut state.decision_writer {
+            w.flush();
+        }
+        if let Some(w) = &mut state.telemetry_writer {
             w.flush();
         }
         cursor.save(&state_path)?;
@@ -189,13 +209,16 @@ async fn main() -> Result<()> {
                     false
                 }
                 _ = narrative_ticker.tick() => {
-                    match process_narrative_tick(&cli.data_dir, &mut cursor, &cfg).await {
+                    match process_narrative_tick(&cli.data_dir, &mut cursor, &cfg, &mut state).await {
                         Ok(n) => {
                             if n > 0 {
                                 info!(new_events = n, "narrative tick");
                             }
                         }
-                        Err(e) => warn!("narrative tick error: {e:#}"),
+                        Err(e) => {
+                            state.telemetry.observe_error("narrative_tick");
+                            warn!("narrative tick error: {e:#}");
+                        }
                     }
                     if let Err(e) = cursor.save(&state_path) {
                         warn!("failed to save cursor after narrative tick: {e:#}");
@@ -222,13 +245,16 @@ async fn main() -> Result<()> {
                     false
                 }
                 _ = narrative_ticker.tick() => {
-                    match process_narrative_tick(&cli.data_dir, &mut cursor, &cfg).await {
+                    match process_narrative_tick(&cli.data_dir, &mut cursor, &cfg, &mut state).await {
                         Ok(n) => {
                             if n > 0 {
                                 info!(new_events = n, "narrative tick");
                             }
                         }
-                        Err(e) => warn!("narrative tick error: {e:#}"),
+                        Err(e) => {
+                            state.telemetry.observe_error("narrative_tick");
+                            warn!("narrative tick error: {e:#}");
+                        }
                     }
                     if let Err(e) = cursor.save(&state_path) {
                         warn!("failed to save cursor after narrative tick: {e:#}");
@@ -243,6 +269,9 @@ async fn main() -> Result<()> {
 
             if shutdown {
                 if let Some(w) = &mut state.decision_writer {
+                    w.flush();
+                }
+                if let Some(w) = &mut state.telemetry_writer {
                     w.flush();
                 }
                 cursor.save(&state_path)?;
@@ -285,6 +314,7 @@ async fn process_incidents(
     ) {
         Ok(r) => r,
         Err(e) => {
+            state.telemetry.observe_error("incident_reader");
             warn!("incident tick: failed to read incidents: {e:#}");
             return 0;
         }
@@ -329,6 +359,8 @@ async fn process_incidents(
     let mut handled = 0;
 
     for incident in &new_incidents.entries {
+        state.telemetry.observe_incident(incident);
+
         let related_incidents = if cfg.correlation.enabled {
             state
                 .correlator
@@ -359,6 +391,7 @@ async fn process_incidents(
                 )
                 .await
                 {
+                    state.telemetry.observe_error("webhook");
                     warn!(incident_id = %incident.incident_id, "webhook failed: {e:#}");
                 }
             }
@@ -379,6 +412,7 @@ async fn process_incidents(
             handled += 1;
             continue;
         }
+        state.telemetry.observe_gate_pass();
 
         // ai_provider is Some when ai_enabled — safe to unwrap
         let provider = ai_provider.as_ref().unwrap();
@@ -441,14 +475,19 @@ async fn process_incidents(
                 .collect(),
         };
 
+        state.telemetry.observe_ai_sent();
+        let decision_start = Instant::now();
         let decision = match provider.decide(&ctx).await {
             Ok(d) => d,
             Err(e) => {
+                state.telemetry.observe_error("ai_provider");
                 warn!(incident_id = %incident.incident_id, "AI decision failed: {e:#}");
                 handled += 1;
                 continue;
             }
         };
+        let latency_ms = decision_start.elapsed().as_millis();
+        state.telemetry.observe_ai_decision(&decision.action, latency_ms);
 
         // Update the in-memory blocked_set immediately after a BlockIp decision.
         // This prevents a second incident from the same IP (arriving in the same 2s tick)
@@ -472,6 +511,7 @@ async fn process_incidents(
             && decision.confidence >= cfg.ai.confidence_threshold
             && cfg.responder.enabled
         {
+            state.telemetry.observe_execution_path(cfg.responder.dry_run);
             execute_decision(&decision, incident, cfg, state).await
         } else if !cfg.responder.enabled {
             "skipped: responder disabled".to_string()
@@ -495,11 +535,24 @@ async fn process_incidents(
                 &execution_result,
             );
             if let Err(e) = writer.write(&entry) {
+                state.telemetry.observe_error("decision_writer");
                 warn!("failed to write decision entry: {e:#}");
             }
         }
 
         handled += 1;
+    }
+
+    let snapshot = state.telemetry.snapshot("incident_tick");
+    let mut telemetry_write_failed = false;
+    if let Some(writer) = &mut state.telemetry_writer {
+        if let Err(e) = writer.write(&snapshot) {
+            warn!("failed to write telemetry snapshot: {e:#}");
+            telemetry_write_failed = true;
+        }
+    }
+    if telemetry_write_failed {
+        state.telemetry.observe_error("telemetry_writer");
     }
 
     handled
@@ -612,6 +665,7 @@ async fn process_narrative_tick(
     data_dir: &Path,
     cursor: &mut reader::AgentCursor,
     cfg: &config::AgentConfig,
+    state: &mut AgentState,
 ) -> Result<usize> {
     let today = chrono::Local::now()
         .date_naive()
@@ -621,24 +675,34 @@ async fn process_narrative_tick(
     let events_path = data_dir.join(format!("events-{today}.jsonl"));
 
     // Read new events and advance the events cursor
-    let new_events = reader::read_new_entries::<innerwarden_core::event::Event>(
-        &events_path,
-        cursor.events_offset(&today),
-    )?;
+    let new_events =
+        reader::read_new_entries::<innerwarden_core::event::Event>(&events_path, cursor.events_offset(&today))
+            .map_err(|e| {
+                state.telemetry.observe_error("event_reader");
+                e
+            })?;
 
     let events_count = new_events.entries.len();
+    state.telemetry.observe_events(&new_events.entries);
     cursor.set_events_offset(&today, new_events.new_offset);
 
     // Regenerate daily summary when there are new events
     if cfg.narrative.enabled && events_count > 0 {
         let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
         // Always read from offset 0 — summary covers the full day, not just new entries
-        let all_events =
-            reader::read_new_entries::<innerwarden_core::event::Event>(&events_path, 0)?;
+        let all_events = reader::read_new_entries::<innerwarden_core::event::Event>(&events_path, 0)
+            .map_err(|e| {
+                state.telemetry.observe_error("narrative_reader");
+                e
+            })?;
         let all_incidents = reader::read_new_entries::<innerwarden_core::incident::Incident>(
             &incidents_path,
             0,
-        )?;
+        )
+        .map_err(|e| {
+            state.telemetry.observe_error("narrative_reader");
+            e
+        })?;
 
         let host = all_events
             .entries
@@ -655,10 +719,23 @@ async fn process_narrative_tick(
             cfg.correlation.window_seconds,
         );
         if let Err(e) = narrative::write(data_dir, &today, &md) {
+            state.telemetry.observe_error("narrative_writer");
             warn!("failed to write daily summary: {e:#}");
         } else {
             info!(date = today, "daily summary updated");
         }
+    }
+
+    let snapshot = state.telemetry.snapshot("narrative_tick");
+    let mut telemetry_write_failed = false;
+    if let Some(writer) = &mut state.telemetry_writer {
+        if let Err(e) = writer.write(&snapshot) {
+            warn!("failed to write telemetry snapshot: {e:#}");
+            telemetry_write_failed = true;
+        }
+    }
+    if telemetry_write_failed {
+        state.telemetry.observe_error("telemetry_writer");
     }
 
     Ok(events_count)
@@ -820,6 +897,8 @@ mod tests {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
+            telemetry: telemetry::TelemetryState::default(),
+            telemetry_writer: None,
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
         };
@@ -904,6 +983,8 @@ mod tests {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
+            telemetry: telemetry::TelemetryState::default(),
+            telemetry_writer: None,
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
         };
@@ -975,6 +1056,8 @@ mod tests {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
+            telemetry: telemetry::TelemetryState::default(),
+            telemetry_writer: None,
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
         };
@@ -1054,6 +1137,8 @@ mod tests {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
+            telemetry: telemetry::TelemetryState::default(),
+            telemetry_writer: None,
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
         };

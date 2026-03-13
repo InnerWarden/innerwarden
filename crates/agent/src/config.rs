@@ -19,6 +19,8 @@ pub struct AgentConfig {
     #[serde(default)]
     pub correlation: CorrelationConfig,
     #[serde(default)]
+    pub telemetry: TelemetryConfig,
+    #[serde(default)]
     pub responder: ResponderConfig,
 }
 
@@ -194,6 +196,23 @@ impl Default for CorrelationConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Operational telemetry
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct TelemetryConfig {
+    /// Enable local operational telemetry JSONL output
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Responder
 // ---------------------------------------------------------------------------
 
@@ -322,6 +341,7 @@ mod tests {
         assert!(cfg.correlation.enabled);
         assert_eq!(cfg.correlation.window_seconds, 300);
         assert_eq!(cfg.correlation.max_related_incidents, 8);
+        assert!(cfg.telemetry.enabled);
     }
 
     #[test]
@@ -344,6 +364,9 @@ timeout_secs = 5
 enabled = true
 window_seconds = 120
 max_related_incidents = 4
+
+[telemetry]
+enabled = true
 "#
         )
         .unwrap();
@@ -358,6 +381,7 @@ max_related_incidents = 4
         assert!(cfg.correlation.enabled);
         assert_eq!(cfg.correlation.window_seconds, 120);
         assert_eq!(cfg.correlation.max_related_incidents, 4);
+        assert!(cfg.telemetry.enabled);
     }
 
     #[test]
