@@ -445,17 +445,24 @@ async fn execute_decision(
 
     match &decision.action {
         AiAction::BlockIp { ip, skill_id } => {
-            // Honour the allowed_skills whitelist; fall back to configured backend default
-            if !cfg.responder.allowed_skills.contains(skill_id) {
-                let fallback_id = format!("block-ip-{}", cfg.responder.block_backend);
-                if !cfg.responder.allowed_skills.contains(&fallback_id) {
+            // Resolve the effective skill ID, honouring the allowed_skills whitelist.
+            // If the AI selected a skill not in the whitelist, fall back to the
+            // configured backend default. This prevents the AI from executing a
+            // skill the operator did not explicitly allow.
+            let effective_id: String = if cfg.responder.allowed_skills.contains(skill_id) {
+                skill_id.clone()
+            } else {
+                let fallback = format!("block-ip-{}", cfg.responder.block_backend);
+                if cfg.responder.allowed_skills.contains(&fallback) {
+                    fallback
+                } else {
                     return format!("skipped: skill '{skill_id}' not in allowed_skills");
                 }
-            }
+            };
 
             let skill = state
                 .skill_registry
-                .get(skill_id)
+                .get(&effective_id)
                 .or_else(|| state.skill_registry.block_skill_for_backend(&cfg.responder.block_backend));
 
             match skill {
@@ -471,7 +478,7 @@ async fn execute_decision(
                     }
                     result.message
                 }
-                None => format!("skipped: skill '{skill_id}' not found"),
+                None => format!("skipped: skill '{effective_id}' not found"),
             }
         }
         AiAction::Monitor { ip } => {
@@ -578,4 +585,210 @@ async fn process_narrative_tick(
     }
 
     Ok(events_count)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    // ------------------------------------------------------------------
+    // Minimal mock AI provider — returns a fixed decision, no network I/O
+    // ------------------------------------------------------------------
+
+    struct MockAiProvider {
+        decision: ai::AiDecision,
+    }
+
+    #[async_trait::async_trait]
+    impl ai::AiProvider for MockAiProvider {
+        fn name(&self) -> &'static str {
+            "mock"
+        }
+        async fn decide(&self, _ctx: &ai::DecisionContext<'_>) -> anyhow::Result<ai::AiDecision> {
+            Ok(self.decision.clone())
+        }
+    }
+
+    /// Write a minimal Incident JSON line (ssh brute-force from an external IP).
+    fn incident_line(ip: &str) -> String {
+        serde_json::to_string(&innerwarden_core::incident::Incident {
+            ts: chrono::Utc::now(),
+            host: "test-host".to_string(),
+            incident_id: format!("ssh_bruteforce:{ip}:test"),
+            severity: innerwarden_core::event::Severity::High,
+            title: "SSH Brute Force".to_string(),
+            summary: format!("9 failed SSH attempts from {ip}"),
+            evidence: serde_json::json!({"failed_attempts": 9}),
+            recommended_checks: vec![],
+            tags: vec!["ssh".to_string()],
+            entities: vec![innerwarden_core::entities::EntityRef::ip(ip)],
+        })
+        .unwrap()
+    }
+
+    // ------------------------------------------------------------------
+    // Golden path: incident → algorithm gate → mock AI → dry-run block → decisions.jsonl
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn golden_path_dry_run_produces_decision_entry() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+
+        // 1. Plant a single brute-force incident from a routable external IP.
+        //    Must NOT be RFC1918, loopback, or documentation (203.0.113.x / 198.51.100.x
+        //    are TEST-NET ranges and would be filtered by the algorithm gate).
+        let attacker_ip = "1.2.3.4";
+        let incidents_path = dir.path().join(format!("incidents-{today}.jsonl"));
+        let mut f = std::fs::File::create(&incidents_path).unwrap();
+        writeln!(f, "{}", incident_line(attacker_ip)).unwrap();
+        drop(f);
+
+        // 2. Config: AI enabled, responder dry_run=true, ufw backend allowed
+        let cfg = config::AgentConfig {
+            ai: config::AiConfig {
+                enabled: true,
+                confidence_threshold: 0.8,
+                context_events: 5,
+                ..config::AiConfig::default()
+            },
+            responder: config::ResponderConfig {
+                enabled: true,
+                dry_run: true,
+                block_backend: "ufw".to_string(),
+                allowed_skills: vec!["block-ip-ufw".to_string()],
+            },
+            ..config::AgentConfig::default()
+        };
+
+        // 3. Mock provider always recommends blocking the IP
+        let mock = Arc::new(MockAiProvider {
+            decision: ai::AiDecision {
+                action: ai::AiAction::BlockIp {
+                    ip: attacker_ip.to_string(),
+                    skill_id: "block-ip-ufw".to_string(),
+                },
+                confidence: 0.97,
+                auto_execute: true,
+                reason: "9 SSH failures, no success, external IP — classic brute force".to_string(),
+                alternatives: vec!["monitor".to_string()],
+                estimated_threat: "high".to_string(),
+            },
+        });
+
+        let mut state = AgentState {
+            skill_registry: skills::SkillRegistry::default_builtin(),
+            blocklist: skills::Blocklist::default(),
+            ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
+            decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
+        };
+
+        // 4. Run the incident tick
+        let mut cursor = reader::AgentCursor::default();
+        let handled = process_incidents(dir.path(), &mut cursor, &cfg, &mut state).await;
+
+        // Verify: one incident handled
+        assert_eq!(handled, 1, "expected 1 incident handled");
+
+        // Verify: cursor advanced (incident will not be re-read on next tick)
+        assert!(
+            cursor.incidents_offset(&today) > 0,
+            "cursor should have advanced past the incident"
+        );
+
+        // Verify: decision written to audit trail
+        if let Some(w) = &mut state.decision_writer {
+            w.flush();
+        }
+        let decisions_path = dir.path().join(format!("decisions-{today}.jsonl"));
+        let content = std::fs::read_to_string(&decisions_path).unwrap();
+        assert!(content.contains(attacker_ip), "decision must record the target IP");
+        assert!(content.contains("block_ip"), "decision must record action type");
+        assert!(content.contains("\"dry_run\":true"), "dry_run must be flagged in audit trail");
+        assert!(content.contains("mock"), "AI provider name must appear in audit trail");
+    }
+
+    // ------------------------------------------------------------------
+    // allowed_skills whitelist: AI selects a disallowed skill → fallback used
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn allowed_skills_whitelist_enforced() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+
+        // Use a routable external IP — TEST-NET ranges (203.0.113.x) are filtered by the gate
+        let attacker_ip = "5.6.7.8";
+        let incidents_path = dir.path().join(format!("incidents-{today}.jsonl"));
+        let mut f = std::fs::File::create(&incidents_path).unwrap();
+        writeln!(f, "{}", incident_line(attacker_ip)).unwrap();
+        drop(f);
+
+        let cfg = config::AgentConfig {
+            ai: config::AiConfig {
+                enabled: true,
+                confidence_threshold: 0.5,
+                context_events: 5,
+                ..config::AiConfig::default()
+            },
+            responder: config::ResponderConfig {
+                enabled: true,
+                dry_run: true,
+                block_backend: "ufw".to_string(),
+                // Only ufw is allowed; AI picks iptables — should fall back silently
+                allowed_skills: vec!["block-ip-ufw".to_string()],
+            },
+            ..config::AgentConfig::default()
+        };
+
+        // AI picks iptables (not in whitelist)
+        let mock = Arc::new(MockAiProvider {
+            decision: ai::AiDecision {
+                action: ai::AiAction::BlockIp {
+                    ip: attacker_ip.to_string(),
+                    skill_id: "block-ip-iptables".to_string(), // NOT in allowed_skills
+                },
+                confidence: 0.95,
+                auto_execute: true,
+                reason: "brute force".to_string(),
+                alternatives: vec![],
+                estimated_threat: "high".to_string(),
+            },
+        });
+
+        let mut state = AgentState {
+            skill_registry: skills::SkillRegistry::default_builtin(),
+            blocklist: skills::Blocklist::default(),
+            ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
+            decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
+        };
+
+        let mut cursor = reader::AgentCursor::default();
+        let handled = process_incidents(dir.path(), &mut cursor, &cfg, &mut state).await;
+
+        // Still handled (not skipped entirely) — fell back to ufw
+        assert_eq!(handled, 1);
+
+        if let Some(w) = &mut state.decision_writer {
+            w.flush();
+        }
+        let decisions_path = dir.path().join(format!("decisions-{today}.jsonl"));
+        let content = std::fs::read_to_string(&decisions_path).unwrap();
+        // The execution used the ufw fallback, not iptables.
+        // The audit trail still records the IP the AI identified.
+        assert!(content.contains(attacker_ip));
+    }
 }

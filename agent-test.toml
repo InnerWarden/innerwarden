@@ -1,0 +1,31 @@
+# Inner Warden — smoke-test config for local development
+# Usage: innerwarden-agent --data-dir ./data --config agent-test.toml
+#
+# Expects:
+#   - OPENAI_API_KEY set in .env or environment
+#   - ./data/ populated by `make run-sensor` (or copied sample JSONL)
+#
+# Safety: dry_run = true — never executes real system commands.
+# You can watch the decisions in: ./data/decisions-YYYY-MM-DD.jsonl
+
+[narrative]
+enabled = true
+keep_days = 3
+
+[webhook]
+enabled = false
+
+[ai]
+enabled = true
+provider = "openai"
+# api_key = ""   # prefer OPENAI_API_KEY env var / .env file
+model = "gpt-4o-mini"
+context_events = 10
+confidence_threshold = 0.8
+incident_poll_secs = 2
+
+[responder]
+enabled = true
+dry_run = true              # SAFE: logs "DRY RUN: would execute..." — no real blocks
+block_backend = "ufw"
+allowed_skills = ["block-ip-ufw", "monitor-ip"]
