@@ -35,7 +35,9 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Webhook HTTP POST com filtragem por severidade mínima (dispara no tick rápido — em tempo real)
 - ✅ Narrativa diária em Markdown: `summary-YYYY-MM-DD.md`
 - ✅ Dois loops independentes no mesmo `tokio::select!`: rápido (incidentes + webhook + AI, 2s) + lento (narrativa, 30s)
-- ✅ Cursor persistido após cada tick de incidentes — crash nunca causa duplo-processamento
+- ✅ Cursor persistido após cada tick — fail-open em ambos os loops (crash nunca derruba o agent)
+- ✅ `reqwest::Client` reutilizado entre chamadas AI (connection pool real, sem overhead de TLS por chamada)
+- ✅ Audit trail com flush imediato por decisão — sobrevive a crash entre execução e shutdown
 - ✅ Modo `--once` para processamento batch
 - ✅ Carregamento automático de `.env` na inicialização (dotenvy, fail-silent)
 
