@@ -1788,8 +1788,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
       box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25), 0 3px 10px rgba(0, 0, 0, 0.35);
     }
     .logo svg {
-      width: 18px;
-      height: 18px;
+      width: 100%;
+      height: 100%;
       display: block;
       filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.5));
     }
@@ -2213,7 +2213,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
   <header class="app-header">
     <div class="app-title">
       <span class="logo" aria-hidden="true">
-        <svg width="18" height="18" viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg">
+        <svg width="18" height="18" viewBox="40 40 140 140" xmlns="http://www.w3.org/2000/svg">
           <defs>
             <linearGradient id="steel" x1="0%" y1="0%" x2="100%" y2="100%">
               <stop offset="0%" stop-color="#e6edf5"/>
