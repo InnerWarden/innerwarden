@@ -101,6 +101,7 @@ struct JourneyQuery {
     date: Option<String>,
     severity_min: Option<String>,
     detector: Option<String>,
+    window_seconds: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -220,6 +221,21 @@ struct JourneyEntry {
 }
 
 #[derive(Debug, Serialize)]
+struct JourneySummary {
+    total_entries: usize,
+    events_count: usize,
+    incidents_count: usize,
+    decisions_count: usize,
+    honeypot_count: usize,
+    first_event: Option<chrono::DateTime<Utc>>,
+    first_incident: Option<chrono::DateTime<Utc>>,
+    first_decision: Option<chrono::DateTime<Utc>>,
+    first_honeypot: Option<chrono::DateTime<Utc>>,
+    pivot_shortcuts: Vec<String>,
+    hints: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 struct JourneyResponse {
     subject_type: String,
     subject: String,
@@ -227,6 +243,7 @@ struct JourneyResponse {
     first_seen: Option<chrono::DateTime<Utc>>,
     last_seen: Option<chrono::DateTime<Utc>>,
     outcome: String,
+    summary: JourneySummary,
     entries: Vec<JourneyEntry>,
 }
 
@@ -599,6 +616,7 @@ async fn api_journey(
 ) -> Json<JourneyResponse> {
     let date = resolve_date(query.date.as_deref());
     let subject_type = PivotKind::parse(query.subject_type.as_deref());
+    let window_seconds = query.window_seconds.map(|w| w.clamp(60, 86_400));
     let subject = query
         .subject
         .or(query.ip)
@@ -616,6 +634,19 @@ async fn api_journey(
             first_seen: None,
             last_seen: None,
             outcome: "unknown".to_string(),
+            summary: JourneySummary {
+                total_entries: 0,
+                events_count: 0,
+                incidents_count: 0,
+                decisions_count: 0,
+                honeypot_count: 0,
+                first_event: None,
+                first_incident: None,
+                first_decision: None,
+                first_honeypot: None,
+                pivot_shortcuts: Vec::new(),
+                hints: vec!["Select a subject to start investigation.".to_string()],
+            },
             entries: vec![],
         });
     }
@@ -626,6 +657,7 @@ async fn api_journey(
         subject_type,
         &subject,
         &filters,
+        window_seconds,
     ))
 }
 
@@ -651,10 +683,16 @@ async fn api_export(
     let overview = compute_overview(&state.data_dir, &date);
     let pivots = build_pivots(&state.data_dir, &date, group_by, &filters, limit);
     let clusters = build_cluster_items(&state.data_dir, &date, &filters, limit, window_seconds);
-    let journey = subject
-        .as_ref()
-        .filter(|s| !s.is_empty())
-        .map(|s| build_journey(&state.data_dir, &date, subject_type, s, &filters));
+    let journey = subject.as_ref().filter(|s| !s.is_empty()).map(|s| {
+        build_journey(
+            &state.data_dir,
+            &date,
+            subject_type,
+            s,
+            &filters,
+            Some(window_seconds),
+        )
+    });
 
     let snapshot = InvestigationExport {
         generated_at: Utc::now(),
@@ -915,6 +953,7 @@ fn build_journey(
     subject_type: PivotKind,
     subject: &str,
     filters: &InvestigationFilters,
+    window_seconds: Option<u64>,
 ) -> JourneyResponse {
     let events =
         read_jsonl::<innerwarden_core::event::Event>(&dated_path(data_dir, "events", date));
@@ -927,6 +966,8 @@ fn build_journey(
 
     let mut entries: Vec<JourneyEntry> = Vec::new();
     let mut related_ips: BTreeSet<String> = BTreeSet::new();
+    let mut related_users: BTreeSet<String> = BTreeSet::new();
+    let mut related_detectors: BTreeSet<String> = BTreeSet::new();
     let mut has_incident = false;
 
     for incident in incidents {
@@ -938,8 +979,12 @@ fn build_journey(
         }
 
         has_incident = true;
+        related_detectors.insert(incident_detector(&incident.incident_id));
         for ip in extract_ip_entities(&incident.entities) {
             related_ips.insert(ip);
+        }
+        for user in extract_entity_values(&incident.entities, EntityType::User) {
+            related_users.insert(user);
         }
 
         entries.push(JourneyEntry {
@@ -978,6 +1023,12 @@ fn build_journey(
         };
 
         if matches_subject {
+            for ip in extract_ip_entities(&event.entities) {
+                related_ips.insert(ip);
+            }
+            for user in extract_entity_values(&event.entities, EntityType::User) {
+                related_users.insert(user);
+            }
             entries.push(JourneyEntry {
                 ts: event.ts,
                 kind: "event".to_string(),
@@ -999,6 +1050,7 @@ fn build_journey(
                 continue;
             }
         }
+        related_detectors.insert(incident_detector(&decision.incident_id));
 
         let matches_subject = match subject_type {
             PivotKind::Ip => decision.target_ip.as_deref() == Some(subject),
@@ -1036,6 +1088,12 @@ fn build_journey(
     entries.append(&mut hp_entries);
 
     entries.sort_by_key(|e| e.ts);
+    if let Some(window) = window_seconds {
+        if let Some(last_ts) = entries.last().map(|e| e.ts) {
+            let cutoff = last_ts - chrono::Duration::seconds(window as i64);
+            entries.retain(|entry| entry.ts >= cutoff);
+        }
+    }
 
     let first_seen = entries.first().map(|e| e.ts);
     let last_seen = entries.last().map(|e| e.ts);
@@ -1044,6 +1102,15 @@ fn build_journey(
     } else {
         determine_outcome_for_ips(&decisions, &related_ips, has_incident)
     };
+    let summary = build_journey_summary(
+        &entries,
+        &outcome,
+        subject_type,
+        subject,
+        &related_ips,
+        &related_users,
+        &related_detectors,
+    );
 
     JourneyResponse {
         subject_type: subject_type.as_str().to_string(),
@@ -1052,8 +1119,196 @@ fn build_journey(
         first_seen,
         last_seen,
         outcome,
+        summary,
         entries,
     }
+}
+
+fn build_journey_summary(
+    entries: &[JourneyEntry],
+    outcome: &str,
+    subject_type: PivotKind,
+    subject: &str,
+    related_ips: &BTreeSet<String>,
+    related_users: &BTreeSet<String>,
+    related_detectors: &BTreeSet<String>,
+) -> JourneySummary {
+    let mut summary = JourneySummary {
+        total_entries: entries.len(),
+        events_count: 0,
+        incidents_count: 0,
+        decisions_count: 0,
+        honeypot_count: 0,
+        first_event: None,
+        first_incident: None,
+        first_decision: None,
+        first_honeypot: None,
+        pivot_shortcuts: build_pivot_shortcuts(
+            subject_type,
+            subject,
+            related_ips,
+            related_users,
+            related_detectors,
+        ),
+        hints: Vec::new(),
+    };
+
+    let mut decision_actions: BTreeMap<String, usize> = BTreeMap::new();
+
+    for entry in entries {
+        match entry.kind.as_str() {
+            "event" => {
+                summary.events_count += 1;
+                if summary.first_event.is_none() {
+                    summary.first_event = Some(entry.ts);
+                }
+            }
+            "incident" => {
+                summary.incidents_count += 1;
+                if summary.first_incident.is_none() {
+                    summary.first_incident = Some(entry.ts);
+                }
+            }
+            "decision" => {
+                summary.decisions_count += 1;
+                if summary.first_decision.is_none() {
+                    summary.first_decision = Some(entry.ts);
+                }
+                if let Some(action_type) = entry.data.get("action_type").and_then(|v| v.as_str()) {
+                    *decision_actions.entry(action_type.to_string()).or_insert(0) += 1;
+                }
+            }
+            kind if kind.starts_with("honeypot_") => {
+                summary.honeypot_count += 1;
+                if summary.first_honeypot.is_none() {
+                    summary.first_honeypot = Some(entry.ts);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if summary.total_entries == 0 {
+        summary
+            .hints
+            .push("No timeline entries for current filters/window.".to_string());
+        return summary;
+    }
+
+    if let (Some(first_event), Some(first_incident)) = (summary.first_event, summary.first_incident)
+    {
+        let lag = (first_incident - first_event).num_seconds();
+        summary.hints.push(format!(
+            "Escalation: first incident raised {} after first signal.",
+            format_duration(lag)
+        ));
+    } else if summary.events_count > 0 && summary.incidents_count == 0 {
+        summary.hints.push(
+            "Signals observed in this window, but no incident met detector thresholds.".to_string(),
+        );
+    }
+
+    if let (Some(first_incident), Some(first_decision)) =
+        (summary.first_incident, summary.first_decision)
+    {
+        let lag = (first_decision - first_incident).num_seconds();
+        summary.hints.push(format!(
+            "Response lag: first decision recorded {} after first incident.",
+            format_duration(lag)
+        ));
+    } else if summary.incidents_count > 0 && summary.decisions_count == 0 {
+        summary.hints.push(
+            "Incidents detected, but no AI decision was recorded in this window.".to_string(),
+        );
+    }
+
+    if summary.honeypot_count > 0 {
+        summary.hints.push(format!(
+            "Honeypot engaged with {} artifact(s) captured.",
+            summary.honeypot_count
+        ));
+    }
+
+    if !decision_actions.is_empty() {
+        let action_line = decision_actions
+            .iter()
+            .map(|(action, count)| format!("{action} ({count})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        summary
+            .hints
+            .push(format!("Decision mix in window: {action_line}."));
+    }
+
+    let outcome_hint = match outcome {
+        "blocked" => "Outcome indicates containment was applied (blocked).",
+        "honeypot" => "Outcome indicates attacker flow was redirected to honeypot controls.",
+        "monitoring" => "Outcome indicates monitoring response without direct containment.",
+        "active" => "Outcome indicates active threat path without confirmed containment.",
+        _ => "Outcome is unknown for this scope.",
+    };
+    summary.hints.push(outcome_hint.to_string());
+
+    summary
+}
+
+fn build_pivot_shortcuts(
+    subject_type: PivotKind,
+    subject: &str,
+    related_ips: &BTreeSet<String>,
+    related_users: &BTreeSet<String>,
+    related_detectors: &BTreeSet<String>,
+) -> Vec<String> {
+    let mut shortcuts = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    let push_token =
+        |token: String, shortcuts: &mut Vec<String>, seen: &mut BTreeSet<String>| {
+            if token.is_empty() {
+                return;
+            }
+            if seen.insert(token.clone()) {
+                shortcuts.push(token);
+            }
+        };
+
+    push_token(
+        format!("{}:{}", subject_type.as_str(), subject),
+        &mut shortcuts,
+        &mut seen,
+    );
+    for ip in related_ips.iter().take(3) {
+        push_token(format!("ip:{ip}"), &mut shortcuts, &mut seen);
+    }
+    for user in related_users.iter().take(3) {
+        push_token(format!("user:{user}"), &mut shortcuts, &mut seen);
+    }
+    for detector in related_detectors.iter().take(3) {
+        push_token(format!("detector:{detector}"), &mut shortcuts, &mut seen);
+    }
+    shortcuts.truncate(8);
+    shortcuts
+}
+
+fn format_duration(seconds: i64) -> String {
+    let secs = seconds.max(0);
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    let mins = secs / 60;
+    let rem = secs % 60;
+    if mins < 60 {
+        if rem == 0 {
+            return format!("{mins}m");
+        }
+        return format!("{mins}m {rem}s");
+    }
+    let hours = mins / 60;
+    let min_rem = mins % 60;
+    if min_rem == 0 {
+        return format!("{hours}h");
+    }
+    format!("{hours}h {min_rem}m")
 }
 
 /// Scan all honeypot JSONL session files for connections from tracked IPs on `date`.
@@ -1218,6 +1473,21 @@ fn render_markdown_snapshot(snapshot: &InvestigationExport) -> String {
                 journey.outcome,
                 journey.entries.len()
             ));
+            out.push_str("### Guided Summary\n\n");
+            out.push_str(&format!(
+                "- Events: `{}`\n- Incidents: `{}`\n- Decisions: `{}`\n- Honeypot: `{}`\n\n",
+                journey.summary.events_count,
+                journey.summary.incidents_count,
+                journey.summary.decisions_count,
+                journey.summary.honeypot_count
+            ));
+            if !journey.summary.hints.is_empty() {
+                out.push_str("### Investigation Hints\n\n");
+                for hint in &journey.summary.hints {
+                    out.push_str(&format!("- {}\n", hint));
+                }
+                out.push('\n');
+            }
             for entry in &journey.entries {
                 out.push_str(&format!("- `{}` · **{}**\n", entry.ts, entry.kind));
             }
@@ -1551,6 +1821,13 @@ const INDEX_HTML: &str = r#"<!doctype html>
       font-family: "Space Grotesk", sans-serif;
       font-weight: 700;
     }
+    .filters-note {
+      grid-column: 1 / -1;
+      font-size: 0.62rem;
+      color: var(--muted);
+      line-height: 1.25;
+      padding: 0 2px;
+    }
 
     .pivot-tabs {
       display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px;
@@ -1662,6 +1939,99 @@ const INDEX_HTML: &str = r#"<!doctype html>
       border-color: rgba(86, 200, 255, 0.35);
     }
 
+    .guided-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .guided-card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 11px;
+    }
+    .guided-title {
+      font-size: 0.64rem;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 7px;
+    }
+    .summary-cell {
+      background: rgba(9, 19, 30, 0.82);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 8px;
+    }
+    .summary-label {
+      font-size: 0.6rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .summary-value {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.8rem;
+      margin-top: 2px;
+    }
+    .hint-list {
+      list-style: none;
+      display: grid;
+      gap: 6px;
+    }
+    .hint-item {
+      font-size: 0.75rem;
+      line-height: 1.35;
+      color: #c9def2;
+      padding-left: 12px;
+      position: relative;
+    }
+    .hint-item::before {
+      content: "•";
+      position: absolute;
+      left: 0;
+      color: var(--accent);
+    }
+    .shortcut-wrap {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .shortcut-btn {
+      border: 1px solid rgba(86, 200, 255, 0.28);
+      background: rgba(86, 200, 255, 0.1);
+      color: var(--accent);
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 0.64rem;
+      font-family: "IBM Plex Mono", monospace;
+      cursor: pointer;
+    }
+    .shortcut-btn:hover {
+      background: rgba(86, 200, 255, 0.16);
+    }
+    .compare-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 7px;
+    }
+    .compare-cell {
+      background: rgba(9, 19, 30, 0.82);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 8px;
+    }
+    .delta-pos { color: var(--danger); }
+    .delta-neg { color: var(--ok); }
+    .delta-neu { color: var(--muted); }
+
     /* ── Timeline ────────────────────────────────────────────────── */
     .timeline { position: relative; }
 
@@ -1746,6 +2116,12 @@ const INDEX_HTML: &str = r#"<!doctype html>
     .empty  { font-size: 0.78rem; color: var(--muted); padding: 8px 2px; }
     .loading { font-size: 0.8rem; color: var(--muted); padding: 20px 0; }
     .err    { font-size: 0.8rem; color: var(--danger); padding: 12px 0; }
+
+    @media (max-width: 1180px) {
+      .guided-grid {
+        grid-template-columns: 1fr;
+      }
+    }
   </style>
 </head>
 <body>
@@ -1774,6 +2150,13 @@ const INDEX_HTML: &str = r#"<!doctype html>
 
       <div class="filters">
         <input id="flt-date" type="date" class="full" />
+        <input id="flt-compare-date" type="date" title="compare date" />
+        <select id="flt-window">
+          <option value="">window: full day</option>
+          <option value="900">window: last 15m</option>
+          <option value="3600">window: last 1h</option>
+          <option value="21600">window: last 6h</option>
+        </select>
         <select id="flt-severity">
           <option value="">severity: any</option>
           <option value="critical">severity: critical+</option>
@@ -1783,6 +2166,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
           <option value="info">severity: info+</option>
         </select>
         <input id="flt-detector" type="text" placeholder="detector (ex: ssh_bruteforce)" />
+        <div class="filters-note">Comparison uses same subject + filters on selected compare date.</div>
         <button id="flt-apply" class="full" type="button">Apply Filters</button>
       </div>
 
@@ -1973,7 +2357,13 @@ const INDEX_HTML: &str = r#"<!doctype html>
   const state = {
     pivot: 'ip',
     selected: { type: 'ip', value: null },
-    filters: { date: '', severity_min: '', detector: '' },
+    filters: {
+      date: '',
+      compare_date: '',
+      severity_min: '',
+      detector: '',
+      window_seconds: ''
+    },
     clusters: [],
   };
 
@@ -2002,8 +2392,10 @@ const INDEX_HTML: &str = r#"<!doctype html>
 
   function syncFiltersFromUi() {
     state.filters.date = document.getElementById('flt-date').value || '';
+    state.filters.compare_date = document.getElementById('flt-compare-date').value || '';
     state.filters.severity_min = document.getElementById('flt-severity').value || '';
     state.filters.detector = (document.getElementById('flt-detector').value || '').trim();
+    state.filters.window_seconds = document.getElementById('flt-window').value || '';
   }
 
   function updatePivotUi() {
@@ -2015,6 +2407,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
 
   async function loadJourney(subjectType, subjectValue) {
     state.selected = { type: subjectType, value: subjectValue };
+    syncFiltersFromUi();
     document.querySelectorAll('.attacker-card').forEach(c => c.classList.remove('active'));
     const card = document.querySelector(
       '.attacker-card[data-subject-type="' + CSS.escape(subjectType) + '"][data-subject-value="' + CSS.escape(subjectValue) + '"]'
@@ -2025,16 +2418,54 @@ const INDEX_HTML: &str = r#"<!doctype html>
     panel.innerHTML = '<div class="loading">Loading journey for ' + esc(subjectValue) + '…</div>';
 
     try {
-      const qs = buildQuery({
+      const baseQs = buildQuery({
         subject_type: subjectType,
         subject: subjectValue,
         date: state.filters.date,
         severity_min: state.filters.severity_min,
         detector: state.filters.detector,
+        window_seconds: state.filters.window_seconds,
       });
-      const j = await loadJson('/api/journey?' + qs);
+      const shouldCompare = state.filters.compare_date && state.filters.compare_date !== state.filters.date;
+      const compareQs = shouldCompare
+        ? buildQuery({
+            subject_type: subjectType,
+            subject: subjectValue,
+            date: state.filters.compare_date,
+            severity_min: state.filters.severity_min,
+            detector: state.filters.detector,
+            window_seconds: state.filters.window_seconds,
+          })
+        : '';
+      const [j, compare] = await Promise.all([
+        loadJson('/api/journey?' + baseQs),
+        shouldCompare ? loadJson('/api/journey?' + compareQs) : Promise.resolve(null),
+      ]);
       const first = j.first_seen ? fmtDateTime(j.first_seen) : '—';
       const last  = j.last_seen  ? fmtDateTime(j.last_seen)  : '—';
+      const summary = j.summary || {};
+      const shortcuts = Array.isArray(summary.pivot_shortcuts) ? summary.pivot_shortcuts : [];
+      const hints = Array.isArray(summary.hints) ? summary.hints : [];
+
+      const summaryGrid = `
+        <div class="summary-grid">
+          <div class="summary-cell"><div class="summary-label">Entries</div><div class="summary-value">${summary.total_entries ?? j.entries.length}</div></div>
+          <div class="summary-cell"><div class="summary-label">Events</div><div class="summary-value">${summary.events_count ?? 0}</div></div>
+          <div class="summary-cell"><div class="summary-label">Incidents</div><div class="summary-value">${summary.incidents_count ?? 0}</div></div>
+          <div class="summary-cell"><div class="summary-label">Decisions</div><div class="summary-value">${summary.decisions_count ?? 0}</div></div>
+          <div class="summary-cell"><div class="summary-label">Honeypot</div><div class="summary-value">${summary.honeypot_count ?? 0}</div></div>
+          <div class="summary-cell"><div class="summary-label">Window</div><div class="summary-value">${state.filters.window_seconds ? esc(state.filters.window_seconds + 's') : 'full day'}</div></div>
+        </div>`;
+
+      const hintsHtml = hints.length
+        ? `<ul class="hint-list">${hints.map((h) => `<li class="hint-item">${esc(h)}</li>`).join('')}</ul>`
+        : '<div class="empty">No hints available for current scope.</div>';
+
+      const shortcutsHtml = shortcuts.length
+        ? `<div class="shortcut-wrap">${shortcuts.map((token) =>
+            `<button type="button" class="shortcut-btn" onclick="openPivotShortcut('${esc(token)}')">${esc(token)}</button>`
+          ).join('')}</div>`
+        : '';
 
       let html = `
         <div class="journey-header">
@@ -2047,6 +2478,48 @@ const INDEX_HTML: &str = r#"<!doctype html>
           <button type="button" class="journey-btn" onclick="downloadSnapshot('json')">Export JSON</button>
           <button type="button" class="journey-btn" onclick="downloadSnapshot('md')">Export Markdown</button>
         </div>
+        <div class="guided-grid">
+          <section class="guided-card">
+            <div class="guided-title">Investigation Summary</div>
+            ${summaryGrid}
+            ${shortcutsHtml}
+          </section>
+          <section class="guided-card">
+            <div class="guided-title">Narrative Hints</div>
+            ${hintsHtml}
+          </section>
+        </div>`;
+
+      if (compare) {
+        const baseS = j.summary || {};
+        const cmpS = compare.summary || {};
+        const metrics = [
+          ['Entries', baseS.total_entries ?? j.entries.length, cmpS.total_entries ?? compare.entries.length],
+          ['Incidents', baseS.incidents_count ?? 0, cmpS.incidents_count ?? 0],
+          ['Decisions', baseS.decisions_count ?? 0, cmpS.decisions_count ?? 0],
+          ['Honeypot', baseS.honeypot_count ?? 0, cmpS.honeypot_count ?? 0],
+        ];
+        const compareRows = metrics.map(([label, current, previous]) => {
+          const delta = Number(current) - Number(previous);
+          const deltaLabel = delta > 0 ? '+' + delta : String(delta);
+          const deltaCls = delta > 0 ? 'delta-pos' : (delta < 0 ? 'delta-neg' : 'delta-neu');
+          return `<div class="compare-cell">
+            <div class="summary-label">${esc(label)}</div>
+            <div class="summary-value">${current} <span class="${deltaCls}">(${deltaLabel})</span></div>
+            <div class="summary-label">compare: ${previous}</div>
+          </div>`;
+        }).join('');
+        html += `
+          <section class="guided-card" style="margin-bottom:14px">
+            <div class="guided-title">Comparison vs ${esc(state.filters.compare_date)}</div>
+            <div class="journey-subtitle" style="margin-bottom:10px">
+              current outcome: <strong>${esc(outcomeLabel(j.outcome))}</strong> · compare outcome: <strong>${esc(outcomeLabel(compare.outcome))}</strong>
+            </div>
+            <div class="compare-grid">${compareRows}</div>
+          </section>`;
+      }
+
+      html += `
         <div class="timeline">`;
 
       if (j.entries.length === 0) {
@@ -2101,7 +2574,20 @@ const INDEX_HTML: &str = r#"<!doctype html>
 
   function openCluster(pivotToken) {
     const parsed = parsePivotToken(pivotToken);
-    loadJourney(parsed.type, parsed.value);
+    state.pivot = parsed.type;
+    updatePivotUi();
+    refreshLeft(false).finally(() => {
+      loadJourney(parsed.type, parsed.value);
+    });
+  }
+
+  function openPivotShortcut(token) {
+    const parsed = parsePivotToken(token);
+    state.pivot = parsed.type;
+    updatePivotUi();
+    refreshLeft(false).finally(() => {
+      loadJourney(parsed.type, parsed.value);
+    });
   }
 
   async function downloadSnapshot(format) {
@@ -2115,6 +2601,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         group_by: state.pivot,
         subject_type: state.selected.value ? state.selected.type : '',
         subject: state.selected.value ? state.selected.value : '',
+        window_seconds: state.filters.window_seconds,
       });
       const body = await loadText('/api/export?' + qs);
       const ext = format === 'md' ? 'md' : 'json';
@@ -2144,6 +2631,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         date: state.filters.date,
         severity_min: state.filters.severity_min,
         detector: state.filters.detector,
+        window_seconds: state.filters.window_seconds,
       });
 
       const [ov, entityData, clusterData] = await Promise.all([
@@ -2192,7 +2680,9 @@ const INDEX_HTML: &str = r#"<!doctype html>
       }
 
       if (state.selected.value) {
-        const stillExists = items.some((it) => it.value === state.selected.value);
+        const stillExists =
+          state.selected.type === state.pivot &&
+          items.some((it) => it.value === state.selected.value);
         if (!stillExists) {
           state.selected = { type: state.pivot, value: null };
           document.getElementById('rightPanel').innerHTML = `
@@ -2216,6 +2706,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
   // Boot
   const today = new Date().toISOString().slice(0, 10);
   document.getElementById('flt-date').value = today;
+  document.getElementById('flt-compare-date').value = '';
   updatePivotUi();
 
   document.getElementById('flt-apply').addEventListener('click', () => {
@@ -2235,6 +2726,14 @@ const INDEX_HTML: &str = r#"<!doctype html>
   });
   document.getElementById('flt-severity').addEventListener('change', () => refreshLeft(true));
   document.getElementById('flt-date').addEventListener('change', () => refreshLeft(true));
+  document.getElementById('flt-compare-date').addEventListener('change', () => {
+    if (state.selected.value) {
+      loadJourney(state.selected.type, state.selected.value);
+      return;
+    }
+    refreshLeft(false);
+  });
+  document.getElementById('flt-window').addEventListener('change', () => refreshLeft(true));
 
   refreshLeft();
   setInterval(() => refreshLeft(false), 5000);
@@ -2521,7 +3020,7 @@ mod tests {
         .unwrap();
 
         let filters = InvestigationFilters::from_query(None, None);
-        let journey = build_journey(dir.path(), date, PivotKind::Ip, ip, &filters);
+        let journey = build_journey(dir.path(), date, PivotKind::Ip, ip, &filters, None);
         assert_eq!(
             journey.entries.len(),
             3,
@@ -2535,6 +3034,86 @@ mod tests {
         assert_eq!(journey.subject, ip);
         assert!(journey.first_seen.is_some());
         assert!(journey.last_seen.is_some());
+        assert_eq!(journey.summary.events_count, 1);
+        assert_eq!(journey.summary.incidents_count, 1);
+        assert_eq!(journey.summary.decisions_count, 1);
+        assert!(!journey.summary.hints.is_empty());
+        assert!(journey
+            .summary
+            .pivot_shortcuts
+            .iter()
+            .any(|token| token == "ip:203.0.113.10"));
+    }
+
+    #[test]
+    fn journey_window_filter_limits_entries() {
+        let dir = TempDir::new().unwrap();
+        let date = "2026-03-13";
+        let ip = "203.0.113.10";
+        let now = Utc::now();
+
+        let event = Event {
+            ts: now - chrono::Duration::seconds(120),
+            host: "h".to_string(),
+            source: "auth.log".to_string(),
+            kind: "ssh.login_failed".to_string(),
+            severity: Severity::Medium,
+            summary: "SSH login failed".to_string(),
+            details: serde_json::json!({}),
+            tags: vec![],
+            entities: vec![EntityRef::ip(ip)],
+        };
+        let incident = Incident {
+            ts: now - chrono::Duration::seconds(45),
+            host: "h".to_string(),
+            incident_id: format!("ssh_bruteforce:{ip}:x"),
+            severity: Severity::Critical,
+            title: "Brute Force".to_string(),
+            summary: "9 failures".to_string(),
+            evidence: serde_json::json!({}),
+            recommended_checks: vec![],
+            tags: vec![],
+            entities: vec![EntityRef::ip(ip)],
+        };
+        let decision = DecisionEntry {
+            ts: now,
+            incident_id: format!("ssh_bruteforce:{ip}:x"),
+            host: "h".to_string(),
+            ai_provider: "mock".to_string(),
+            action_type: "block_ip".to_string(),
+            target_ip: Some(ip.to_string()),
+            skill_id: Some("block-ip-ufw".to_string()),
+            confidence: 0.95,
+            auto_executed: true,
+            dry_run: false,
+            reason: "brute force detected".to_string(),
+            estimated_threat: "critical".to_string(),
+            execution_result: "ok".to_string(),
+        };
+
+        std::fs::write(
+            dated_path(dir.path(), "events", date),
+            format!("{}\n", serde_json::to_string(&event).unwrap()),
+        )
+        .unwrap();
+        std::fs::write(
+            dated_path(dir.path(), "incidents", date),
+            format!("{}\n", serde_json::to_string(&incident).unwrap()),
+        )
+        .unwrap();
+        std::fs::write(
+            dated_path(dir.path(), "decisions", date),
+            format!("{}\n", serde_json::to_string(&decision).unwrap()),
+        )
+        .unwrap();
+
+        let filters = InvestigationFilters::from_query(None, None);
+        let journey = build_journey(dir.path(), date, PivotKind::Ip, ip, &filters, Some(60));
+        assert_eq!(journey.entries.len(), 2);
+        assert!(!journey.entries.iter().any(|e| e.kind == "event"));
+        assert_eq!(journey.summary.events_count, 0);
+        assert_eq!(journey.summary.incidents_count, 1);
+        assert_eq!(journey.summary.decisions_count, 1);
     }
 
     #[test]
@@ -2629,7 +3208,7 @@ mod tests {
         .unwrap();
 
         let filters = InvestigationFilters::from_query(None, None);
-        let journey = build_journey(dir.path(), date, PivotKind::User, "root", &filters);
+        let journey = build_journey(dir.path(), date, PivotKind::User, "root", &filters, None);
         assert_eq!(journey.subject_type, "user");
         assert_eq!(journey.subject, "root");
         assert!(journey.entries.iter().any(|e| e.kind == "incident"));
@@ -2732,6 +3311,19 @@ mod tests {
                 first_seen: Some(Utc::now()),
                 last_seen: Some(Utc::now()),
                 outcome: "active".to_string(),
+                summary: JourneySummary {
+                    total_entries: 1,
+                    events_count: 1,
+                    incidents_count: 0,
+                    decisions_count: 0,
+                    honeypot_count: 0,
+                    first_event: Some(Utc::now()),
+                    first_incident: None,
+                    first_decision: None,
+                    first_honeypot: None,
+                    pivot_shortcuts: vec!["ip:203.0.113.10".to_string()],
+                    hints: vec!["Signals observed".to_string()],
+                },
                 entries: vec![],
             }),
         };
@@ -2742,6 +3334,8 @@ mod tests {
         assert!(markdown.contains("cluster-001"));
         assert!(markdown.contains("## Journey"));
         assert!(markdown.contains("Subject: `ip:203.0.113.10`"));
+        assert!(markdown.contains("### Guided Summary"));
+        assert!(markdown.contains("### Investigation Hints"));
     }
 
     #[test]

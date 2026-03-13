@@ -58,7 +58,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Correlação temporal leve de incidentes por janela + pivôs (`ip`, `user`, `detector`) com contexto para AI e clusters narráveis
 - ✅ Telemetria operacional leve (JSONL) com métricas de ingestão, detectores, gate, AI, latência, erros e dry-run vs execução real
 - ✅ Dashboard local read-only (`--dashboard`) com visão operacional de eventos/incidentes/decisões/telemetria (sem endpoints de ação) + autenticação HTTP Basic obrigatória
-- ✅ Dashboard D2 — UX de investigação estilo Clarity: split-pane com investigação read-only em múltiplas etapas: D2.1 (jornada por IP com `/api/entities` + `/api/journey`), D2.2 (filtros + pivôs `ip|user|detector` com `/api/pivots`) e D2.3 (cluster-first com `/api/clusters` + export de snapshot JSON/Markdown via `/api/export`)
+- ✅ Dashboard D2 — UX de investigação estilo Clarity: split-pane com investigação read-only em múltiplas etapas: D2.1 (jornada por IP com `/api/entities` + `/api/journey`), D2.2 (filtros + pivôs `ip|user|detector` com `/api/pivots`), D2.3 (cluster-first com `/api/clusters` + export de snapshot JSON/Markdown via `/api/export`) e D2.4 (investigação guiada com hints narrativos, atalhos de pivô e comparação temporal por data/janela)
 
 ---
 
@@ -258,7 +258,7 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 148 testes (48 sensor + 100 agent)
+make test             # 149 testes (48 sensor + 101 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -597,7 +597,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 148 testes (48 sensor + 100 agent) — todos devem passar
+make test   # 149 testes (48 sensor + 101 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -684,7 +684,8 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase D2.1 (concluída): UX de investigação "jornada do atacante" (split-pane com overview lateral + timeline expandível por IP via `/api/entities` e `/api/journey`)
 - Fase D2.2 (concluída): filtros e pivôs avançados (severidade/detector/entidade) + drill-down por pivô (`ip|user|detector`)
 - Fase D2.3 (concluída): correlação cluster-first + export de snapshot read-only (JSON/Markdown)
-- Fase D2.4 (próxima): UX de investigação avançada (cluster pivot shortcuts, narrativa guiada e comparação temporal)
+- Fase D2.4 (concluída): UX de investigação guiada (hints analíticos, pivot shortcuts na jornada, comparação entre datas e janela temporal configurável)
+- Fase D3 (próxima): ações operacionais guardadas no dashboard (intenção explícita + trilha auditável)
 - Fase 8.1 (concluída): honeypot rebuild foundation (`listener` mínimo, gated por config)
 - Fase 8.2 (concluída): honeypot real bounded (multi-serviço, redirecionamento seletivo opcional, isolamento e forensics JSON/JSONL)
 - Fase 8.3 (concluída): hardening de isolamento + profundidade forense (session lock, retenção e transcript)
