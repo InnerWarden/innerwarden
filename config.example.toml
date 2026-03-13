@@ -36,6 +36,12 @@ enabled = true
 threshold = 8
 window_seconds = 300
 
+[detectors.credential_stuffing]
+enabled = false
+# distinct usernames targeted by one source IP within window
+threshold = 6
+window_seconds = 300
+
 [detectors.port_scan]
 enabled = false
 # distinct destination ports hit by one source IP within window

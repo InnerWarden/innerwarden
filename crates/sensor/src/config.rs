@@ -98,6 +98,8 @@ pub struct DetectorsConfig {
     #[serde(default)]
     pub ssh_bruteforce: SshBruteforceConfig,
     #[serde(default)]
+    pub credential_stuffing: CredentialStuffingConfig,
+    #[serde(default)]
     pub port_scan: PortScanConfig,
 }
 
@@ -114,6 +116,26 @@ pub struct SshBruteforceConfig {
 impl Default for SshBruteforceConfig {
     fn default() -> Self {
         Self { enabled: true, threshold: default_threshold(), window_seconds: default_window_seconds() }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CredentialStuffingConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_credential_stuffing_threshold")]
+    pub threshold: usize,
+    #[serde(default = "default_credential_stuffing_window_seconds")]
+    pub window_seconds: u64,
+}
+
+impl Default for CredentialStuffingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: default_credential_stuffing_threshold(),
+            window_seconds: default_credential_stuffing_window_seconds(),
+        }
     }
 }
 
@@ -149,12 +171,20 @@ fn default_port_scan_threshold() -> usize {
     12
 }
 
+fn default_credential_stuffing_threshold() -> usize {
+    6
+}
+
 fn default_window_seconds() -> u64 {
     300
 }
 
 fn default_port_scan_window_seconds() -> u64 {
     60
+}
+
+fn default_credential_stuffing_window_seconds() -> u64 {
+    300
 }
 
 fn default_poll_seconds() -> u64 {

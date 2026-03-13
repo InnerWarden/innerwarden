@@ -29,6 +29,11 @@ enabled = true
 threshold = 5
 window_seconds = 300
 
+[detectors.credential_stuffing]
+enabled = true
+threshold = 3
+window_seconds = 300
+
 [detectors.port_scan]
 enabled = true
 threshold = 3

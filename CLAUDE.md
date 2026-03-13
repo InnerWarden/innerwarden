@@ -13,6 +13,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Monitoramento de Docker events (start / stop / die / OOM)
 - ✅ Integridade de arquivos via SHA-256 polling configurável
 - ✅ Detector de SSH brute-force (sliding window por IP, threshold configurável)
+- ✅ Detector de SSH credential stuffing por IP (spray de múltiplos usuários em janela)
 - ✅ Detector de port scan por IP (sliding window por portas de destino únicas em logs de firewall)
 - ✅ Output JSONL append-only com rotação diária automática
 - ✅ Fail-open: erros de I/O em collectors são logados, nunca derrubam o agente
@@ -71,6 +72,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 ║              ┌─────────────────────────┐                               ║
 ║              │  Detectors (stateful)   │                               ║
 ║              │  ssh_bruteforce         │ ← sliding window por IP       ║
+║              │  credential_stuffing    │ ← usuários distintos por IP    ║
 ║              │  port_scan              │ ← portas únicas por IP         ║
 ║              └────────────┬────────────┘                               ║
 ║                           │ Events + Incidents                         ║
@@ -183,6 +185,7 @@ crates/
         docker.rs            — subprocess docker events --format '{{json .}}'
       detectors/
         ssh_bruteforce.rs    — sliding window por IP
+        credential_stuffing.rs — spray de usuários distintos por IP
         port_scan.rs         — portas de destino únicas por IP (firewall logs)
       sinks/
         jsonl.rs             — DatedWriter com rotação diária
@@ -220,7 +223,7 @@ examples/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 66 testes (34 sensor + 32 agent)
+make test             # 72 testes (40 sensor + 32 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -284,6 +287,11 @@ paths = ["/etc/ssh/sshd_config", "/etc/sudoers"]
 [detectors.ssh_bruteforce]
 enabled = true
 threshold = 8
+window_seconds = 300
+
+[detectors.credential_stuffing]
+enabled = false       # recomendado habilitar após baseline de ruído no host
+threshold = 6         # usuários distintos por IP na janela
 window_seconds = 300
 
 [detectors.port_scan]
@@ -428,7 +436,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 66 testes (34 sensor + 32 agent) — todos devem passar
+make test   # 72 testes (40 sensor + 32 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -498,8 +506,8 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 ## Próximos passos
 
 - Fase 1 (concluída): Sensor — detector `port_scan`
-- Fase 2 (ativa): Sensor — detector `credential_stuffing`
-- Fase 3 (planejada): Replay QA harness para validação end-to-end
+- Fase 2 (concluída): Sensor — detector `credential_stuffing`
+- Fase 3 (ativa): Replay QA harness para validação end-to-end
 - Fase 4 (deferida): Agent `--report` v2 (tendências e anomalias adicionais)
 - Fase 5 (planejada): Skill `monitor-ip` real (execução continua segura por config)
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
