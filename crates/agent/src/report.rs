@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
@@ -28,6 +28,8 @@ pub struct TrialReport {
     pub operational_health: OperationalHealth,
     pub detection_summary: DetectionSummary,
     pub agent_ai_summary: AgentAiSummary,
+    pub trend_summary: TrendSummary,
+    pub anomaly_hints: Vec<AnomalyHint>,
     pub data_quality: DataQuality,
     pub suggested_improvements: Vec<String>,
 }
@@ -81,6 +83,40 @@ pub struct DataQuality {
     pub files_not_growing: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct TrendSummary {
+    pub previous_date: Option<String>,
+    pub events: CountDelta,
+    pub incidents: CountDelta,
+    pub decisions: CountDelta,
+    pub incident_rate_per_1k_events: FloatDelta,
+    pub decision_rate_per_incident: FloatDelta,
+    pub average_confidence: FloatDelta,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CountDelta {
+    pub current: u64,
+    pub previous: u64,
+    pub delta: i64,
+    pub pct_change: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FloatDelta {
+    pub current: f64,
+    pub previous: f64,
+    pub delta: f64,
+    pub pct_change: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct AnomalyHint {
+    pub severity: String,
+    pub code: String,
+    pub message: String,
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct NamedCount {
     pub name: String,
@@ -131,6 +167,7 @@ struct Counters {
 pub fn generate(data_dir: &Path) -> Result<GeneratedReport> {
     let report_date = Local::now().date_naive().format("%Y-%m-%d").to_string();
     let analyzed_date = detect_latest_date(data_dir).unwrap_or_else(|| report_date.clone());
+    let previous_date = detect_previous_date(data_dir, &analyzed_date);
     let analyzed_is_today = analyzed_date == report_date;
 
     let events = data_dir.join(format!("events-{analyzed_date}.jsonl"));
@@ -217,6 +254,19 @@ pub fn generate(data_dir: &Path) -> Result<GeneratedReport> {
         files_not_growing: counters.files_not_growing.clone(),
     };
 
+    let previous_counters = previous_date
+        .as_ref()
+        .map(|date| compute_day_counters(data_dir, date));
+
+    let trend_summary = build_trend_summary(&counters, previous_counters.as_ref(), previous_date);
+    let anomaly_hints = build_anomaly_hints(
+        &detection_summary,
+        &agent_ai_summary,
+        &data_quality,
+        &trend_summary,
+        previous_counters.as_ref(),
+    );
+
     let operational_health = OperationalHealth {
         expected_files_present,
         state_json_readable,
@@ -231,6 +281,8 @@ pub fn generate(data_dir: &Path) -> Result<GeneratedReport> {
         operational_health,
         detection_summary,
         agent_ai_summary,
+        trend_summary,
+        anomaly_hints,
         data_quality,
         suggested_improvements: vec![],
     };
@@ -256,8 +308,22 @@ pub fn generate(data_dir: &Path) -> Result<GeneratedReport> {
 }
 
 fn detect_latest_date(data_dir: &Path) -> Option<String> {
-    let mut latest: Option<String> = None;
-    let entries = fs::read_dir(data_dir).ok()?;
+    collect_available_dates(data_dir).into_iter().max()
+}
+
+fn detect_previous_date(data_dir: &Path, analyzed_date: &str) -> Option<String> {
+    collect_available_dates(data_dir)
+        .into_iter()
+        .filter(|date| date.as_str() < analyzed_date)
+        .max()
+}
+
+fn collect_available_dates(data_dir: &Path) -> Vec<String> {
+    let mut dates = BTreeSet::new();
+    let entries = match fs::read_dir(data_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
 
     for entry in entries.flatten() {
         let file_name = entry.file_name();
@@ -266,16 +332,12 @@ fn detect_latest_date(data_dir: &Path) -> Option<String> {
             .or_else(|| extract_date(&name, "incidents-", ".jsonl"))
             .or_else(|| extract_date(&name, "decisions-", ".jsonl"))
             .or_else(|| extract_date(&name, "summary-", ".md"));
-
         if let Some(date) = candidate {
-            match &latest {
-                Some(current) if current >= &date => {}
-                _ => latest = Some(date),
-            }
+            dates.insert(date);
         }
     }
 
-    latest
+    dates.into_iter().collect()
 }
 
 fn extract_date(name: &str, prefix: &str, suffix: &str) -> Option<String> {
@@ -404,6 +466,18 @@ fn parse_decisions_file(path: &Path, counters: &mut Counters) -> ParseOutcome {
     }
 
     outcome
+}
+
+fn compute_day_counters(data_dir: &Path, date: &str) -> Counters {
+    let events = data_dir.join(format!("events-{date}.jsonl"));
+    let incidents = data_dir.join(format!("incidents-{date}.jsonl"));
+    let decisions = data_dir.join(format!("decisions-{date}.jsonl"));
+
+    let mut counters = Counters::default();
+    parse_events_file(&events, &mut counters);
+    parse_incidents_file(&incidents, &mut counters);
+    parse_decisions_file(&decisions, &mut counters);
+    counters
 }
 
 fn parse_state_file(path: &Path) -> ParseOutcome {
@@ -576,6 +650,210 @@ fn top_n(map: &HashMap<String, u64>, n: usize) -> Vec<NamedCount> {
     items
 }
 
+fn build_trend_summary(
+    current: &Counters,
+    previous: Option<&Counters>,
+    previous_date: Option<String>,
+) -> TrendSummary {
+    let previous_events = previous.map(|c| c.total_events).unwrap_or(0);
+    let previous_incidents = previous.map(|c| c.total_incidents).unwrap_or(0);
+    let previous_decisions = previous.map(|c| c.total_decisions).unwrap_or(0);
+
+    let current_incident_rate = incident_rate_per_1k_events(current);
+    let previous_incident_rate = previous.map(incident_rate_per_1k_events).unwrap_or(0.0);
+
+    let current_decision_rate = decision_rate_per_incident(current);
+    let previous_decision_rate = previous.map(decision_rate_per_incident).unwrap_or(0.0);
+
+    let current_avg_conf = average_confidence(current);
+    let previous_avg_conf = previous.map(average_confidence).unwrap_or(0.0);
+
+    TrendSummary {
+        previous_date,
+        events: count_delta(current.total_events, previous_events),
+        incidents: count_delta(current.total_incidents, previous_incidents),
+        decisions: count_delta(current.total_decisions, previous_decisions),
+        incident_rate_per_1k_events: float_delta(current_incident_rate, previous_incident_rate),
+        decision_rate_per_incident: float_delta(current_decision_rate, previous_decision_rate),
+        average_confidence: float_delta(current_avg_conf, previous_avg_conf),
+    }
+}
+
+fn build_anomaly_hints(
+    detection_summary: &DetectionSummary,
+    agent_ai_summary: &AgentAiSummary,
+    data_quality: &DataQuality,
+    trend_summary: &TrendSummary,
+    previous: Option<&Counters>,
+) -> Vec<AnomalyHint> {
+    let mut hints = Vec::new();
+
+    if !data_quality.malformed_jsonl.is_empty() {
+        hints.push(AnomalyHint {
+            severity: "high".to_string(),
+            code: "malformed_jsonl".to_string(),
+            message: format!(
+                "Malformed JSONL detected: {}.",
+                map_or_none(&data_quality.malformed_jsonl)
+            ),
+        });
+    }
+
+    if detection_summary.total_events == 0 {
+        hints.push(AnomalyHint {
+            severity: "high".to_string(),
+            code: "no_events".to_string(),
+            message: "No events captured for analyzed day; collectors may be blocked or misconfigured."
+                .to_string(),
+        });
+    }
+
+    if detection_summary.total_incidents > 0 && agent_ai_summary.total_decisions == 0 {
+        hints.push(AnomalyHint {
+            severity: "high".to_string(),
+            code: "incident_without_ai_decision".to_string(),
+            message: "Incidents exist but no AI decisions were recorded; check agent AI settings and credentials."
+                .to_string(),
+        });
+    }
+
+    if trend_summary.incidents.previous > 0
+        && trend_summary.incidents.delta >= 5
+        && trend_summary.incidents.pct_change.unwrap_or(0.0) >= 100.0
+    {
+        hints.push(AnomalyHint {
+            severity: "high".to_string(),
+            code: "incident_spike".to_string(),
+            message: format!(
+                "Incidents doubled or more vs previous day (delta: {}).",
+                signed_i64(trend_summary.incidents.delta)
+            ),
+        });
+    }
+
+    if trend_summary.average_confidence.delta <= -0.2
+        && trend_summary.decisions.current >= 5
+        && trend_summary.decisions.previous >= 5
+    {
+        hints.push(AnomalyHint {
+            severity: "medium".to_string(),
+            code: "confidence_drop".to_string(),
+            message: format!(
+                "Average AI confidence dropped from {:.3} to {:.3}.",
+                trend_summary.average_confidence.previous, trend_summary.average_confidence.current
+            ),
+        });
+    }
+
+    if agent_ai_summary.total_decisions >= 10 {
+        let ignore_ratio = agent_ai_summary.ignore_count as f64 / agent_ai_summary.total_decisions as f64;
+        if ignore_ratio > 0.9 {
+            hints.push(AnomalyHint {
+                severity: "medium".to_string(),
+                code: "ignore_saturation".to_string(),
+                message: format!(
+                    "Ignore ratio is {:.1}% ({} of {} decisions).",
+                    ignore_ratio * 100.0,
+                    agent_ai_summary.ignore_count,
+                    agent_ai_summary.total_decisions
+                ),
+            });
+        }
+    }
+
+    if let Some(previous) = previous {
+        let mut new_incident_types = Vec::new();
+        for (kind, count) in &detection_summary.incidents_by_type {
+            let previous_count = previous.incidents_by_type.get(kind).copied().unwrap_or(0);
+            if previous_count == 0 && *count >= 3 {
+                new_incident_types.push(kind.clone());
+            }
+        }
+        if !new_incident_types.is_empty() {
+            new_incident_types.sort();
+            hints.push(AnomalyHint {
+                severity: "medium".to_string(),
+                code: "new_incident_type".to_string(),
+                message: format!(
+                    "New incident types crossed noise floor: {}.",
+                    new_incident_types.join(", ")
+                ),
+            });
+        }
+    }
+
+    if !data_quality.files_not_growing.is_empty() {
+        hints.push(AnomalyHint {
+            severity: "medium".to_string(),
+            code: "stale_ingest_files".to_string(),
+            message: format!(
+                "Some active-day artifacts look stale: {}.",
+                list_or_none(&data_quality.files_not_growing)
+            ),
+        });
+    }
+
+    hints
+}
+
+fn count_delta(current: u64, previous: u64) -> CountDelta {
+    CountDelta {
+        current,
+        previous,
+        delta: signed_u64_diff(current, previous),
+        pct_change: pct_change(current as f64, previous as f64),
+    }
+}
+
+fn float_delta(current: f64, previous: f64) -> FloatDelta {
+    FloatDelta {
+        current,
+        previous,
+        delta: current - previous,
+        pct_change: pct_change(current, previous),
+    }
+}
+
+fn average_confidence(counters: &Counters) -> f64 {
+    if counters.total_decisions > 0 {
+        counters.confidence_sum / counters.total_decisions as f64
+    } else {
+        0.0
+    }
+}
+
+fn incident_rate_per_1k_events(counters: &Counters) -> f64 {
+    if counters.total_events > 0 {
+        counters.total_incidents as f64 * 1000.0 / counters.total_events as f64
+    } else {
+        0.0
+    }
+}
+
+fn decision_rate_per_incident(counters: &Counters) -> f64 {
+    if counters.total_incidents > 0 {
+        counters.total_decisions as f64 / counters.total_incidents as f64
+    } else {
+        0.0
+    }
+}
+
+fn pct_change(current: f64, previous: f64) -> Option<f64> {
+    if previous.abs() < f64::EPSILON {
+        None
+    } else {
+        Some(((current - previous) / previous) * 100.0)
+    }
+}
+
+fn signed_u64_diff(current: u64, previous: u64) -> i64 {
+    if current >= previous {
+        (current - previous).min(i64::MAX as u64) as i64
+    } else {
+        -((previous - current).min(i64::MAX as u64) as i64)
+    }
+}
+
 fn build_suggestions(report: &TrialReport) -> Vec<String> {
     let mut suggestions = Vec::new();
 
@@ -636,6 +914,12 @@ fn build_suggestions(report: &TrialReport) -> Vec<String> {
     if !report.data_quality.files_not_growing.is_empty() {
         suggestions.push(
             "Some active-day files appear stale (>6h without updates); verify ingest pipeline health."
+                .to_string(),
+        );
+    }
+    if !report.anomaly_hints.is_empty() {
+        suggestions.push(
+            "Review anomaly hints for day-over-day spikes and behavior shifts before changing responder settings."
                 .to_string(),
         );
     }
@@ -783,6 +1067,64 @@ fn render_markdown(report: &TrialReport) -> String {
     }
     let _ = writeln!(&mut out);
 
+    let _ = writeln!(&mut out, "## Trend deltas (v2)");
+    match &report.trend_summary.previous_date {
+        Some(previous_date) => {
+            let _ = writeln!(&mut out, "- Previous date: {}", previous_date);
+            let _ = writeln!(
+                &mut out,
+                "- Events: {}",
+                render_count_delta(&report.trend_summary.events)
+            );
+            let _ = writeln!(
+                &mut out,
+                "- Incidents: {}",
+                render_count_delta(&report.trend_summary.incidents)
+            );
+            let _ = writeln!(
+                &mut out,
+                "- Decisions: {}",
+                render_count_delta(&report.trend_summary.decisions)
+            );
+            let _ = writeln!(
+                &mut out,
+                "- Incident rate / 1k events: {}",
+                render_float_delta(&report.trend_summary.incident_rate_per_1k_events, 3)
+            );
+            let _ = writeln!(
+                &mut out,
+                "- Decision rate / incident: {}",
+                render_float_delta(&report.trend_summary.decision_rate_per_incident, 3)
+            );
+            let _ = writeln!(
+                &mut out,
+                "- Average confidence: {}",
+                render_float_delta(&report.trend_summary.average_confidence, 3)
+            );
+        }
+        None => {
+            let _ = writeln!(
+                &mut out,
+                "- No previous day artifacts found; trend deltas will appear after another full day."
+            );
+        }
+    }
+    let _ = writeln!(&mut out);
+
+    let _ = writeln!(&mut out, "## Anomaly hints");
+    if report.anomaly_hints.is_empty() {
+        let _ = writeln!(&mut out, "- none");
+    } else {
+        for hint in &report.anomaly_hints {
+            let _ = writeln!(
+                &mut out,
+                "- [{}] {}: {}",
+                hint.severity, hint.code, hint.message
+            );
+        }
+    }
+    let _ = writeln!(&mut out);
+
     let _ = writeln!(&mut out, "## Data quality / anomalies");
     let _ = writeln!(
         &mut out,
@@ -827,6 +1169,50 @@ fn yes_no(v: bool) -> String {
     }
 }
 
+fn render_count_delta(delta: &CountDelta) -> String {
+    format!(
+        "current={} previous={} delta={} ({})",
+        delta.current,
+        delta.previous,
+        signed_i64(delta.delta),
+        format_pct(delta.pct_change)
+    )
+}
+
+fn render_float_delta(delta: &FloatDelta, precision: usize) -> String {
+    format!(
+        "current={cur:.p$} previous={prev:.p$} delta={signed} ({pct})",
+        cur = delta.current,
+        prev = delta.previous,
+        p = precision,
+        signed = signed_f64(delta.delta, precision),
+        pct = format_pct(delta.pct_change)
+    )
+}
+
+fn signed_i64(v: i64) -> String {
+    if v > 0 {
+        format!("+{v}")
+    } else {
+        v.to_string()
+    }
+}
+
+fn signed_f64(v: f64, precision: usize) -> String {
+    if v > 0.0 {
+        format!("+{:.*}", precision, v)
+    } else {
+        format!("{:.*}", precision, v)
+    }
+}
+
+fn format_pct(v: Option<f64>) -> String {
+    match v {
+        Some(v) => format!("{:+.1}%", v),
+        None => "n/a".to_string(),
+    }
+}
+
 fn list_or_none(items: &[String]) -> String {
     if items.is_empty() {
         "none".to_string()
@@ -850,6 +1236,8 @@ fn map_or_none(items: &BTreeMap<String, u64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
     use chrono::Utc;
     use innerwarden_core::{
         entities::EntityRef,
@@ -947,6 +1335,7 @@ mod tests {
         assert_eq!(out.report.detection_summary.total_events, 2);
         assert_eq!(out.report.detection_summary.total_incidents, 1);
         assert_eq!(out.report.agent_ai_summary.total_decisions, 1);
+        assert!(out.report.trend_summary.previous_date.is_none());
     }
 
     #[test]
@@ -976,5 +1365,211 @@ mod tests {
         let out = generate(dir.path()).unwrap();
         assert!(out.report.data_quality.decisions_without_action > 0);
         assert!(!out.report.data_quality.malformed_jsonl.is_empty());
+        let anomaly_codes: HashSet<&str> = out
+            .report
+            .anomaly_hints
+            .iter()
+            .map(|hint| hint.code.as_str())
+            .collect();
+        assert!(anomaly_codes.contains("malformed_jsonl"));
+    }
+
+    #[test]
+    fn computes_day_over_day_trends_and_anomalies() {
+        let dir = TempDir::new().unwrap();
+        let previous_date = "2026-03-12";
+        let current_date = "2026-03-13";
+
+        let previous_events = dir.path().join(format!("events-{previous_date}.jsonl"));
+        let previous_incidents = dir.path().join(format!("incidents-{previous_date}.jsonl"));
+        let previous_decisions = dir.path().join(format!("decisions-{previous_date}.jsonl"));
+        let previous_summary = dir.path().join(format!("summary-{previous_date}.md"));
+
+        let current_events = dir.path().join(format!("events-{current_date}.jsonl"));
+        let current_incidents = dir.path().join(format!("incidents-{current_date}.jsonl"));
+        let current_decisions = dir.path().join(format!("decisions-{current_date}.jsonl"));
+        let current_summary = dir.path().join(format!("summary-{current_date}.md"));
+
+        let state_path = dir.path().join("state.json");
+        let agent_state_path = dir.path().join("agent-state.json");
+
+        let prev_events_payload = (0..4)
+            .map(|_| {
+                serde_json::to_string(&Event {
+                    ts: Utc::now(),
+                    host: "h".to_string(),
+                    source: "auth.log".to_string(),
+                    kind: "ssh.login_failed".to_string(),
+                    severity: Severity::Info,
+                    summary: "prev".to_string(),
+                    details: serde_json::json!({}),
+                    tags: vec![],
+                    entities: vec![EntityRef::ip("1.2.3.4"), EntityRef::user("root")],
+                })
+                .unwrap()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&previous_events, format!("{prev_events_payload}\n")).unwrap();
+
+        let previous_incident = Incident {
+            ts: Utc::now(),
+            host: "h".to_string(),
+            incident_id: "ssh_bruteforce:1.2.3.4:prev".to_string(),
+            severity: Severity::High,
+            title: "bruteforce".to_string(),
+            summary: "prev".to_string(),
+            evidence: serde_json::json!({}),
+            recommended_checks: vec![],
+            tags: vec![],
+            entities: vec![EntityRef::ip("1.2.3.4")],
+        };
+        fs::write(
+            &previous_incidents,
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&previous_incident).unwrap(),
+                serde_json::to_string(&previous_incident).unwrap()
+            ),
+        )
+        .unwrap();
+
+        let previous_decisions_payload = (0..6)
+            .map(|i| {
+                serde_json::to_string(&DecisionEntry {
+                    ts: Utc::now(),
+                    incident_id: format!("prev-{i}"),
+                    host: "h".to_string(),
+                    ai_provider: "openai".to_string(),
+                    action_type: if i == 0 { "ignore" } else { "block_ip" }.to_string(),
+                    target_ip: Some("1.2.3.4".to_string()),
+                    skill_id: Some("block-ip-ufw".to_string()),
+                    confidence: 0.95,
+                    auto_executed: false,
+                    dry_run: true,
+                    reason: "prev".to_string(),
+                    estimated_threat: "high".to_string(),
+                    execution_result: "skipped".to_string(),
+                })
+                .unwrap()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&previous_decisions, format!("{previous_decisions_payload}\n")).unwrap();
+        fs::write(&previous_summary, "# prev\n").unwrap();
+
+        let current_events_payload = (0..20)
+            .map(|_| {
+                serde_json::to_string(&Event {
+                    ts: Utc::now(),
+                    host: "h".to_string(),
+                    source: "auth.log".to_string(),
+                    kind: "ssh.login_failed".to_string(),
+                    severity: Severity::Info,
+                    summary: "current".to_string(),
+                    details: serde_json::json!({}),
+                    tags: vec![],
+                    entities: vec![EntityRef::ip("1.2.3.4"), EntityRef::user("root")],
+                })
+                .unwrap()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&current_events, format!("{current_events_payload}\n")).unwrap();
+
+        let current_bruteforce = Incident {
+            ts: Utc::now(),
+            host: "h".to_string(),
+            incident_id: "ssh_bruteforce:1.2.3.4:current".to_string(),
+            severity: Severity::High,
+            title: "bruteforce".to_string(),
+            summary: "current".to_string(),
+            evidence: serde_json::json!({}),
+            recommended_checks: vec![],
+            tags: vec![],
+            entities: vec![EntityRef::ip("1.2.3.4")],
+        };
+        let current_port_scan = Incident {
+            ts: Utc::now(),
+            host: "h".to_string(),
+            incident_id: "port_scan:1.2.3.4:current".to_string(),
+            severity: Severity::High,
+            title: "port scan".to_string(),
+            summary: "current".to_string(),
+            evidence: serde_json::json!({}),
+            recommended_checks: vec![],
+            tags: vec![],
+            entities: vec![EntityRef::ip("1.2.3.4")],
+        };
+        let current_incidents_payload = vec![
+            &current_bruteforce,
+            &current_bruteforce,
+            &current_bruteforce,
+            &current_bruteforce,
+            &current_bruteforce,
+            &current_port_scan,
+            &current_port_scan,
+            &current_port_scan,
+            &current_port_scan,
+            &current_port_scan,
+        ]
+        .into_iter()
+        .map(|incident| serde_json::to_string(incident).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+        fs::write(&current_incidents, format!("{current_incidents_payload}\n")).unwrap();
+
+        let current_decisions_payload = (0..12)
+            .map(|i| {
+                serde_json::to_string(&DecisionEntry {
+                    ts: Utc::now(),
+                    incident_id: format!("current-{i}"),
+                    host: "h".to_string(),
+                    ai_provider: "openai".to_string(),
+                    action_type: if i < 11 { "ignore" } else { "block_ip" }.to_string(),
+                    target_ip: Some("1.2.3.4".to_string()),
+                    skill_id: Some("block-ip-ufw".to_string()),
+                    confidence: 0.4,
+                    auto_executed: false,
+                    dry_run: true,
+                    reason: "current".to_string(),
+                    estimated_threat: "medium".to_string(),
+                    execution_result: "skipped".to_string(),
+                })
+                .unwrap()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&current_decisions, format!("{current_decisions_payload}\n")).unwrap();
+
+        fs::write(&current_summary, "# current\n").unwrap();
+        fs::write(&state_path, r#"{"cursors":{"auth_log":10}}"#).unwrap();
+        fs::write(
+            &agent_state_path,
+            r#"{"events":{"2026-03-13":10},"incidents":{"2026-03-13":5}}"#,
+        )
+        .unwrap();
+
+        let out = generate(dir.path()).unwrap();
+
+        assert_eq!(
+            out.report.trend_summary.previous_date,
+            Some(previous_date.to_string())
+        );
+        assert_eq!(out.report.trend_summary.incidents.current, 10);
+        assert_eq!(out.report.trend_summary.incidents.previous, 2);
+        assert_eq!(out.report.trend_summary.incidents.delta, 8);
+        assert!(out.report.trend_summary.incidents.pct_change.unwrap_or(0.0) > 100.0);
+
+        let anomaly_codes: HashSet<&str> = out
+            .report
+            .anomaly_hints
+            .iter()
+            .map(|hint| hint.code.as_str())
+            .collect();
+        assert!(anomaly_codes.contains("incident_spike"));
+        assert!(anomaly_codes.contains("confidence_drop"));
+        assert!(anomaly_codes.contains("ignore_saturation"));
+        assert!(anomaly_codes.contains("new_incident_type"));
     }
 }

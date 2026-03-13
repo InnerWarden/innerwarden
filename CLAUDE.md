@@ -45,7 +45,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ `reqwest::Client` reutilizado entre chamadas AI (connection pool real, sem overhead de TLS por chamada)
 - ✅ Audit trail com flush imediato por decisão — sobrevive a crash entre execução e shutdown
 - ✅ Modo `--once` para processamento batch
-- ✅ Modo `--report`: gera relatório operacional do trial (`trial-report-YYYY-MM-DD.{md,json}`) sem alterar estado
+- ✅ Modo `--report` v2: gera relatório operacional do trial com deltas dia-a-dia + anomaly hints (`trial-report-YYYY-MM-DD.{md,json}`) sem alterar estado
 - ✅ Carregamento automático de `.env` na inicialização (dotenvy, fail-silent)
 - ✅ Replay QA harness end-to-end (`make replay-qa`) com assertions estáveis de artefatos
 
@@ -197,7 +197,7 @@ crates/
       main.rs                — CLI + dois loops (AI 2s + narrative 30s) + SIGTERM
       config.rs              — AgentConfig: narrative, webhook, ai, responder
       reader.rs              — JSONL incremental reader + AgentCursor persistence
-      report.rs              — geração de relatório operacional (`--report`) a partir dos artefatos
+      report.rs              — relatório operacional v2 (`--report`) com tendências e anomaly hints
       narrative.rs           — geração de Markdown diário (generate/write/cleanup)
       webhook.rs             — HTTP POST de notificações de incidente
       decisions.rs           — DecisionWriter + DecisionEntry (audit trail JSONL)
@@ -227,7 +227,7 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 76 testes (40 sensor + 36 agent)
+make test             # 77 testes (40 sensor + 37 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -446,7 +446,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 76 testes (40 sensor + 36 agent) — todos devem passar
+make test   # 77 testes (40 sensor + 37 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -519,7 +519,7 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase 1 (concluída): Sensor — detector `port_scan`
 - Fase 2 (concluída): Sensor — detector `credential_stuffing`
 - Fase 3 (concluída): Replay QA harness para validação end-to-end
-- Fase 4 (deferida): Agent `--report` v2 (tendências e anomalias adicionais)
+- Fase 4 (concluída): Agent `--report` v2 (tendências e anomalias adicionais)
 - Fase 5 (concluída): Skill `monitor-ip` real (execução continua segura por config)
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
 - Referência do roadmap: `docs/development-plan.md`
