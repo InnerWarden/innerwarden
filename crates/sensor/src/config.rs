@@ -97,6 +97,8 @@ impl Default for AuthLogConfig {
 pub struct DetectorsConfig {
     #[serde(default)]
     pub ssh_bruteforce: SshBruteforceConfig,
+    #[serde(default)]
+    pub port_scan: PortScanConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,6 +117,26 @@ impl Default for SshBruteforceConfig {
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PortScanConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_port_scan_threshold")]
+    pub threshold: usize,
+    #[serde(default = "default_port_scan_window_seconds")]
+    pub window_seconds: u64,
+}
+
+impl Default for PortScanConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: default_port_scan_threshold(),
+            window_seconds: default_port_scan_window_seconds(),
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -123,8 +145,16 @@ fn default_threshold() -> usize {
     8
 }
 
+fn default_port_scan_threshold() -> usize {
+    12
+}
+
 fn default_window_seconds() -> u64 {
     300
+}
+
+fn default_port_scan_window_seconds() -> u64 {
+    60
 }
 
 fn default_poll_seconds() -> u64 {

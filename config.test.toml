@@ -28,3 +28,8 @@ enabled = true   # docker binary present; collector exits gracefully if daemon i
 enabled = true
 threshold = 5
 window_seconds = 300
+
+[detectors.port_scan]
+enabled = true
+threshold = 3
+window_seconds = 60

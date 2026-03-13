@@ -151,6 +151,7 @@ fn parse_journal_line(line: &str, host: &str) -> Option<(String, Option<Event>)>
     let event = match identifier {
         "sshd" => parse_sshd_message(message, host, "journald"),
         "sudo" => parse_sudo_message(message, host),
+        "kernel" => parse_kernel_firewall_message(message, host),
         _ => None,
     };
 
@@ -186,11 +187,60 @@ fn parse_sudo_message(msg: &str, host: &str) -> Option<Event> {
     })
 }
 
+/// Parse kernel firewall message variants (UFW/iptables/nftables style).
+///
+/// Typical examples:
+///   [UFW BLOCK] IN=eth0 OUT= MAC=... SRC=203.0.113.10 DST=10.0.0.10 ... PROTO=TCP SPT=49466 DPT=3306
+///   IN=eth0 OUT= SRC=198.51.100.9 DST=10.0.0.10 ... PROTO=TCP SPT=45000 DPT=8080
+fn parse_kernel_firewall_message(msg: &str, host: &str) -> Option<Event> {
+    // Keep this strict enough to avoid turning random kernel logs into network events.
+    let has_firewall_hint = msg.contains("UFW BLOCK")
+        || (msg.contains("SRC=") && msg.contains("DST=") && msg.contains("DPT="));
+    if !has_firewall_hint {
+        return None;
+    }
+
+    let src_ip = kv_after(msg, "SRC=")?;
+    let dst_ip = kv_after(msg, "DST=").unwrap_or("unknown");
+    let dst_port = kv_after(msg, "DPT=")?.parse::<u16>().ok()?;
+    let proto = kv_after(msg, "PROTO=").unwrap_or("UNKNOWN");
+
+    let mut entities = vec![EntityRef::ip(src_ip)];
+    if dst_ip != "unknown" && dst_ip != src_ip {
+        entities.push(EntityRef::ip(dst_ip));
+    }
+
+    Some(Event {
+        ts: Utc::now(),
+        host: host.to_string(),
+        source: "journald".to_string(),
+        kind: "network.connection_blocked".to_string(),
+        severity: Severity::Low,
+        summary: format!("Firewall blocked {proto} traffic from {src_ip} to {dst_ip}:{dst_port}"),
+        details: serde_json::json!({
+            "src_ip": src_ip,
+            "dst_ip": dst_ip,
+            "dst_port": dst_port,
+            "proto": proto,
+        }),
+        tags: vec!["network".to_string(), "firewall".to_string()],
+        entities,
+    })
+}
+
 /// Extract the value of a `KEY=value` field (stops at ';' or end of string).
 fn field_after<'a>(s: &'a str, key: &str) -> Option<&'a str> {
     let pos = s.find(key)?;
     let rest = &s[pos + key.len()..];
     let end = rest.find(';').unwrap_or(rest.len());
+    Some(rest[..end].trim())
+}
+
+/// Extract a KEY=VALUE token from syslog-style key/value strings.
+fn kv_after<'a>(s: &'a str, key: &str) -> Option<&'a str> {
+    let pos = s.find(key)?;
+    let rest = &s[pos + key.len()..];
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
     Some(rest[..end].trim())
 }
 
@@ -267,5 +317,27 @@ mod tests {
     #[test]
     fn returns_none_for_invalid_json() {
         assert!(parse_journal_line("not-json-at-all", "host").is_none());
+    }
+
+    #[test]
+    fn parses_kernel_ufw_block_message() {
+        let line = journal_line(
+            "kernel",
+            "[UFW BLOCK] IN=eth0 OUT= MAC=aa SRC=203.0.113.10 DST=10.0.0.10 LEN=60 PROTO=TCP SPT=48888 DPT=5432",
+        );
+        let (_, ev) = parse_journal_line(&line, "host").unwrap();
+        let ev = ev.expect("should parse firewall event");
+        assert_eq!(ev.kind, "network.connection_blocked");
+        assert_eq!(ev.details["src_ip"], "203.0.113.10");
+        assert_eq!(ev.details["dst_ip"], "10.0.0.10");
+        assert_eq!(ev.details["dst_port"], 5432);
+        assert_eq!(ev.details["proto"], "TCP");
+    }
+
+    #[test]
+    fn skips_kernel_message_without_firewall_fields() {
+        let line = journal_line("kernel", "EXT4-fs (vda1): mounted filesystem with ordered data mode");
+        let (_, ev) = parse_journal_line(&line, "host").unwrap();
+        assert!(ev.is_none());
     }
 }

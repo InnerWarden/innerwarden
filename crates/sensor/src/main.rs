@@ -16,6 +16,7 @@ use collectors::{
     integrity::IntegrityCollector,
     journald::JournaldCollector,
 };
+use detectors::port_scan::PortScanDetector;
 use detectors::ssh_bruteforce::SshBruteforceDetector;
 use sinks::{jsonl::JsonlWriter, state::State};
 use tokio::sync::mpsc;
@@ -69,6 +70,11 @@ async fn main() -> Result<()> {
         let d = &cfg.detectors.ssh_bruteforce;
         info!(threshold = d.threshold, window_seconds = d.window_seconds, "ssh_bruteforce detector enabled");
         SshBruteforceDetector::new(&cfg.agent.host_id, d.threshold, d.window_seconds)
+    });
+    let mut port_scan_detector = cfg.detectors.port_scan.enabled.then(|| {
+        let d = &cfg.detectors.port_scan;
+        info!(threshold = d.threshold, window_seconds = d.window_seconds, "port_scan detector enabled");
+        PortScanDetector::new(&cfg.agent.host_id, d.threshold, d.window_seconds)
     });
 
     // Spawn auth_log collector
@@ -178,7 +184,14 @@ async fn main() -> Result<()> {
             event = rx.recv() => {
                 match event {
                     Some(ev) => {
-                        process_event(ev, &mut writer, &mut ssh_detector, &mut events_written, &mut incidents_written);
+                        process_event(
+                            ev,
+                            &mut writer,
+                            &mut ssh_detector,
+                            &mut port_scan_detector,
+                            &mut events_written,
+                            &mut incidents_written,
+                        );
                         false
                     }
                     None => {
@@ -208,7 +221,14 @@ async fn main() -> Result<()> {
             event = rx.recv() => {
                 match event {
                     Some(ev) => {
-                        process_event(ev, &mut writer, &mut ssh_detector, &mut events_written, &mut incidents_written);
+                        process_event(
+                            ev,
+                            &mut writer,
+                            &mut ssh_detector,
+                            &mut port_scan_detector,
+                            &mut events_written,
+                            &mut incidents_written,
+                        );
                         false
                     }
                     None => {
@@ -271,6 +291,7 @@ fn process_event(
     ev: innerwarden_core::event::Event,
     writer: &mut JsonlWriter,
     ssh_detector: &mut Option<SshBruteforceDetector>,
+    port_scan_detector: &mut Option<PortScanDetector>,
     events_written: &mut u64,
     incidents_written: &mut u64,
 ) {
@@ -282,6 +303,22 @@ fn process_event(
     }
 
     if let Some(ref mut det) = ssh_detector {
+        if let Some(incident) = det.process(&ev) {
+            info!(
+                incident_id = %incident.incident_id,
+                severity = ?incident.severity,
+                title = %incident.title,
+                "INCIDENT"
+            );
+            if let Err(e) = writer.write_incident(&incident) {
+                warn!(incident_id = %incident.incident_id, "failed to write incident: {e:#}");
+            } else {
+                *incidents_written += 1;
+            }
+        }
+    }
+
+    if let Some(ref mut det) = port_scan_detector {
         if let Some(incident) = det.process(&ev) {
             info!(
                 incident_id = %incident.incident_id,

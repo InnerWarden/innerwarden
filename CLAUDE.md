@@ -9,10 +9,11 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 
 ### Sensor (`innerwarden-sensor`)
 - ✅ Tail de `/var/log/auth.log` com parser SSH completo (falhas, logins, usuários inválidos)
-- ✅ Integração com `journald` (sshd, sudo, qualquer systemd unit)
+- ✅ Integração com `journald` (sshd, sudo, kernel/qualquer systemd unit)
 - ✅ Monitoramento de Docker events (start / stop / die / OOM)
 - ✅ Integridade de arquivos via SHA-256 polling configurável
 - ✅ Detector de SSH brute-force (sliding window por IP, threshold configurável)
+- ✅ Detector de port scan por IP (sliding window por portas de destino únicas em logs de firewall)
 - ✅ Output JSONL append-only com rotação diária automática
 - ✅ Fail-open: erros de I/O em collectors são logados, nunca derrubam o agente
 - ✅ Flush duplo: por contagem (50 eventos) + por tempo (intervalo de 5s)
@@ -70,7 +71,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 ║              ┌─────────────────────────┐                               ║
 ║              │  Detectors (stateful)   │                               ║
 ║              │  ssh_bruteforce         │ ← sliding window por IP       ║
-║              │  (mais no futuro)       │                               ║
+║              │  port_scan              │ ← portas únicas por IP         ║
 ║              └────────────┬────────────┘                               ║
 ║                           │ Events + Incidents                         ║
 ║                           ▼                                            ║
@@ -182,6 +183,7 @@ crates/
         docker.rs            — subprocess docker events --format '{{json .}}'
       detectors/
         ssh_bruteforce.rs    — sliding window por IP
+        port_scan.rs         — portas de destino únicas por IP (firewall logs)
       sinks/
         jsonl.rs             — DatedWriter com rotação diária
         state.rs             — load/save atômico de cursors
@@ -218,7 +220,7 @@ examples/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 59 testes (27 sensor + 32 agent)
+make test             # 66 testes (34 sensor + 32 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -269,7 +271,7 @@ path = "/var/log/auth.log"
 
 [collectors.journald]
 enabled = true
-units = ["sshd", "sudo"]   # "sshd" não "ssh"
+units = ["sshd", "sudo", "kernel"]   # "sshd" não "ssh"; "kernel" habilita sinais de firewall/port scan
 
 [collectors.docker]
 enabled = true
@@ -283,6 +285,11 @@ paths = ["/etc/ssh/sshd_config", "/etc/sudoers"]
 enabled = true
 threshold = 8
 window_seconds = 300
+
+[detectors.port_scan]
+enabled = false       # recomendado habilitar após validar volume de logs de firewall
+threshold = 12        # portas de destino únicas por IP na janela
+window_seconds = 60
 ```
 
 ### Variáveis de ambiente (`.env`)
@@ -421,7 +428,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 59 testes (27 sensor + 32 agent) — todos devem passar
+make test   # 66 testes (34 sensor + 32 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -490,8 +497,8 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 
 ## Próximos passos
 
-- Fase 1 (ativa): Sensor — detector `port_scan`
-- Fase 2 (planejada): Sensor — detector `credential_stuffing`
+- Fase 1 (concluída): Sensor — detector `port_scan`
+- Fase 2 (ativa): Sensor — detector `credential_stuffing`
 - Fase 3 (planejada): Replay QA harness para validação end-to-end
 - Fase 4 (deferida): Agent `--report` v2 (tendências e anomalias adicionais)
 - Fase 5 (planejada): Skill `monitor-ip` real (execução continua segura por config)

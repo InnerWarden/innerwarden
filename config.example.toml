@@ -15,7 +15,7 @@ path = "/var/log/auth.log"
 [collectors.journald]
 enabled = true
 # Optional: only these systemd units
-units = ["ssh", "docker", "containerd"]
+units = ["sshd", "sudo", "kernel"]
 
 [collectors.docker]
 enabled = true
@@ -36,5 +36,8 @@ enabled = true
 threshold = 8
 window_seconds = 300
 
-[detectors.file_change]
-enabled = true
+[detectors.port_scan]
+enabled = false
+# distinct destination ports hit by one source IP within window
+threshold = 12
+window_seconds = 60
