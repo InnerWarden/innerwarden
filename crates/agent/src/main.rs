@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use tracing::{debug, info, warn};
 
@@ -41,6 +41,10 @@ struct Cli {
     /// Generate a trial operational report from existing artifacts and exit
     #[arg(long)]
     report: bool,
+
+    /// Output directory for generated reports (default: same as --data-dir)
+    #[arg(long)]
+    report_dir: Option<PathBuf>,
 
     /// Run read-only local dashboard server and exit this process only on SIGTERM/SIGINT
     #[arg(long)]
@@ -174,6 +178,10 @@ fn decision_cooldown_key_from_entry(entry: &decisions::DecisionEntry) -> Option<
             .target_ip
             .as_ref()
             .map(|ip| decision_cooldown_key(&entry.action_type, detector, "ip", ip)),
+        "suspend_user_sudo" => entry
+            .target_user
+            .as_ref()
+            .map(|user| decision_cooldown_key("suspend_user_sudo", detector, "user", user)),
         _ => None,
     }
 }
@@ -287,7 +295,12 @@ async fn main() -> Result<()> {
     }
 
     if cli.report {
-        let out = report::generate(&cli.data_dir)?;
+        let out_dir = cli.report_dir.as_deref().unwrap_or(&cli.data_dir);
+        if let Some(d) = cli.report_dir.as_deref() {
+            std::fs::create_dir_all(d)
+                .with_context(|| format!("failed to create report-dir {}", d.display()))?;
+        }
+        let out = report::generate(&cli.data_dir, out_dir)?;
         info!(
             analyzed_date = %out.report.analyzed_date,
             markdown = %out.markdown_path.display(),
@@ -764,12 +777,7 @@ async fn process_incidents(
                 .iter()
                 .map(|s| ai::SkillInfo {
                     id: s.id.clone(),
-                    name: s.name.clone(),
-                    description: s.description.clone(),
-                    tier: match s.tier {
-                        skills::SkillTier::Open => "open".to_string(),
-                        skills::SkillTier::Premium => "premium".to_string(),
-                    },
+                    applicable_to: s.applicable_to.clone(),
                 })
                 .collect(),
         };
@@ -802,6 +810,16 @@ async fn process_incidents(
         // re-evaluated by AI within the cooldown window (default 1h).
         if let Some(key) = decision_cooldown_key_for_decision(incident, &decision) {
             state.decision_cooldowns.insert(key, chrono::Utc::now());
+        }
+
+        // Update in-memory blocklist immediately for BlockIp decisions so subsequent
+        // ticks don't re-evaluate the same IP even when the responder is disabled or
+        // dry_run is true. Without this, state.blocklist is only updated inside
+        // execute_decision (which is skipped when responder.enabled = false), leaving
+        // cross-tick deduplication to the cooldown alone — which breaks on restart if
+        // the decision was not yet flushed to the decisions file.
+        if let ai::AiAction::BlockIp { ip, .. } = &decision.action {
+            state.blocklist.insert(ip.clone());
         }
 
         info!(

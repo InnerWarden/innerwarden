@@ -96,8 +96,8 @@ impl AgentCursor {
             .with_context(|| format!("failed to read {}", path.display()))?;
         // Fall back to a fresh cursor on parse errors (e.g. power loss mid-write).
         // Consequence: incidents since the last saved offset are re-analyzed by AI.
-        // The blocklist prevents duplicate real blocks; dry-run mode may see duplicate
-        // AI calls for already-seen incidents — acceptable vs. crashing the agent.
+        // The blocklist and decision cooldowns (pre-loaded from decisions-*.jsonl on
+        // startup) prevent duplicate decisions for IPs/users already decided upon.
         match serde_json::from_str::<Self>(&content) {
             Ok(cursor) => Ok(cursor),
             Err(e) => {

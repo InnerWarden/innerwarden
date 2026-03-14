@@ -33,7 +33,8 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Config TOML com defaults sensatos — `--config` é opcional
 - ✅ **Algorithm gate** — pré-filtra incidentes sem custo de API (severity, IP privado, já bloqueado)
 - ✅ Deduplicação intra-tick por IP: evita chamadas AI duplicadas no mesmo tick de 2s
-- ✅ **Decision cooldown** (1h) — suprime chamadas AI repetidas para o mesmo scope `action:detector:entity` dentro de uma janela de 1h; pré-carregado de `decisions-*.jsonl` (hoje + ontem) na inicialização
+- ✅ **Decision cooldown** (1h) — suprime chamadas AI repetidas para o mesmo scope `action:detector:entity` dentro de uma janela de 1h; pré-carregado de `decisions-*.jsonl` (hoje + ontem) na inicialização; suporta `suspend_user_sudo` (campo `target_user` em `DecisionEntry`)
+- ✅ **Blocklist atualizada imediatamente** após qualquer decisão `block_ip`, mesmo quando `responder.enabled = false` — evita re-avaliação AI do mesmo IP em ticks seguintes
 - ✅ **Multi-provider AI** — OpenAI real (MVP), Anthropic/Ollama como stubs extensíveis
 - ✅ Análise AI em tempo real de incidentes High/Critical
 - ✅ AI seleciona a melhor ação com confidence score (0.0–1.0)
@@ -71,115 +72,11 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 
 ---
 
-## Fluxo completo do sistema
+## Fluxo resumido
 
-```
-╔══════════════════════════════════════════════════════════════════════════╗
-║                            HOST ACTIVITY                               ║
-║ SSH logins · sudo commands · shell audit · Docker events · integrity    ║
-╚═══════════════════════════════════════╦════════════════════════════════╝
-                                        │
-                                        ▼
-╔══════════════════════════════════════════════════════════════════════════╗
-║                        innerwarden-sensor                              ║
-║                                                                        ║
-║  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────┐          ║
-║  │ auth_log │  │ journald │  │  docker  │  │  integrity   │          ║
-║  │  (tail)  │  │(subproc) │  │(subproc) │  │ (SHA-256     │          ║
-║  │ SSH/sudo │  │sshd/sudo │  │events    │  │  polling)    │          ║
-║  └────┬─────┘  └────┬─────┘  └────┬─────┘  └──────┬───────┘          ║
-║       └─────────────┴─────────────┴────────────────┘                   ║
-║                           │  mpsc::channel(1024)                       ║
-║                           ▼                                            ║
-║              ┌─────────────────────────┐                               ║
-║              │  Detectors (stateful)   │                               ║
-║              │  ssh_bruteforce         │ ← sliding window por IP       ║
-║              │  credential_stuffing    │ ← usuários distintos por IP    ║
-║              │  port_scan              │ ← portas únicas por IP         ║
-║              │  sudo_abuse             │ ← comandos sudo suspeitos/user ║
-║              └────────────┬────────────┘                               ║
-║                           │ Events + Incidents                         ║
-║                           ▼                                            ║
-║  ┌─────────────────────────────────────────────────────────────────┐   ║
-║  │  JSONL Sinks — append-only, rotação diária                      │   ║
-║  │  · events-YYYY-MM-DD.jsonl                                      │   ║
-║  │  · incidents-YYYY-MM-DD.jsonl                                   │   ║
-║  │  · state.json (cursors de leitura)                              │   ║
-║  └─────────────────────────────────────────────────────────────────┘   ║
-╚═══════════════════════════════════════╦════════════════════════════════╝
-                                        │  data_dir compartilhado
-                                        ▼
-╔══════════════════════════════════════════════════════════════════════════╗
-║                        innerwarden-agent                               ║
-║              (lê via byte-offset cursors — sem re-leitura)             ║
-║                                                                        ║
-║  ╔══════════════════════════════════════════════════════════════════╗   ║
-║  ║  LOOP RÁPIDO — tick a cada 2s                                   ║   ║
-║  ╠══════════════════════════════════════════════════════════════════╣   ║
-║  ║                                                                  ║   ║
-║  ║  Novos incidentes? ──── NÃO ──→ skip                           ║   ║
-║  ║         │ SIM                                                   ║   ║
-║  ║         ▼                                                       ║   ║
-║  ║  ┌─────────────────────────────────────────────────────────┐   ║   ║
-║  ║  │  Webhook (severity ≥ min_severity?) → HTTP POST         │   ║   ║
-║  ║  │  Dispara para TODOS os incidentes acima do threshold    │   ║   ║
-║  ║  └────────────────────────────┬────────────────────────────┘   ║   ║
-║  ║                               │ (sempre, independente do AI)   ║   ║
-║  ║                               ▼                                ║   ║
-║  ║  ┌─────────────────────────────────────────────────────────┐   ║   ║
-║  ║  │  Algorithm Gate  (puro, sem I/O, sem custo de API)      │   ║   ║
-║  ║  │                                                          │   ║   ║
-║  ║  │  Severity < High?     ──→  ignore (ruído)               │   ║   ║
-║  ║  │  IP já na blocklist?  ──→  ignore (duplicado)           │   ║   ║
-║  ║  │  IP RFC1918/loopback? ──→  ignore (interno)             │   ║   ║
-║  ║  └────────────────────────────┬────────────────────────────┘   ║   ║
-║  ║                               │ PASSA o gate                   ║   ║
-║  ║                               ▼                                ║   ║
-║  ║  ┌──────────────────────────────────────────────────────────┐  ║   ║
-║  ║  │  AI Provider  (plugável via trait AiProvider)            │  ║   ║
-║  ║  │                                                          │  ║   ║
-║  ║  │  ● OpenAI gpt-4o-mini  ◄── real (MVP)                   │  ║   ║
-║  ║  │  ○ Anthropic Claude    ◄── stub (contribua!)            │  ║   ║
-║  ║  │  ○ Ollama (local LLM)  ◄── stub (contribua!)            │  ║   ║
-║  ║  │                                                          │  ║   ║
-║  ║  │  Contexto enviado para a AI:                             │  ║   ║
-║  ║  │  · Incident (severity, entities, summary, evidence)      │  ║   ║
-║  ║  │  · Últimos N eventos da mesma entidade (IP/user)         │  ║   ║
-║  ║  │  · Lista de IPs já bloqueados                            │  ║   ║
-║  ║  │  · Skills disponíveis com descrições                     │  ║   ║
-║  ║  └───────────────────────────┬──────────────────────────────┘  ║   ║
-║  ║                              │ AiDecision { action, confidence, ║   ║
-║  ║                              │             auto_execute, reason }║   ║
-║  ║                              ▼                                  ║   ║
-║  ║  ┌──────────────────────────────────────────────────────────┐  ║   ║
-║  ║  │  Executor  (confidence ≥ threshold AND auto_execute?)    │  ║   ║
-║  ║  │                                                          │  ║   ║
-║  ║  │  NÃO ──→ log "skipped: confidence X below threshold Y"  │  ║   ║
-║  ║  └───────────────────────────┬──────────────────────────────┘  ║   ║
-║  ║                              │ SIM                              ║   ║
-║  ║            ┌─────────────────┼──────────────────┐              ║   ║
-║  ║            │                 │                  │              ║   ║
-║  ║   block_ip      monitor_ip      honeypot / suspend_user_sudo   ║   ║
-║  ║   ┌────────────────┐  (premium capture / listener / sudo TTL)  ║   ║
-║  ║   │ block-ip-ufw   │                                           ║   ║
-║  ║   │ block-ip-ipt   │  + request_confirmation                   ║   ║
-║  ║   │ block-ip-nft   │    └→ webhook POST com payload            ║   ║
-║  ║   └────────────────┘                                           ║   ║
-║  ║                              │                                 ║   ║
-║  ║                              ▼                                 ║   ║
-║  ║  decisions-YYYY-MM-DD.jsonl  (audit trail imutável)           ║   ║
-║  ╚══════════════════════════════════════════════════════════════╝   ║
-║                                                                        ║
-║  ╔══════════════════════════════════════════════════════════════════╗   ║
-║  ║  LOOP LENTO — tick a cada 30s                                   ║   ║
-║  ╠══════════════════════════════════════════════════════════════════╣   ║
-║  ║  Novos eventos? → regenera summary-YYYY-MM-DD.md               ║   ║
-║  ║  (webhook e incidentes ficam no loop rápido)                    ║   ║
-║  ╚══════════════════════════════════════════════════════════════════╝   ║
-╚══════════════════════════════════════════════════════════════════════════╝
-```
+**sensor** coleta host activity (auth_log, journald, docker, integrity, exec_audit opcional) via `mpsc::channel(1024)`, passa por detectors stateful (ssh_bruteforce, credential_stuffing, port_scan, sudo_abuse) e escreve `events-*.jsonl` + `incidents-*.jsonl` no `data_dir` compartilhado.
 
-> Observação: o diagrama acima não expande o collector opcional `exec_audit` (`/var/log/audit/audit.log`), que também alimenta `events-*.jsonl`.
+**agent** lê incrementalmente via byte-offset cursors. Loop rápido (2s): webhook → algorithm gate (severity < High / IP privado / já bloqueado → skip) → AI provider → executor (confidence ≥ threshold AND auto_execute) → skill (block_ip / monitor_ip / honeypot / suspend_user_sudo) → `decisions-*.jsonl`. Loop lento (30s): regenera `summary-*.md` com throttle de 5min.
 
 ### Saídas geradas por dia
 
@@ -187,7 +84,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 |---------|-------------|---------|
 | `events-YYYY-MM-DD.jsonl` | sensor | Um evento por linha (SSH, Docker, integrity, journald, auditd opcional) |
 | `incidents-YYYY-MM-DD.jsonl` | sensor | Incidentes detectados (brute-force, etc.) |
-| `decisions-YYYY-MM-DD.jsonl` | agent | Decisões da AI com confidence, ação (`block_ip`/`monitor`/`honeypot`/`suspend_user_sudo`/`ignore`) e resultado |
+| `decisions-YYYY-MM-DD.jsonl` | agent | Decisões da AI com confidence, ação (`block_ip`/`monitor`/`honeypot`/`suspend_user_sudo`/`ignore`), `target_ip`, `target_user` e resultado |
 | `telemetry-YYYY-MM-DD.jsonl` | agent | Snapshots operacionais (coletores, detectores, gate, AI, latência, erros, dry-run/real) |
 | `honeypot/listener-session-*.json` | agent | Metadados de sessão do honeypot listener (serviços, redirecionamento, stats) |
 | `honeypot/listener-session-*.jsonl` | agent | Evidências por conexão/sessão no honeypot listener |
@@ -206,6 +103,18 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 ```
 crates/
   core/     — tipos compartilhados: Event, Incident, EntityRef, Severity, EntityType
+  ctl/      — binário innerwarden-ctl, instalado como `innerwarden` (plano de controle)
+    src/
+      main.rs              — CLI: enable, disable, list, status
+      capability.rs        — Capability trait + ActivationOptions + CapabilityRegistry
+      config_editor.rs     — patch TOML atômico via toml_edit (preserva comentários)
+      preflight.rs         — BinaryExists, DirectoryExists, UserExists, VisudoAvailable
+      sudoers.rs           — SudoersDropIn: write + visudo validation + install
+      systemd.rs           — restart_service / is_service_active
+      capabilities/
+        block_ip.rs        — enable block-ip (ufw|iptables|nftables)
+        sudo_protection.rs — enable sudo-protection (detector + skill)
+        shell_audit.rs     — enable shell-audit (privacy gate obrigatório)
   sensor/   — binário innerwarden-sensor
     src/
       main.rs
@@ -267,10 +176,21 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 157 testes (48 sensor + 109 agent)
-make build            # debug build de ambos
+make test             # 195 testes (48 sensor + 109 agent + 38 ctl)
+make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
+make build-ctl        # só o ctl (innerwarden binary)
+
+# Capability management (após instalar)
+innerwarden list                    # lista capabilities com status atual
+innerwarden status block-ip         # status de uma capability específica
+innerwarden enable block-ip         # ativa block-ip (ufw por default)
+innerwarden enable block-ip --param backend=iptables  # backend alternativo
+innerwarden enable sudo-protection  # ativa detector sudo_abuse + skill
+innerwarden enable shell-audit      # ativa exec_audit (com privacy gate)
+innerwarden enable shell-audit --yes  # pula confirmação interativa
+innerwarden --dry-run enable block-ip  # mostra o que seria feito
 
 # Instalação trial em servidor Linux (systemd)
 ./install.sh          # pede OPENAI_API_KEY, instala binários em /usr/local/bin,
@@ -577,29 +497,6 @@ echo "innerwarden ALL=(ALL) NOPASSWD: /usr/sbin/nft add element *" \
 
 O `data_dir` no config.toml **deve** bater com `ReadWritePaths` no service file.
 
----
-
-## Formato de saída (JSONL)
-
-Arquivos em `data_dir/` — contrato entre sensor e agent:
-
-```
-data_dir/
-  events-YYYY-MM-DD.jsonl       — eventos brutos
-  incidents-YYYY-MM-DD.jsonl    — incidentes detectados
-  decisions-YYYY-MM-DD.jsonl    — decisões da AI (audit trail)
-  telemetry-YYYY-MM-DD.jsonl    — snapshots de telemetria operacional do agent
-  honeypot/listener-session-*.json  — metadados de sessão do honeypot listener
-  honeypot/listener-session-*.jsonl — evidências por conexão/sessão do honeypot listener
-  honeypot/listener-session-*.pcap  — captura limitada opcional de handoff forense
-  honeypot/listener-session-*.external-handoff.json — resultado da integração externa de forense
-  honeypot/listener-session-*.external-handoff.sig — assinatura HMAC-SHA256 do handoff externo
-  honeypot/listener-active.lock     — lock de sessão honeypot ativa
-  summary-YYYY-MM-DD.md         — narrativa diária em Markdown
-  state.json                    — cursors do sensor
-  agent-state.json              — cursors do agent (byte offsets)
-```
-
 Ver `docs/format.md` para schema completo de Event e Incident.
 
 ---
@@ -686,37 +583,13 @@ Documentação pública do repositório:
 
 ## Próximos passos
 
-- Fase 1 (concluída): Sensor — detector `port_scan`
-- Fase 2 (concluída): Sensor — detector `credential_stuffing`
-- Fase 3 (concluída): Replay QA harness para validação end-to-end
-- Fase 4 (concluída): Agent `--report` v2 (tendências e anomalias adicionais)
-- Fase 5 (concluída): Skill `monitor-ip` real (execução continua segura por config)
-- Fase 7.1 (concluída): Production rollout hardening (playbook + smoke checks + rollback rápido)
-- Fase 7.2 (concluída): correlação temporal simples por janela + entidade
-- Fase 7.3 (concluída): telemetria operacional leve
-- Fase 7.4 (concluída): honeypot demo only (simulação controlada)
-- Fase 7.5 (concluída): trilha opcional de shell (`auditd EXECVE` + `TTY` opcional) com consentimento explícito no instalador
-- Fase 7.6 (concluída): resposta de abuso de privilégio (`sudo_abuse` + ação AI `suspend_user_sudo` com TTL e cleanup)
-- Fase D1 (concluída): dashboard local read-only (`--dashboard`) para visibilidade operacional sem execução de ações
-- Fase D2.1 (concluída): UX de investigação "jornada do atacante" (split-pane com overview lateral + timeline expandível por IP via `/api/entities` e `/api/journey`)
-- Fase D2.2 (concluída): filtros e pivôs avançados (severidade/detector/entidade) + drill-down por pivô (`ip|user|detector`)
-- Fase D2.3 (concluída): correlação cluster-first + export de snapshot read-only (JSON/Markdown)
-- Fase D2.4 (concluída): UX de investigação guiada (hints analíticos, pivot shortcuts na jornada, comparação entre datas e janela temporal configurável)
-- Fase D3 (concluída): ações operacionais guardadas no dashboard (Block IP + Suspend User com modal de confirmação, razão obrigatória, dry-run transparente e trilha auditável em `decisions-*.jsonl`)
-- Fase D4 (concluída): redesign visual do dashboard para combinar com o site innerwarden.com (paleta navy, radial gradients, border-radius moderno, mobile UX completo com painel colapsável, touch targets e layout fluído)
-- Robustez produção (concluída): 3 bugs críticos corrigidos pós-first-report: (1) `--report` agora usa janela de 6h real com campo `ts` + `action_type` corretos abrangendo 2 dias; (2) blocklist inserida mesmo em dry_run + pré-carregada do `decisions-*.jsonl` ao iniciar (evita bloquear o mesmo IP repetidamente); (3) narrativa diária throttlada a no mínimo 5min entre escritas (evita rewrite a cada tick de 30s); `scripts/ops-check.sh` + `make ops-check` adicionados para inspeção rápida
-- Fase D5 (concluída): dashboard "attacker path viewer" — verdict card (entry_vector, access/privilege/containment/honeypot status, confidence), chapter rail navegável (reconnaissance → containment → honeypot), evidence cards com metadados humanos + Raw JSON secondary toggle; backend `derive_verdict()` + `derive_chapters()` adicionados ao `JourneyResponse`
-- Fase D6 (próxima): notificações push em tempo real via Server-Sent Events (SSE) para alertar operadores de novos incidentes sem refresh manual
-- Fase 8.1 (concluída): honeypot rebuild foundation (`listener` mínimo, gated por config)
-- Fase 8.2 (concluída): honeypot real bounded (multi-serviço, redirecionamento seletivo opcional, isolamento e forensics JSON/JSONL)
-- Fase 8.3 (concluída): hardening de isolamento + profundidade forense (session lock, retenção e transcript)
-- Fase 8.4 (concluída): sandbox runtime dedicado + handoff forense opcional + retenção por budget total
-- Fase 8.5 (concluída): containment avançado (`process|namespace`) + handoff forense externo controlado + checks de lifecycle
-- Fase 8.6 (concluída): isolamento avançado em runtime dedicado (`namespace|jail`) + handoff externo confiável assinado
-- Fase 8.7 (concluída): perfis de jail mais restritivos + receiver attestation no handoff externo
-- Fase 8.8 (concluída): interação média realista — SSH via `russh` (key exchange + captura de credenciais) + HTTP com login page fake (captura de formulário)
-- Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
-- Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/phase-d5-attacker-path-viewer.md`, `docs/public-readiness-checklist.md`; fases concluídas arquivadas em `docs/archive/`
+Fases concluídas (1–8.8, D1–D5, robustez produção, C.1): ver `docs/archive/` e histórico de commits.
+
+- **Fase C.2–C.4 (próximas):** capabilities `block-ip`, `sudo-protection`, `shell-audit` end-to-end em produção; comando `disable`
+- **Fase D6:** notificações push em tempo real via Server-Sent Events (SSE)
+- **Fase 6 (deferida):** providers AI adicionais (Anthropic/Ollama)
+
+Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/public-readiness-checklist.md`
 
 ---
 

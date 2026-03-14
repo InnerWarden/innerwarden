@@ -211,7 +211,7 @@ struct Counters {
     files_not_growing: Vec<String>,
 }
 
-pub fn generate(data_dir: &Path) -> Result<GeneratedReport> {
+pub fn generate(data_dir: &Path, output_dir: &Path) -> Result<GeneratedReport> {
     let report_date = Local::now().date_naive().format("%Y-%m-%d").to_string();
     let analyzed_date = detect_latest_date(data_dir).unwrap_or_else(|| report_date.clone());
     let previous_date = detect_previous_date(data_dir, &analyzed_date);
@@ -335,8 +335,8 @@ pub fn generate(data_dir: &Path) -> Result<GeneratedReport> {
     };
     report.suggested_improvements = build_suggestions(&report);
 
-    let json_path = data_dir.join(format!("trial-report-{report_date}.json"));
-    let md_path = data_dir.join(format!("trial-report-{report_date}.md"));
+    let json_path = output_dir.join(format!("trial-report-{report_date}.json"));
+    let md_path = output_dir.join(format!("trial-report-{report_date}.md"));
 
     let json_file = File::create(&json_path)
         .with_context(|| format!("failed to create {}", json_path.display()))?;
@@ -1692,6 +1692,7 @@ mod tests {
             ai_provider: "openai".to_string(),
             action_type: "ignore".to_string(),
             target_ip: None,
+            target_user: None,
             skill_id: None,
             confidence: 0.8,
             auto_executed: false,
@@ -1714,7 +1715,7 @@ mod tests {
         )
         .unwrap();
 
-        let out = generate(dir.path()).unwrap();
+        let out = generate(dir.path(), dir.path()).unwrap();
         assert!(out.markdown_path.exists());
         assert!(out.json_path.exists());
         assert_eq!(out.report.detection_summary.total_events, 2);
@@ -1743,7 +1744,7 @@ mod tests {
         fs::write(dir.path().join("state.json"), "{}").unwrap();
         fs::write(dir.path().join("agent-state.json"), "{}").unwrap();
 
-        let out = generate(dir.path()).unwrap();
+        let out = generate(dir.path(), dir.path()).unwrap();
         assert!(out.report.data_quality.decisions_without_action > 0);
         assert!(!out.report.data_quality.malformed_jsonl.is_empty());
         let anomaly_codes: HashSet<&str> = out
@@ -1824,6 +1825,7 @@ mod tests {
                     ai_provider: "openai".to_string(),
                     action_type: if i == 0 { "ignore" } else { "block_ip" }.to_string(),
                     target_ip: Some("1.2.3.4".to_string()),
+                    target_user: None,
                     skill_id: Some("block-ip-ufw".to_string()),
                     confidence: 0.95,
                     auto_executed: false,
@@ -1913,6 +1915,7 @@ mod tests {
                     ai_provider: "openai".to_string(),
                     action_type: if i < 11 { "ignore" } else { "block_ip" }.to_string(),
                     target_ip: Some("1.2.3.4".to_string()),
+                    target_user: None,
                     skill_id: Some("block-ip-ufw".to_string()),
                     confidence: 0.4,
                     auto_executed: false,
@@ -1935,7 +1938,7 @@ mod tests {
         )
         .unwrap();
 
-        let out = generate(dir.path()).unwrap();
+        let out = generate(dir.path(), dir.path()).unwrap();
 
         assert_eq!(
             out.report.trend_summary.previous_date,
@@ -2013,6 +2016,7 @@ mod tests {
                     ai_provider: "openai".to_string(),
                     action_type: "ignore".to_string(),
                     target_ip: None,
+                    target_user: None,
                     skill_id: None,
                     confidence: 0.9,
                     auto_executed: false,
@@ -2058,7 +2062,7 @@ mod tests {
         )
         .unwrap();
 
-        let out = generate(dir.path()).unwrap();
+        let out = generate(dir.path(), dir.path()).unwrap();
         assert!(out.report.operational_telemetry.available);
         assert_eq!(
             out.report

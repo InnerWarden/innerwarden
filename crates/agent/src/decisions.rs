@@ -23,6 +23,8 @@ pub struct DecisionEntry {
     /// Serialized AiAction tag (e.g. "block_ip", "ignore")
     pub action_type: String,
     pub target_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_user: Option<String>,
     pub skill_id: Option<String>,
 
     pub confidence: f32,
@@ -115,21 +117,25 @@ pub fn build_entry(
 ) -> DecisionEntry {
     use crate::ai::AiAction;
 
-    let (action_type, target_ip, skill_id) = match &decision.action {
+    let (action_type, target_ip, target_user, skill_id) = match &decision.action {
         AiAction::BlockIp { ip, skill_id } => (
             "block_ip".to_string(),
             Some(ip.clone()),
+            None,
             Some(skill_id.clone()),
         ),
-        AiAction::Monitor { ip } => ("monitor".to_string(), Some(ip.clone()), None),
-        AiAction::Honeypot { ip } => ("honeypot".to_string(), Some(ip.clone()), None),
-        AiAction::SuspendUserSudo { .. } => (
+        AiAction::Monitor { ip } => ("monitor".to_string(), Some(ip.clone()), None, None),
+        AiAction::Honeypot { ip } => ("honeypot".to_string(), Some(ip.clone()), None, None),
+        AiAction::SuspendUserSudo { user, .. } => (
             "suspend_user_sudo".to_string(),
             None,
+            Some(user.clone()),
             Some("suspend-user-sudo".to_string()),
         ),
-        AiAction::RequestConfirmation { .. } => ("request_confirmation".to_string(), None, None),
-        AiAction::Ignore { .. } => ("ignore".to_string(), None, None),
+        AiAction::RequestConfirmation { .. } => {
+            ("request_confirmation".to_string(), None, None, None)
+        }
+        AiAction::Ignore { .. } => ("ignore".to_string(), None, None, None),
     };
 
     DecisionEntry {
@@ -139,6 +145,7 @@ pub fn build_entry(
         ai_provider: ai_provider.to_string(),
         action_type,
         target_ip,
+        target_user,
         skill_id,
         confidence: decision.confidence,
         auto_executed: decision.auto_execute,
