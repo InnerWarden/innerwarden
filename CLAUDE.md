@@ -35,7 +35,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Deduplicação intra-tick por IP: evita chamadas AI duplicadas no mesmo tick de 2s
 - ✅ **Decision cooldown** (1h) — suprime chamadas AI repetidas para o mesmo scope `action:detector:entity` dentro de uma janela de 1h; pré-carregado de `decisions-*.jsonl` (hoje + ontem) na inicialização; suporta `suspend_user_sudo` (campo `target_user` em `DecisionEntry`)
 - ✅ **Blocklist atualizada imediatamente** após qualquer decisão `block_ip`, mesmo quando `responder.enabled = false` — evita re-avaliação AI do mesmo IP em ticks seguintes
-- ✅ **Multi-provider AI** — OpenAI real (MVP), Anthropic/Ollama como stubs extensíveis
+- ✅ **Multi-provider AI** — OpenAI real (MVP), Anthropic real (claude-haiku-4-5-20251001 default), Ollama como stub extensível
 - ✅ Análise AI em tempo real de incidentes High/Critical
 - ✅ AI seleciona a melhor ação com confidence score (0.0–1.0)
 - ✅ Sanitização de decisão AI: `block_ip` sem `target_ip` é rebaixado para `ignore`
@@ -70,6 +70,9 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ **Dashboard D3** — ações operacionais guardadas: operador pode bloquear IPs (`block-ip-*`) e suspender usuários (`suspend-user-sudo`) diretamente da timeline da investigação, com campo de razão obrigatório, modal de confirmação com badge de modo (DRY RUN / LIVE), toast de feedback e auditoria completa em `decisions-YYYY-MM-DD.jsonl` (ai_provider: `dashboard:operator`). Ações desabilitadas por padrão; requerem `responder.enabled = true` no agent.toml. Suporte a dry-run transparente (simula a ação sem executar comandos do sistema). Endpoints: `POST /api/action/block-ip`, `POST /api/action/suspend-user`, `GET /api/action/config`.
 - ✅ **Dashboard D5** — attacker path viewer: `JourneyResponse` agora inclui `verdict` (attack assessment com entry_vector, access_status, privilege_status, containment_status, honeypot_status, confidence) e `chapters` (fases lógicas derivadas automaticamente: reconnaissance, initial_access_attempt, access_success, privilege_abuse, response, containment, honeypot_interaction). UI exibe verdict card antes da timeline, chapter rail navegável clicável e evidence cards com metadados humanos + Raw JSON secundário (toggle). `window._journeyData` armazena dados da jornada para scroll-to-chapter.
 - ✅ **Dashboard D6** — notificações push em tempo real via Server-Sent Events (SSE): `GET /api/events/stream` com autenticação Basic. File watcher interno (2 s) detecta crescimento de `incidents-*.jsonl` e `decisions-*.jsonl` e faz push de evento `refresh` via broadcast channel (`tokio::sync::broadcast`, capacity 64). Heartbeat de 30 s mantém a conexão viva. Frontend usa `fetch()` + `ReadableStream` (compatível com Basic auth, diferente do `EventSource` nativo) com reconexão automática a cada 3 s. Indicador `● LIVE` / `● reconnecting` em `#refreshStatus` no header. Fallback para poll de 30 s se SSE não conectar em 35 s.
+- ✅ **Dashboard D7** — timeline ao vivo: SSE aciona `refreshLeftLive()` em vez de reload completo. Novos cards de entidade aparecem com animação CSS `cardSlideIn` (slide + borda cyan). KPIs piscam em cyan (`kpiFlash`) quando o valor muda. Cards existentes têm contagens atualizadas silenciosamente. Scroll e seleção preservados. `state.knownItemValues` (Set) rastreia entidades renderizadas para diff incremental.
+- ✅ **Dashboard D8** — alertas push de incidentes: file watcher lê novas linhas de `incidents-*.jsonl` por byte offset a cada 2 s; para severidade High/Critical emite evento SSE `alert` com payload `{ severity, title, entity_type, entity_value }`. Frontend exibe `showAlertToast()` — badge colorido (vermelho/laranja), título e link clicável `→ IP/entidade` que abre diretamente o journey panel. Toast persiste 8 s.
+- ✅ **Dashboard D9** — busca inline de entidades: campo `<input type="search">` acima da lista filtra cards em tempo real por qualquer texto visível (IP, detector, severidade, contagens) — sem round-trip ao servidor, sem reload, scroll preservado. Mensagem "No matches for X" quando nenhum card passa no filtro. Filtro re-aplicado automaticamente após `refreshLeft()` e `refreshLeftLive()`.
 
 ---
 
@@ -106,7 +109,7 @@ crates/
   core/     — tipos compartilhados: Event, Incident, EntityRef, Severity, EntityType
   ctl/      — binário innerwarden-ctl, instalado como `innerwarden` (plano de controle)
     src/
-      main.rs              — CLI: enable, disable, list, status
+      main.rs              — CLI: enable, disable, list, status, doctor, upgrade, module *
       capability.rs        — Capability trait + ActivationOptions + CapabilityRegistry
       config_editor.rs     — patch TOML atômico via toml_edit (preserva comentários)
       preflight.rs         — BinaryExists, DirectoryExists, UserExists, VisudoAvailable
@@ -154,7 +157,7 @@ crates/
       ai/
         mod.rs               — AiProvider trait, AiDecision, AiAction, algorithm gate, factory
         openai.rs            — implementação real OpenAI (gpt-4o-mini)
-        anthropic.rs         — stub "coming soon / contribute"
+        anthropic.rs         — implementação real Anthropic (claude-haiku-4-5-20251001 default; troca modelo OpenAI automaticamente)
         ollama.rs            — stub "coming soon / contribute"
       skills/
         mod.rs               — ResponseSkill trait, SkillRegistry, Blocklist, SkillTier
@@ -195,7 +198,7 @@ docs/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 274 testes (64 sensor + 120 agent + 90 ctl)
+make test             # 305 testes (64 sensor + 125 agent + 116 ctl)
 make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -203,17 +206,29 @@ make build-ctl        # só o ctl (innerwarden binary)
 
 # Capability management (após instalar)
 innerwarden list                    # lista capabilities com status atual
+innerwarden status                  # overview global: serviços + capabilities + módulos
 innerwarden status block-ip         # status de uma capability específica
 innerwarden enable block-ip         # ativa block-ip (ufw por default)
 innerwarden enable block-ip --param backend=iptables  # backend alternativo
 innerwarden enable sudo-protection  # ativa detector sudo_abuse + skill
 innerwarden enable shell-audit      # ativa exec_audit (com privacy gate)
 innerwarden enable shell-audit --yes  # pula confirmação interativa
+innerwarden disable block-ip        # desativa capability (reverte config + sudoers + restart)
 innerwarden --dry-run enable block-ip  # mostra o que seria feito
+innerwarden doctor                  # diagnóstico completo com fix hints; exit 1 se houver issues
+innerwarden upgrade                 # busca novo release no GitHub e instala atomicamente
+innerwarden upgrade --check         # só verifica se há update disponível, não instala
 
-# Module validation
+# Module management
 innerwarden module validate ./modules/ssh-protection   # valida manifest, segurança, testes, docs
-innerwarden module validate ./modules/my-new-module    # valida módulo antes de abrir PR
+innerwarden module install https://example.com/mod.tar.gz  # baixa, valida SHA-256, instala
+innerwarden module install ./local-mod.tar.gz --enable  # instala + habilita imediatamente
+innerwarden module uninstall <id>                       # desativa e remove
+innerwarden module publish ./modules/my-module          # empacota em .tar.gz + gera .sha256
+innerwarden module update-all                           # atualiza todos os módulos com update_url
+innerwarden module update-all --check                   # só verifica atualizações, não instala
+innerwarden module list                                 # lista módulos instalados com status
+innerwarden module status <id>                          # detalhe de um módulo específico
 
 # Instalação trial em servidor Linux (systemd)
 ./install.sh          # pede OPENAI_API_KEY, instala binários em /usr/local/bin,
@@ -316,7 +331,7 @@ cp .env.example .env
 
 # .env (nunca commitar — está no .gitignore)
 OPENAI_API_KEY=sk-...
-# ANTHROPIC_API_KEY=sk-ant-...  # quando o provider Anthropic for implementado
+# ANTHROPIC_API_KEY=sk-ant-...  # provider Anthropic real; use com provider = "anthropic" no agent.toml
 # RUST_LOG=innerwarden_agent=debug
 ```
 
@@ -348,7 +363,7 @@ timeout_secs = 10
 
 [ai]
 enabled = true
-provider = "openai"        # openai | anthropic (stub) | ollama (stub)
+provider = "openai"        # openai | anthropic | ollama (stub)
 # api_key = ""             # ou env var OPENAI_API_KEY
 model = "gpt-4o-mini"      # qualquer modelo do provider
 context_events = 20        # eventos recentes enviados como contexto
@@ -565,7 +580,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 274 testes (64 sensor + 120 agent + 90 ctl) — todos devem passar
+make test   # 305 testes (64 sensor + 125 agent + 116 ctl) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -644,23 +659,22 @@ Documentação pública do repositório:
 
 ## Próximos passos
 
-Fases concluídas (1–8.8, D1–D6, robustez produção, C.1–C.5, M.1–M.7+): ver `docs/archive/` e histórico de commits.
+Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8): ver `docs/archive/` e histórico de commits.
 
-- **Fase M.1 (módulos — foundation):** ✅ manifest format, módulos built-in mapeados, `docs/module-authoring.md` com guia para AI tools
-- **Fase M.2 (módulos — validação):** ✅ `innerwarden module validate` implementado no CTL (14 testes); valida estrutura, manifest, segurança de skills, docs e testes
-- **Fase M.3 (módulos — primeiro módulo externo):** ✅ `search-protection` — nginx access log collector + search_abuse detector (16 novos testes); demonstra o workflow completo de criação de módulo externo
-- **Fase M.4 (rate-limit-nginx):** ✅ skill `rate-limit-nginx` — deny nginx layer (HTTP 403) com TTL + cleanup automático; cleanup no slow loop do agent; 11 novos testes
-- **Fase M.5:** ✅ capability `search-protection` no CTL (`innerwarden enable search-protection`) — habilita collector/detector no sensor + rate-limit-nginx no agent + sudoers drop-in + placeholder `/etc/nginx/innerwarden-blocklist.conf`; 9 novos testes
-- **Fase C.2 (disable):** ✅ `innerwarden disable <capability>` — reverte config patches, remove sudoers drop-ins, reinicia serviços; implementado para todas as 4 capabilities; 14 novos testes + `write_array_remove` no config_editor
-- **Fase M.6 (module enable):** ✅ `innerwarden module enable <path>` — valida, parseia `module.toml`, habilita collectors/detectors no sensor, adiciona skills ao agent, instala sudoers drop-in, reinicia serviços; `ModuleManifest` + lookup table coletor/detector → config section; 11 novos testes
-- **Fase M.7 (module disable/list/status):** ✅ `innerwarden module disable <path>` (reverte enable), `module list [--modules-dir]` (scan + tabela de status), `module status <id>` (detalhe por módulo com estado de cada componente); `scan_modules_dir` + `module_disable_effects`; 4 novos testes
-- **Fase M.8 (module install/uninstall/publish/update-all):** ✅ `module install <url|path>` — baixa, valida SHA-256, extrai, valida manifest, instala em `modules_dir/<id>/`; `module uninstall <id>` — desativa e remove; `module publish <path>` — empacota + gera `.sha256`; `module update-all` — verifica `update_url` de cada módulo instalado, compara versões (semver), baixa + reinstala atualizações disponíveis, re-ativa módulos que estavam ativos; `--check` só reporta sem instalar; campos `version` e `update_url` adicionados ao `ModuleManifest`; 3 novos testes em module_manifest.rs `module install <url|path>` — baixa (ureq), valida SHA-256 sidecar opcional, extrai tarball, valida manifest, copia para `modules_dir/<id>/`, suporta `--enable`, `--force`, `--yes`; `module uninstall <id>` — desativa se necessário, remove dir; `module publish <path>` — empacota em `<id>-v<version>.tar.gz` + gera sidecar `.sha256`; formato: dir nomeado com ID, wrapped ou flat; 9 testes em `module_package.rs` `innerwarden module disable <path>` (reverte enable), `module list [--modules-dir]` (scan + tabela de status), `module status <id>` (detalhe por módulo com estado de cada componente); `scan_modules_dir` + `module_disable_effects`; 4 novos testes
-- **Fase D6:** ✅ SSE live push — `GET /api/events/stream`, file watcher 2 s, broadcast channel, fetch+ReadableStream JS, `● LIVE` indicator, reconexão automática, fallback poll 30 s
-- **Fase C.3:** ✅ `innerwarden status` global — overview de serviços (sensor/agent via systemctl is-active), capabilities (enabled/disabled) e módulos instalados; `innerwarden status <id>` continua funcionando para detalhe de capability específica
-- **Fase C.4:** ✅ `innerwarden doctor` — diagnóstico completo: system (systemctl, usuário `innerwarden`, `/etc/sudoers.d/`), services (sensor/agent via is-active), configuration (sensor+agent config existem e são TOML válido, OPENAI_API_KEY presente em env ou agent.env), capabilities (sudoers drop-in presente para cada capability ativa); fix hints exatos para cada falha; exit code 1 se houver issues
-- **Fase C.5:** ✅ `innerwarden upgrade` — busca último release no GitHub API, compara versão (semver), mostra assets disponíveis para o arch detectado (x86_64/aarch64), baixa binários, valida SHA-256 contra sidecar `.sha256`, instala atomicamente via `install -o root -m 755`, reinicia serviços ativos; `--check` só informa sem instalar; `--install-dir` configurável; 15 testes em `upgrade.rs`
-- **Release CI/CD:** ✅ `.github/workflows/release.yml` — dispara em push de tag `v*.*.*`; compila sensor+agent+ctl para x86_64 e aarch64 via cargo-zigbuild+zig 0.13; gera 6 binários + 6 sidecars `.sha256`; verifica manifest antes de publicar; cria GitHub Release com `generate_release_notes: true`; pre-release automático para tags com `-` (ex: `v1.0.0-rc.1`)
-- **Fase 6 (deferida):** providers AI adicionais (Anthropic/Ollama)
+- **Fase M.1–M.8:** ✅ sistema de módulos completo — manifest, validação, enable/disable, install/uninstall/publish/update-all, `module_package.rs` (download+SHA-256+tarball), `upgrade.rs` (GitHub API + semver)
+- **Fase C.2–C.5:** ✅ `innerwarden disable`, `status` global, `doctor` (diagnóstico + fix hints + exit 1), `upgrade` (GitHub API + SHA-256 + install atômico + restart)
+- **Release CI/CD:** ✅ `.github/workflows/release.yml` — x86_64 + aarch64 via cargo-zigbuild+zig 0.13; 6 binários + 6 `.sha256` + `install.sh`; pre-release automático para tags com `-`
+- **install.sh reescrito:** ✅ baixa binários pré-compilados por padrão (~10 s vs 5-10 min); `INNERWARDEN_BUILD_FROM_SOURCE=1` faz fallback para build local
+- **Fase D6:** ✅ SSE live push — `GET /api/events/stream`, file watcher 2 s, broadcast channel, `fetch()+ReadableStream` JS, `● LIVE` indicator, reconexão automática, fallback poll 30 s
+- **Fase D7:** ✅ timeline ao vivo — `refreshLeftLive()` via SSE: novos cards com animação `cardSlideIn`, KPIs piscam em cyan (`kpiFlash`), diff incremental por `state.knownItemValues`, scroll preservado
+- **Fase D8:** ✅ alertas push de incidentes — watcher lê novas linhas de `incidents-*.jsonl` por byte offset; emite evento SSE `alert` para High/Critical; `showAlertToast()` com badge, título e link clicável
+- **Fase D9:** ✅ busca inline — `<input type="search">` filtra cards client-side por qualquer texto visível; sem round-trip; re-aplicado após refreshLeft/refreshLeftLive
+- **Anthropic provider real:** ✅ POST `/v1/messages`, modelo padrão `claude-haiku-4-5-20251001`, troca automática do default OpenAI, `extract_json()` tolerante a prose, reutiliza `parse_decision` do openai.rs; 5 testes
+
+Próximas direções:
+- **`innerwarden module search`** — registry central em TOML hospedado; `search <termo>` lista módulos da comunidade com `install_url`
+- **Ollama provider real** — stub → implementação real para uso local/offline
+- **Fase D10** — notificações por browser (Web Notifications API) quando o dashboard está em background
 
 Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/public-readiness-checklist.md`
 
