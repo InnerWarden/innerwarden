@@ -30,6 +30,9 @@ pub struct TrialReport {
     pub operational_telemetry: OperationalTelemetry,
     pub detection_summary: DetectionSummary,
     pub agent_ai_summary: AgentAiSummary,
+    /// Sliding 6-hour window spanning today + yesterday if needed.
+    /// Always use this section for "last N hours" ops-check queries.
+    pub recent_window: RecentWindow,
     pub trend_summary: TrendSummary,
     pub anomaly_hints: Vec<AnomalyHint>,
     pub data_quality: DataQuality,
@@ -126,6 +129,32 @@ pub struct FloatDelta {
     pub previous: f64,
     pub delta: f64,
     pub pct_change: Option<f64>,
+}
+
+/// Statistics for a sliding 6-hour window that may span two calendar days.
+/// This is the source of truth for "last 6 hours" metrics shown in ops checks.
+#[derive(Debug, Serialize)]
+pub struct RecentWindow {
+    /// Width of the window in seconds (always 6 * 3600).
+    pub window_secs: u64,
+    /// Total events in the window (capped at a sane scan limit).
+    pub events: u64,
+    /// Total incidents in the window.
+    pub incidents: u64,
+    /// High or Critical incidents in the window.
+    pub high_critical_incidents: u64,
+    /// Total decision lines in the window.
+    pub decisions: u64,
+    /// Decision counts grouped by action_type (e.g. "block_ip", "ignore").
+    pub decisions_by_action: BTreeMap<String, u64>,
+    /// Most recent event timestamp seen in the window ("none" if empty).
+    pub latest_event_ts: String,
+    /// Most recent incident timestamp seen in the window ("none" if empty).
+    pub latest_incident_ts: String,
+    /// Most recent decision timestamp seen in the window ("none" if empty).
+    pub latest_decision_ts: String,
+    /// Most recent telemetry snapshot timestamp for today ("none" if empty).
+    pub latest_telemetry_ts: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -288,6 +317,8 @@ pub fn generate(data_dir: &Path) -> Result<GeneratedReport> {
         files,
     };
 
+    let recent_window = compute_recent_window(data_dir, &analyzed_date);
+
     let mut report = TrialReport {
         generated_at: Utc::now(),
         analyzed_date,
@@ -296,6 +327,7 @@ pub fn generate(data_dir: &Path) -> Result<GeneratedReport> {
         operational_telemetry,
         detection_summary,
         agent_ai_summary,
+        recent_window,
         trend_summary,
         anomaly_hints,
         data_quality,
@@ -514,6 +546,164 @@ fn parse_decisions_file(path: &Path, counters: &mut Counters) -> ParseOutcome {
     }
 
     outcome
+}
+
+/// Compute the 6-hour sliding window report.
+///
+/// Reads both `analyzed_date` and the previous date files, filtering entries
+/// to those with a `ts` field within the last 6 hours. This correctly handles
+/// midnight rollovers where the window spans two calendar days.
+fn compute_recent_window(data_dir: &Path, analyzed_date: &str) -> RecentWindow {
+    const WINDOW_SECS: i64 = 6 * 3600;
+    let cutoff = Utc::now() - chrono::Duration::seconds(WINDOW_SECS);
+
+    // Determine which dates to scan (today + optionally yesterday)
+    let dates_to_scan: Vec<String> = {
+        let mut v = vec![analyzed_date.to_string()];
+        if let Some(prev) = NaiveDate::parse_from_str(analyzed_date, "%Y-%m-%d")
+            .ok()
+            .and_then(|d| d.pred_opt())
+            .map(|d| d.format("%Y-%m-%d").to_string())
+        {
+            v.push(prev);
+        }
+        v
+    };
+
+    let mut events: u64 = 0;
+    let mut incidents: u64 = 0;
+    let mut high_critical: u64 = 0;
+    let mut decisions: u64 = 0;
+    let mut decisions_by_action: BTreeMap<String, u64> = BTreeMap::new();
+    let mut latest_event_ts = String::from("none");
+    let mut latest_incident_ts = String::from("none");
+    let mut latest_decision_ts = String::from("none");
+    let mut latest_telemetry_ts = String::from("none");
+
+    for date in &dates_to_scan {
+        // ── Events ──────────────────────────────────────────────────────────
+        let path = data_dir.join(format!("events-{date}.jsonl"));
+        if let Ok(f) = File::open(&path) {
+            for line in BufReader::new(f).lines().flatten() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+                    let ts_str = v
+                        .get("ts")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    if let Ok(ts) = ts_str.parse::<DateTime<Utc>>() {
+                        if ts >= cutoff {
+                            events += 1;
+                            if ts_str > latest_event_ts || latest_event_ts == "none" {
+                                latest_event_ts = ts_str;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Incidents ────────────────────────────────────────────────────────
+        let path = data_dir.join(format!("incidents-{date}.jsonl"));
+        if let Ok(f) = File::open(&path) {
+            for line in BufReader::new(f).lines().flatten() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+                    let ts_str = v
+                        .get("ts")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    if let Ok(ts) = ts_str.parse::<DateTime<Utc>>() {
+                        if ts >= cutoff {
+                            incidents += 1;
+                            let sev = v
+                                .get("severity")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("")
+                                .to_lowercase();
+                            if sev == "high" || sev == "critical" {
+                                high_critical += 1;
+                            }
+                            if ts_str > latest_incident_ts || latest_incident_ts == "none" {
+                                latest_incident_ts = ts_str;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Decisions ────────────────────────────────────────────────────────
+        let path = data_dir.join(format!("decisions-{date}.jsonl"));
+        if let Ok(f) = File::open(&path) {
+            for line in BufReader::new(f).lines().flatten() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+                    let ts_str = v
+                        .get("ts")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    if let Ok(ts) = ts_str.parse::<DateTime<Utc>>() {
+                        if ts >= cutoff {
+                            decisions += 1;
+                            let action = v
+                                .get("action_type")
+                                .and_then(|a| a.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+                            *decisions_by_action.entry(action).or_insert(0) += 1;
+                            if ts_str > latest_decision_ts || latest_decision_ts == "none" {
+                                latest_decision_ts = ts_str;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Telemetry latest (today only, most recent snapshot) ─────────────────
+    let telem_path = data_dir.join(format!("telemetry-{analyzed_date}.jsonl"));
+    if let Ok(f) = File::open(&telem_path) {
+        for line in BufReader::new(f).lines().flatten() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+                if let Some(ts_str) = v.get("ts").and_then(|t| t.as_str()) {
+                    if ts_str > latest_telemetry_ts.as_str() || latest_telemetry_ts == "none" {
+                        latest_telemetry_ts = ts_str.to_string();
+                    }
+                }
+            }
+        }
+    }
+
+    RecentWindow {
+        window_secs: WINDOW_SECS as u64,
+        events,
+        incidents,
+        high_critical_incidents: high_critical,
+        decisions,
+        decisions_by_action,
+        latest_event_ts,
+        latest_incident_ts,
+        latest_decision_ts,
+        latest_telemetry_ts,
+    }
 }
 
 fn compute_day_counters(data_dir: &Path, date: &str) -> Counters {
@@ -1141,6 +1331,45 @@ fn render_markdown(report: &TrialReport) -> String {
             let _ = writeln!(&mut out, "  - {}: {}", k, v);
         }
     }
+    let _ = writeln!(&mut out);
+
+    let _ = writeln!(&mut out, "## Recent 6h window");
+    let _ = writeln!(&mut out, "- Events: {}", report.recent_window.events);
+    let _ = writeln!(&mut out, "- Incidents: {}", report.recent_window.incidents);
+    let _ = writeln!(
+        &mut out,
+        "- High/critical incidents: {}",
+        report.recent_window.high_critical_incidents
+    );
+    let _ = writeln!(&mut out, "- Decisions: {}", report.recent_window.decisions);
+    let _ = writeln!(&mut out, "- Decisions by action:");
+    if report.recent_window.decisions_by_action.is_empty() {
+        let _ = writeln!(&mut out, "  - none");
+    } else {
+        for (k, v) in &report.recent_window.decisions_by_action {
+            let _ = writeln!(&mut out, "  - {}: {}", k, v);
+        }
+    }
+    let _ = writeln!(
+        &mut out,
+        "- Latest event ts: {}",
+        report.recent_window.latest_event_ts
+    );
+    let _ = writeln!(
+        &mut out,
+        "- Latest incident ts: {}",
+        report.recent_window.latest_incident_ts
+    );
+    let _ = writeln!(
+        &mut out,
+        "- Latest decision ts: {}",
+        report.recent_window.latest_decision_ts
+    );
+    let _ = writeln!(
+        &mut out,
+        "- Latest telemetry ts: {}",
+        report.recent_window.latest_telemetry_ts
+    );
     let _ = writeln!(&mut out);
 
     let _ = writeln!(&mut out, "## Operational telemetry");

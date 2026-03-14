@@ -10,7 +10,7 @@ mod skills;
 mod telemetry;
 mod webhook;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -78,6 +78,9 @@ struct Cli {
 struct AgentState {
     skill_registry: skills::SkillRegistry,
     blocklist: skills::Blocklist,
+    /// Recent action decisions keyed by `action:detector:entity_kind:entity_value`.
+    /// Used to suppress repeated AI decisions for the same scope within a short window.
+    decision_cooldowns: HashMap<String, chrono::DateTime<chrono::Utc>>,
     correlator: correlation::TemporalCorrelator,
     telemetry: telemetry::TelemetryState,
     telemetry_writer: Option<telemetry::TelemetryWriter>,
@@ -85,6 +88,163 @@ struct AgentState {
     /// without holding a borrow of `state` across async calls that need `&mut state`.
     ai_provider: Option<Arc<dyn ai::AiProvider>>,
     decision_writer: Option<decisions::DecisionWriter>,
+    /// Tracks when the daily narrative was last written so we can enforce a
+    /// minimum interval and avoid rewriting on every 30-second tick.
+    last_narrative_at: Option<std::time::Instant>,
+}
+
+const DECISION_COOLDOWN_SECS: i64 = 3600;
+const NARRATIVE_MIN_INTERVAL_SECS: u64 = 300;
+
+fn incident_detector(incident_id: &str) -> &str {
+    incident_id.split(':').next().unwrap_or("unknown")
+}
+
+fn decision_cooldown_key(action: &str, detector: &str, entity_kind: &str, entity: &str) -> String {
+    format!("{action}:{detector}:{entity_kind}:{entity}")
+}
+
+fn decision_cooldown_candidates(
+    incident: &innerwarden_core::incident::Incident,
+) -> Vec<String> {
+    let detector = incident_detector(&incident.incident_id);
+    let mut keys = Vec::new();
+
+    for entity in &incident.entities {
+        match entity.r#type {
+            innerwarden_core::entities::EntityType::Ip => {
+                keys.push(decision_cooldown_key(
+                    "block_ip",
+                    detector,
+                    "ip",
+                    &entity.value,
+                ));
+                keys.push(decision_cooldown_key(
+                    "monitor",
+                    detector,
+                    "ip",
+                    &entity.value,
+                ));
+                keys.push(decision_cooldown_key(
+                    "honeypot",
+                    detector,
+                    "ip",
+                    &entity.value,
+                ));
+            }
+            innerwarden_core::entities::EntityType::User => {
+                keys.push(decision_cooldown_key(
+                    "suspend_user_sudo",
+                    detector,
+                    "user",
+                    &entity.value,
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    keys
+}
+
+fn decision_cooldown_key_for_decision(
+    incident: &innerwarden_core::incident::Incident,
+    decision: &ai::AiDecision,
+) -> Option<String> {
+    let detector = incident_detector(&incident.incident_id);
+    match &decision.action {
+        ai::AiAction::BlockIp { ip, .. } => {
+            Some(decision_cooldown_key("block_ip", detector, "ip", ip))
+        }
+        ai::AiAction::Monitor { ip } => {
+            Some(decision_cooldown_key("monitor", detector, "ip", ip))
+        }
+        ai::AiAction::Honeypot { ip } => {
+            Some(decision_cooldown_key("honeypot", detector, "ip", ip))
+        }
+        ai::AiAction::SuspendUserSudo { user, .. } => Some(decision_cooldown_key(
+            "suspend_user_sudo",
+            detector,
+            "user",
+            user,
+        )),
+        ai::AiAction::Ignore { .. } | ai::AiAction::RequestConfirmation { .. } => None,
+    }
+}
+
+fn decision_cooldown_key_from_entry(entry: &decisions::DecisionEntry) -> Option<String> {
+    let detector = incident_detector(&entry.incident_id);
+    match entry.action_type.as_str() {
+        "block_ip" | "monitor" | "honeypot" => entry.target_ip.as_ref().map(|ip| {
+            decision_cooldown_key(&entry.action_type, detector, "ip", ip)
+        }),
+        _ => None,
+    }
+}
+
+fn recent_decision_dates() -> Vec<String> {
+    let today = chrono::Local::now().date_naive();
+    let mut dates = vec![today.format("%Y-%m-%d").to_string()];
+    if let Some(prev) = today.pred_opt() {
+        dates.push(prev.format("%Y-%m-%d").to_string());
+    }
+    dates
+}
+
+fn load_startup_decision_state(
+    data_dir: &Path,
+    preload_blocklist_from_system: bool,
+) -> (skills::Blocklist, HashMap<String, chrono::DateTime<chrono::Utc>>) {
+    let mut blocklist = skills::Blocklist::default();
+    let mut cooldowns: HashMap<String, chrono::DateTime<chrono::Utc>> = HashMap::new();
+
+    if preload_blocklist_from_system {
+        // Caller is responsible for awaiting the async ufw load and inserting later.
+    }
+
+    for date in recent_decision_dates() {
+        let decisions_path = data_dir.join(format!("decisions-{date}.jsonl"));
+        let Ok(content) = std::fs::read_to_string(&decisions_path) else {
+            continue;
+        };
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Ok(entry) = serde_json::from_str::<decisions::DecisionEntry>(line) else {
+                continue;
+            };
+            if entry.action_type == "block_ip" {
+                if let Some(ip) = &entry.target_ip {
+                    blocklist.insert(ip.clone());
+                }
+            }
+            if let Some(key) = decision_cooldown_key_from_entry(&entry) {
+                cooldowns
+                    .entry(key)
+                    .and_modify(|existing| {
+                        if entry.ts > *existing {
+                            *existing = entry.ts;
+                        }
+                    })
+                    .or_insert(entry.ts);
+            }
+        }
+    }
+
+    (blocklist, cooldowns)
+}
+
+fn load_last_narrative_instant(data_dir: &Path) -> Option<std::time::Instant> {
+    let today = chrono::Local::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    let path = data_dir.join(format!("summary-{today}.md"));
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let elapsed = modified.elapsed().ok()?;
+    std::time::Instant::now().checked_sub(elapsed)
 }
 
 // ---------------------------------------------------------------------------
@@ -203,13 +363,40 @@ async fn main() -> Result<()> {
     }
 
     // Build shared agent state
-    let mut state = AgentState {
-        skill_registry: skills::SkillRegistry::default_builtin(),
-        blocklist: if cfg.responder.enabled && !cfg.responder.dry_run {
+    // Pre-populate blocklist from today's decisions file so that IPs we already
+    // decided to block are skipped after a restart, even in dry-run mode.
+    let startup_blocklist = {
+        let mut bl = if cfg.responder.enabled && !cfg.responder.dry_run {
             skills::Blocklist::load_from_ufw().await
         } else {
             skills::Blocklist::default()
-        },
+        };
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+        let decisions_path = cli.data_dir.join(format!("decisions-{today}.jsonl"));
+        if let Ok(content) = std::fs::read_to_string(&decisions_path) {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                if let Ok(entry) = serde_json::from_str::<decisions::DecisionEntry>(line) {
+                    if entry.action_type == "block_ip" {
+                        if let Some(ip) = entry.target_ip {
+                            bl.insert(ip);
+                        }
+                    }
+                }
+            }
+        }
+        bl
+    };
+
+    let mut state = AgentState {
+        skill_registry: skills::SkillRegistry::default_builtin(),
+        blocklist: startup_blocklist,
         correlator: correlation::TemporalCorrelator::new(cfg.correlation.window_seconds, 4096),
         telemetry: telemetry::TelemetryState::default(),
         telemetry_writer: if cfg.telemetry.enabled {
@@ -239,6 +426,7 @@ async fn main() -> Result<()> {
         } else {
             None
         },
+        last_narrative_at: None,
     };
 
     let state_path = cli.data_dir.join("agent-state.json");
@@ -702,7 +890,10 @@ async fn execute_decision(
                         honeypot: honeypot_runtime(cfg),
                     };
                     let result = skill.execute(&ctx, cfg.responder.dry_run).await;
-                    if result.success && !cfg.responder.dry_run {
+                    // Always track the IP in the in-memory blocklist regardless of dry_run
+                    // mode, so the same IP is not re-evaluated by AI on subsequent ticks
+                    // or after a restart within the same day.
+                    if result.success {
                         state.blocklist.insert(ip.clone());
                     }
                     result.message
@@ -1057,40 +1248,59 @@ async fn process_narrative_tick(
     state.telemetry.observe_events(&new_events.entries);
     cursor.set_events_offset(&today, new_events.new_offset);
 
-    // Regenerate daily summary when there are new events
+    // Regenerate daily summary when there are new events, subject to a minimum
+    // rewrite interval to avoid thrashing on busy hosts.
+    // Rule: write if events arrived AND either (a) first write ever, or
+    // (b) at least 5 minutes have passed since the last write.
+    // Additionally, always write after 30 minutes regardless of event count, so
+    // the summary doesn't become stale if a handful of events trickle in slowly.
+    const NARRATIVE_MIN_INTERVAL_SECS: u64 = 300; // 5 minutes
+    const NARRATIVE_MAX_STALE_SECS: u64 = 1800;   // 30 minutes
     if cfg.narrative.enabled && events_count > 0 {
-        let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
-        // Always read from offset 0 — summary covers the full day, not just new entries
-        let all_events =
-            reader::read_new_entries::<innerwarden_core::event::Event>(&events_path, 0)
-                .inspect_err(|_| {
-                    state.telemetry.observe_error("narrative_reader");
-                })?;
-        let all_incidents =
-            reader::read_new_entries::<innerwarden_core::incident::Incident>(&incidents_path, 0)
+        let elapsed = state
+            .last_narrative_at
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(u64::MAX); // None → never written → always write
+        let should_write = elapsed >= NARRATIVE_MIN_INTERVAL_SECS
+            || elapsed >= NARRATIVE_MAX_STALE_SECS;
+        if should_write {
+            let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
+            // Always read from offset 0 — summary covers the full day, not just new entries
+            let all_events =
+                reader::read_new_entries::<innerwarden_core::event::Event>(&events_path, 0)
+                    .inspect_err(|_| {
+                        state.telemetry.observe_error("narrative_reader");
+                    })?;
+            let all_incidents =
+                reader::read_new_entries::<innerwarden_core::incident::Incident>(
+                    &incidents_path,
+                    0,
+                )
                 .inspect_err(|_| {
                     state.telemetry.observe_error("narrative_reader");
                 })?;
 
-        let host = all_events
-            .entries
-            .first()
-            .map(|e| e.host.as_str())
-            .or_else(|| all_incidents.entries.first().map(|i| i.host.as_str()))
-            .unwrap_or("unknown");
+            let host = all_events
+                .entries
+                .first()
+                .map(|e| e.host.as_str())
+                .or_else(|| all_incidents.entries.first().map(|i| i.host.as_str()))
+                .unwrap_or("unknown");
 
-        let md = narrative::generate(
-            &today,
-            host,
-            &all_events.entries,
-            &all_incidents.entries,
-            cfg.correlation.window_seconds,
-        );
-        if let Err(e) = narrative::write(data_dir, &today, &md) {
-            state.telemetry.observe_error("narrative_writer");
-            warn!("failed to write daily summary: {e:#}");
-        } else {
-            info!(date = today, "daily summary updated");
+            let md = narrative::generate(
+                &today,
+                host,
+                &all_events.entries,
+                &all_incidents.entries,
+                cfg.correlation.window_seconds,
+            );
+            if let Err(e) = narrative::write(data_dir, &today, &md) {
+                state.telemetry.observe_error("narrative_writer");
+                warn!("failed to write daily summary: {e:#}");
+            } else {
+                state.last_narrative_at = Some(std::time::Instant::now());
+                info!(date = today, "daily summary updated");
+            }
         }
     }
 
@@ -1269,6 +1479,7 @@ mod tests {
             telemetry_writer: None,
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
+            last_narrative_at: None,
         };
 
         // 4. Run the incident tick
@@ -1367,6 +1578,7 @@ mod tests {
             telemetry_writer: None,
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
+            last_narrative_at: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -1440,6 +1652,7 @@ mod tests {
             telemetry_writer: None,
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
+            last_narrative_at: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -1525,6 +1738,7 @@ mod tests {
             telemetry_writer: None,
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
+            last_narrative_at: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -1587,6 +1801,7 @@ mod tests {
             telemetry_writer: None,
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
+            last_narrative_at: None,
         };
 
         let mut cursor = reader::AgentCursor::default();

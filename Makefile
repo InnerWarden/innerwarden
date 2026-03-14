@@ -38,6 +38,10 @@ run-dashboard:
 replay-qa:
 	./scripts/replay_qa.sh
 
+.PHONY: ops-check
+ops-check:
+	./scripts/ops-check.sh $(DATA_DIR)
+
 # ─── Cross-compile for Linux arm64 ───────────────────────────────────────────
 
 .PHONY: build-linux

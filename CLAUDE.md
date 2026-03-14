@@ -46,16 +46,16 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Honeypot fase 8.8: interação média (`interaction = "medium"`) — SSH real via `russh` (key exchange + captura de credenciais, sem shell) + HTTP com parser manual (captura de formulário de login fake)
 - ✅ Skill open real: `suspend-user-sudo` (negação temporária de sudo via drop-in em `/etc/sudoers.d` + cleanup automático de expiração)
 - ✅ Dry-run por padrão (seguro para produção até o usuário habilitar)
-- ✅ Blocklist em memória (evita bloquear o mesmo IP duas vezes)
+- ✅ Blocklist em memória persistida entre ticks: inserção sempre feita (inclusive dry_run) + pré-carregamento de `decisions-*.jsonl` do dia na inicialização (evita bloquear o mesmo IP mesmo após restart em dry_run)
 - ✅ **Audit trail** append-only: `decisions-YYYY-MM-DD.jsonl`
 - ✅ Webhook HTTP POST com filtragem por severidade mínima (dispara no tick rápido — em tempo real)
-- ✅ Narrativa diária em Markdown: `summary-YYYY-MM-DD.md`
+- ✅ Narrativa diária em Markdown: `summary-YYYY-MM-DD.md` com throttle mínimo de 5min entre escritas (evita reescrita em cada tick)
 - ✅ Dois loops independentes no mesmo `tokio::select!`: rápido (incidentes + webhook + AI, 2s) + lento (narrativa, 30s)
 - ✅ Cursor persistido após cada tick — fail-open em ambos os loops (crash nunca derruba o agent)
 - ✅ `reqwest::Client` reutilizado entre chamadas AI (connection pool real, sem overhead de TLS por chamada)
 - ✅ Audit trail com flush imediato por decisão — sobrevive a crash entre execução e shutdown
 - ✅ Modo `--once` para processamento batch
-- ✅ Modo `--report` v2: gera relatório operacional do trial com deltas dia-a-dia + anomaly hints + seção de telemetria (`trial-report-YYYY-MM-DD.{md,json}`) sem alterar estado
+- ✅ Modo `--report` v2: gera relatório operacional do trial com deltas dia-a-dia + anomaly hints + seção de telemetria (`trial-report-YYYY-MM-DD.{md,json}`) sem alterar estado; inclui seção `recent_window` com janela deslizante real de 6h (abrange ontem+hoje, usa campo `ts` e `action_type` corretos)
 - ✅ Carregamento automático de `.env` na inicialização (dotenvy, fail-silent)
 - ✅ Replay QA harness end-to-end (`make replay-qa`) com assertions estáveis de artefatos
 - ✅ Playbook de rollout hardening + smoke checks remotos (`make rollout-precheck/postcheck`)
@@ -284,6 +284,7 @@ make run-dashboard    # dashboard read-only em http://127.0.0.1:8787 (requer aut
 innerwarden-agent --dashboard-generate-password-hash  # gera hash Argon2 para auth do dashboard
 innerwarden-agent --report --data-dir ./data  # gera trial-report-YYYY-MM-DD.{md,json}
 make replay-qa        # replay end-to-end com assertions estáveis de artefatos
+make ops-check DATA_DIR=./data  # quick ops-check da janela de 6h do último trial-report-*.json
 
 # Cross-compile para Linux arm64 (requer cargo-zigbuild + zig)
 make build-linux      # → target/aarch64-unknown-linux-gnu/release/innerwarden-{sensor,agent}
@@ -701,6 +702,7 @@ Documentação pública do repositório:
 - Fase D2.4 (concluída): UX de investigação guiada (hints analíticos, pivot shortcuts na jornada, comparação entre datas e janela temporal configurável)
 - Fase D3 (concluída): ações operacionais guardadas no dashboard (Block IP + Suspend User com modal de confirmação, razão obrigatória, dry-run transparente e trilha auditável em `decisions-*.jsonl`)
 - Fase D4 (concluída): redesign visual do dashboard para combinar com o site innerwarden.com (paleta navy, radial gradients, border-radius moderno, mobile UX completo com painel colapsável, touch targets e layout fluído)
+- Robustez produção (concluída): 3 bugs críticos corrigidos pós-first-report: (1) `--report` agora usa janela de 6h real com campo `ts` + `action_type` corretos abrangendo 2 dias; (2) blocklist inserida mesmo em dry_run + pré-carregada do `decisions-*.jsonl` ao iniciar (evita bloquear o mesmo IP repetidamente); (3) narrativa diária throttlada a no mínimo 5min entre escritas (evita rewrite a cada tick de 30s); `scripts/ops-check.sh` + `make ops-check` adicionados para inspeção rápida
 - Fase D5 (próxima): dashboard "attacker path viewer" — reconstrução story-first do caminho do atacante (chapters/fases derivadas, verdict card, compactação de bursts/sessões e evidência humana antes de JSON bruto), mantendo o layout alinhado ao visual do site innerwarden.com
 - Fase D6 (planejada): notificações push em tempo real via Server-Sent Events (SSE) para alertar operadores de novos incidentes sem refresh manual
 - Fase 8.1 (concluída): honeypot rebuild foundation (`listener` mínimo, gated por config)
