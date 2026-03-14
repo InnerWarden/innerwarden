@@ -30,6 +30,7 @@ impl SudoersDropIn {
         PathBuf::from(format!("/etc/sudoers.d/{}", self.name))
     }
 
+    #[allow(dead_code)] // used by future `innerwarden disable` command
     pub fn is_installed(&self) -> bool {
         self.path().exists()
     }
@@ -92,6 +93,7 @@ impl SudoersDropIn {
     }
 
     /// Remove the drop-in file.
+    #[allow(dead_code)] // used by future `innerwarden disable` command
     pub fn remove(&self, dry_run: bool) -> Result<()> {
         let dest = self.path();
         if !dest.exists() {

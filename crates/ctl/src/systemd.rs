@@ -23,6 +23,7 @@ pub fn restart_service(unit: &str, dry_run: bool) -> Result<()> {
 }
 
 /// Returns true if a service is currently active (running).
+#[allow(dead_code)] // used by future `innerwarden status` command
 pub fn is_service_active(unit: &str) -> bool {
     Command::new("systemctl")
         .args(["is-active", "--quiet", unit])
