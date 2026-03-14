@@ -136,6 +136,26 @@ Default dashboard address:
 
 The dashboard is read-only, but authentication is mandatory.
 
+You can also deep-link dashboard state through query parameters for reproducible investigations and docs previews, for example:
+
+```text
+/?date=2026-03-13&subject_type=ip&subject=203.0.113.10&window_seconds=300
+```
+
+## Dashboard Preview
+
+Overview:
+
+<img src="docs/assets/screenshots/dashboard-overview.png" alt="InnerWarden dashboard overview" width="960">
+
+Attacker journey:
+
+<img src="docs/assets/screenshots/dashboard-journey.png" alt="InnerWarden attacker journey view" width="960">
+
+Cluster-first investigation:
+
+<img src="docs/assets/screenshots/dashboard-clusters.png" alt="InnerWarden cluster-first investigation view" width="960">
+
 ## Trial Install on Linux
 
 A guided installer is available for systemd-based Linux hosts:

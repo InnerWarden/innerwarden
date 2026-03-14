@@ -2505,6 +2505,41 @@ const INDEX_HTML: &str = r##"<!doctype html>
     state.filters.window_seconds = document.getElementById('flt-window').value || '';
   }
 
+  function hydrateStateFromQuery() {
+    const qs = new URLSearchParams(window.location.search || '');
+    const pivot = (qs.get('pivot') || '').trim();
+    if (pivot === 'ip' || pivot === 'user' || pivot === 'detector') {
+      state.pivot = pivot;
+    }
+
+    state.filters.date = (qs.get('date') || '').trim();
+    state.filters.compare_date = (qs.get('compare_date') || '').trim();
+    state.filters.severity_min = (qs.get('severity_min') || '').trim();
+    state.filters.detector = (qs.get('detector') || '').trim();
+    state.filters.window_seconds = (qs.get('window_seconds') || '').trim();
+
+    const subjectType = (qs.get('subject_type') || '').trim();
+    const subject = (qs.get('subject') || '').trim();
+    if ((subjectType === 'ip' || subjectType === 'user' || subjectType === 'detector') && subject) {
+      state.selected = { type: subjectType, value: subject };
+    }
+  }
+
+  function syncUrl() {
+    const qs = buildQuery({
+      pivot: state.pivot,
+      date: state.filters.date,
+      compare_date: state.filters.compare_date,
+      severity_min: state.filters.severity_min,
+      detector: state.filters.detector,
+      window_seconds: state.filters.window_seconds,
+      subject_type: state.selected.value ? state.selected.type : '',
+      subject: state.selected.value ? state.selected.value : '',
+    });
+    const nextUrl = qs ? ('?' + qs) : window.location.pathname;
+    window.history.replaceState({}, '', nextUrl);
+  }
+
   function updatePivotUi() {
     document.querySelectorAll('.pivot-tab').forEach((tab) => {
       tab.classList.toggle('active', tab.dataset.pivot === state.pivot);
@@ -2515,6 +2550,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
   async function loadJourney(subjectType, subjectValue) {
     state.selected = { type: subjectType, value: subjectValue };
     syncFiltersFromUi();
+    syncUrl();
     document.querySelectorAll('.attacker-card').forEach(c => c.classList.remove('active'));
     const card = document.querySelector(
       '.attacker-card[data-subject-type="' + CSS.escape(subjectType) + '"][data-subject-value="' + CSS.escape(subjectValue) + '"]'
@@ -2804,6 +2840,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
         }
       }
 
+      syncUrl();
       document.getElementById('refreshStatus').textContent = new Date().toLocaleTimeString();
     } catch (e) {
       document.getElementById('refreshStatus').textContent = 'err: ' + e.message;
@@ -2812,8 +2849,12 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
   // Boot
   const today = new Date().toISOString().slice(0, 10);
-  document.getElementById('flt-date').value = today;
-  document.getElementById('flt-compare-date').value = '';
+  hydrateStateFromQuery();
+  document.getElementById('flt-date').value = state.filters.date || today;
+  document.getElementById('flt-compare-date').value = state.filters.compare_date || '';
+  document.getElementById('flt-severity').value = state.filters.severity_min || '';
+  document.getElementById('flt-detector').value = state.filters.detector || '';
+  document.getElementById('flt-window').value = state.filters.window_seconds || '';
   updatePivotUi();
 
   document.getElementById('flt-apply').addEventListener('click', () => {
@@ -2842,7 +2883,11 @@ const INDEX_HTML: &str = r##"<!doctype html>
   });
   document.getElementById('flt-window').addEventListener('change', () => refreshLeft(true));
 
-  refreshLeft();
+  refreshLeft(false).then(() => {
+    if (state.selected.value) {
+      loadJourney(state.selected.type, state.selected.value);
+    }
+  });
   setInterval(() => refreshLeft(false), 5000);
 </script>
 </body>

@@ -11,6 +11,9 @@
 - [docs/format.md](format.md) — JSONL output formats
 - [docs/development-plan.md](development-plan.md) — roadmap and completed phases
 - [docs/dashboard-roadmap.md](dashboard-roadmap.md) — dashboard evolution plan
+- [CHANGELOG.md](../CHANGELOG.md) — release notes convention
+- `docs/assets/screenshots/` — public dashboard preview images
+- `scripts/capture_dashboard_previews.sh` — regeneration helper for dashboard preview assets
 
 ## Phase Docs
 
