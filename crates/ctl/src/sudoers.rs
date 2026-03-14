@@ -13,15 +13,15 @@ use anyhow::{bail, Context, Result};
 
 pub struct SudoersDropIn {
     /// File name inside /etc/sudoers.d/ (no path separators)
-    pub name: &'static str,
+    pub name: String,
     /// Full sudoers rule content
     pub content: String,
 }
 
 impl SudoersDropIn {
-    pub fn new(name: &'static str, content: impl Into<String>) -> Self {
+    pub fn new(name: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
-            name,
+            name: name.into(),
             content: content.into(),
         }
     }
@@ -30,7 +30,6 @@ impl SudoersDropIn {
         PathBuf::from(format!("/etc/sudoers.d/{}", self.name))
     }
 
-    #[allow(dead_code)] // used by future `innerwarden disable` command
     pub fn is_installed(&self) -> bool {
         self.path().exists()
     }
@@ -93,7 +92,6 @@ impl SudoersDropIn {
     }
 
     /// Remove the drop-in file.
-    #[allow(dead_code)] // used by future `innerwarden disable` command
     pub fn remove(&self, dry_run: bool) -> Result<()> {
         let dest = self.path();
         if !dest.exists() {
@@ -126,6 +124,17 @@ pub fn block_ip_rule(backend: &str) -> Option<String> {
          # Generated for capability: block-ip (backend: {backend})\n\
          {rule}"
     ))
+}
+
+/// Returns the sudoers rule for the search-protection nginx skill.
+pub fn search_protection_nginx_rule() -> String {
+    "# Managed by innerwarden-ctl — do not edit manually\n\
+     # Generated for capability: search-protection\n\
+     innerwarden ALL=(ALL) NOPASSWD: \\\n  \
+     /usr/bin/install -o root -g root -m 644 * /etc/nginx/innerwarden-blocklist.conf, \\\n  \
+     /usr/sbin/nginx -t, \\\n  \
+     /usr/sbin/nginx -s reload\n"
+        .to_string()
 }
 
 /// Returns the sudoers rule for suspend-user-sudo skill.

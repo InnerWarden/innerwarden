@@ -595,6 +595,27 @@ async fn process_incidents(
         }
     }
 
+    if cfg.responder.enabled
+        && cfg
+            .responder
+            .allowed_skills
+            .iter()
+            .any(|id| id == "rate-limit-nginx")
+    {
+        match skills::builtin::cleanup_expired_nginx_blocks(data_dir, cfg.responder.dry_run).await
+        {
+            Ok(removed) => {
+                if removed > 0 {
+                    info!(removed, "expired nginx deny rules cleaned up");
+                }
+            }
+            Err(e) => {
+                state.telemetry.observe_error("rate_limit_nginx_cleanup");
+                warn!("failed to cleanup expired nginx blocks: {e:#}");
+            }
+        }
+    }
+
     let today = chrono::Local::now()
         .date_naive()
         .format("%Y-%m-%d")

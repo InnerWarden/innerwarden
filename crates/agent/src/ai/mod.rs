@@ -189,7 +189,10 @@ pub fn build_provider(cfg: &AiConfig) -> Box<dyn AiProvider> {
             cfg.resolved_api_key(),
             cfg.model.clone(),
         )),
-        "anthropic" => Box::new(anthropic::AnthropicProvider),
+        "anthropic" => Box::new(anthropic::AnthropicProvider::new(
+            cfg.resolved_api_key(),
+            cfg.model.clone(),
+        )),
         "ollama" => Box::new(ollama::OllamaProvider),
         other => {
             tracing::warn!(

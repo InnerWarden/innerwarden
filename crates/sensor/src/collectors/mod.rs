@@ -3,3 +3,4 @@ pub mod docker;
 pub mod exec_audit;
 pub mod integrity;
 pub mod journald;
+pub mod nginx_access;

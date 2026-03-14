@@ -9,9 +9,13 @@ use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use tokio::sync::broadcast;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
@@ -23,6 +27,22 @@ use crate::correlation::build_clusters;
 use crate::decisions::DecisionEntry;
 use crate::telemetry::TelemetrySnapshot;
 use innerwarden_core::entities::{EntityRef, EntityType};
+use innerwarden_core::event::Severity;
+use innerwarden_core::incident::Incident;
+
+// ---------------------------------------------------------------------------
+// D6 — SSE types
+// ---------------------------------------------------------------------------
+
+/// Minimal SSE payload pushed to connected clients.
+#[derive(Debug, Clone, Serialize)]
+struct SsePayload {
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<serde_json::Value>,
+}
+
+type EventTx = broadcast::Sender<SsePayload>;
 
 // ---------------------------------------------------------------------------
 // Shared state / auth
@@ -58,6 +78,8 @@ struct DashboardState {
     data_dir: PathBuf,
     /// D3: operator-initiated action configuration.
     action_cfg: Arc<DashboardActionConfig>,
+    /// D6: SSE broadcast channel sender.
+    event_tx: EventTx,
 }
 
 #[derive(Clone)]
@@ -495,9 +517,13 @@ pub async fn serve(
     auth: DashboardAuth,
     action_cfg: DashboardActionConfig,
 ) -> Result<()> {
+    // D6: broadcast channel — capacity 64 is plenty; lagged receivers are dropped.
+    let (event_tx, _) = broadcast::channel::<SsePayload>(64);
+
     let state = DashboardState {
-        data_dir,
+        data_dir: data_dir.clone(),
         action_cfg: Arc::new(action_cfg),
+        event_tx: event_tx.clone(),
     };
     let auth_layer = middleware::from_fn_with_state(auth, require_basic_auth);
 
@@ -515,8 +541,20 @@ pub async fn serve(
         .route("/api/action/block-ip", post(api_action_block_ip))
         .route("/api/action/suspend-user", post(api_action_suspend_user))
         .route("/api/action/config", get(api_action_config))
+        // D6 — SSE live event stream
+        .route("/api/events/stream", get(api_events_stream))
         .layer(auth_layer)
         .with_state(state);
+
+    // D6: spawn file watcher and heartbeat tasks
+    tokio::spawn(watch_for_new_entries(data_dir, event_tx.clone()));
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            let _ = event_tx.send(SsePayload { kind: "heartbeat".to_string(), data: None });
+        }
+    });
 
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
@@ -591,6 +629,119 @@ fn unauthorized_response() -> Response {
         HeaderValue::from_static(r#"Basic realm="innerwarden-dashboard", charset="UTF-8""#),
     );
     response
+}
+
+// ---------------------------------------------------------------------------
+// D6 — SSE file watcher and stream handler
+// ---------------------------------------------------------------------------
+
+/// Polls today's incidents and decisions JSONL files every 2 s.
+/// Broadcasts a `"refresh"` SSE payload whenever either file grows.
+async fn watch_for_new_entries(data_dir: PathBuf, tx: EventTx) {
+    use std::collections::HashMap;
+    use std::io::{Read, Seek, SeekFrom};
+
+    // Track byte offsets so we can read only new lines.
+    let mut offsets: HashMap<String, u64> = HashMap::new();
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+
+    loop {
+        interval.tick().await;
+        if tx.receiver_count() == 0 {
+            continue;
+        }
+
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+
+        // Check decisions + incidents for growth → generic refresh signal.
+        let refresh_files = [
+            format!("incidents-{today}.jsonl"),
+            format!("decisions-{today}.jsonl"),
+        ];
+        let mut changed = false;
+        for name in &refresh_files {
+            let path = data_dir.join(name);
+            let current = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let prev = offsets.entry(name.clone()).or_insert(current);
+            if current > *prev {
+                *prev = current;
+                changed = true;
+            }
+        }
+        if changed {
+            let _ = tx.send(SsePayload { kind: "refresh".to_string(), data: None });
+        }
+
+        // D8 — read new incident lines and emit `alert` for High/Critical.
+        let inc_name = format!("incidents-{today}.jsonl");
+        let inc_path = data_dir.join(&inc_name);
+        let alert_key = format!("alert:{inc_name}");
+        let alert_offset = offsets.entry(alert_key.clone()).or_insert(0);
+
+        if let Ok(mut f) = std::fs::File::open(&inc_path) {
+            let file_len = f.seek(SeekFrom::End(0)).unwrap_or(0);
+            if file_len > *alert_offset {
+                let _ = f.seek(SeekFrom::Start(*alert_offset));
+                let mut buf = String::new();
+                if f.read_to_string(&mut buf).is_ok() {
+                    *alert_offset = file_len;
+                    for line in buf.lines() {
+                        if let Ok(inc) = serde_json::from_str::<Incident>(line) {
+                            if matches!(inc.severity, Severity::High | Severity::Critical) {
+                                // Pick first ip entity, fall back to first entity of any kind.
+                                let entity = inc
+                                    .entities
+                                    .iter()
+                                    .find(|e| e.r#type == EntityType::Ip)
+                                    .or_else(|| inc.entities.first());
+                                let (etype, evalue) = entity
+                                    .map(|e| {
+                                        let t = match e.r#type {
+                                            EntityType::Ip        => "ip",
+                                            EntityType::User      => "user",
+                                            EntityType::Container => "container",
+                                            EntityType::Path      => "path",
+                                            EntityType::Service   => "service",
+                                        };
+                                        (t, e.value.as_str())
+                                    })
+                                    .unwrap_or(("ip", "unknown"));
+
+                                let payload = serde_json::json!({
+                                    "severity":     format!("{:?}", inc.severity).to_lowercase(),
+                                    "title":        inc.title,
+                                    "entity_type":  etype,
+                                    "entity_value": evalue,
+                                });
+                                let _ = tx.send(SsePayload {
+                                    kind: "alert".to_string(),
+                                    data: Some(payload),
+                                });
+                            }
+                        }
+                    }
+                }
+            } else {
+                // File shrunk (rotation) — reset offset.
+                if file_len < *alert_offset {
+                    *alert_offset = 0;
+                }
+            }
+        }
+    }
+}
+
+/// `GET /api/events/stream` — SSE live event stream (D6).
+async fn api_events_stream(
+    State(state): State<DashboardState>,
+) -> Sse<impl futures_core::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
+    let rx = state.event_tx.subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(|msg| {
+        let payload = msg.ok()?;
+        let data = serde_json::to_string(&payload).unwrap_or_default();
+        Some(Ok(SseEvent::default().event(&payload.kind).data(data)))
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 // ---------------------------------------------------------------------------
@@ -3307,6 +3458,29 @@ const INDEX_HTML: &str = r##"<!doctype html>
     .toast.visible { opacity: 1; transform: translateY(0); pointer-events: auto; }
     .toast.ok  { border-left: 3px solid var(--ok);    color: var(--text); }
     .toast.err { border-left: 3px solid var(--danger); color: var(--text); }
+    /* D9 — inline entity search */
+    .search-wrap { padding: 6px 12px 2px; }
+    #entitySearch {
+      width: 100%; box-sizing: border-box;
+      background: var(--bg1); border: 1px solid var(--line2); border-radius: 8px;
+      color: var(--text); font-size: 0.8rem; padding: 6px 10px;
+      outline: none; transition: border-color 0.15s;
+    }
+    #entitySearch:focus { border-color: var(--accent); }
+    #entitySearch::placeholder { color: var(--muted); }
+    .attacker-card.hidden { display: none; }
+    /* D7 — live timeline animations */
+    @keyframes cardSlideIn {
+      from { opacity: 0; transform: translateY(-12px); box-shadow: 0 0 0 1px var(--accent); }
+      60%  { box-shadow: 0 0 12px 2px rgba(120,229,255,0.25); }
+      to   { opacity: 1; transform: translateY(0);   box-shadow: none; }
+    }
+    @keyframes kpiFlash {
+      0%   { color: var(--accent); text-shadow: 0 0 8px rgba(120,229,255,0.7); }
+      100% { color: inherit; text-shadow: none; }
+    }
+    .card-new  { animation: cardSlideIn 0.4s ease forwards; }
+    .kpi-flash { animation: kpiFlash 0.8s ease forwards; }
   </style>
 </head>
 <body>
@@ -3388,6 +3562,12 @@ const INDEX_HTML: &str = r##"<!doctype html>
         <button type="button" class="pivot-tab active" data-pivot="ip">IP</button>
         <button type="button" class="pivot-tab" data-pivot="user">User</button>
         <button type="button" class="pivot-tab" data-pivot="detector">Detector</button>
+      </div>
+
+      <!-- D9 — inline search -->
+      <div class="search-wrap">
+        <input id="entitySearch" type="search" placeholder="filter by IP, detector, severity…"
+               autocomplete="off" spellcheck="false" />
       </div>
 
       <!-- Entity list -->
@@ -3843,6 +4023,55 @@ const INDEX_HTML: &str = r##"<!doctype html>
     toast._timer = setTimeout(() => toast.classList.remove('visible'), 4500);
   }
 
+  // D8 — rich push alert toast for High/Critical incidents arriving via SSE.
+  function showAlertToast(alert) {
+    const sev = (alert.severity || 'high').toUpperCase();
+    const title = alert.title || 'Incident detected';
+    const evalue = alert.entity_value || '';
+    const etype  = alert.entity_type  || 'ip';
+    const sevColor = sev === 'CRITICAL' ? '#f43f5e' : '#f97316';
+    const toast = document.getElementById('toast');
+    toast.innerHTML =
+      `<span style="color:${sevColor};font-weight:700;margin-right:6px">${esc(sev)}</span>` +
+      `<span>${esc(title)}</span>` +
+      (evalue
+        ? ` &nbsp;<a href="#" style="color:#78e5ff;text-decoration:none" ` +
+          `onclick="event.preventDefault();loadJourney('${esc(etype)}','${esc(evalue)}')"` +
+          `>→ ${esc(evalue)}</a>`
+        : '');
+    toast.className = 'toast err visible';
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => toast.classList.remove('visible'), 8000);
+  }
+
+  // D9 — inline entity search filter (client-side, no round-trip)
+  function applyEntitySearch() {
+    const q = (document.getElementById('entitySearch').value || '').trim().toLowerCase();
+    const cards = document.querySelectorAll('#attackerList .attacker-card');
+    let visible = 0;
+    cards.forEach(card => {
+      const text = card.textContent.toLowerCase();
+      const match = !q || text.includes(q);
+      card.classList.toggle('hidden', !match);
+      if (match) visible++;
+    });
+    // Show a "no results" message if every card is hidden
+    let noRes = document.getElementById('searchNoResults');
+    if (!visible && q) {
+      if (!noRes) {
+        noRes = document.createElement('div');
+        noRes.id = 'searchNoResults';
+        noRes.className = 'empty';
+        noRes.textContent = 'No matches for "' + q + '"';
+        document.getElementById('attackerList').appendChild(noRes);
+      } else {
+        noRes.textContent = 'No matches for "' + q + '"';
+      }
+    } else if (noRes) {
+      noRes.remove();
+    }
+  }
+
   // ── Investigation state ────────────────────────────────────────────────
   const state = {
     pivot: 'ip',
@@ -3855,6 +4084,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       window_seconds: ''
     },
     clusters: [],
+    knownItemValues: new Set(),  // D7: tracks rendered entity values for diff
   };
 
   const pivotTitle = (pivot) => ({
@@ -4169,6 +4399,77 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
   }
 
+  // D7 — update a KPI span; flash on change
+  function updateKpi(id, newVal) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const prev = el.textContent;
+    el.textContent = newVal;
+    if (String(prev) !== String(newVal)) {
+      el.classList.remove('kpi-flash');
+      void el.offsetWidth; // reflow to restart animation
+      el.classList.add('kpi-flash');
+      el.addEventListener('animationend', () => el.classList.remove('kpi-flash'), { once: true });
+    }
+  }
+
+  // D7 — soft live refresh: only new cards get animated, existing stay in place.
+  async function refreshLeftLive() {
+    try {
+      syncFiltersFromUi();
+      const overviewQs = buildQuery({ date: state.filters.date });
+      const entityQs = buildQuery({
+        date: state.filters.date,
+        severity_min: state.filters.severity_min,
+        detector: state.filters.detector,
+        group_by: state.pivot,
+      });
+
+      const [ov, entityData] = await Promise.all([
+        loadJson('/api/overview' + (overviewQs ? '?' + overviewQs : '')),
+        state.pivot === 'ip'
+          ? loadJson('/api/entities?' + entityQs).then((r) => ({
+              items: (r.attackers || []).map((a) => ({ ...a, value: a.ip, group_by: 'ip' })),
+            }))
+          : loadJson('/api/pivots?' + entityQs),
+      ]);
+
+      const items = entityData.items || [];
+
+      updateKpi('kpi-events',    ov.events_count);
+      updateKpi('kpi-incidents', ov.incidents_count);
+      updateKpi('kpi-decisions', ov.decisions_count);
+      updateKpi('kpi-attackers', items.length);
+
+      const list = document.getElementById('attackerList');
+      const newItems = items.filter(it => !state.knownItemValues.has(it.value));
+      if (newItems.length > 0) {
+        for (const item of newItems.reverse()) {
+          const el = document.createElement('div');
+          el.innerHTML = renderCard(item).trim();
+          const card = el.firstChild;
+          card.classList.add('card-new');
+          list.prepend(card);
+          state.knownItemValues.add(item.value);
+        }
+      }
+
+      // Update counts on existing cards (incident/event count may change)
+      for (const item of items) {
+        const existing = list.querySelector(
+          `[data-subject-type="${esc(state.pivot)}"][data-subject-value="${esc(item.value)}"]`
+        );
+        if (existing && !newItems.includes(item)) {
+          const countEl = existing.querySelector('.card-counts');
+          if (countEl) countEl.textContent = `${item.incident_count} inc · ${item.event_count} ev`;
+        }
+      }
+      if (newItems.length > 0) applyEntitySearch();  // D9: filter newly inserted cards
+    } catch (e) {
+      // silent — refreshLeft fallback handles error display
+    }
+  }
+
   async function refreshLeft(forceRefreshJourney = false) {
     try {
       syncFiltersFromUi();
@@ -4213,8 +4514,10 @@ const INDEX_HTML: &str = r##"<!doctype html>
       const list = document.getElementById('attackerList');
       if (items.length === 0) {
         list.innerHTML = '<div class="empty">No records for the selected filters.</div>';
+        state.knownItemValues.clear();
       } else {
         list.innerHTML = items.map((item) => renderCard(item)).join('');
+        state.knownItemValues = new Set(items.map(it => it.value));
       }
 
       const clusterList = document.getElementById('clusterList');
@@ -4250,6 +4553,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
         }
       }
 
+      applyEntitySearch();  // D9: re-apply filter after full reload
       syncUrl();
       document.getElementById('refreshStatus').textContent = new Date().toLocaleTimeString();
     } catch (e) {
@@ -4298,13 +4602,81 @@ const INDEX_HTML: &str = r##"<!doctype html>
     refreshLeft(false);
   });
   document.getElementById('flt-window').addEventListener('change', () => refreshLeft(true));
+  document.getElementById('entitySearch').addEventListener('input', applyEntitySearch);
 
   refreshLeft(false).then(() => {
+    applyEntitySearch();  // respect any pre-filled query on initial load
     if (state.selected.value) {
       loadJourney(state.selected.type, state.selected.value);
     }
   });
-  setInterval(() => refreshLeft(false), 5000);
+  // D6 — SSE live update client (replaces 5 s setInterval).
+  // Uses fetch() + ReadableStream so Basic auth credentials flow correctly.
+  (function startSse() {
+    let fallbackTimer = null;
+    let reconnectTimer = null;
+
+    function armFallback() {
+      // If SSE hasn't fired within 35 s, fall back to a 30 s poll.
+      clearTimeout(fallbackTimer);
+      fallbackTimer = setTimeout(() => {
+        refreshLeftLive();
+        fallbackTimer = setInterval(() => refreshLeftLive(), 30000);
+      }, 35000);
+    }
+
+    function connect() {
+      clearTimeout(reconnectTimer);
+      fetch('/api/events/stream', { headers: { 'Accept': 'text/event-stream' } })
+        .then(res => {
+          if (!res.ok || !res.body) throw new Error('SSE connect failed');
+          clearTimeout(fallbackTimer);
+          clearInterval(fallbackTimer);
+          const el = document.getElementById('refreshStatus');
+          if (el) el.innerHTML = '<span style="color:#78e5ff;font-size:0.7rem">&#9679; LIVE</span>';
+          const reader = res.body.getReader();
+          const dec = new TextDecoder();
+          let buf = '';
+          let lastEvent = '';
+          function pump() {
+            reader.read().then(({ done, value }) => {
+              if (done) { scheduleReconnect(); return; }
+              buf += dec.decode(value, { stream: true });
+              const lines = buf.split('\n');
+              buf = lines.pop();
+              for (const line of lines) {
+                if (line.startsWith('event: ')) {
+                  lastEvent = line.slice(7).trim();
+                } else if (line.startsWith('data: ')) {
+                  if (lastEvent === 'refresh') {
+                    refreshLeftLive();  // D7: soft live diff
+                  } else if (lastEvent === 'alert') {
+                    try {
+                      const outer = JSON.parse(line.slice(6).trim());
+                      showAlertToast(outer.data || outer);
+                    } catch (_) {}
+                  }
+                  lastEvent = '';
+                }
+              }
+              pump();
+            }).catch(() => scheduleReconnect());
+          }
+          pump();
+        })
+        .catch(() => scheduleReconnect());
+    }
+
+    function scheduleReconnect() {
+      const el = document.getElementById('refreshStatus');
+      if (el) el.innerHTML = '<span style="color:#888;font-size:0.7rem">&#9679; reconnecting</span>';
+      armFallback();
+      reconnectTimer = setTimeout(connect, 3000);
+    }
+
+    armFallback();
+    connect();
+  })();
 </script>
 </body>
 </html>

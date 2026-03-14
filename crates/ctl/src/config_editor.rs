@@ -175,6 +175,44 @@ pub fn write_array_push(path: &Path, section: &str, key: &str, val: &str) -> Res
     Ok(true)
 }
 
+/// Remove all occurrences of a string value from an array key in `[section]`.
+/// Returns `true` if the value was found and removed, `false` if it was absent.
+/// No-ops gracefully if the key or section does not exist.
+pub fn write_array_remove(path: &Path, section: &str, key: &str, val: &str) -> Result<bool> {
+    let mut doc = read_doc(path)?;
+
+    let already_absent = read_item(&doc, section, key)
+        .and_then(|v| v.as_value())
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().all(|v| v.as_str() != Some(val)))
+        .unwrap_or(true);
+
+    if already_absent {
+        return Ok(false);
+    }
+
+    let parts = section_parts(section);
+    let arr_item = match parts.as_slice() {
+        [s1] => &mut doc[s1][key],
+        [s1, s2] => &mut doc[s1][s2][key],
+        _ => return Ok(false),
+    };
+    if let Some(arr) = arr_item.as_value_mut().and_then(|v| v.as_array_mut()) {
+        let indices: Vec<usize> = arr
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.as_str() == Some(val))
+            .map(|(i, _)| i)
+            .collect();
+        for i in indices.into_iter().rev() {
+            arr.remove(i);
+        }
+    }
+
+    atomic_write(path, &doc.to_string())?;
+    Ok(true)
+}
+
 // ---------------------------------------------------------------------------
 // Public read API
 // ---------------------------------------------------------------------------
@@ -338,6 +376,45 @@ mod tests {
     fn read_str_array_returns_empty_for_missing_file() {
         let arr = read_str_array(Path::new("/nonexistent/agent.toml"), "responder", "allowed_skills");
         assert!(arr.is_empty());
+    }
+
+    #[test]
+    fn write_array_remove_removes_value() {
+        let f = write_tmp("[responder]\nallowed_skills = [\"block-ip-ufw\", \"monitor-ip\"]\n");
+        let removed =
+            write_array_remove(f.path(), "responder", "allowed_skills", "block-ip-ufw").unwrap();
+        assert!(removed);
+        let skills = read_str_array(f.path(), "responder", "allowed_skills");
+        assert!(!skills.contains(&"block-ip-ufw".to_string()));
+        assert!(skills.contains(&"monitor-ip".to_string()));
+    }
+
+    #[test]
+    fn write_array_remove_returns_false_when_absent() {
+        let f = write_tmp("[responder]\nallowed_skills = [\"monitor-ip\"]\n");
+        let removed =
+            write_array_remove(f.path(), "responder", "allowed_skills", "block-ip-ufw").unwrap();
+        assert!(!removed);
+        let skills = read_str_array(f.path(), "responder", "allowed_skills");
+        assert_eq!(skills, vec!["monitor-ip"]);
+    }
+
+    #[test]
+    fn write_array_remove_no_ops_on_missing_section() {
+        let f = NamedTempFile::new().unwrap();
+        let removed =
+            write_array_remove(f.path(), "responder", "allowed_skills", "anything").unwrap();
+        assert!(!removed);
+    }
+
+    #[test]
+    fn write_array_remove_nested_section() {
+        let f = write_tmp("[detectors.search_abuse]\ntags = [\"web\", \"abuse\"]\n");
+        let removed =
+            write_array_remove(f.path(), "detectors.search_abuse", "tags", "web").unwrap();
+        assert!(removed);
+        let tags = read_str_array(f.path(), "detectors.search_abuse", "tags");
+        assert_eq!(tags, vec!["abuse"]);
     }
 
     #[test]

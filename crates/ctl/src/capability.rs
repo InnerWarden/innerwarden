@@ -95,6 +95,12 @@ pub trait Capability: Send + Sync {
     /// Execute the activation. Must be idempotent.
     fn activate(&self, opts: &ActivationOptions) -> Result<ActivationReport>;
 
+    /// What deactivation will do, for dry-run display.
+    fn planned_disable_effects(&self, opts: &ActivationOptions) -> Vec<CapabilityEffect>;
+
+    /// Reverse the activation. Must be idempotent.
+    fn deactivate(&self, opts: &ActivationOptions) -> Result<ActivationReport>;
+
     /// Whether this capability is already enabled (derived from existing configs).
     fn is_enabled(&self, opts: &ActivationOptions) -> bool;
 }
@@ -110,14 +116,15 @@ pub struct CapabilityRegistry {
 impl CapabilityRegistry {
     pub fn default_all() -> Self {
         use crate::capabilities::{
-            block_ip::BlockIpCapability, shell_audit::ShellAuditCapability,
-            sudo_protection::SudoProtectionCapability,
+            block_ip::BlockIpCapability, search_protection::SearchProtectionCapability,
+            shell_audit::ShellAuditCapability, sudo_protection::SudoProtectionCapability,
         };
         Self {
             caps: vec![
                 Box::new(BlockIpCapability),
                 Box::new(SudoProtectionCapability),
                 Box::new(ShellAuditCapability),
+                Box::new(SearchProtectionCapability),
             ],
         }
     }

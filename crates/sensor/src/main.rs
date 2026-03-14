@@ -13,9 +13,11 @@ use clap::Parser;
 use collectors::{
     auth_log::AuthLogCollector, docker::DockerCollector, exec_audit::ExecAuditCollector,
     integrity::IntegrityCollector, journald::JournaldCollector,
+    nginx_access::NginxAccessCollector,
 };
 use detectors::credential_stuffing::CredentialStuffingDetector;
 use detectors::port_scan::PortScanDetector;
+use detectors::search_abuse::SearchAbuseDetector;
 use detectors::ssh_bruteforce::SshBruteforceDetector;
 use detectors::sudo_abuse::SudoAbuseDetector;
 use sinks::{jsonl::JsonlWriter, state::State};
@@ -39,6 +41,7 @@ struct DetectorSet {
     credential_stuffing: Option<CredentialStuffingDetector>,
     port_scan: Option<PortScanDetector>,
     sudo_abuse: Option<SudoAbuseDetector>,
+    search_abuse: Option<SearchAbuseDetector>,
 }
 
 #[derive(Default)]
@@ -82,6 +85,7 @@ async fn main() -> Result<()> {
     let shared_journald_cursor: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let shared_docker_since: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let shared_exec_audit_offset = Arc::new(AtomicU64::new(0));
+    let shared_nginx_offset = Arc::new(AtomicU64::new(0));
 
     // SSH brute force detector (stateful, lives in main loop)
     let ssh_detector = cfg.detectors.ssh_bruteforce.enabled.then(|| {
@@ -120,11 +124,27 @@ async fn main() -> Result<()> {
         );
         SudoAbuseDetector::new(&cfg.agent.host_id, d.threshold, d.window_seconds)
     });
+    let search_abuse_detector = cfg.detectors.search_abuse.enabled.then(|| {
+        let d = &cfg.detectors.search_abuse;
+        info!(
+            threshold = d.threshold,
+            window_seconds = d.window_seconds,
+            path_prefix = %d.path_prefix,
+            "search_abuse detector enabled"
+        );
+        SearchAbuseDetector::new(
+            &cfg.agent.host_id,
+            d.threshold,
+            d.window_seconds,
+            &d.path_prefix,
+        )
+    });
     let mut detectors = DetectorSet {
         ssh: ssh_detector,
         credential_stuffing: credential_stuffing_detector,
         port_scan: port_scan_detector,
         sudo_abuse: sudo_abuse_detector,
+        search_abuse: search_abuse_detector,
     };
 
     // Spawn auth_log collector
@@ -231,6 +251,25 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             if let Err(e) = collector.run(tx6, shared).await {
                 tracing::error!("exec_audit collector error: {e:#}");
+            }
+        });
+    }
+
+    // Spawn nginx_access collector
+    if cfg.collectors.nginx_access.enabled {
+        let nc = &cfg.collectors.nginx_access;
+        let offset = state
+            .get_cursor("nginx_access")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        shared_nginx_offset.store(offset, Ordering::Relaxed);
+        let collector = NginxAccessCollector::new(&nc.path, &cfg.agent.host_id, offset);
+        info!(path = %nc.path, offset, "starting nginx_access collector");
+        let tx7 = tx.clone();
+        let shared = Arc::clone(&shared_nginx_offset);
+        tokio::spawn(async move {
+            if let Err(e) = collector.run(tx7, shared).await {
+                tracing::error!("nginx_access collector error: {e:#}");
             }
         });
     }
@@ -359,6 +398,9 @@ async fn main() -> Result<()> {
     let exec_audit_offset = shared_exec_audit_offset.load(Ordering::Relaxed);
     state.set_cursor("exec_audit", serde_json::json!(exec_audit_offset));
 
+    let nginx_offset = shared_nginx_offset.load(Ordering::Relaxed);
+    state.set_cursor("nginx_access", serde_json::json!(nginx_offset));
+
     state.save(&state_path)?;
     info!(auth_offset, "state saved");
 
@@ -397,6 +439,12 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.sudo_abuse {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.search_abuse {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }

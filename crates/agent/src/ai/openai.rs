@@ -265,6 +265,11 @@ fn default_threat() -> String {
     "medium".to_string()
 }
 
+/// Public re-export for Anthropic provider (same JSON schema).
+pub fn parse_decision_pub(content: &str) -> Result<AiDecision> {
+    parse_decision(content)
+}
+
 fn parse_decision(content: &str) -> Result<AiDecision> {
     let raw: RawDecision = serde_json::from_str(content)
         .with_context(|| format!("failed to parse AI decision JSON: {content}"))?;

@@ -289,6 +289,7 @@ impl SkillRegistry {
                 Box::new(MonitorIp),
                 Box::new(Honeypot),
                 Box::new(SuspendUserSudo),
+                Box::new(RateLimitNginx),
             ],
         }
     }
@@ -399,6 +400,7 @@ mod tests {
         assert!(reg.get("monitor-ip").is_some());
         assert!(reg.get("honeypot").is_some());
         assert!(reg.get("suspend-user-sudo").is_some());
+        assert!(reg.get("rate-limit-nginx").is_some());
         assert!(reg.get("nonexistent").is_none());
     }
 
@@ -406,7 +408,7 @@ mod tests {
     fn registry_infos_are_serializable() {
         let reg = SkillRegistry::default_builtin();
         let infos = reg.infos();
-        assert_eq!(infos.len(), 6);
+        assert_eq!(infos.len(), 7);
         let json = serde_json::to_string(&infos).unwrap();
         assert!(json.contains("block-ip-ufw"));
     }

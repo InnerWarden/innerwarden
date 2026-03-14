@@ -144,6 +144,57 @@ impl Capability for BlockIpCapability {
         })
     }
 
+    fn planned_disable_effects(&self, opts: &ActivationOptions) -> Vec<CapabilityEffect> {
+        let agent = opts.agent_config.display().to_string();
+        vec![
+            CapabilityEffect::new(format!(
+                "Remove block-ip-* skills from [responder] allowed_skills in {agent}"
+            )),
+            CapabilityEffect::new(format!(
+                "Remove /etc/sudoers.d/{}",
+                Self::sudoers_name()
+            )),
+            CapabilityEffect::new("Restart innerwarden-agent"),
+        ]
+    }
+
+    fn deactivate(&self, opts: &ActivationOptions) -> Result<ActivationReport> {
+        let mut effects = Vec::new();
+
+        // 1. Remove all block-ip-* skills from allowed_skills
+        for backend in BLOCK_IP_BACKENDS {
+            let skill = self.skill_id(backend);
+            let removed = config_editor::write_array_remove(
+                &opts.agent_config,
+                "responder",
+                "allowed_skills",
+                &skill,
+            )?;
+            if removed {
+                effects.push(CapabilityEffect::new(format!(
+                    "Removed \"{skill}\" from [responder] allowed_skills"
+                )));
+            }
+        }
+
+        // 2. Remove sudoers drop-in
+        let drop_in = SudoersDropIn::new(Self::sudoers_name(), String::new());
+        drop_in.remove(opts.dry_run)?;
+        effects.push(CapabilityEffect::new(format!(
+            "Removed /etc/sudoers.d/{}",
+            Self::sudoers_name()
+        )));
+
+        // 3. Restart agent
+        systemd::restart_service("innerwarden-agent", opts.dry_run)?;
+        effects.push(CapabilityEffect::new("Restarted innerwarden-agent"));
+
+        Ok(ActivationReport {
+            effects_applied: effects,
+            warnings: vec![],
+        })
+    }
+
     fn is_enabled(&self, opts: &ActivationOptions) -> bool {
         // Enabled if responder is on and any block-ip skill is in allowed_skills
         if !config_editor::read_bool(&opts.agent_config, "responder", "enabled") {
@@ -235,5 +286,50 @@ mod tests {
         let opts = make_opts(&sensor, &agent);
         let effects = BlockIpCapability.planned_effects(&opts);
         assert_eq!(effects.len(), 5);
+    }
+
+    #[test]
+    fn deactivate_dry_run_removes_skills_from_config() {
+        let sensor = NamedTempFile::new().unwrap();
+        let mut agent = NamedTempFile::new().unwrap();
+        writeln!(
+            agent,
+            "[responder]\nenabled = true\nallowed_skills = [\"block-ip-ufw\", \"monitor-ip\"]\n"
+        )
+        .unwrap();
+        let opts = make_opts(&sensor, &agent);
+
+        BlockIpCapability.deactivate(&opts).unwrap();
+
+        let skills = config_editor::read_str_array(agent.path(), "responder", "allowed_skills");
+        assert!(!skills.contains(&"block-ip-ufw".to_string()));
+        // unrelated skills are preserved
+        assert!(skills.contains(&"monitor-ip".to_string()));
+    }
+
+    #[test]
+    fn deactivate_removes_all_backend_variants() {
+        let sensor = NamedTempFile::new().unwrap();
+        let mut agent = NamedTempFile::new().unwrap();
+        writeln!(
+            agent,
+            "[responder]\nallowed_skills = [\"block-ip-ufw\", \"block-ip-iptables\"]\n"
+        )
+        .unwrap();
+        let opts = make_opts(&sensor, &agent);
+
+        BlockIpCapability.deactivate(&opts).unwrap();
+
+        let skills = config_editor::read_str_array(agent.path(), "responder", "allowed_skills");
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn planned_disable_effects_count() {
+        let sensor = NamedTempFile::new().unwrap();
+        let agent = NamedTempFile::new().unwrap();
+        let opts = make_opts(&sensor, &agent);
+        let effects = BlockIpCapability.planned_disable_effects(&opts);
+        assert_eq!(effects.len(), 3);
     }
 }

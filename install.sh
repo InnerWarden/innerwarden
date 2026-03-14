@@ -3,9 +3,15 @@ set -euo pipefail
 
 # Inner Warden installer (production trial profile)
 #
+# Default mode: downloads pre-built binaries from GitHub Releases (~10 s).
+# Source mode:  INNERWARDEN_BUILD_FROM_SOURCE=1 — builds from source with cargo.
+#
+# One-liner:
+#   curl -fsSL https://github.com/maiconburn/innerwarden/releases/latest/download/install.sh | sudo bash
+#
 # What this script does:
-# - Installs rustup/cargo if missing (user install)
-# - Builds release binaries (sensor + agent)
+# - Downloads (or builds) sensor + agent + ctl binaries
+# - Validates SHA-256 of downloaded binaries
 # - Installs binaries to /usr/local/bin
 # - Creates /etc/innerwarden/{config.toml,agent.toml,agent.env}
 # - Creates systemd units for sensor + agent
@@ -14,6 +20,9 @@ set -euo pipefail
 #   * responder.enabled = false (no skill execution)
 #   * dry_run = true
 #   * only block-ip-ufw in allowed_skills
+
+GITHUB_REPO="maiconburn/innerwarden"
+GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IW_USER="innerwarden"
@@ -164,22 +173,98 @@ else
   ENABLE_EXEC_AUDIT_TTY="false"
 fi
 
-if ! command -v cargo >/dev/null 2>&1; then
-  log "cargo not found. Installing rustup (user install)..."
-  curl -sSf https://sh.rustup.rs | sh -s -- -y
+BUILD_FROM_SOURCE="${INNERWARDEN_BUILD_FROM_SOURCE:-0}"
+
+# ── Detect architecture ──────────────────────────────────────────────────────
+detect_arch() {
+  case "$(uname -m)" in
+    x86_64)        echo "x86_64"  ;;
+    aarch64|arm64) echo "aarch64" ;;
+    *) fail "unsupported architecture: $(uname -m) — use INNERWARDEN_BUILD_FROM_SOURCE=1 to build locally" ;;
+  esac
+}
+
+# ── Download a binary from GitHub Releases and validate its SHA-256 ──────────
+download_asset() {
+  local binary="$1"   # e.g. innerwarden-sensor
+  local dest="$2"     # destination file path
+  local version="$3"  # e.g. v0.2.0
+  local arch="$4"     # x86_64 | aarch64
+
+  local asset="${binary}-linux-${arch}"
+  local base_url="https://github.com/${GITHUB_REPO}/releases/download/${version}"
+
+  log "downloading ${asset}..."
+  curl -fsSL --output "${dest}" "${base_url}/${asset}"
+
+  if curl -fsSL "${base_url}/${asset}.sha256" | awk '{print $1}' > /tmp/iw-expected-sha256 2>/dev/null; then
+    local expected actual
+    expected="$(cat /tmp/iw-expected-sha256)"
+    actual="$(sha256sum "${dest}" | awk '{print $1}')"
+    rm -f /tmp/iw-expected-sha256
+    if [[ "${expected}" != "${actual}" ]]; then
+      fail "SHA-256 mismatch for ${asset}:\n  expected: ${expected}\n  got:      ${actual}"
+    fi
+    log "SHA-256 ok"
+  else
+    log "warning: no SHA-256 sidecar for ${asset} — skipping integrity check"
+  fi
+}
+
+if [[ "${BUILD_FROM_SOURCE}" == "1" ]]; then
+  # ── Build from source (development / unsupported arch) ──────────────────
+  if ! command -v cargo >/dev/null 2>&1; then
+    log "cargo not found. Installing rustup (user install)..."
+    curl -sSf https://sh.rustup.rs | sh -s -- -y
+  fi
+  # shellcheck disable=SC1090
+  source "${HOME}/.cargo/env"
+  log "ensuring stable Rust toolchain..."
+  rustup toolchain install stable >/dev/null
+  rustup default stable >/dev/null
+  cd "${ROOT_DIR}"
+  log "building innerwarden-sensor + innerwarden-agent + innerwarden-ctl (release)..."
+  cargo build --release -p innerwarden-sensor -p innerwarden-agent -p innerwarden-ctl
+  IW_SENSOR_BIN="${ROOT_DIR}/target/release/innerwarden-sensor"
+  IW_AGENT_BIN="${ROOT_DIR}/target/release/innerwarden-agent"
+  IW_CTL_BIN="${ROOT_DIR}/target/release/innerwarden-ctl"
+else
+  # ── Download pre-built binaries from GitHub Releases (~10 s) ────────────
+  if ! command -v curl >/dev/null 2>&1; then
+    fail "curl is required to download binaries (apt install curl)"
+  fi
+  if ! command -v sha256sum >/dev/null 2>&1; then
+    fail "sha256sum is required for integrity checks (apt install coreutils)"
+  fi
+
+  ARCH="$(detect_arch)"
+
+  # Resolve version: env override or latest from GitHub API
+  if [[ -n "${INNERWARDEN_VERSION:-}" ]]; then
+    IW_VERSION="${INNERWARDEN_VERSION}"
+  else
+    log "fetching latest release version..."
+    IW_VERSION="$(curl -fsSL \
+      -H "Accept: application/vnd.github+json" \
+      "${GITHUB_API}/releases/latest" \
+      | grep '"tag_name"' | head -1 \
+      | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')"
+    [[ -n "${IW_VERSION}" ]] || fail "could not determine latest release version from GitHub API"
+  fi
+
+  log "installing InnerWarden ${IW_VERSION} for linux/${ARCH}"
+
+  TMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "${TMP_DIR}"' EXIT
+
+  download_asset "innerwarden-sensor" "${TMP_DIR}/innerwarden-sensor" "${IW_VERSION}" "${ARCH}"
+  download_asset "innerwarden-agent"  "${TMP_DIR}/innerwarden-agent"  "${IW_VERSION}" "${ARCH}"
+  download_asset "innerwarden-ctl"    "${TMP_DIR}/innerwarden-ctl"    "${IW_VERSION}" "${ARCH}"
+
+  IW_SENSOR_BIN="${TMP_DIR}/innerwarden-sensor"
+  IW_AGENT_BIN="${TMP_DIR}/innerwarden-agent"
+  IW_CTL_BIN="${TMP_DIR}/innerwarden-ctl"
 fi
-
-# shellcheck disable=SC1090
-source "${HOME}/.cargo/env"
-
-log "ensuring stable Rust toolchain..."
-rustup toolchain install stable >/dev/null
-rustup default stable >/dev/null
-
-cd "${ROOT_DIR}"
-
-log "building innerwarden-sensor + innerwarden-agent (release)..."
-cargo build --release -p innerwarden-sensor -p innerwarden-agent
 
 NOLOGIN_BIN="$(command -v nologin || echo /usr/sbin/nologin)"
 if ! id "${IW_USER}" >/dev/null 2>&1; then
@@ -201,8 +286,10 @@ run_root chown "${IW_USER}:${IW_USER}" "${DATA_DIR}"
 run_root chmod 750 "${DATA_DIR}"
 
 log "installing binaries to ${BIN_DIR}"
-run_root install -o root -g root -m 755 "${ROOT_DIR}/target/release/innerwarden-sensor" "${SENSOR_BIN}"
-run_root install -o root -g root -m 755 "${ROOT_DIR}/target/release/innerwarden-agent" "${AGENT_BIN}"
+run_root install -o root -g root -m 755 "${IW_SENSOR_BIN}" "${SENSOR_BIN}"
+run_root install -o root -g root -m 755 "${IW_AGENT_BIN}"  "${AGENT_BIN}"
+run_root install -o root -g root -m 755 "${IW_CTL_BIN}"    "${BIN_DIR}/innerwarden-ctl"
+run_root install -o root -g root -m 755 "${IW_CTL_BIN}"    "${BIN_DIR}/innerwarden"
 
 HOST_ID="$(hostname -f 2>/dev/null || hostname)"
 
@@ -455,6 +542,9 @@ log "  responder.enabled = false"
 log "  responder.dry_run = true"
 echo
 echo "Useful commands:"
+echo "  innerwarden status                              — system overview"
+echo "  innerwarden doctor                              — diagnose any issues"
+echo "  innerwarden list                                — show available capabilities"
 echo "  sudo systemctl status innerwarden-sensor --no-pager"
 echo "  sudo systemctl status innerwarden-agent --no-pager"
 echo "  sudo journalctl -u innerwarden-sensor -f --no-pager"

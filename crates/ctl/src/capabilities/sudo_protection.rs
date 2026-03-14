@@ -112,6 +112,71 @@ impl Capability for SudoProtectionCapability {
         })
     }
 
+    fn planned_disable_effects(&self, opts: &ActivationOptions) -> Vec<CapabilityEffect> {
+        let sensor = opts.sensor_config.display().to_string();
+        let agent = opts.agent_config.display().to_string();
+        vec![
+            CapabilityEffect::new(format!(
+                "Patch {sensor}: [detectors.sudo_abuse] enabled = false"
+            )),
+            CapabilityEffect::new(format!(
+                "Remove \"suspend-user-sudo\" from [responder] allowed_skills in {agent}"
+            )),
+            CapabilityEffect::new(format!(
+                "Remove /etc/sudoers.d/{}",
+                Self::sudoers_name()
+            )),
+            CapabilityEffect::new("Restart innerwarden-sensor"),
+            CapabilityEffect::new("Restart innerwarden-agent"),
+        ]
+    }
+
+    fn deactivate(&self, opts: &ActivationOptions) -> Result<ActivationReport> {
+        let mut effects = Vec::new();
+
+        // 1. Disable detector in sensor config
+        config_editor::write_bool(
+            &opts.sensor_config,
+            "detectors.sudo_abuse",
+            "enabled",
+            false,
+        )?;
+        effects.push(CapabilityEffect::new("[detectors.sudo_abuse] enabled = false"));
+
+        // 2. Remove skill from allowed_skills
+        let removed = config_editor::write_array_remove(
+            &opts.agent_config,
+            "responder",
+            "allowed_skills",
+            "suspend-user-sudo",
+        )?;
+        if removed {
+            effects.push(CapabilityEffect::new(
+                "Removed \"suspend-user-sudo\" from [responder] allowed_skills",
+            ));
+        }
+
+        // 3. Remove sudoers drop-in
+        let drop_in = SudoersDropIn::new(Self::sudoers_name(), String::new());
+        drop_in.remove(opts.dry_run)?;
+        effects.push(CapabilityEffect::new(format!(
+            "Removed /etc/sudoers.d/{}",
+            Self::sudoers_name()
+        )));
+
+        // 4 & 5. Restart both services
+        systemd::restart_service("innerwarden-sensor", opts.dry_run)?;
+        effects.push(CapabilityEffect::new("Restarted innerwarden-sensor"));
+
+        systemd::restart_service("innerwarden-agent", opts.dry_run)?;
+        effects.push(CapabilityEffect::new("Restarted innerwarden-agent"));
+
+        Ok(ActivationReport {
+            effects_applied: effects,
+            warnings: vec![],
+        })
+    }
+
     fn is_enabled(&self, opts: &ActivationOptions) -> bool {
         // Both conditions must be true
         let detector_on =
@@ -181,6 +246,38 @@ mod tests {
         .unwrap();
         let opts = make_opts(&sensor, &agent);
         assert!(SudoProtectionCapability.is_enabled(&opts));
+    }
+
+    #[test]
+    fn deactivate_dry_run_disables_detector_and_removes_skill() {
+        let mut sensor = NamedTempFile::new().unwrap();
+        writeln!(sensor, "[detectors.sudo_abuse]\nenabled = true\n").unwrap();
+        let mut agent = NamedTempFile::new().unwrap();
+        writeln!(
+            agent,
+            "[responder]\nallowed_skills = [\"suspend-user-sudo\"]\n"
+        )
+        .unwrap();
+        let opts = make_opts(&sensor, &agent);
+
+        SudoProtectionCapability.deactivate(&opts).unwrap();
+
+        assert!(!config_editor::read_bool(
+            sensor.path(),
+            "detectors.sudo_abuse",
+            "enabled"
+        ));
+        let skills = config_editor::read_str_array(agent.path(), "responder", "allowed_skills");
+        assert!(!skills.contains(&"suspend-user-sudo".to_string()));
+    }
+
+    #[test]
+    fn planned_disable_effects_count() {
+        let sensor = NamedTempFile::new().unwrap();
+        let agent = NamedTempFile::new().unwrap();
+        let opts = make_opts(&sensor, &agent);
+        let effects = SudoProtectionCapability.planned_disable_effects(&opts);
+        assert_eq!(effects.len(), 5);
     }
 
     #[test]

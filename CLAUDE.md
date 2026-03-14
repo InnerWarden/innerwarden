@@ -69,6 +69,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Dashboard D4 — redesign visual site-matched (paleta navy `#040814`, acento `#78e5ff`, danger `#f43f5e`, radial gradients ambient, border-radius moderno, inputs/cards mais escuros) + mobile UX completo (collapsar/expandir painel via toggle button, touch targets, toast e modal full-width, layout responsivo melhorado)
 - ✅ **Dashboard D3** — ações operacionais guardadas: operador pode bloquear IPs (`block-ip-*`) e suspender usuários (`suspend-user-sudo`) diretamente da timeline da investigação, com campo de razão obrigatório, modal de confirmação com badge de modo (DRY RUN / LIVE), toast de feedback e auditoria completa em `decisions-YYYY-MM-DD.jsonl` (ai_provider: `dashboard:operator`). Ações desabilitadas por padrão; requerem `responder.enabled = true` no agent.toml. Suporte a dry-run transparente (simula a ação sem executar comandos do sistema). Endpoints: `POST /api/action/block-ip`, `POST /api/action/suspend-user`, `GET /api/action/config`.
 - ✅ **Dashboard D5** — attacker path viewer: `JourneyResponse` agora inclui `verdict` (attack assessment com entry_vector, access_status, privilege_status, containment_status, honeypot_status, confidence) e `chapters` (fases lógicas derivadas automaticamente: reconnaissance, initial_access_attempt, access_success, privilege_abuse, response, containment, honeypot_interaction). UI exibe verdict card antes da timeline, chapter rail navegável clicável e evidence cards com metadados humanos + Raw JSON secundário (toggle). `window._journeyData` armazena dados da jornada para scroll-to-chapter.
+- ✅ **Dashboard D6** — notificações push em tempo real via Server-Sent Events (SSE): `GET /api/events/stream` com autenticação Basic. File watcher interno (2 s) detecta crescimento de `incidents-*.jsonl` e `decisions-*.jsonl` e faz push de evento `refresh` via broadcast channel (`tokio::sync::broadcast`, capacity 64). Heartbeat de 30 s mantém a conexão viva. Frontend usa `fetch()` + `ReadableStream` (compatível com Basic auth, diferente do `EventSource` nativo) com reconexão automática a cada 3 s. Indicador `● LIVE` / `● reconnecting` em `#refreshStatus` no header. Fallback para poll de 30 s se SSE não conectar em 35 s.
 
 ---
 
@@ -112,9 +113,12 @@ crates/
       sudoers.rs           — SudoersDropIn: write + visudo validation + install
       systemd.rs           — restart_service / is_service_active
       capabilities/
-        block_ip.rs        — enable block-ip (ufw|iptables|nftables)
-        sudo_protection.rs — enable sudo-protection (detector + skill)
-        shell_audit.rs     — enable shell-audit (privacy gate obrigatório)
+        block_ip.rs           — enable/disable block-ip (ufw|iptables|nftables)
+        sudo_protection.rs    — enable/disable sudo-protection (detector + skill)
+        shell_audit.rs        — enable/disable shell-audit (privacy gate obrigatório)
+        search_protection.rs  — enable/disable search-protection (nginx collector + search_abuse + rate-limit-nginx)
+      module_manifest.rs     — ModuleManifest parser + collector/detector ID → config section lookup + sudoers rule generator
+      module_validator.rs    — validação estática de pacotes de módulo
   sensor/   — binário innerwarden-sensor
     src/
       main.rs
@@ -125,11 +129,13 @@ crates/
         journald.rs          — subprocess journalctl --follow --output=json
         exec_audit.rs        — tail /var/log/audit/audit.log (EXECVE + TTY opcional)
         docker.rs            — subprocess docker events --format '{{json .}}'
+        nginx_access.rs      — tail nginx access log (Combined Log Format), emite http.request
       detectors/
         ssh_bruteforce.rs    — sliding window por IP
         credential_stuffing.rs — spray de usuários distintos por IP
         port_scan.rs         — portas de destino únicas por IP (firewall logs)
         sudo_abuse.rs        — burst de comandos sudo suspeitos por usuário (janela + threshold)
+        search_abuse.rs      — sliding window por IP+path (nginx http.request events)
       sinks/
         jsonl.rs             — DatedWriter com rotação diária
         state.rs             — load/save atômico de cursors
@@ -168,6 +174,19 @@ examples/
 scripts/
   replay_qa.sh — harness de replay fim-a-fim (fixture log → sensor → agent --once → --report + telemetry assertions)
   rollout_smoke.sh — pre/post smoke checks + plano de rollback rápido para produção
+modules/                           — soluções verticais empacotadas (ver docs/module-authoring.md)
+  ssh-protection/                  — SSH brute-force + credential stuffing → block-ip (built-in)
+    module.toml                    — manifest: id, version, provides, rules, security constraints
+    config/                        — sensor.example.toml + agent.example.toml
+    docs/README.md
+  network-defense/                 — port scan → block-ip (built-in)
+  sudo-protection/                 — sudo abuse → suspend-user-sudo (built-in)
+  file-integrity/                  — SHA-256 file monitoring → webhook (built-in)
+  container-security/              — Docker lifecycle events (built-in, observability only)
+  threat-capture/                  — monitor-ip + honeypot (built-in, Premium)
+  search-protection/               — nginx access log → search_abuse → block-ip (built-in, M.3)
+docs/
+  module-authoring.md              — guia completo para criar módulos + passo-a-passo Claude Code/Codex
 ```
 
 ---
@@ -176,7 +195,7 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 195 testes (48 sensor + 109 agent + 38 ctl)
+make test             # 274 testes (64 sensor + 120 agent + 90 ctl)
 make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -191,6 +210,10 @@ innerwarden enable sudo-protection  # ativa detector sudo_abuse + skill
 innerwarden enable shell-audit      # ativa exec_audit (com privacy gate)
 innerwarden enable shell-audit --yes  # pula confirmação interativa
 innerwarden --dry-run enable block-ip  # mostra o que seria feito
+
+# Module validation
+innerwarden module validate ./modules/ssh-protection   # valida manifest, segurança, testes, docs
+innerwarden module validate ./modules/my-new-module    # valida módulo antes de abrir PR
 
 # Instalação trial em servidor Linux (systemd)
 ./install.sh          # pede OPENAI_API_KEY, instala binários em /usr/local/bin,
@@ -413,23 +436,61 @@ O agent usa `--data-dir` para apontar ao mesmo `data_dir` do sensor.
 
 ---
 
+## Sistema de Módulos
+
+Um **module** é uma solução vertical completa para um problema de segurança. Empacota collectors, detectors, skills e rules numa unidade coesa com manifest, config examples, testes e documentação.
+
+```
+modules/
+  ssh-protection/       — SSH brute-force + credential stuffing → block-ip
+  network-defense/      — port scan → block-ip
+  sudo-protection/      — sudo abuse → suspend-user-sudo
+  file-integrity/       — file hash monitoring → webhook alert
+  container-security/   — docker lifecycle events (observability)
+  threat-capture/       — monitor-ip + honeypot (Premium)
+  search-protection/    — nginx access log → search_abuse → block-ip (M.3)
+```
+
+Cada módulo contém:
+- `module.toml` — manifest com id, version, provides, rules, security constraints
+- `config/sensor.example.toml` + `config/agent.example.toml` — snippets prontos para copiar
+- `docs/README.md` — o que faz, quando usar, como configurar
+- `tests/` — pelo menos um teste por componente
+- `src/` — código Rust (apenas se o módulo adiciona novos collectors/detectors/skills)
+
+**Módulos built-in** (`builtin = true` no module.toml): código vive em `crates/`, módulo serve como manifest + config examples + docs.
+
+**Módulos externos** (novos): código começa em `modules/<id>/src/`, é registrado manualmente nos crates ao ser mergeado.
+
+Comandos de validação:
+```bash
+innerwarden module validate ./modules/my-module   # valida estrutura, manifest, segurança, testes
+```
+
+Guia completo de criação de módulos (incluindo passo-a-passo para Claude Code/Codex):
+→ `docs/module-authoring.md`
+
+---
+
 ## Sistema de Skills (open-core)
 
 ```
-Tier   │ ID                  │ Status
-───────┼─────────────────────┼────────────────────────────────
-Open   │ block-ip-ufw        │ ✅ executável
-Open   │ block-ip-iptables   │ ✅ executável
-Open   │ block-ip-nftables   │ ✅ executável
-Open   │ suspend-user-sudo   │ ✅ executável — nega sudo por TTL com cleanup automático
-Premium│ monitor-ip          │ ✅ executável — captura limitada (`tcpdump`) + metadata
-Premium│ honeypot            │ ✅ hardening 8.7 (containment `process|namespace|jail` + jail_profile + handoff externo attested)
+Tier   │ ID                  │ Módulo            │ Status
+───────┼─────────────────────┼───────────────────┼────────────────────────────────
+Open   │ block-ip-ufw        │ ssh-protection    │ ✅ executável
+Open   │ block-ip-iptables   │ ssh-protection    │ ✅ executável
+Open   │ block-ip-nftables   │ ssh-protection    │ ✅ executável
+Open   │ suspend-user-sudo   │ sudo-protection   │ ✅ executável — nega sudo por TTL com cleanup automático
+Open   │ rate-limit-nginx    │ search-protection │ ✅ executável — deny nginx layer (HTTP 403) com TTL + cleanup automático
+Premium│ monitor-ip          │ threat-capture    │ ✅ executável — captura limitada (`tcpdump`) + metadata
+Premium│ honeypot            │ threat-capture    │ ✅ hardening 8.7 (containment `process|namespace|jail` + jail_profile + handoff externo attested)
 ```
 
 Para adicionar uma skill da comunidade:
-1. Criar struct que implemente `ResponseSkill` trait em `skills/builtin/`
-2. Registrar em `SkillRegistry::default_builtin()`
-3. Abrir PR em https://github.com/maiconburn/innerwarden
+1. Criar um module em `modules/<id>/` seguindo `docs/module-authoring.md`
+2. Criar struct que implemente `ResponseSkill` trait em `skills/builtin/`
+3. Registrar em `SkillRegistry::default_builtin()`
+4. Abrir PR em https://github.com/maiconburn/innerwarden
 
 O trait `ResponseSkill` exige: `id()`, `name()`, `description()`, `tier()`, `applicable_to()`, `execute()`.
 
@@ -504,7 +565,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 157 testes (48 sensor + 109 agent) — todos devem passar
+make test   # 274 testes (64 sensor + 120 agent + 90 ctl) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -583,10 +644,22 @@ Documentação pública do repositório:
 
 ## Próximos passos
 
-Fases concluídas (1–8.8, D1–D5, robustez produção, C.1): ver `docs/archive/` e histórico de commits.
+Fases concluídas (1–8.8, D1–D6, robustez produção, C.1–C.5, M.1–M.7+): ver `docs/archive/` e histórico de commits.
 
-- **Fase C.2–C.4 (próximas):** capabilities `block-ip`, `sudo-protection`, `shell-audit` end-to-end em produção; comando `disable`
-- **Fase D6:** notificações push em tempo real via Server-Sent Events (SSE)
+- **Fase M.1 (módulos — foundation):** ✅ manifest format, módulos built-in mapeados, `docs/module-authoring.md` com guia para AI tools
+- **Fase M.2 (módulos — validação):** ✅ `innerwarden module validate` implementado no CTL (14 testes); valida estrutura, manifest, segurança de skills, docs e testes
+- **Fase M.3 (módulos — primeiro módulo externo):** ✅ `search-protection` — nginx access log collector + search_abuse detector (16 novos testes); demonstra o workflow completo de criação de módulo externo
+- **Fase M.4 (rate-limit-nginx):** ✅ skill `rate-limit-nginx` — deny nginx layer (HTTP 403) com TTL + cleanup automático; cleanup no slow loop do agent; 11 novos testes
+- **Fase M.5:** ✅ capability `search-protection` no CTL (`innerwarden enable search-protection`) — habilita collector/detector no sensor + rate-limit-nginx no agent + sudoers drop-in + placeholder `/etc/nginx/innerwarden-blocklist.conf`; 9 novos testes
+- **Fase C.2 (disable):** ✅ `innerwarden disable <capability>` — reverte config patches, remove sudoers drop-ins, reinicia serviços; implementado para todas as 4 capabilities; 14 novos testes + `write_array_remove` no config_editor
+- **Fase M.6 (module enable):** ✅ `innerwarden module enable <path>` — valida, parseia `module.toml`, habilita collectors/detectors no sensor, adiciona skills ao agent, instala sudoers drop-in, reinicia serviços; `ModuleManifest` + lookup table coletor/detector → config section; 11 novos testes
+- **Fase M.7 (module disable/list/status):** ✅ `innerwarden module disable <path>` (reverte enable), `module list [--modules-dir]` (scan + tabela de status), `module status <id>` (detalhe por módulo com estado de cada componente); `scan_modules_dir` + `module_disable_effects`; 4 novos testes
+- **Fase M.8 (module install/uninstall/publish/update-all):** ✅ `module install <url|path>` — baixa, valida SHA-256, extrai, valida manifest, instala em `modules_dir/<id>/`; `module uninstall <id>` — desativa e remove; `module publish <path>` — empacota + gera `.sha256`; `module update-all` — verifica `update_url` de cada módulo instalado, compara versões (semver), baixa + reinstala atualizações disponíveis, re-ativa módulos que estavam ativos; `--check` só reporta sem instalar; campos `version` e `update_url` adicionados ao `ModuleManifest`; 3 novos testes em module_manifest.rs `module install <url|path>` — baixa (ureq), valida SHA-256 sidecar opcional, extrai tarball, valida manifest, copia para `modules_dir/<id>/`, suporta `--enable`, `--force`, `--yes`; `module uninstall <id>` — desativa se necessário, remove dir; `module publish <path>` — empacota em `<id>-v<version>.tar.gz` + gera sidecar `.sha256`; formato: dir nomeado com ID, wrapped ou flat; 9 testes em `module_package.rs` `innerwarden module disable <path>` (reverte enable), `module list [--modules-dir]` (scan + tabela de status), `module status <id>` (detalhe por módulo com estado de cada componente); `scan_modules_dir` + `module_disable_effects`; 4 novos testes
+- **Fase D6:** ✅ SSE live push — `GET /api/events/stream`, file watcher 2 s, broadcast channel, fetch+ReadableStream JS, `● LIVE` indicator, reconexão automática, fallback poll 30 s
+- **Fase C.3:** ✅ `innerwarden status` global — overview de serviços (sensor/agent via systemctl is-active), capabilities (enabled/disabled) e módulos instalados; `innerwarden status <id>` continua funcionando para detalhe de capability específica
+- **Fase C.4:** ✅ `innerwarden doctor` — diagnóstico completo: system (systemctl, usuário `innerwarden`, `/etc/sudoers.d/`), services (sensor/agent via is-active), configuration (sensor+agent config existem e são TOML válido, OPENAI_API_KEY presente em env ou agent.env), capabilities (sudoers drop-in presente para cada capability ativa); fix hints exatos para cada falha; exit code 1 se houver issues
+- **Fase C.5:** ✅ `innerwarden upgrade` — busca último release no GitHub API, compara versão (semver), mostra assets disponíveis para o arch detectado (x86_64/aarch64), baixa binários, valida SHA-256 contra sidecar `.sha256`, instala atomicamente via `install -o root -m 755`, reinicia serviços ativos; `--check` só informa sem instalar; `--install-dir` configurável; 15 testes em `upgrade.rs`
+- **Release CI/CD:** ✅ `.github/workflows/release.yml` — dispara em push de tag `v*.*.*`; compila sensor+agent+ctl para x86_64 e aarch64 via cargo-zigbuild+zig 0.13; gera 6 binários + 6 sidecars `.sha256`; verifica manifest antes de publicar; cria GitHub Release com `generate_release_notes: true`; pre-release automático para tags com `-` (ex: `v1.0.0-rc.1`)
 - **Fase 6 (deferida):** providers AI adicionais (Anthropic/Ollama)
 
 Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/public-readiness-checklist.md`

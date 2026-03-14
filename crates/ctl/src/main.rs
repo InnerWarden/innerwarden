@@ -1,16 +1,20 @@
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 mod capability;
 mod capabilities;
 mod config_editor;
+mod module_manifest;
+mod module_validator;
 mod preflight;
 mod sudoers;
 mod systemd;
+mod module_package;
+mod upgrade;
 
 use capability::{ActivationOptions, CapabilityRegistry};
 
@@ -59,17 +63,163 @@ enum Command {
         yes: bool,
     },
 
-    /// Deactivate a capability (not yet implemented)
+    /// Deactivate a capability
     Disable {
+        /// Capability ID (run 'innerwarden list' to see options)
         capability: String,
+
+        /// Skip interactive confirmation prompt
+        #[arg(long)]
+        yes: bool,
     },
 
     /// List all capabilities with their current status
     List,
 
-    /// Show the status of a specific capability
+    /// Show system status (services, capabilities, modules).
+    /// Optionally narrow to a specific capability.
     Status {
-        capability: String,
+        /// Capability ID to inspect (omit for global overview)
+        capability: Option<String>,
+
+        /// Directory to scan for installed modules
+        #[arg(long, default_value = "/etc/innerwarden/modules")]
+        modules_dir: PathBuf,
+    },
+
+    /// Run system diagnostics and print fix hints for any issues found
+    Doctor,
+
+    /// Check for a newer release and optionally upgrade all binaries
+    Upgrade {
+        /// Only check if an update is available; do not install
+        #[arg(long)]
+        check: bool,
+
+        /// Skip interactive confirmation prompt
+        #[arg(long)]
+        yes: bool,
+
+        /// Directory where binaries are installed
+        #[arg(long, default_value = "/usr/local/bin")]
+        install_dir: PathBuf,
+    },
+
+    /// Module management commands
+    Module {
+        #[command(subcommand)]
+        command: ModuleCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModuleCommand {
+    /// Validate a module package (manifest, structure, security, docs, tests)
+    Validate {
+        /// Path to the module directory
+        path: PathBuf,
+
+        /// Enable stricter security checks (unsafe blocks, etc.)
+        #[arg(long)]
+        strict: bool,
+    },
+
+    /// Enable a module (patch configs, install sudoers, restart services)
+    Enable {
+        /// Path to the module directory containing module.toml
+        path: PathBuf,
+
+        /// Skip interactive confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Disable a module (revert config patches, remove sudoers, restart services)
+    Disable {
+        /// Path to the module directory containing module.toml
+        path: PathBuf,
+
+        /// Skip interactive confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// List all modules found in the modules directory
+    List {
+        /// Directory to scan for module packages (each subdirectory with a module.toml)
+        #[arg(long, default_value = "/etc/innerwarden/modules")]
+        modules_dir: PathBuf,
+    },
+
+    /// Show the status of a specific module by ID
+    Status {
+        /// Module ID (e.g. "search-protection")
+        id: String,
+
+        /// Directory to scan for module packages
+        #[arg(long, default_value = "/etc/innerwarden/modules")]
+        modules_dir: PathBuf,
+    },
+
+    /// Install a module from a .tar.gz URL or local file path
+    Install {
+        /// HTTPS URL or local path to a .tar.gz module package
+        source: String,
+
+        /// Directory where modules are installed
+        #[arg(long, default_value = "/etc/innerwarden/modules")]
+        modules_dir: PathBuf,
+
+        /// Enable the module immediately after installing
+        #[arg(long)]
+        enable: bool,
+
+        /// Overwrite if the module ID is already installed
+        #[arg(long)]
+        force: bool,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Remove an installed module (disables it first if needed)
+    Uninstall {
+        /// Module ID to remove
+        id: String,
+
+        /// Directory where modules are installed
+        #[arg(long, default_value = "/etc/innerwarden/modules")]
+        modules_dir: PathBuf,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Package a module directory into a distributable .tar.gz
+    Publish {
+        /// Path to the module directory
+        path: PathBuf,
+
+        /// Output file (defaults to <id>-v<version>.tar.gz in current directory)
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Check installed modules for updates and apply them
+    UpdateAll {
+        /// Directory where modules are installed
+        #[arg(long, default_value = "/etc/innerwarden/modules")]
+        modules_dir: PathBuf,
+
+        /// Only report available updates without installing
+        #[arg(long)]
+        check: bool,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -82,8 +232,18 @@ fn main() -> Result<()> {
     let registry = CapabilityRegistry::default_all();
 
     match cli.command {
+        Command::Doctor => cmd_doctor(&cli, &registry),
+        Command::Upgrade { check, yes, ref install_dir } => {
+            cmd_upgrade(&cli, check, yes, install_dir)
+        }
         Command::List => cmd_list(&cli, &registry),
-        Command::Status { ref capability } => cmd_status(&cli, &registry, capability),
+        Command::Status {
+            ref capability,
+            ref modules_dir,
+        } => match capability {
+            Some(ref id) => cmd_status(&cli, &registry, id),
+            None => cmd_status_global(&cli, &registry, modules_dir),
+        },
         Command::Enable {
             ref capability,
             ref params,
@@ -92,7 +252,30 @@ fn main() -> Result<()> {
             let params = parse_params(params)?;
             cmd_enable(&cli, &registry, capability, params, yes)
         }
-        Command::Disable { ref capability } => cmd_disable(&registry, capability),
+        Command::Disable { ref capability, yes } => {
+            cmd_disable(&cli, &registry, capability, yes)
+        }
+        Command::Module { ref command } => match command {
+            ModuleCommand::Validate { ref path, strict } => cmd_module_validate(path, *strict),
+            ModuleCommand::Enable { ref path, yes } => cmd_module_enable(&cli, path, *yes),
+            ModuleCommand::Disable { ref path, yes } => cmd_module_disable(&cli, path, *yes),
+            ModuleCommand::List { ref modules_dir } => cmd_module_list(&cli, modules_dir),
+            ModuleCommand::Status { ref id, ref modules_dir } => {
+                cmd_module_status(&cli, id, modules_dir)
+            }
+            ModuleCommand::Install { ref source, ref modules_dir, enable, force, yes } => {
+                cmd_module_install(&cli, source, modules_dir, *enable, *force, *yes)
+            }
+            ModuleCommand::Uninstall { ref id, ref modules_dir, yes } => {
+                cmd_module_uninstall(&cli, id, modules_dir, *yes)
+            }
+            ModuleCommand::Publish { ref path, ref output } => {
+                cmd_module_publish(path, output.as_deref())
+            }
+            ModuleCommand::UpdateAll { ref modules_dir, check, yes } => {
+                cmd_module_update_all(&cli, modules_dir, *check, *yes)
+            }
+        },
     }
 }
 
@@ -129,6 +312,53 @@ fn cmd_status(cli: &Cli, registry: &CapabilityRegistry, id: &str) -> Result<()> 
     println!("ID:          {}", cap.id());
     println!("Status:      {status}");
     println!("Description: {}", cap.description());
+    Ok(())
+}
+
+fn cmd_status_global(
+    cli: &Cli,
+    registry: &CapabilityRegistry,
+    modules_dir: &std::path::Path,
+) -> Result<()> {
+    use module_manifest::{is_module_enabled, scan_modules_dir};
+
+    println!("InnerWarden Status");
+    println!("{}", "═".repeat(48));
+
+    // ── Services ─────────────────────────────────────────
+    println!("\nServices");
+    for unit in &["innerwarden-sensor", "innerwarden-agent"] {
+        let active = systemd::is_service_active(unit);
+        let indicator = if active { "●" } else { "○" };
+        let label = if active { "running" } else { "stopped" };
+        println!("  {indicator} {unit:<28} {label}");
+    }
+
+    // ── Capabilities ──────────────────────────────────────
+    println!("\nCapabilities");
+    let opts = make_opts(cli, HashMap::new(), false);
+    for cap in registry.all() {
+        let enabled = cap.is_enabled(&opts);
+        let indicator = if enabled { "●" } else { "○" };
+        let label = if enabled { "enabled " } else { "disabled" };
+        println!("  {indicator} {:<20} {}  {}", cap.id(), label, cap.description());
+    }
+
+    // ── Modules ───────────────────────────────────────────
+    println!("\nModules  ({})", modules_dir.display());
+    let modules = scan_modules_dir(modules_dir);
+    if modules.is_empty() {
+        println!("  (none installed)");
+    } else {
+        for m in &modules {
+            let enabled = is_module_enabled(&cli.sensor_config, m);
+            let indicator = if enabled { "●" } else { "○" };
+            let label = if enabled { "enabled " } else { "disabled" };
+            println!("  {indicator} {:<20} {}  {}", m.id, label, m.name);
+        }
+    }
+
+    println!();
     Ok(())
 }
 
@@ -211,14 +441,1134 @@ fn cmd_enable(
     Ok(())
 }
 
-fn cmd_disable(registry: &CapabilityRegistry, id: &str) -> Result<()> {
-    let _cap = registry
+fn cmd_module_validate(path: &std::path::Path, strict: bool) -> Result<()> {
+    let report = module_validator::validate(path, strict)?;
+    report.print();
+    if report.passed() {
+        Ok(())
+    } else {
+        anyhow::bail!("module validation failed")
+    }
+}
+
+fn cmd_module_enable(cli: &Cli, path: &std::path::Path, yes: bool) -> Result<()> {
+    use module_manifest::{
+        generate_module_sudoers_rule, is_module_enabled, module_planned_effects,
+        ModuleManifest,
+    };
+
+    // 1. Validate manifest before touching anything
+    let report = module_validator::validate(path, false)?;
+    if !report.passed() {
+        report.print();
+        anyhow::bail!("module validation failed — fix errors before enabling");
+    }
+
+    // 2. Parse manifest
+    let manifest = ModuleManifest::from_path(path)?;
+
+    println!("Enabling module: {} ({})\n", manifest.name, manifest.id);
+
+    // 3. Check if already enabled
+    if is_module_enabled(&cli.sensor_config, &manifest) {
+        println!("Module '{}' is already enabled. Nothing to do.", manifest.id);
+        return Ok(());
+    }
+
+    // 4. Preflight checks
+    println!("Preflight checks:");
+    let mut any_failed = false;
+    for pf in &manifest.preflights {
+        let (ok, err_msg) = run_module_preflight(pf);
+        if ok {
+            println!("  [ok]   {}", pf.reason);
+        } else {
+            println!("  [fail] {} — {}", pf.reason, err_msg);
+            any_failed = true;
+        }
+    }
+    if manifest.preflights.is_empty() {
+        println!("  (none required)");
+    }
+    if any_failed {
+        anyhow::bail!("preflight checks failed — no changes applied");
+    }
+
+    // 5. Planned effects
+    let effects = module_planned_effects(&cli.sensor_config, &cli.agent_config, &manifest);
+    println!("\nPlanned changes:");
+    for (i, e) in effects.iter().enumerate() {
+        println!("  {}. {}", i + 1, e);
+    }
+
+    if cli.dry_run {
+        println!("\n[DRY RUN] No changes applied.");
+        return Ok(());
+    }
+
+    // 6. Confirmation
+    if !yes {
+        print!("\nApply? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let answer = input.trim().to_lowercase();
+        if !answer.is_empty() && answer != "y" && answer != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    println!();
+
+    // 7. Apply
+    apply_module_enable(cli, &manifest, &generate_module_sudoers_rule)?;
+
+    println!("\nModule '{}' is now enabled.", manifest.id);
+    Ok(())
+}
+
+fn cmd_module_disable(cli: &Cli, path: &std::path::Path, yes: bool) -> Result<()> {
+    use module_manifest::{is_module_enabled, module_disable_effects, ModuleManifest};
+
+    let manifest = ModuleManifest::from_path(path)?;
+
+    println!("Disabling module: {} ({})\n", manifest.name, manifest.id);
+
+    if !is_module_enabled(&cli.sensor_config, &manifest) {
+        println!("Module '{}' is not enabled. Nothing to do.", manifest.id);
+        return Ok(());
+    }
+
+    let effects = module_disable_effects(&cli.sensor_config, &cli.agent_config, &manifest);
+    println!("Changes to apply:");
+    for (i, e) in effects.iter().enumerate() {
+        println!("  {}. {}", i + 1, e);
+    }
+
+    if cli.dry_run {
+        println!("\n[DRY RUN] No changes applied.");
+        return Ok(());
+    }
+
+    if !yes {
+        print!("\nApply? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let answer = input.trim().to_lowercase();
+        if !answer.is_empty() && answer != "y" && answer != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    println!();
+    apply_module_disable(cli, &manifest)?;
+    println!("\nModule '{}' is now disabled.", manifest.id);
+    Ok(())
+}
+
+fn cmd_module_list(cli: &Cli, modules_dir: &std::path::Path) -> Result<()> {
+    use module_manifest::{is_module_enabled, scan_modules_dir};
+
+    let modules = scan_modules_dir(modules_dir);
+
+    if modules.is_empty() {
+        println!(
+            "No modules found in {}",
+            modules_dir.display()
+        );
+        println!("Use 'innerwarden module enable <path>' to enable a module from its directory.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<24} {:<10} {:<8} {}",
+        "Module", "Status", "Tier", "Description"
+    );
+    println!("{}", "─".repeat(80));
+
+    for m in &modules {
+        let status = if is_module_enabled(&cli.sensor_config, &m) {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        // Truncate description to keep table readable
+        let desc: String = m
+            .name
+            .chars()
+            .take(23)
+            .collect();
+        println!("{:<24} {:<10} {:<8} {}", m.id, status, "open", desc);
+    }
+    Ok(())
+}
+
+fn cmd_module_status(cli: &Cli, id: &str, modules_dir: &std::path::Path) -> Result<()> {
+    use module_manifest::{
+        collector_section, detector_section, is_module_enabled, scan_modules_dir,
+    };
+
+    let modules = scan_modules_dir(modules_dir);
+    let manifest = modules
+        .iter()
+        .find(|m| m.id == id)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "module '{}' not found in {} — check the path or run 'innerwarden module list'",
+                id,
+                modules_dir.display()
+            )
+        })?;
+
+    let enabled = is_module_enabled(&cli.sensor_config, manifest);
+    let status = if enabled { "enabled" } else { "disabled" };
+    let builtin = if manifest.builtin { "yes" } else { "no" };
+
+    println!("Module:      {}", manifest.name);
+    println!("ID:          {}", manifest.id);
+    println!("Status:      {status}");
+    println!("Builtin:     {builtin}");
+
+    if !manifest.collectors.is_empty() {
+        let parts: Vec<String> = manifest
+            .collectors
+            .iter()
+            .map(|id| {
+                let on = collector_section(id)
+                    .map(|s| {
+                        config_editor::read_bool(&cli.sensor_config, s, "enabled")
+                    })
+                    .unwrap_or(false);
+                format!("{id} ({})", if on { "enabled" } else { "disabled" })
+            })
+            .collect();
+        println!("Collectors:  {}", parts.join(", "));
+    }
+
+    if !manifest.detectors.is_empty() {
+        let parts: Vec<String> = manifest
+            .detectors
+            .iter()
+            .map(|id| {
+                let on = detector_section(id)
+                    .map(|s| {
+                        config_editor::read_bool(&cli.sensor_config, s, "enabled")
+                    })
+                    .unwrap_or(false);
+                format!("{id} ({})", if on { "enabled" } else { "disabled" })
+            })
+            .collect();
+        println!("Detectors:   {}", parts.join(", "));
+    }
+
+    if !manifest.skills.is_empty() {
+        println!("Skills:      {}", manifest.skills.join(", "));
+    }
+
+    Ok(())
+}
+
+fn apply_module_disable(cli: &Cli, manifest: &module_manifest::ModuleManifest) -> Result<()> {
+    use module_manifest::{collector_section, detector_section};
+
+    // Disable collectors
+    for id in &manifest.collectors {
+        if let Some(section) = collector_section(id) {
+            config_editor::write_bool(&cli.sensor_config, section, "enabled", false)?;
+            println!("  [done] [{section}] enabled = false");
+        }
+    }
+
+    // Disable detectors
+    for id in &manifest.detectors {
+        if let Some(section) = detector_section(id) {
+            config_editor::write_bool(&cli.sensor_config, section, "enabled", false)?;
+            println!("  [done] [{section}] enabled = false");
+        }
+    }
+
+    // Remove skills from allowed_skills
+    for skill in &manifest.skills {
+        let removed = config_editor::write_array_remove(
+            &cli.agent_config,
+            "responder",
+            "allowed_skills",
+            skill,
+        )?;
+        if removed {
+            println!("  [done] Removed \"{skill}\" from [responder] allowed_skills");
+        }
+    }
+
+    // Remove sudoers drop-in
+    if !manifest.allowed_commands.is_empty() {
+        let drop_in_name = format!("innerwarden-module-{}", manifest.id);
+        let drop_in = sudoers::SudoersDropIn::new(drop_in_name, String::new());
+        drop_in.remove(cli.dry_run)?;
+        println!(
+            "  [done] Removed /etc/sudoers.d/innerwarden-module-{}",
+            manifest.id
+        );
+    }
+
+    // Restart services
+    let needs_sensor =
+        !manifest.collectors.is_empty() || !manifest.detectors.is_empty();
+    let needs_agent = !manifest.skills.is_empty();
+
+    if needs_sensor {
+        systemd::restart_service("innerwarden-sensor", cli.dry_run)?;
+        println!("  [done] Restarted innerwarden-sensor");
+    }
+    if needs_agent {
+        systemd::restart_service("innerwarden-agent", cli.dry_run)?;
+        println!("  [done] Restarted innerwarden-agent");
+    }
+
+    Ok(())
+}
+
+fn run_module_preflight(pf: &module_manifest::ModulePreflightSpec) -> (bool, String) {
+    match pf.kind.as_str() {
+        "binary_exists" => {
+            let exists = std::path::Path::new(&pf.value).exists();
+            (exists, format!("{} not found", pf.value))
+        }
+        "directory_exists" => {
+            let exists = std::path::Path::new(&pf.value).is_dir();
+            (exists, format!("directory {} not found", pf.value))
+        }
+        "user_exists" => {
+            // Check via /etc/passwd presence (no external tools needed)
+            let passwd =
+                std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+            let exists = passwd.lines().any(|l| {
+                l.split(':').next().is_some_and(|u| u == pf.value)
+            });
+            (exists, format!("user '{}' does not exist", pf.value))
+        }
+        _ => (true, String::new()), // unknown kind = pass (fail-open)
+    }
+}
+
+fn apply_module_enable(
+    cli: &Cli,
+    manifest: &module_manifest::ModuleManifest,
+    sudoers_rule_fn: &dyn Fn(&str, &[String]) -> String,
+) -> Result<()> {
+    use module_manifest::{collector_section, detector_section};
+
+    // Enable collectors in sensor config
+    for id in &manifest.collectors {
+        if let Some(section) = collector_section(id) {
+            config_editor::write_bool(&cli.sensor_config, section, "enabled", true)?;
+            println!("  [done] [{section}] enabled = true");
+        } else {
+            println!("  [warn] unknown collector '{id}' — no sensor config section found; skipped");
+        }
+    }
+
+    // Enable detectors in sensor config
+    for id in &manifest.detectors {
+        if let Some(section) = detector_section(id) {
+            config_editor::write_bool(&cli.sensor_config, section, "enabled", true)?;
+            println!("  [done] [{section}] enabled = true");
+        } else {
+            println!("  [warn] unknown detector '{id}' — no sensor config section found; skipped");
+        }
+    }
+
+    // Add skills to agent allowed_skills and enable responder
+    if !manifest.skills.is_empty() {
+        config_editor::write_bool(&cli.agent_config, "responder", "enabled", true)?;
+        println!("  [done] [responder] enabled = true");
+    }
+    for skill in &manifest.skills {
+        let added = config_editor::write_array_push(
+            &cli.agent_config,
+            "responder",
+            "allowed_skills",
+            skill,
+        )?;
+        if added {
+            println!("  [done] Added \"{skill}\" to [responder] allowed_skills");
+        }
+    }
+
+    // Install sudoers drop-in if commands are declared
+    if !manifest.allowed_commands.is_empty() {
+        let rule = sudoers_rule_fn(&manifest.id, &manifest.allowed_commands);
+        let drop_in_name = format!("innerwarden-module-{}", manifest.id);
+        let drop_in = sudoers::SudoersDropIn::new(drop_in_name, rule);
+        drop_in.install(cli.dry_run)?;
+        println!(
+            "  [done] Wrote /etc/sudoers.d/innerwarden-module-{}",
+            manifest.id
+        );
+    }
+
+    // Restart services
+    let needs_sensor =
+        !manifest.collectors.is_empty() || !manifest.detectors.is_empty();
+    let needs_agent = !manifest.skills.is_empty();
+
+    if needs_sensor {
+        systemd::restart_service("innerwarden-sensor", cli.dry_run)?;
+        println!("  [done] Restarted innerwarden-sensor");
+    }
+    if needs_agent {
+        systemd::restart_service("innerwarden-agent", cli.dry_run)?;
+        println!("  [done] Restarted innerwarden-agent");
+    }
+
+    Ok(())
+}
+
+fn cmd_disable(cli: &Cli, registry: &CapabilityRegistry, id: &str, yes: bool) -> Result<()> {
+    let cap = registry
         .get(id)
         .ok_or_else(|| unknown_cap_error(id))?;
-    anyhow::bail!(
-        "'disable' is not yet implemented. \
-         To manually revert, set the corresponding config keys back to their defaults."
-    )
+    let opts = make_opts(cli, HashMap::new(), yes);
+
+    if !cap.is_enabled(&opts) {
+        println!("Capability '{}' is not enabled. Nothing to do.", cap.id());
+        return Ok(());
+    }
+
+    println!("Disabling capability: {}\n", cap.name());
+
+    println!("Changes to apply:");
+    let effects = cap.planned_disable_effects(&opts);
+    for (i, effect) in effects.iter().enumerate() {
+        println!("  {}. {}", i + 1, effect.description);
+    }
+
+    if cli.dry_run {
+        println!("\n[DRY RUN] No changes applied.");
+        return Ok(());
+    }
+
+    if !yes {
+        print!("\nApply? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let answer = input.trim().to_lowercase();
+        if !answer.is_empty() && answer != "y" && answer != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    println!();
+
+    let report = cap.deactivate(&opts)?;
+    for effect in &report.effects_applied {
+        println!("  [done] {}", effect.description);
+    }
+    for warn in &report.warnings {
+        println!("  [warn] {warn}");
+    }
+
+    println!("\nCapability '{}' is now disabled.", cap.id());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Module install / uninstall / publish
+// ---------------------------------------------------------------------------
+
+fn cmd_module_install(
+    cli: &Cli,
+    source: &str,
+    modules_dir: &Path,
+    enable_after: bool,
+    force: bool,
+    yes: bool,
+) -> Result<()> {
+    use module_manifest::ModuleManifest;
+    use module_package::*;
+
+    let is_url = source.starts_with("https://") || source.starts_with("http://");
+
+    let tmp = tempfile::tempdir().context("failed to create temp directory")?;
+
+    // ── Download or resolve local path ────────────────────────────────────
+    let tarball_path: PathBuf = if is_url {
+        println!("Downloading module package...");
+        let path = download(source, tmp.path())?;
+
+        // Verify SHA-256 sidecar if available
+        if let Some(expected) = fetch_sha256_sidecar(source) {
+            print!("  Validating SHA-256... ");
+            std::io::stdout().flush()?;
+            verify_sha256(&path, &expected)?;
+            println!("ok");
+        } else {
+            println!("  (no SHA-256 sidecar found — skipping integrity check)");
+        }
+        path
+    } else {
+        let p = PathBuf::from(source);
+        if !p.exists() {
+            anyhow::bail!("local path not found: {}", p.display());
+        }
+        // Check for local sidecar
+        let sidecar = PathBuf::from(format!("{}.sha256", source));
+        if sidecar.exists() {
+            let expected = std::fs::read_to_string(&sidecar)?;
+            verify_sha256(&p, expected.split_whitespace().next().unwrap_or(""))?;
+            println!("  SHA-256 ok");
+        }
+        p
+    };
+
+    // ── Extract ───────────────────────────────────────────────────────────
+    let extract_dir = tmp.path().join("extracted");
+    std::fs::create_dir_all(&extract_dir)?;
+    extract_tarball(&tarball_path, &extract_dir)?;
+    let module_dir = find_module_dir(&extract_dir)?;
+
+    // ── Validate manifest ─────────────────────────────────────────────────
+    let report = module_validator::validate(&module_dir, false)?;
+    if !report.passed() {
+        report.print();
+        anyhow::bail!("module validation failed — package is not installable");
+    }
+
+    let manifest = ModuleManifest::from_path(&module_dir)?;
+    println!("Module: {} ({})", manifest.name, manifest.id);
+
+    // ── Check existing installation ───────────────────────────────────────
+    let install_dest = modules_dir.join(&manifest.id);
+    if install_dest.exists() {
+        if !force {
+            anyhow::bail!(
+                "module '{}' is already installed in {}\n\
+                 Use --force to overwrite.",
+                manifest.id,
+                modules_dir.display()
+            );
+        }
+        println!("  (overwriting existing installation)");
+    }
+
+    // ── Plan ──────────────────────────────────────────────────────────────
+    println!("\nWill install to: {}", install_dest.display());
+    if enable_after {
+        println!("Will enable after install.");
+    }
+
+    if cli.dry_run {
+        println!("\n[DRY RUN] No changes applied.");
+        return Ok(());
+    }
+
+    if !yes {
+        print!("\nInstall? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let answer = input.trim().to_lowercase();
+        if !answer.is_empty() && answer != "y" && answer != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    // ── Copy to modules_dir/<id>/ ─────────────────────────────────────────
+    std::fs::create_dir_all(modules_dir)
+        .with_context(|| format!("cannot create {}", modules_dir.display()))?;
+    if install_dest.exists() {
+        std::fs::remove_dir_all(&install_dest)?;
+    }
+    copy_dir(&module_dir, &install_dest)?;
+    println!("  [done] Installed → {}", install_dest.display());
+
+    // ── Enable immediately if requested ───────────────────────────────────
+    if enable_after {
+        println!();
+        cmd_module_enable(cli, &install_dest, yes)?;
+    } else {
+        println!(
+            "\nModule '{}' installed. Run 'innerwarden module enable {}' to activate.",
+            manifest.id,
+            install_dest.display()
+        );
+    }
+    Ok(())
+}
+
+fn cmd_module_uninstall(
+    cli: &Cli,
+    id: &str,
+    modules_dir: &Path,
+    yes: bool,
+) -> Result<()> {
+    use module_manifest::{is_module_enabled, ModuleManifest};
+
+    let install_dir = modules_dir.join(id);
+    if !install_dir.exists() {
+        anyhow::bail!(
+            "module '{}' is not installed in {}",
+            id,
+            modules_dir.display()
+        );
+    }
+
+    let manifest = ModuleManifest::from_path(&install_dir)?;
+    println!("Uninstalling module: {} ({})", manifest.name, manifest.id);
+
+    // Disable first if enabled
+    let enabled = is_module_enabled(&cli.sensor_config, &manifest);
+    if enabled {
+        println!("  Module is currently enabled — will disable before removing.");
+    }
+
+    println!("  Will remove: {}", install_dir.display());
+
+    if cli.dry_run {
+        println!("\n[DRY RUN] No changes applied.");
+        return Ok(());
+    }
+
+    if !yes {
+        print!("\nUninstall? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let answer = input.trim().to_lowercase();
+        if !answer.is_empty() && answer != "y" && answer != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    println!();
+
+    if enabled {
+        apply_module_disable(cli, &manifest)?;
+    }
+
+    std::fs::remove_dir_all(&install_dir)
+        .with_context(|| format!("failed to remove {}", install_dir.display()))?;
+    println!("  [done] Removed {}", install_dir.display());
+    println!("\nModule '{}' uninstalled.", manifest.id);
+    Ok(())
+}
+
+fn cmd_module_publish(module_path: &Path, output: Option<&Path>) -> Result<()> {
+    use module_manifest::ModuleManifest;
+    use module_package::*;
+
+    // Validate before packaging
+    let report = module_validator::validate(module_path, false)?;
+    if !report.passed() {
+        report.print();
+        anyhow::bail!("module validation failed — fix errors before publishing");
+    }
+
+    let manifest = ModuleManifest::from_path(module_path)?;
+
+    // Determine output path: <id>-v<version>.tar.gz or caller-supplied
+    let tarball_path = if let Some(p) = output {
+        p.to_path_buf()
+    } else {
+        let version = manifest.version.as_deref().unwrap_or("0.1.0");
+        PathBuf::from(format!("{}-v{version}.tar.gz", manifest.id))
+    };
+
+    println!("Publishing module: {} ({})", manifest.name, manifest.id);
+    println!("  Output: {}", tarball_path.display());
+
+    create_tarball(module_path, &tarball_path)?;
+    println!("  [done] Created {}", tarball_path.display());
+
+    let sidecar = write_sha256_sidecar(&tarball_path)?;
+    let hex = sha256_hex(&tarball_path)?;
+    println!("  [done] SHA-256:  {hex}");
+    println!("  [done] Sidecar:  {}", sidecar.display());
+
+    println!(
+        "\nInstall with:\n  innerwarden module install {}",
+        tarball_path.display()
+    );
+    Ok(())
+}
+
+fn cmd_module_update_all(
+    cli: &Cli,
+    modules_dir: &Path,
+    check_only: bool,
+    yes: bool,
+) -> Result<()> {
+    use module_manifest::{scan_modules_dir, ModuleManifest};
+    use module_package::*;
+    use upgrade::is_newer;
+
+    let modules = scan_modules_dir(modules_dir);
+    if modules.is_empty() {
+        println!("No modules installed in {}.", modules_dir.display());
+        return Ok(());
+    }
+
+    println!("Checking modules for updates...\n");
+
+    struct UpdateCandidate {
+        manifest: ModuleManifest,
+        current_version: String,
+        new_version: String,
+        url: String,
+    }
+
+    let mut candidates: Vec<UpdateCandidate> = Vec::new();
+    let mut skipped = 0usize;
+
+    for manifest in &modules {
+        let current = manifest.version.as_deref().unwrap_or("0.0.0");
+
+        let Some(ref url) = manifest.update_url else {
+            println!("  {:<24} (no update_url — skipped)", manifest.id);
+            skipped += 1;
+            continue;
+        };
+
+        // Download to temp, extract, read new version
+        let tmp = tempfile::tempdir().context("failed to create temp dir")?;
+        print!("  {:<24} checking... ", manifest.id);
+        std::io::stdout().flush()?;
+
+        let tarball = match download(url, tmp.path()) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("error ({})", e);
+                continue;
+            }
+        };
+
+        // Validate SHA-256 sidecar if available
+        if let Some(expected) = fetch_sha256_sidecar(url) {
+            if let Err(e) = verify_sha256(&tarball, &expected) {
+                println!("SHA-256 mismatch — skipping ({})", e);
+                continue;
+            }
+        }
+
+        let extract_dir = tmp.path().join("extracted");
+        std::fs::create_dir_all(&extract_dir)?;
+        if let Err(e) = extract_tarball(&tarball, &extract_dir) {
+            println!("extract error — skipping ({})", e);
+            continue;
+        }
+        let module_dir = match find_module_dir(&extract_dir) {
+            Ok(d) => d,
+            Err(e) => {
+                println!("no module.toml — skipping ({})", e);
+                continue;
+            }
+        };
+        let new_manifest = match ModuleManifest::from_path(&module_dir) {
+            Ok(m) => m,
+            Err(e) => {
+                println!("manifest parse error — skipping ({})", e);
+                continue;
+            }
+        };
+        let new_version = new_manifest.version.as_deref().unwrap_or("0.0.0").to_string();
+
+        if is_newer(current, &new_version) {
+            println!("{current} → {new_version}  [update available]");
+            candidates.push(UpdateCandidate {
+                manifest: manifest.clone(),
+                current_version: current.to_string(),
+                new_version,
+                url: url.clone(),
+            });
+        } else {
+            println!("{current}  [up to date]");
+        }
+    }
+
+    println!();
+
+    if candidates.is_empty() {
+        println!("All modules are up to date.");
+        return Ok(());
+    }
+
+    println!("{} update(s) available:", candidates.len());
+    for c in &candidates {
+        println!("  {} {} → {}", c.manifest.id, c.current_version, c.new_version);
+    }
+
+    if check_only {
+        println!("\nRun 'innerwarden module update-all' to install.");
+        return Ok(());
+    }
+
+    if cli.dry_run {
+        println!("\n[DRY RUN] No changes applied.");
+        return Ok(());
+    }
+
+    if !yes {
+        print!("\nApply {} update(s)? [Y/n] ", candidates.len());
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let answer = input.trim().to_lowercase();
+        if !answer.is_empty() && answer != "y" && answer != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    println!();
+    let mut updated = 0usize;
+    for c in &candidates {
+        println!("Updating {} ({} → {})...", c.manifest.id, c.current_version, c.new_version);
+        let install_dir = modules_dir.join(&c.manifest.id);
+        match cmd_module_install(cli, &c.url, modules_dir, false, true, true) {
+            Ok(()) => {
+                println!("  [done] {} updated to {}", c.manifest.id, c.new_version);
+                // Re-enable if it was enabled before
+                if module_manifest::is_module_enabled(&cli.sensor_config, &c.manifest) {
+                    let _ = cmd_module_enable(cli, &install_dir, true);
+                }
+                updated += 1;
+            }
+            Err(e) => println!("  [fail] {}: {}", c.manifest.id, e),
+        }
+    }
+
+    println!("\n{updated}/{} module(s) updated successfully.", candidates.len());
+    if skipped > 0 {
+        println!("({skipped} skipped — no update_url declared)");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// C.5 — Upgrade
+// ---------------------------------------------------------------------------
+
+fn cmd_upgrade(cli: &Cli, check_only: bool, yes: bool, install_dir: &PathBuf) -> Result<()> {
+    use upgrade::*;
+
+    println!("Checking for updates...");
+
+    let release = fetch_latest_release()
+        .context("could not reach GitHub — check network and try again")?;
+
+    let current = CURRENT_VERSION;
+    let latest = strip_v(&release.tag_name);
+
+    println!("  Current version:  {current}");
+
+    if !is_newer(current, &release.tag_name) {
+        println!("  Latest release:   {latest} — already up to date.");
+        return Ok(());
+    }
+
+    println!("  Latest release:   {latest}  ({})", release.html_url);
+
+    if check_only {
+        println!("\nRun 'innerwarden upgrade' to install.");
+        return Ok(());
+    }
+
+    // Detect architecture
+    let arch = detect_arch().ok_or_else(|| {
+        anyhow::anyhow!(
+            "unsupported CPU architecture '{}' — build from source for your platform",
+            std::env::consts::ARCH
+        )
+    })?;
+
+    // Build download plan
+    let plan = build_plan(&release, arch);
+
+    if plan.is_empty() {
+        anyhow::bail!(
+            "no assets found for linux-{arch} in release {} — \
+             check {} for manual download",
+            release.tag_name, release.html_url
+        );
+    }
+
+    println!("\nAssets available for linux-{arch}:");
+    for dp in &plan {
+        let sha_status = if dp.sha256_asset.is_some() { "sha256 ✓" } else { "no sha256" };
+        println!("  {:<28} {}  ({})", dp.target.binary, fmt_bytes(dp.asset.size), sha_status);
+    }
+
+    let dest_paths: Vec<_> = plan
+        .iter()
+        .flat_map(|dp| install_paths(dp.target, install_dir))
+        .collect();
+
+    println!("\nWill install to {}:", install_dir.display());
+    for p in &dest_paths {
+        println!("  {}", p.display());
+    }
+
+    if cli.dry_run {
+        println!("\n[DRY RUN] No changes applied.");
+        return Ok(());
+    }
+
+    if !yes {
+        print!("\nProceed? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let answer = input.trim().to_lowercase();
+        if !answer.is_empty() && answer != "y" && answer != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    println!();
+
+    let tmp_dir = tempfile::tempdir().context("failed to create temp directory")?;
+
+    for dp in &plan {
+        let binary = dp.target.binary;
+        print!("  Downloading {binary}... ");
+        std::io::stdout().flush()?;
+
+        let tmp_path = tmp_dir.path().join(binary);
+        let bytes = download(&dp.asset.browser_download_url, &tmp_path)?;
+
+        // Verify SHA-256 if sidecar is present
+        if let Some(sha_asset) = dp.sha256_asset {
+            let expected = fetch_expected_hash(&sha_asset.browser_download_url)?;
+            let actual = sha256_file(&tmp_path)?;
+            if actual != expected {
+                anyhow::bail!(
+                    "SHA-256 mismatch for {binary}:\n  expected {expected}\n  got      {actual}"
+                );
+            }
+            println!("{}  sha256 ok", fmt_bytes(bytes));
+        } else {
+            println!("{}  (no sha256 sidecar)", fmt_bytes(bytes));
+        }
+
+        // Install to all target names
+        for dest in install_paths(dp.target, install_dir) {
+            install_binary(&tmp_path, &dest, false)?;
+            println!("  [done] {} → {}", binary, dest.display());
+        }
+    }
+
+    // Restart running services
+    println!();
+    for unit in &["innerwarden-sensor", "innerwarden-agent"] {
+        if systemd::is_service_active(unit) {
+            systemd::restart_service(unit, false)?;
+            println!("  [done] Restarted {unit}");
+        }
+    }
+
+    println!("\nInnerWarden upgraded to {} successfully.", release.tag_name);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// C.4 — Doctor
+// ---------------------------------------------------------------------------
+
+fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
+    #[derive(PartialEq)]
+    enum Sev { Ok, Warn, Fail }
+
+    struct Check {
+        label: String,
+        sev: Sev,
+        hint: Option<String>,
+    }
+
+    impl Check {
+        fn ok(label: impl Into<String>) -> Self {
+            Self { label: label.into(), sev: Sev::Ok, hint: None }
+        }
+        fn warn(label: impl Into<String>, hint: impl Into<String>) -> Self {
+            Self { label: label.into(), sev: Sev::Warn, hint: Some(hint.into()) }
+        }
+        fn fail(label: impl Into<String>, hint: impl Into<String>) -> Self {
+            Self { label: label.into(), sev: Sev::Fail, hint: Some(hint.into()) }
+        }
+        fn print(&self) {
+            let tag = match self.sev {
+                Sev::Ok => "[ok]  ",
+                Sev::Warn => "[warn]",
+                Sev::Fail => "[fail]",
+            };
+            println!("  {tag} {}", self.label);
+            if let Some(h) = &self.hint {
+                println!("         → {h}");
+            }
+        }
+        fn is_issue(&self) -> bool { self.sev != Sev::Ok }
+    }
+
+    fn run_section(checks: Vec<Check>, issues: &mut u32) {
+        for c in &checks {
+            c.print();
+            if c.is_issue() { *issues += 1; }
+        }
+    }
+
+    println!("InnerWarden Doctor");
+    println!("{}", "═".repeat(48));
+
+    let mut total_issues: u32 = 0;
+
+    // ── System ────────────────────────────────────────────
+    println!("\nSystem");
+    let mut sys = Vec::new();
+
+    // systemctl
+    let has_systemctl = std::path::Path::new("/usr/bin/systemctl").exists()
+        || std::path::Path::new("/bin/systemctl").exists();
+    sys.push(if has_systemctl {
+        Check::ok("systemctl found")
+    } else {
+        Check::fail("systemctl not found", "install systemd or check PATH")
+    });
+
+    // innerwarden user
+    let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+    let user_ok = passwd.lines().any(|l| l.split(':').next() == Some("innerwarden"));
+    sys.push(if user_ok {
+        Check::ok("innerwarden system user exists")
+    } else {
+        Check::fail(
+            "innerwarden system user missing",
+            "sudo useradd -r -s /sbin/nologin innerwarden",
+        )
+    });
+
+    // /etc/sudoers.d/
+    sys.push(if std::path::Path::new("/etc/sudoers.d").is_dir() {
+        Check::ok("/etc/sudoers.d/ directory exists")
+    } else {
+        Check::fail("/etc/sudoers.d/ not found", "sudo mkdir -p /etc/sudoers.d")
+    });
+
+    run_section(sys, &mut total_issues);
+
+    // ── Services ──────────────────────────────────────────
+    println!("\nServices");
+    let mut svc = Vec::new();
+    for unit in &["innerwarden-sensor", "innerwarden-agent"] {
+        svc.push(if systemd::is_service_active(unit) {
+            Check::ok(format!("{unit} is running"))
+        } else {
+            Check::warn(
+                format!("{unit} is not running"),
+                format!("sudo systemctl start {unit}"),
+            )
+        });
+    }
+    run_section(svc, &mut total_issues);
+
+    // ── Configuration ─────────────────────────────────────
+    println!("\nConfiguration");
+    let mut cfg = Vec::new();
+
+    for (label, path) in &[("Sensor", &cli.sensor_config), ("Agent", &cli.agent_config)] {
+        if path.exists() {
+            cfg.push(Check::ok(format!("{} config found ({})", label, path.display())));
+            let valid_toml = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
+                .is_some();
+            cfg.push(if valid_toml {
+                Check::ok(format!("{} config is valid TOML", label))
+            } else {
+                Check::fail(
+                    format!("{} config has invalid TOML syntax ({})", label, path.display()),
+                    format!("fix syntax in {}", path.display()),
+                )
+            });
+        } else {
+            cfg.push(Check::fail(
+                format!("{} config not found ({})", label, path.display()),
+                format!("create {} — see README.md for a template", path.display()),
+            ));
+        }
+    }
+
+    // API key: check env var or agent.env file
+    let env_file = cli.agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+    let key_in_env = std::env::var("OPENAI_API_KEY").is_ok();
+    let key_in_file = std::fs::read_to_string(&env_file)
+        .map(|s| s.lines().any(|l| l.starts_with("OPENAI_API_KEY=")))
+        .unwrap_or(false);
+    cfg.push(if key_in_env || key_in_file {
+        Check::ok("OPENAI_API_KEY is configured")
+    } else {
+        Check::warn(
+            "OPENAI_API_KEY not found in environment or agent.env",
+            format!("add OPENAI_API_KEY=sk-... to {}", env_file.display()),
+        )
+    });
+
+    run_section(cfg, &mut total_issues);
+
+    // ── Capabilities ──────────────────────────────────────
+    println!("\nCapabilities");
+    let opts = make_opts(cli, HashMap::new(), false);
+    let mut any_enabled = false;
+
+    for cap in registry.all() {
+        if !cap.is_enabled(&opts) { continue; }
+        any_enabled = true;
+
+        // Map capability → expected sudoers drop-in name
+        let drop_in = match cap.id() {
+            "block-ip"          => Some("innerwarden-block-ip"),
+            "sudo-protection"   => Some("innerwarden-sudo-protection"),
+            "search-protection" => Some("innerwarden-search-protection"),
+            _                   => None,
+        };
+
+        if let Some(name) = drop_in {
+            let path = std::path::Path::new("/etc/sudoers.d").join(name);
+            if path.exists() {
+                println!("  [ok]   {} (enabled): sudoers drop-in present", cap.id());
+            } else {
+                println!("  [warn] {} (enabled): sudoers drop-in missing (/etc/sudoers.d/{name})", cap.id());
+                println!("         → innerwarden enable {}", cap.id());
+                total_issues += 1;
+            }
+        } else {
+            println!("  [ok]   {} (enabled)", cap.id());
+        }
+    }
+
+    if !any_enabled {
+        println!("  (no capabilities enabled — run 'innerwarden list' to see options)");
+    }
+
+    // ── Summary ───────────────────────────────────────────
+    println!();
+    println!("{}", "─".repeat(48));
+    if total_issues == 0 {
+        println!("All checks passed — system looks healthy.");
+    } else {
+        println!("{total_issues} issue(s) found — review hints above.");
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

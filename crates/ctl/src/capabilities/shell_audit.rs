@@ -141,6 +141,56 @@ impl Capability for ShellAuditCapability {
         })
     }
 
+    fn planned_disable_effects(&self, opts: &ActivationOptions) -> Vec<CapabilityEffect> {
+        let sensor = opts.sensor_config.display().to_string();
+        vec![
+            CapabilityEffect::new(format!(
+                "Patch {sensor}: [collectors.exec_audit] enabled = false"
+            )),
+            CapabilityEffect::new(format!("Remove {AUDITD_RULE_FILE}")),
+            CapabilityEffect::new("Reload audit rules (augenrules --load)"),
+            CapabilityEffect::new("Restart innerwarden-sensor"),
+        ]
+    }
+
+    fn deactivate(&self, opts: &ActivationOptions) -> Result<ActivationReport> {
+        let mut effects = Vec::new();
+        let mut warnings = Vec::new();
+
+        // 1. Disable collector in sensor config
+        config_editor::write_bool(
+            &opts.sensor_config,
+            "collectors.exec_audit",
+            "enabled",
+            false,
+        )?;
+        effects.push(CapabilityEffect::new("[collectors.exec_audit] enabled = false"));
+
+        // 2. Remove auditd rule file
+        if !opts.dry_run {
+            let rule_path = std::path::Path::new(AUDITD_RULE_FILE);
+            if rule_path.exists() {
+                std::fs::remove_file(rule_path)?;
+            }
+        }
+        effects.push(CapabilityEffect::new(format!("Removed {AUDITD_RULE_FILE}")));
+
+        // 3. Reload audit rules so the execve filter is deactivated
+        if !opts.dry_run {
+            load_audit_rules(AUDITD_RULE_FILE, &mut warnings)?;
+        }
+        effects.push(CapabilityEffect::new("Reloaded audit rules"));
+
+        // 4. Restart sensor
+        systemd::restart_service("innerwarden-sensor", opts.dry_run)?;
+        effects.push(CapabilityEffect::new("Restarted innerwarden-sensor"));
+
+        Ok(ActivationReport {
+            effects_applied: effects,
+            warnings,
+        })
+    }
+
     fn is_enabled(&self, opts: &ActivationOptions) -> bool {
         config_editor::read_bool(&opts.sensor_config, "collectors.exec_audit", "enabled")
     }
@@ -238,6 +288,31 @@ mod tests {
             "collectors.exec_audit",
             "enabled"
         ));
+    }
+
+    #[test]
+    fn deactivate_dry_run_disables_collector() {
+        let mut sensor = NamedTempFile::new().unwrap();
+        writeln!(sensor, "[collectors.exec_audit]\nenabled = true\n").unwrap();
+        let agent = NamedTempFile::new().unwrap();
+        let opts = make_opts(&sensor, &agent);
+
+        ShellAuditCapability.deactivate(&opts).unwrap();
+
+        assert!(!config_editor::read_bool(
+            sensor.path(),
+            "collectors.exec_audit",
+            "enabled"
+        ));
+    }
+
+    #[test]
+    fn planned_disable_effects_count() {
+        let sensor = NamedTempFile::new().unwrap();
+        let agent = NamedTempFile::new().unwrap();
+        let opts = make_opts(&sensor, &agent);
+        let effects = ShellAuditCapability.planned_disable_effects(&opts);
+        assert_eq!(effects.len(), 4);
     }
 
     #[test]

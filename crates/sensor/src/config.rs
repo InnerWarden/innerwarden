@@ -36,6 +36,8 @@ pub struct CollectorsConfig {
     pub docker: DockerConfig,
     #[serde(default)]
     pub exec_audit: ExecAuditConfig,
+    #[serde(default)]
+    pub nginx_access: NginxAccessConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,6 +131,8 @@ pub struct DetectorsConfig {
     pub port_scan: PortScanConfig,
     #[serde(default)]
     pub sudo_abuse: SudoAbuseConfig,
+    #[serde(default)]
+    pub search_abuse: SearchAbuseConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -211,6 +215,47 @@ impl Default for SudoAbuseConfig {
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct NginxAccessConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_nginx_access_path")]
+    pub path: String,
+}
+
+impl Default for NginxAccessConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: default_nginx_access_path(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SearchAbuseConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_search_abuse_threshold")]
+    pub threshold: usize,
+    #[serde(default = "default_search_abuse_window_seconds")]
+    pub window_seconds: u64,
+    /// Path prefix to monitor. Empty string means all paths.
+    #[serde(default = "default_search_abuse_path_prefix")]
+    pub path_prefix: String,
+}
+
+impl Default for SearchAbuseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: default_search_abuse_threshold(),
+            window_seconds: default_search_abuse_window_seconds(),
+            path_prefix: default_search_abuse_path_prefix(),
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -261,6 +306,22 @@ fn default_exec_audit_path() -> String {
 
 fn default_journald_units() -> Vec<String> {
     vec!["sshd".to_string(), "sudo".to_string()]
+}
+
+fn default_nginx_access_path() -> String {
+    "/var/log/nginx/access.log".to_string()
+}
+
+fn default_search_abuse_threshold() -> usize {
+    30
+}
+
+fn default_search_abuse_window_seconds() -> u64 {
+    60
+}
+
+fn default_search_abuse_path_prefix() -> String {
+    "/api/search".to_string()
 }
 
 pub fn load(path: &str) -> Result<Config> {
