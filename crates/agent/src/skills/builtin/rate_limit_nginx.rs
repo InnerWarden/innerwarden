@@ -406,7 +406,7 @@ fn shadow_blocklist_path(blocks_dir: &Path) -> PathBuf {
 
 fn write_metadata(blocks_dir: &Path, meta: &NginxBlockMetadata) -> Result<()> {
     // Use a filename-safe IP representation
-    let safe_ip = meta.ip.replace(':', "_").replace('.', "_");
+    let safe_ip = meta.ip.replace([':', '.'], "_");
     let path = blocks_dir.join(format!("{safe_ip}.json"));
     let content = serde_json::to_string_pretty(meta)?;
     std::fs::write(&path, content)
