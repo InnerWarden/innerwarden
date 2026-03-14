@@ -1,6 +1,11 @@
-# Inner Warden — Specifications (v0.1)
+# InnerWarden Design Spec (historical v0.1 draft)
 
-Status: draft
+Status: historical design draft kept for context.
+
+Public note:
+- Start with `README.md` for current project status and safe usage guidance.
+- Use `CLAUDE.md` for the most complete maintainer-oriented operational reference.
+- This file records the original v0.1 design direction and may not match every current capability.
 
 ## Purpose
 Inner Warden is a lightweight, portable host observability and security agent.
@@ -27,7 +32,7 @@ Target constraints:
 - Disk writes must be append-only and buffered
 - Event ingestion must tolerate bursty log input
 
-## Context (this server)
+## Reference Environment (original design context)
 - Ubuntu 22.04 LTS, arm64
 - Docker-heavy: reverse proxy + web apps + databases
 - Public SSH receives constant scanning

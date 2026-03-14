@@ -1,5 +1,9 @@
 # Inner Warden — CLAUDE.md
 
+> Nota pública: este arquivo é um handbook detalhado de manutenção e operação.
+> Para visão geral, instalação e uso inicial, comece por `README.md`.
+> O conteúdo abaixo existe para preservar contexto operacional aprofundado do projeto.
+
 Observabilidade e resposta autônoma de host com dois componentes Rust:
 **sensor** (coleta determinística, zero AI) e **agent** (inteligência em tempo real).
 
@@ -638,10 +642,10 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 5. git push
 ```
 
-> **Regra**: o CLAUDE.md é a fonte de verdade do projeto. Qualquer mudança no
-> comportamento do sistema, nos arquivos gerados, na configuração ou nas dependências
-> deve ser refletida no CLAUDE.md no mesmo commit. Se não está documentado aqui,
-> não existe para quem retomar o projeto.
+> **Regra de manutenção**: para mantenedores, o CLAUDE.md continua sendo a
+> referência operacional mais detalhada do projeto. Mudanças relevantes de
+> comportamento, artefatos, configuração ou dependências devem ser refletidas
+> aqui no mesmo commit para preservar contexto de continuidade.
 
 Documentação pública do repositório:
 - `README.md`
@@ -652,7 +656,7 @@ Documentação pública do repositório:
 
 **Durante o production trial (execução paralela):**
 
-- Desenvolvimento contínuo em branch local dedicada (`codex/*`)
+- Desenvolvimento contínuo em branch local dedicada de feature
 - Host de trial permanece estável sem upgrade automático
 - Promoção para produção só acontece por fase, com validação explícita
 - Plano ativo versionado em `docs/development-plan.md`

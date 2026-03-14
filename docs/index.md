@@ -30,5 +30,5 @@
 These remain useful during active development, but should be reviewed before the repository becomes fully public-facing:
 
 - [CLAUDE.md](../CLAUDE.md)
-- [SPEC.md](../SPEC.md)
+- [SPEC.md](../SPEC.md) — historical design draft preserved for context
 - [docs/public-readiness-checklist.md](public-readiness-checklist.md)
