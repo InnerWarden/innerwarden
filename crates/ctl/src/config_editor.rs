@@ -115,7 +115,7 @@ fn read_item<'doc>(doc: &'doc DocumentMut, section: &str, key: &str) -> Option<&
 }
 
 fn item_key_absent(doc: &DocumentMut, section: &str, key: &str) -> bool {
-    read_item(doc, section, key).map_or(true, Item::is_none)
+    read_item(doc, section, key).is_none_or(Item::is_none)
 }
 
 // ---------------------------------------------------------------------------

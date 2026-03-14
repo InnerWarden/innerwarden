@@ -284,7 +284,7 @@ fn main() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_list(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
-    println!("{:<20} {:<10} {}", "Capability", "Status", "Description");
+    println!("{:<20} {:<10} Description", "Capability", "Status");
     println!("{}", "─".repeat(72));
     for cap in registry.all() {
         let opts = make_opts(cli, HashMap::new(), false);
@@ -584,13 +584,13 @@ fn cmd_module_list(cli: &Cli, modules_dir: &std::path::Path) -> Result<()> {
     }
 
     println!(
-        "{:<24} {:<10} {:<8} {}",
-        "Module", "Status", "Tier", "Description"
+        "{:<24} {:<10} {:<8} Description",
+        "Module", "Status", "Tier"
     );
     println!("{}", "─".repeat(80));
 
     for m in &modules {
-        let status = if is_module_enabled(&cli.sensor_config, &m) {
+        let status = if is_module_enabled(&cli.sensor_config, m) {
             "enabled"
         } else {
             "disabled"
@@ -1255,7 +1255,7 @@ fn cmd_module_update_all(
 // C.5 — Upgrade
 // ---------------------------------------------------------------------------
 
-fn cmd_upgrade(cli: &Cli, check_only: bool, yes: bool, install_dir: &PathBuf) -> Result<()> {
+fn cmd_upgrade(cli: &Cli, check_only: bool, yes: bool, install_dir: &Path) -> Result<()> {
     use upgrade::*;
 
     println!("Checking for updates...");

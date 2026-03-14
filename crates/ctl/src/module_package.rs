@@ -25,7 +25,7 @@ const USER_AGENT: &str = concat!("innerwarden-ctl/", env!("CARGO_PKG_VERSION"));
 pub fn download(url: &str, tmp_dir: &Path) -> Result<PathBuf> {
     let filename = url
         .split('/')
-        .last()
+        .next_back()
         .filter(|s| !s.is_empty())
         .unwrap_or("module.tar.gz");
 
