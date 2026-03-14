@@ -8,7 +8,7 @@ CARGO        := $(HOME)/.cargo/bin/cargo
 
 .PHONY: build
 build:
-	$(CARGO) build -p innerwarden-sensor -p innerwarden-agent
+	$(CARGO) build -p innerwarden-sensor -p innerwarden-agent -p innerwarden-ctl
 
 .PHONY: build-sensor
 build-sensor:
@@ -17,6 +17,10 @@ build-sensor:
 .PHONY: build-agent
 build-agent:
 	$(CARGO) build -p innerwarden-agent
+
+.PHONY: build-ctl
+build-ctl:
+	$(CARGO) build -p innerwarden-ctl
 
 .PHONY: test
 test:
@@ -34,6 +38,15 @@ run-agent:
 run-dashboard:
 	$(CARGO) run -p innerwarden-agent -- --data-dir ./data --dashboard
 
+# Test the enable flow without applying changes (safe to run locally)
+.PHONY: test-enable-dry-run
+test-enable-dry-run: build-ctl
+	$(CARGO) run -p innerwarden-ctl -- \
+		--sensor-config config.test.toml \
+		--agent-config agent-test.toml \
+		--dry-run \
+		enable block-ip
+
 .PHONY: replay-qa
 replay-qa:
 	./scripts/replay_qa.sh
@@ -49,10 +62,11 @@ build-linux:
 	@$(dir $(CARGO))cargo-zigbuild --version >/dev/null 2>&1 || \
 		{ echo "cargo-zigbuild not found — install with: cargo install cargo-zigbuild"; exit 1; }
 	@rustup target add $(TARGET_LINUX) 2>/dev/null || true
-	$(CARGO) zigbuild -p innerwarden-sensor -p innerwarden-agent \
+	$(CARGO) zigbuild -p innerwarden-sensor -p innerwarden-agent -p innerwarden-ctl \
 		--target $(TARGET_LINUX) --release
 	@echo "Sensor: $(RELEASE_DIR)/innerwarden-sensor"
 	@echo "Agent:  $(RELEASE_DIR)/innerwarden-agent"
+	@echo "Ctl:    $(RELEASE_DIR)/innerwarden-ctl"
 
 # ─── Deploy ──────────────────────────────────────────────────────────────────
 

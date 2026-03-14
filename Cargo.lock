@@ -1247,6 +1247,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "innerwarden-ctl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "tempfile",
+ "toml_edit",
+]
+
+[[package]]
 name = "innerwarden-sensor"
 version = "0.1.0"
 dependencies = [

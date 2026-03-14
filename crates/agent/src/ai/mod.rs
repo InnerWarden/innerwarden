@@ -103,9 +103,9 @@ pub struct DecisionContext<'a> {
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillInfo {
     pub id: String,
-    pub name: String,
-    pub description: String,
-    pub tier: String, // "open" | "premium"
+    /// Incident kinds this skill applies to (empty = all).
+    /// Serialized to AI so it can match skills to incident types.
+    pub applicable_to: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,21 @@
+[package]
+name = "innerwarden-ctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "InnerWarden control plane — manage capabilities and system configuration."
+keywords = ["security", "linux", "capabilities", "rust"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "innerwarden-ctl"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+toml_edit = "0.22"
