@@ -42,13 +42,13 @@ fn ensure_section(doc: &mut DocumentMut, section: &str) {
     let parts = section_parts(section);
     match parts.as_slice() {
         [s1] => {
-            if doc.get(s1).map_or(true, Item::is_none) {
+            if doc.get(s1).is_none_or(Item::is_none) {
                 doc[s1] = toml_edit::table();
             }
         }
         [s1, s2] => {
             // Ensure outer table
-            if doc.get(s1).map_or(true, Item::is_none) {
+            if doc.get(s1).is_none_or(Item::is_none) {
                 doc[s1] = toml_edit::table();
             }
             // Ensure inner table using get to check without mutating
@@ -56,7 +56,7 @@ fn ensure_section(doc: &mut DocumentMut, section: &str) {
                 .get(s1)
                 .and_then(|i| i.as_table())
                 .and_then(|t| t.get(s2))
-                .map_or(true, Item::is_none);
+                .is_none_or(Item::is_none);
             if inner_absent {
                 doc[s1][s2] = toml_edit::table();
             }
