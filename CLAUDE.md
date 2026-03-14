@@ -61,7 +61,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Playbook de rollout hardening + smoke checks remotos (`make rollout-precheck/postcheck`)
 - ✅ Correlação temporal leve de incidentes por janela + pivôs (`ip`, `user`, `detector`) com contexto para AI e clusters narráveis
 - ✅ Telemetria operacional leve (JSONL) com métricas de ingestão, detectores, gate, AI, latência, erros e dry-run vs execução real
-- ✅ Dashboard local read-only (`--dashboard`) com visão operacional de eventos/incidentes/decisões/telemetria (sem endpoints de ação) + autenticação HTTP Basic obrigatória
+- ✅ Dashboard local autenticado (`--dashboard`) com visão operacional de eventos/incidentes/decisões/telemetria + autenticação HTTP Basic obrigatória
 - ✅ Dashboard D2 — UX de investigação estilo Clarity: split-pane com investigação read-only em múltiplas etapas: D2.1 (jornada por IP com `/api/entities` + `/api/journey`), D2.2 (filtros + pivôs `ip|user|detector` com `/api/pivots`), D2.3 (cluster-first com `/api/clusters` + export de snapshot JSON/Markdown via `/api/export`) e D2.4 (investigação guiada com hints narrativos, atalhos de pivô, comparação temporal por data/janela e deep-link inicial por query string)
 - ✅ Dashboard header com logo SVG de alto contraste (mesmo logo, melhor legibilidade visual no topo)
 - ✅ Dashboard D4 — redesign visual site-matched (paleta navy `#040814`, acento `#78e5ff`, danger `#f43f5e`, radial gradients ambient, border-radius moderno, inputs/cards mais escuros) + mobile UX completo (collapsar/expandir painel via toggle button, touch targets, toast e modal full-width, layout responsivo melhorado)
@@ -229,7 +229,7 @@ crates/
       reader.rs              — JSONL incremental reader + AgentCursor persistence
       correlation.rs         — correlação temporal leve + clusterização de incidentes
       telemetry.rs           — telemetria operacional leve (snapshot JSONL por tick)
-      dashboard.rs           — servidor HTTP local read-only + UI operacional
+      dashboard.rs           — servidor HTTP local autenticado + UI operacional/investigação
       report.rs              — relatório operacional v2 (`--report`) com tendências, anomaly hints e telemetria
       narrative.rs           — geração de Markdown diário (generate/write/cleanup)
       webhook.rs             — HTTP POST de notificações de incidente
@@ -701,7 +701,8 @@ Documentação pública do repositório:
 - Fase D2.4 (concluída): UX de investigação guiada (hints analíticos, pivot shortcuts na jornada, comparação entre datas e janela temporal configurável)
 - Fase D3 (concluída): ações operacionais guardadas no dashboard (Block IP + Suspend User com modal de confirmação, razão obrigatória, dry-run transparente e trilha auditável em `decisions-*.jsonl`)
 - Fase D4 (concluída): redesign visual do dashboard para combinar com o site innerwarden.com (paleta navy, radial gradients, border-radius moderno, mobile UX completo com painel colapsável, touch targets e layout fluído)
-- Fase D5 (próxima): notificações push em tempo real via Server-Sent Events (SSE) para alertar operadores de novos incidentes sem refresh manual
+- Fase D5 (próxima): dashboard "attacker path viewer" — reconstrução story-first do caminho do atacante (chapters/fases derivadas, verdict card, compactação de bursts/sessões e evidência humana antes de JSON bruto), mantendo o layout alinhado ao visual do site innerwarden.com
+- Fase D6 (planejada): notificações push em tempo real via Server-Sent Events (SSE) para alertar operadores de novos incidentes sem refresh manual
 - Fase 8.1 (concluída): honeypot rebuild foundation (`listener` mínimo, gated por config)
 - Fase 8.2 (concluída): honeypot real bounded (multi-serviço, redirecionamento seletivo opcional, isolamento e forensics JSON/JSONL)
 - Fase 8.3 (concluída): hardening de isolamento + profundidade forense (session lock, retenção e transcript)
@@ -711,7 +712,7 @@ Documentação pública do repositório:
 - Fase 8.7 (concluída): perfis de jail mais restritivos + receiver attestation no handoff externo
 - Fase 8.8 (concluída): interação média realista — SSH via `russh` (key exchange + captura de credenciais) + HTTP com login page fake (captura de formulário)
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
-- Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/public-readiness-checklist.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md`, `docs/phase-8-honeypot-real-rebuild.md`, `docs/phase-8-honeypot-hardening.md`, `docs/phase-8-honeypot-sandbox-runtime.md`, `docs/phase-8-honeypot-advanced-containment.md`, `docs/phase-8-honeypot-runtime-jail-trusted-handoff.md`, `docs/phase-8-honeypot-runtime-profile-attested-handoff.md` e `docs/phase-8-honeypot-medium-interaction.md`
+- Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/phase-d5-attacker-path-viewer.md`, `docs/public-readiness-checklist.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md`, `docs/phase-8-honeypot-real-rebuild.md`, `docs/phase-8-honeypot-hardening.md`, `docs/phase-8-honeypot-sandbox-runtime.md`, `docs/phase-8-honeypot-advanced-containment.md`, `docs/phase-8-honeypot-runtime-jail-trusted-handoff.md`, `docs/phase-8-honeypot-runtime-profile-attested-handoff.md` e `docs/phase-8-honeypot-medium-interaction.md`
 
 ---
 
