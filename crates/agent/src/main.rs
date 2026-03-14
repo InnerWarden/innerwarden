@@ -602,8 +602,7 @@ async fn process_incidents(
             .iter()
             .any(|id| id == "rate-limit-nginx")
     {
-        match skills::builtin::cleanup_expired_nginx_blocks(data_dir, cfg.responder.dry_run).await
-        {
+        match skills::builtin::cleanup_expired_nginx_blocks(data_dir, cfg.responder.dry_run).await {
             Ok(removed) => {
                 if removed > 0 {
                     info!(removed, "expired nginx deny rules cleaned up");

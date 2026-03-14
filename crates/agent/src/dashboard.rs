@@ -13,14 +13,14 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
-use tokio_stream::StreamExt as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use rand_core::OsRng;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use tokio::sync::broadcast;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt as _;
 use tracing::{info, warn};
 
 use crate::correlation::build_clusters;
@@ -552,7 +552,10 @@ pub async fn serve(
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         loop {
             interval.tick().await;
-            let _ = event_tx.send(SsePayload { kind: "heartbeat".to_string(), data: None });
+            let _ = event_tx.send(SsePayload {
+                kind: "heartbeat".to_string(),
+                data: None,
+            });
         }
     });
 
@@ -669,7 +672,10 @@ async fn watch_for_new_entries(data_dir: PathBuf, tx: EventTx) {
             }
         }
         if changed {
-            let _ = tx.send(SsePayload { kind: "refresh".to_string(), data: None });
+            let _ = tx.send(SsePayload {
+                kind: "refresh".to_string(),
+                data: None,
+            });
         }
 
         // D8 — read new incident lines and emit `alert` for High/Critical.
@@ -697,11 +703,11 @@ async fn watch_for_new_entries(data_dir: PathBuf, tx: EventTx) {
                                 let (etype, evalue) = entity
                                     .map(|e| {
                                         let t = match e.r#type {
-                                            EntityType::Ip        => "ip",
-                                            EntityType::User      => "user",
+                                            EntityType::Ip => "ip",
+                                            EntityType::User => "user",
                                             EntityType::Container => "container",
-                                            EntityType::Path      => "path",
-                                            EntityType::Service   => "service",
+                                            EntityType::Path => "path",
+                                            EntityType::Service => "service",
                                         };
                                         (t, e.value.as_str())
                                     })

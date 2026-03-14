@@ -157,9 +157,7 @@ fn parse_line(line: &str) -> Option<NginxLogEntry> {
 
     // bytes (next token, '-' means 0)
     let after_status = after_status.trim_start();
-    let (bytes_str, rest_str) = after_status
-        .split_once(' ')
-        .unwrap_or((after_status, ""));
+    let (bytes_str, rest_str) = after_status.split_once(' ').unwrap_or((after_status, ""));
     let bytes: u64 = bytes_str.parse().unwrap_or(0);
 
     // User-agent is in the last quoted field (Combined format only)
@@ -217,7 +215,8 @@ mod tests {
 
     #[test]
     fn parses_common_log_format() {
-        let line = r#"10.0.0.1 - - [01/Jan/2025:00:00:00 +0000] "POST /api/search HTTP/1.0" 200 512"#;
+        let line =
+            r#"10.0.0.1 - - [01/Jan/2025:00:00:00 +0000] "POST /api/search HTTP/1.0" 200 512"#;
         let entry = parse_line(line).unwrap();
         assert_eq!(entry.ip, "10.0.0.1");
         assert_eq!(entry.method, "POST");

@@ -114,7 +114,9 @@ impl Capability for ShellAuditCapability {
             "enabled",
             true,
         )?;
-        effects.push(CapabilityEffect::new("[collectors.exec_audit] enabled = true"));
+        effects.push(CapabilityEffect::new(
+            "[collectors.exec_audit] enabled = true",
+        ));
 
         // 2. Write auditd rule file
         if !opts.dry_run {
@@ -164,7 +166,9 @@ impl Capability for ShellAuditCapability {
             "enabled",
             false,
         )?;
-        effects.push(CapabilityEffect::new("[collectors.exec_audit] enabled = false"));
+        effects.push(CapabilityEffect::new(
+            "[collectors.exec_audit] enabled = false",
+        ));
 
         // 2. Remove auditd rule file
         if !opts.dry_run {

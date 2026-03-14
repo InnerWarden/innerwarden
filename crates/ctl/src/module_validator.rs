@@ -63,11 +63,7 @@ impl ValidationReport {
         if self.passed() {
             println!("Result: PASS");
         } else {
-            let fails = self
-                .checks
-                .iter()
-                .filter(|c| c.result.is_fail())
-                .count();
+            let fails = self.checks.iter().filter(|c| c.result.is_fail()).count();
             println!("Result: FAIL ({fails} error(s))");
         }
     }
@@ -275,7 +271,9 @@ fn validate_manifest(doc: &toml_edit::DocumentMut, checks: &mut Vec<Check>) {
             result: if valid {
                 CheckResult::Pass
             } else {
-                CheckResult::Fail(format!("'{id}' is not valid kebab-case (lowercase letters and hyphens only)"))
+                CheckResult::Fail(format!(
+                    "'{id}' is not valid kebab-case (lowercase letters and hyphens only)"
+                ))
             },
         });
     }
@@ -288,7 +286,9 @@ fn validate_manifest(doc: &toml_edit::DocumentMut, checks: &mut Vec<Check>) {
             result: if tier == "open" || tier == "premium" {
                 CheckResult::Pass
             } else {
-                CheckResult::Fail(format!("tier '{tier}' is invalid — must be 'open' or 'premium'"))
+                CheckResult::Fail(format!(
+                    "tier '{tier}' is invalid — must be 'open' or 'premium'"
+                ))
             },
         });
     }
@@ -355,9 +355,7 @@ fn validate_manifest_rules(doc: &toml_edit::DocumentMut, checks: &mut Vec<Check>
                 checks.push(Check {
                     category: "Manifest",
                     name: format!("[[rules]][{rule_num}].detector references declared detector"),
-                    result: CheckResult::Fail(format!(
-                        "'{det}' is not in [provides].detectors"
-                    )),
+                    result: CheckResult::Fail(format!("'{det}' is not in [provides].detectors")),
                 });
             } else {
                 checks.push(Check {
@@ -374,9 +372,7 @@ fn validate_manifest_rules(doc: &toml_edit::DocumentMut, checks: &mut Vec<Check>
                 checks.push(Check {
                     category: "Manifest",
                     name: format!("[[rules]][{rule_num}].skill references declared skill"),
-                    result: CheckResult::Fail(format!(
-                        "'{skill}' is not in [provides].skills"
-                    )),
+                    result: CheckResult::Fail(format!("'{skill}' is not in [provides].skills")),
                 });
             } else {
                 checks.push(Check {
@@ -434,10 +430,7 @@ fn validate_readme(readme_path: &Path, checks: &mut Vec<Check>) -> Result<()> {
         result: if content.len() >= 300 {
             CheckResult::Pass
         } else {
-            CheckResult::Fail(format!(
-                "{} chars — must be at least 300",
-                content.len()
-            ))
+            CheckResult::Fail(format!("{} chars — must be at least 300", content.len()))
         },
     });
 
@@ -461,7 +454,9 @@ fn validate_readme(readme_path: &Path, checks: &mut Vec<Check>) -> Result<()> {
         result: if content.contains("```toml") || content.contains("```bash") {
             CheckResult::Pass
         } else {
-            CheckResult::Warn("no ```toml or ```bash block found — consider adding a config example".into())
+            CheckResult::Warn(
+                "no ```toml or ```bash block found — consider adding a config example".into(),
+            )
         },
     });
 
@@ -519,7 +514,8 @@ fn validate_skills_security(
                 CheckResult::Pass
             } else {
                 CheckResult::Fail(
-                    "shell -c invocation detected — never pass dynamic strings through shell".into(),
+                    "shell -c invocation detected — never pass dynamic strings through shell"
+                        .into(),
                 )
             },
         });
@@ -654,8 +650,14 @@ This module is safe to use in all environments.
         let tmp = TempDir::new().unwrap();
         make_valid_module(&tmp);
         let report = validate(tmp.path(), false).unwrap();
-        assert!(report.passed(), "valid module should pass; failures: {:?}",
-            report.checks.iter().filter(|c| c.result.is_fail()).collect::<Vec<_>>()
+        assert!(
+            report.passed(),
+            "valid module should pass; failures: {:?}",
+            report
+                .checks
+                .iter()
+                .filter(|c| c.result.is_fail())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -735,10 +737,8 @@ This module is safe to use in all environments.
     #[test]
     fn non_kebab_id_fails() {
         let tmp = TempDir::new().unwrap();
-        let toml = minimal_module_toml().replace(
-            "id          = \"test-module\"",
-            "id = \"TestModule\"",
-        );
+        let toml =
+            minimal_module_toml().replace("id          = \"test-module\"", "id = \"TestModule\"");
         write_file(tmp.path(), "module.toml", &toml);
         write_file(tmp.path(), "docs/README.md", minimal_readme());
         write_file(tmp.path(), "tests/t.rs", "#[test] fn x() {}");
@@ -773,8 +773,7 @@ This module is safe to use in all environments.
     #[test]
     fn confidence_out_of_range_fails() {
         let tmp = TempDir::new().unwrap();
-        let toml =
-            minimal_module_toml().replace("min_confidence = 0.8", "min_confidence = 1.5");
+        let toml = minimal_module_toml().replace("min_confidence = 0.8", "min_confidence = 1.5");
         write_file(tmp.path(), "module.toml", &toml);
         write_file(tmp.path(), "docs/README.md", minimal_readme());
         write_file(tmp.path(), "tests/t.rs", "#[test] fn x() {}");

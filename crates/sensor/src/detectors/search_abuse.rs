@@ -77,11 +77,7 @@ impl SearchAbuseDetector {
 
         self.alerted.insert(ip.clone(), now);
 
-        let method = event
-            .details["method"]
-            .as_str()
-            .unwrap_or("?")
-            .to_string();
+        let method = event.details["method"].as_str().unwrap_or("?").to_string();
 
         Some(Incident {
             ts: now,
@@ -91,8 +87,16 @@ impl SearchAbuseDetector {
             title: format!("Possible search route abuse from {ip}"),
             summary: format!(
                 "{count} requests to {}{} from {ip} in the last {} seconds",
-                if self.path_prefix.is_empty() { "(any path)" } else { &self.path_prefix },
-                if self.path_prefix.is_empty() { "" } else { "* " },
+                if self.path_prefix.is_empty() {
+                    "(any path)"
+                } else {
+                    &self.path_prefix
+                },
+                if self.path_prefix.is_empty() {
+                    ""
+                } else {
+                    "* "
+                },
                 self.window.num_seconds()
             ),
             evidence: serde_json::json!([{
@@ -106,7 +110,8 @@ impl SearchAbuseDetector {
             recommended_checks: vec![
                 format!("Review access logs for {ip} — check for automation patterns"),
                 "Consider rate-limiting or blocking the source IP".to_string(),
-                "Check if traffic correlates with an SSH or credential-stuffing incident".to_string(),
+                "Check if traffic correlates with an SSH or credential-stuffing incident"
+                    .to_string(),
             ],
             tags: vec![
                 "http".to_string(),
@@ -178,7 +183,11 @@ mod tests {
         let mut det = SearchAbuseDetector::new("host", 3, 300, "/api/search");
         let base = Utc::now();
         for i in 0..3 {
-            det.process(&request_event("1.2.3.4", "/api/search", base + Duration::seconds(i)));
+            det.process(&request_event(
+                "1.2.3.4",
+                "/api/search",
+                base + Duration::seconds(i),
+            ));
         }
         // Further requests within same window should not re-alert
         assert!(det
@@ -196,7 +205,10 @@ mod tests {
         let base = Utc::now();
         for i in 0..10 {
             let ev = request_event("1.2.3.4", "/api/users", base + Duration::seconds(i));
-            assert!(det.process(&ev).is_none(), "should not trigger for /api/users");
+            assert!(
+                det.process(&ev).is_none(),
+                "should not trigger for /api/users"
+            );
         }
     }
 

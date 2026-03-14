@@ -36,17 +36,20 @@ pub fn download(url: &str, tmp_dir: &Path) -> Result<PathBuf> {
         .call()
         .with_context(|| format!("failed to download {url}"))?;
 
-    let mut file =
-        std::fs::File::create(&dest).with_context(|| format!("cannot create {}", dest.display()))?;
+    let mut file = std::fs::File::create(&dest)
+        .with_context(|| format!("cannot create {}", dest.display()))?;
 
     let mut buf = [0u8; 65_536];
     let mut reader = resp.into_reader();
     loop {
-        let n = reader.read(&mut buf).context("read error during download")?;
+        let n = reader
+            .read(&mut buf)
+            .context("read error during download")?;
         if n == 0 {
             break;
         }
-        file.write_all(&buf[..n]).context("write error during download")?;
+        file.write_all(&buf[..n])
+            .context("write error during download")?;
     }
 
     Ok(dest)
@@ -75,8 +78,7 @@ pub fn fetch_sha256_sidecar(url: &str) -> Option<String> {
 
 /// Compute SHA-256 of a file and return lowercase hex string.
 pub fn sha256_hex(path: &Path) -> Result<String> {
-    let data = std::fs::read(path)
-        .with_context(|| format!("cannot read {}", path.display()))?;
+    let data = std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
     let hash = Sha256::digest(&data);
     Ok(hash.iter().map(|b| format!("{b:02x}")).collect())
 }
@@ -196,12 +198,9 @@ pub fn write_sha256_sidecar(tarball: &Path) -> Result<PathBuf> {
 
 /// Recursively copy `src` directory into `dst` (created if absent).
 pub fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
-    std::fs::create_dir_all(dst)
-        .with_context(|| format!("cannot create {}", dst.display()))?;
+    std::fs::create_dir_all(dst).with_context(|| format!("cannot create {}", dst.display()))?;
 
-    for entry in std::fs::read_dir(src)
-        .with_context(|| format!("cannot read {}", src.display()))?
-    {
+    for entry in std::fs::read_dir(src).with_context(|| format!("cannot read {}", src.display()))? {
         let entry = entry?;
         let dest_path = dst.join(entry.file_name());
         if entry.file_type()?.is_dir() {
@@ -299,7 +298,11 @@ mod tests {
         let src = tempfile::tempdir().unwrap();
         let module_dir = src.path().join("test-module");
         std::fs::create_dir_all(&module_dir).unwrap();
-        write_file(&module_dir, "module.toml", "[module]\nid = \"test-module\"\n");
+        write_file(
+            &module_dir,
+            "module.toml",
+            "[module]\nid = \"test-module\"\n",
+        );
 
         // Pack it
         let out_dir = tempfile::tempdir().unwrap();

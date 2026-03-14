@@ -12,8 +12,7 @@ use anyhow::Result;
 use clap::Parser;
 use collectors::{
     auth_log::AuthLogCollector, docker::DockerCollector, exec_audit::ExecAuditCollector,
-    integrity::IntegrityCollector, journald::JournaldCollector,
-    nginx_access::NginxAccessCollector,
+    integrity::IntegrityCollector, journald::JournaldCollector, nginx_access::NginxAccessCollector,
 };
 use detectors::credential_stuffing::CredentialStuffingDetector;
 use detectors::port_scan::PortScanDetector;

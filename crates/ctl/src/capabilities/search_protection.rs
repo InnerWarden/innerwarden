@@ -63,9 +63,7 @@ impl Capability for SearchProtectionCapability {
                 "Patch {sensor}: [detectors.search_abuse] enabled = true"
             )),
             CapabilityEffect::new(format!("Patch {agent}: [responder] enabled = true")),
-            CapabilityEffect::new(
-                "Add \"rate-limit-nginx\" to [responder] allowed_skills",
-            ),
+            CapabilityEffect::new("Add \"rate-limit-nginx\" to [responder] allowed_skills"),
             CapabilityEffect::new(format!(
                 "Write /etc/sudoers.d/{} (validated with visudo)",
                 Self::sudoers_name()
@@ -98,7 +96,9 @@ impl Capability for SearchProtectionCapability {
             "enabled",
             true,
         )?;
-        effects.push(CapabilityEffect::new("[detectors.search_abuse] enabled = true"));
+        effects.push(CapabilityEffect::new(
+            "[detectors.search_abuse] enabled = true",
+        ));
 
         // 3. Patch agent: responder enabled
         config_editor::write_bool(&opts.agent_config, "responder", "enabled", true)?;
@@ -174,10 +174,7 @@ impl Capability for SearchProtectionCapability {
             CapabilityEffect::new(format!(
                 "Remove \"rate-limit-nginx\" from [responder] allowed_skills in {agent}"
             )),
-            CapabilityEffect::new(format!(
-                "Remove /etc/sudoers.d/{}",
-                Self::sudoers_name()
-            )),
+            CapabilityEffect::new(format!("Remove /etc/sudoers.d/{}", Self::sudoers_name())),
             CapabilityEffect::new("Restart innerwarden-sensor"),
             CapabilityEffect::new("Restart innerwarden-agent"),
         ]
@@ -210,7 +207,9 @@ impl Capability for SearchProtectionCapability {
             "enabled",
             false,
         )?;
-        effects.push(CapabilityEffect::new("[detectors.search_abuse] enabled = false"));
+        effects.push(CapabilityEffect::new(
+            "[detectors.search_abuse] enabled = false",
+        ));
 
         // 3. Remove skill from allowed_skills
         let removed = config_editor::write_array_remove(
@@ -247,15 +246,8 @@ impl Capability for SearchProtectionCapability {
     }
 
     fn is_enabled(&self, opts: &ActivationOptions) -> bool {
-        config_editor::read_bool(
-            &opts.sensor_config,
-            "collectors.nginx_access",
-            "enabled",
-        ) && config_editor::read_bool(
-            &opts.sensor_config,
-            "detectors.search_abuse",
-            "enabled",
-        )
+        config_editor::read_bool(&opts.sensor_config, "collectors.nginx_access", "enabled")
+            && config_editor::read_bool(&opts.sensor_config, "detectors.search_abuse", "enabled")
     }
 }
 
@@ -272,8 +264,7 @@ fn create_nginx_placeholder(path: &str) -> Result<()> {
         "/tmp/innerwarden-nginx-placeholder-{}",
         std::process::id()
     ));
-    std::fs::write(&tmp, comment)
-        .context("failed to write nginx placeholder tmp file")?;
+    std::fs::write(&tmp, comment).context("failed to write nginx placeholder tmp file")?;
 
     let out = std::process::Command::new("sudo")
         .args([
@@ -401,8 +392,7 @@ mod tests {
             "responder",
             "enabled"
         ));
-        let skills =
-            config_editor::read_str_array(agent.path(), "responder", "allowed_skills");
+        let skills = config_editor::read_str_array(agent.path(), "responder", "allowed_skills");
         assert!(skills.contains(&"rate-limit-nginx".to_string()));
     }
 
@@ -419,10 +409,12 @@ mod tests {
 
         SearchProtectionCapability.activate(&opts).unwrap();
 
-        let skills =
-            config_editor::read_str_array(agent.path(), "responder", "allowed_skills");
+        let skills = config_editor::read_str_array(agent.path(), "responder", "allowed_skills");
         // No duplicate should appear
-        let count = skills.iter().filter(|s| s.as_str() == "rate-limit-nginx").count();
+        let count = skills
+            .iter()
+            .filter(|s| s.as_str() == "rate-limit-nginx")
+            .count();
         assert_eq!(count, 1);
     }
 

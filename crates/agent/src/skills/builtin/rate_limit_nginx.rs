@@ -37,9 +37,9 @@ use tracing::{info, warn};
 
 use crate::skills::{ResponseSkill, SkillContext, SkillResult, SkillTier};
 
-const DEFAULT_TTL_SECS: u64 = 3_600;   // 1 hour
+const DEFAULT_TTL_SECS: u64 = 3_600; // 1 hour
 const MIN_TTL_SECS: u64 = 60;
-const MAX_TTL_SECS: u64 = 86_400;      // 24 hours
+const MAX_TTL_SECS: u64 = 86_400; // 24 hours
 const NGINX_BLOCKLIST_DEST: &str = "/etc/nginx/innerwarden-blocklist.conf";
 const NGINX_BLOCKS_SUBDIR: &str = "nginx-blocks";
 
@@ -342,9 +342,12 @@ async fn install_blocklist(shadow_path: &Path) -> Result<()> {
     let out = Command::new("sudo")
         .args([
             "install",
-            "-o", "root",
-            "-g", "root",
-            "-m", "644",
+            "-o",
+            "root",
+            "-g",
+            "root",
+            "-m",
+            "644",
             &shadow_str,
             NGINX_BLOCKLIST_DEST,
         ])

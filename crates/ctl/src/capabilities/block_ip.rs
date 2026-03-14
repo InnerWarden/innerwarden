@@ -71,9 +71,7 @@ impl Capability for BlockIpCapability {
         let agent = opts.agent_config.display().to_string();
         let skill = self.skill_id(backend);
         vec![
-            CapabilityEffect::new(format!(
-                "Patch {agent}: [responder] enabled = true"
-            )),
+            CapabilityEffect::new(format!("Patch {agent}: [responder] enabled = true")),
             CapabilityEffect::new(format!(
                 "Patch {agent}: [responder] block_backend = \"{backend}\""
             )),
@@ -150,10 +148,7 @@ impl Capability for BlockIpCapability {
             CapabilityEffect::new(format!(
                 "Remove block-ip-* skills from [responder] allowed_skills in {agent}"
             )),
-            CapabilityEffect::new(format!(
-                "Remove /etc/sudoers.d/{}",
-                Self::sudoers_name()
-            )),
+            CapabilityEffect::new(format!("Remove /etc/sudoers.d/{}", Self::sudoers_name())),
             CapabilityEffect::new("Restart innerwarden-agent"),
         ]
     }
@@ -200,7 +195,8 @@ impl Capability for BlockIpCapability {
         if !config_editor::read_bool(&opts.agent_config, "responder", "enabled") {
             return false;
         }
-        let skills = config_editor::read_str_array(&opts.agent_config, "responder", "allowed_skills");
+        let skills =
+            config_editor::read_str_array(&opts.agent_config, "responder", "allowed_skills");
         BLOCK_IP_BACKENDS
             .iter()
             .any(|backend| skills.contains(&format!("block-ip-{backend}")))
@@ -273,9 +269,12 @@ mod tests {
         // Even in dry_run, config patches are applied (dry_run only skips system calls)
         BlockIpCapability.activate(&opts).unwrap();
 
-        assert!(config_editor::read_bool(agent.path(), "responder", "enabled"));
-        let skills =
-            config_editor::read_str_array(agent.path(), "responder", "allowed_skills");
+        assert!(config_editor::read_bool(
+            agent.path(),
+            "responder",
+            "enabled"
+        ));
+        let skills = config_editor::read_str_array(agent.path(), "responder", "allowed_skills");
         assert!(skills.contains(&"block-ip-ufw".to_string()));
     }
 

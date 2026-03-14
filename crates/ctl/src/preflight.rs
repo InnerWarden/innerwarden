@@ -35,7 +35,9 @@ impl Preflight for BinaryExists {
             .unwrap_or(self.path);
         Err(
             PreflightError::new(format!("{} not found (expected at {})", bin, self.path))
-                .with_hint(format!("install with your distro package manager, e.g.: apt install {bin}")),
+                .with_hint(format!(
+                    "install with your distro package manager, e.g.: apt install {bin}"
+                )),
         )
     }
 }
@@ -59,8 +61,10 @@ impl Preflight for DirectoryExists {
         if Path::new(self.path).is_dir() {
             return Ok(());
         }
-        Err(PreflightError::new(format!("directory {} does not exist", self.path))
-            .with_hint(format!("create it with: sudo mkdir -p {}", self.path)))
+        Err(
+            PreflightError::new(format!("directory {} does not exist", self.path))
+                .with_hint(format!("create it with: sudo mkdir -p {}", self.path)),
+        )
     }
 }
 
@@ -85,13 +89,10 @@ impl Preflight for UserExists {
         if passwd.lines().any(|l| l.starts_with(&prefix)) {
             return Ok(());
         }
-        Err(PreflightError::new(format!(
-            "system user '{}' does not exist",
-            self.username
-        ))
-        .with_hint(
-            "run the installer first: sudo ./install.sh".to_string(),
-        ))
+        Err(
+            PreflightError::new(format!("system user '{}' does not exist", self.username))
+                .with_hint("run the installer first: sudo ./install.sh".to_string()),
+        )
     }
 }
 

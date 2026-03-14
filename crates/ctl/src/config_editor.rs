@@ -24,8 +24,8 @@ fn read_doc(path: &Path) -> Result<DocumentMut> {
     if !path.exists() {
         return Ok(DocumentMut::default());
     }
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let content =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     content
         .parse::<DocumentMut>()
         .with_context(|| format!("failed to parse TOML: {}", path.display()))
@@ -85,8 +85,7 @@ fn set_item(doc: &mut DocumentMut, section: &str, key: &str, val: toml_edit::Ite
 fn atomic_write(path: &Path, content: &str) -> Result<()> {
     if path.exists() {
         let backup = path.with_extension("toml.bak");
-        fs::copy(path, &backup)
-            .with_context(|| format!("failed to backup {}", path.display()))?;
+        fs::copy(path, &backup).with_context(|| format!("failed to backup {}", path.display()))?;
     }
     // Use tempfile::NamedTempFile in the same directory so rename is atomic
     // (same filesystem) and there are no races between concurrent calls.
@@ -306,7 +305,8 @@ mod tests {
     #[test]
     fn write_array_push_creates_array_when_absent() {
         let f = write_tmp("[responder]\nenabled = true\n");
-        let added = write_array_push(f.path(), "responder", "allowed_skills", "block-ip-ufw").unwrap();
+        let added =
+            write_array_push(f.path(), "responder", "allowed_skills", "block-ip-ufw").unwrap();
         assert!(added);
         let skills = read_str_array(f.path(), "responder", "allowed_skills");
         assert_eq!(skills, vec!["block-ip-ufw"]);
@@ -315,7 +315,8 @@ mod tests {
     #[test]
     fn write_array_push_appends_to_existing() {
         let f = write_tmp("[responder]\nallowed_skills = [\"monitor-ip\"]\n");
-        let added = write_array_push(f.path(), "responder", "allowed_skills", "block-ip-ufw").unwrap();
+        let added =
+            write_array_push(f.path(), "responder", "allowed_skills", "block-ip-ufw").unwrap();
         assert!(added);
         let skills = read_str_array(f.path(), "responder", "allowed_skills");
         assert!(skills.contains(&"block-ip-ufw".to_string()));
@@ -325,7 +326,8 @@ mod tests {
     #[test]
     fn write_array_push_is_idempotent() {
         let f = write_tmp("[responder]\nallowed_skills = [\"block-ip-ufw\"]\n");
-        let added = write_array_push(f.path(), "responder", "allowed_skills", "block-ip-ufw").unwrap();
+        let added =
+            write_array_push(f.path(), "responder", "allowed_skills", "block-ip-ufw").unwrap();
         assert!(!added);
         let skills = read_str_array(f.path(), "responder", "allowed_skills");
         assert_eq!(skills.len(), 1);
@@ -364,17 +366,29 @@ mod tests {
     fn read_bool_nested_reads_correctly() {
         let f = write_tmp("[detectors.sudo_abuse]\nenabled = true\n");
         assert!(read_bool(f.path(), "detectors.sudo_abuse", "enabled"));
-        assert!(!read_bool(f.path(), "detectors.sudo_abuse", "nonexistent_key"));
+        assert!(!read_bool(
+            f.path(),
+            "detectors.sudo_abuse",
+            "nonexistent_key"
+        ));
     }
 
     #[test]
     fn read_bool_returns_false_for_missing_file() {
-        assert!(!read_bool(Path::new("/nonexistent/agent.toml"), "responder", "enabled"));
+        assert!(!read_bool(
+            Path::new("/nonexistent/agent.toml"),
+            "responder",
+            "enabled"
+        ));
     }
 
     #[test]
     fn read_str_array_returns_empty_for_missing_file() {
-        let arr = read_str_array(Path::new("/nonexistent/agent.toml"), "responder", "allowed_skills");
+        let arr = read_str_array(
+            Path::new("/nonexistent/agent.toml"),
+            "responder",
+            "allowed_skills",
+        );
         assert!(arr.is_empty());
     }
 

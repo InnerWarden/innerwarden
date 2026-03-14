@@ -101,23 +101,16 @@ impl SudoersDropIn {
         if dry_run {
             return Ok(());
         }
-        std::fs::remove_file(&dest)
-            .with_context(|| format!("failed to remove {}", dest.display()))
+        std::fs::remove_file(&dest).with_context(|| format!("failed to remove {}", dest.display()))
     }
 }
 
 /// Returns the sudoers rule for a given block-ip backend.
 pub fn block_ip_rule(backend: &str) -> Option<String> {
     let rule = match backend {
-        "ufw" => {
-            "innerwarden ALL=(ALL) NOPASSWD: /usr/sbin/ufw deny from *\n"
-        }
-        "iptables" => {
-            "innerwarden ALL=(ALL) NOPASSWD: /sbin/iptables -A INPUT *\n"
-        }
-        "nftables" => {
-            "innerwarden ALL=(ALL) NOPASSWD: /usr/sbin/nft add element *\n"
-        }
+        "ufw" => "innerwarden ALL=(ALL) NOPASSWD: /usr/sbin/ufw deny from *\n",
+        "iptables" => "innerwarden ALL=(ALL) NOPASSWD: /sbin/iptables -A INPUT *\n",
+        "nftables" => "innerwarden ALL=(ALL) NOPASSWD: /usr/sbin/nft add element *\n",
         _ => return None,
     };
     Some(format!(
@@ -172,9 +165,6 @@ mod tests {
     #[test]
     fn drop_in_path_is_correct() {
         let d = SudoersDropIn::new("innerwarden-test", "# test\n");
-        assert_eq!(
-            d.path(),
-            PathBuf::from("/etc/sudoers.d/innerwarden-test")
-        );
+        assert_eq!(d.path(), PathBuf::from("/etc/sudoers.d/innerwarden-test"));
     }
 }

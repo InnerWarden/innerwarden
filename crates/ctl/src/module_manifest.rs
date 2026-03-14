@@ -110,8 +110,7 @@ impl ModuleManifest {
 
         // [security]
         let security = doc.get("security").and_then(|v| v.as_table());
-        let allowed_commands =
-            str_array(security.as_ref().and_then(|t| t.get("allowed_commands")));
+        let allowed_commands = str_array(security.as_ref().and_then(|t| t.get("allowed_commands")));
 
         // [[preflights]]
         let mut preflights = Vec::new();
@@ -257,8 +256,7 @@ pub fn module_planned_effects(
             manifest.id
         ));
     }
-    let needs_sensor =
-        !manifest.collectors.is_empty() || !manifest.detectors.is_empty();
+    let needs_sensor = !manifest.collectors.is_empty() || !manifest.detectors.is_empty();
     let needs_agent = !manifest.skills.is_empty();
     if needs_sensor {
         effects.push("Restart innerwarden-sensor".to_string());
@@ -300,8 +298,7 @@ pub fn module_disable_effects(
             manifest.id
         ));
     }
-    let needs_sensor =
-        !manifest.collectors.is_empty() || !manifest.detectors.is_empty();
+    let needs_sensor = !manifest.collectors.is_empty() || !manifest.detectors.is_empty();
     let needs_agent = !manifest.skills.is_empty();
     if needs_sensor {
         effects.push("Restart innerwarden-sensor".to_string());
@@ -495,9 +492,15 @@ skill = "my-skill"
 
     #[test]
     fn collector_section_known_ids() {
-        assert_eq!(collector_section("nginx-access-log"), Some("collectors.nginx_access"));
+        assert_eq!(
+            collector_section("nginx-access-log"),
+            Some("collectors.nginx_access")
+        );
         assert_eq!(collector_section("auth-log"), Some("collectors.auth_log"));
-        assert_eq!(collector_section("exec-audit"), Some("collectors.exec_audit"));
+        assert_eq!(
+            collector_section("exec-audit"),
+            Some("collectors.exec_audit")
+        );
         assert_eq!(collector_section("docker"), Some("collectors.docker"));
         assert_eq!(collector_section("integrity"), Some("collectors.integrity"));
         assert_eq!(collector_section("journald"), Some("collectors.journald"));
@@ -505,11 +508,20 @@ skill = "my-skill"
 
     #[test]
     fn detector_section_known_ids() {
-        assert_eq!(detector_section("ssh-bruteforce"), Some("detectors.ssh_bruteforce"));
-        assert_eq!(detector_section("credential-stuffing"), Some("detectors.credential_stuffing"));
+        assert_eq!(
+            detector_section("ssh-bruteforce"),
+            Some("detectors.ssh_bruteforce")
+        );
+        assert_eq!(
+            detector_section("credential-stuffing"),
+            Some("detectors.credential_stuffing")
+        );
         assert_eq!(detector_section("port-scan"), Some("detectors.port_scan"));
         assert_eq!(detector_section("sudo-abuse"), Some("detectors.sudo_abuse"));
-        assert_eq!(detector_section("search-abuse"), Some("detectors.search_abuse"));
+        assert_eq!(
+            detector_section("search-abuse"),
+            Some("detectors.search_abuse")
+        );
     }
 
     #[test]
@@ -538,9 +550,15 @@ skill = "my-skill"
             Path::new("/etc/innerwarden/agent.toml"),
             &m,
         );
-        assert!(effects.iter().any(|e| e.contains("nginx_access") && e.contains("false")));
-        assert!(effects.iter().any(|e| e.contains("search_abuse") && e.contains("false")));
-        assert!(effects.iter().any(|e| e.contains("rate-limit-nginx") && e.contains("Remove")));
+        assert!(effects
+            .iter()
+            .any(|e| e.contains("nginx_access") && e.contains("false")));
+        assert!(effects
+            .iter()
+            .any(|e| e.contains("search_abuse") && e.contains("false")));
+        assert!(effects
+            .iter()
+            .any(|e| e.contains("rate-limit-nginx") && e.contains("Remove")));
         assert!(effects.iter().any(|e| e.contains("innerwarden-sensor")));
         assert!(effects.iter().any(|e| e.contains("innerwarden-agent")));
     }
@@ -584,10 +602,8 @@ skill    = "my-skill"
         let a = root.path().join("mod-a");
         std::fs::create_dir(&a).unwrap();
         std::fs::create_dir(a.join("docs")).unwrap();
-        let toml_a = SEARCH_PROTECTION_TOML.replace(
-            "id          = \"search-protection\"",
-            "id = \"mod-a\"",
-        );
+        let toml_a =
+            SEARCH_PROTECTION_TOML.replace("id          = \"search-protection\"", "id = \"mod-a\"");
         std::fs::File::create(a.join("module.toml"))
             .unwrap()
             .write_all(toml_a.as_bytes())
@@ -596,10 +612,8 @@ skill    = "my-skill"
         // Module B
         let b = root.path().join("mod-b");
         std::fs::create_dir(&b).unwrap();
-        let toml_b = SEARCH_PROTECTION_TOML.replace(
-            "id          = \"search-protection\"",
-            "id = \"mod-b\"",
-        );
+        let toml_b =
+            SEARCH_PROTECTION_TOML.replace("id          = \"search-protection\"", "id = \"mod-b\"");
         std::fs::File::create(b.join("module.toml"))
             .unwrap()
             .write_all(toml_b.as_bytes())
@@ -623,10 +637,7 @@ skill    = "my-skill"
 
     #[test]
     fn sudoers_rule_preserves_commands_with_args() {
-        let rule = generate_module_sudoers_rule(
-            "my-module",
-            &["/usr/sbin/nginx -t".to_string()],
-        );
+        let rule = generate_module_sudoers_rule("my-module", &["/usr/sbin/nginx -t".to_string()]);
         assert!(rule.contains("/usr/sbin/nginx -t"));
         assert!(!rule.contains("/usr/sbin/nginx -t *"));
     }

@@ -67,9 +67,7 @@ pub const TARGETS: &[UpgradeTarget] = &[
 
 /// Fetch the latest release metadata from GitHub.
 pub fn fetch_latest_release() -> Result<GithubRelease> {
-    let url = format!(
-        "https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-    );
+    let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
     let resp = ureq::get(&url)
         .set("User-Agent", &format!("innerwarden-ctl/{CURRENT_VERSION}"))
         .set("Accept", "application/vnd.github+json")
@@ -102,9 +100,9 @@ fn parse_semver(s: &str) -> (u64, u64, u64) {
 /// Detect the current CPU architecture as used in asset names.
 pub fn detect_arch() -> Option<&'static str> {
     match std::env::consts::ARCH {
-        "x86_64"  => Some("x86_64"),
+        "x86_64" => Some("x86_64"),
         "aarch64" => Some("aarch64"),
-        _         => None,
+        _ => None,
     }
 }
 
@@ -122,15 +120,20 @@ pub fn download(url: &str, dest: &Path) -> Result<u64> {
         .context("download request failed")?;
 
     let mut reader = resp.into_reader();
-    let mut file = std::fs::File::create(dest)
-        .with_context(|| format!("cannot create {}", dest.display()))?;
+    let mut file =
+        std::fs::File::create(dest).with_context(|| format!("cannot create {}", dest.display()))?;
 
     let mut buf = [0u8; 65_536];
     let mut total: u64 = 0;
     loop {
-        let n = reader.read(&mut buf).context("read error during download")?;
-        if n == 0 { break; }
-        file.write_all(&buf[..n]).context("write error during download")?;
+        let n = reader
+            .read(&mut buf)
+            .context("read error during download")?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n])
+            .context("write error during download")?;
         total += n as u64;
     }
     Ok(total)
@@ -149,25 +152,35 @@ pub fn fetch_expected_hash(url: &str) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("sha256 sidecar file is empty"))?
         .to_ascii_lowercase();
     if hash.len() != 64 {
-        bail!("sha256 sidecar has unexpected format (got {} chars, want 64)", hash.len());
+        bail!(
+            "sha256 sidecar has unexpected format (got {} chars, want 64)",
+            hash.len()
+        );
     }
     Ok(hash)
 }
 
 /// Compute SHA-256 of a local file and return lowercase hex.
 pub fn sha256_file(path: &Path) -> Result<String> {
-    let data = std::fs::read(path)
-        .with_context(|| format!("cannot read {}", path.display()))?;
+    let data = std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
     let hash = Sha256::digest(&data);
     Ok(hash.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Atomically install `src` → `dest` with mode 755 (root-owned).
 pub fn install_binary(src: &Path, dest: &Path, dry_run: bool) -> Result<()> {
-    if dry_run { return Ok(()); }
+    if dry_run {
+        return Ok(());
+    }
     let out = std::process::Command::new("install")
-        .args(["-o", "root", "-m", "755",
-               src.to_str().unwrap(), dest.to_str().unwrap()])
+        .args([
+            "-o",
+            "root",
+            "-m",
+            "755",
+            src.to_str().unwrap(),
+            dest.to_str().unwrap(),
+        ])
         .output()
         .context("failed to run install command")?;
     if !out.status.success() {
@@ -204,7 +217,11 @@ pub fn build_plan<'r>(release: &'r GithubRelease, arch: &str) -> Vec<DownloadPla
             let asset = find_asset(release, &asset_name)?;
             let sha_name = format!("{asset_name}.sha256");
             let sha256_asset = find_asset(release, &sha_name);
-            Some(DownloadPlan { target: t, asset, sha256_asset })
+            Some(DownloadPlan {
+                target: t,
+                asset,
+                sha256_asset,
+            })
         })
         .collect()
 }
@@ -214,7 +231,11 @@ pub fn build_plan<'r>(release: &'r GithubRelease, arch: &str) -> Vec<DownloadPla
 // ---------------------------------------------------------------------------
 
 pub fn install_paths(target: &UpgradeTarget, install_dir: &Path) -> Vec<PathBuf> {
-    target.install_as.iter().map(|n| install_dir.join(n)).collect()
+    target
+        .install_as
+        .iter()
+        .map(|n| install_dir.join(n))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -368,7 +389,10 @@ mod tests {
 
     #[test]
     fn ctl_installs_as_two_names() {
-        let ctl = TARGETS.iter().find(|t| t.binary == "innerwarden-ctl").unwrap();
+        let ctl = TARGETS
+            .iter()
+            .find(|t| t.binary == "innerwarden-ctl")
+            .unwrap();
         assert!(ctl.install_as.contains(&"innerwarden-ctl"));
         assert!(ctl.install_as.contains(&"innerwarden"));
     }

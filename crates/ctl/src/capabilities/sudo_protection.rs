@@ -50,9 +50,7 @@ impl Capability for SudoProtectionCapability {
             CapabilityEffect::new(format!(
                 "Patch {sensor}: [detectors.sudo_abuse] enabled = true"
             )),
-            CapabilityEffect::new(format!(
-                "Patch {agent}: [responder] enabled = true"
-            )),
+            CapabilityEffect::new(format!("Patch {agent}: [responder] enabled = true")),
             CapabilityEffect::new(format!(
                 "Add \"suspend-user-sudo\" to [responder] allowed_skills in {agent}"
             )),
@@ -122,10 +120,7 @@ impl Capability for SudoProtectionCapability {
             CapabilityEffect::new(format!(
                 "Remove \"suspend-user-sudo\" from [responder] allowed_skills in {agent}"
             )),
-            CapabilityEffect::new(format!(
-                "Remove /etc/sudoers.d/{}",
-                Self::sudoers_name()
-            )),
+            CapabilityEffect::new(format!("Remove /etc/sudoers.d/{}", Self::sudoers_name())),
             CapabilityEffect::new("Restart innerwarden-sensor"),
             CapabilityEffect::new("Restart innerwarden-agent"),
         ]
@@ -141,7 +136,9 @@ impl Capability for SudoProtectionCapability {
             "enabled",
             false,
         )?;
-        effects.push(CapabilityEffect::new("[detectors.sudo_abuse] enabled = false"));
+        effects.push(CapabilityEffect::new(
+            "[detectors.sudo_abuse] enabled = false",
+        ));
 
         // 2. Remove skill from allowed_skills
         let removed = config_editor::write_array_remove(
@@ -224,11 +221,7 @@ mod tests {
     #[test]
     fn not_enabled_when_skill_missing() {
         let mut sensor = NamedTempFile::new().unwrap();
-        writeln!(
-            sensor,
-            "[detectors.sudo_abuse]\nenabled = true\n"
-        )
-        .unwrap();
+        writeln!(sensor, "[detectors.sudo_abuse]\nenabled = true\n").unwrap();
         let agent = NamedTempFile::new().unwrap();
         let opts = make_opts(&sensor, &agent);
         assert!(!SudoProtectionCapability.is_enabled(&opts));
@@ -298,8 +291,7 @@ mod tests {
             "responder",
             "enabled"
         ));
-        let skills =
-            config_editor::read_str_array(agent.path(), "responder", "allowed_skills");
+        let skills = config_editor::read_str_array(agent.path(), "responder", "allowed_skills");
         assert!(skills.contains(&"suspend-user-sudo".to_string()));
     }
 }

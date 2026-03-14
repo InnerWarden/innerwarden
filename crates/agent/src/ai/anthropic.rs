@@ -35,7 +35,11 @@ impl AnthropicProvider {
             .timeout(std::time::Duration::from_secs(20))
             .build()
             .expect("failed to build reqwest client");
-        Self { api_key, model, client }
+        Self {
+            api_key,
+            model,
+            client,
+        }
     }
 }
 
@@ -146,7 +150,11 @@ Respond ONLY with valid JSON using exactly this schema (no extra fields, no mark
 "#;
 
 fn trunc(s: &str, max: usize) -> &str {
-    if s.len() <= max { s } else { &s[..max] }
+    if s.len() <= max {
+        s
+    } else {
+        &s[..max]
+    }
 }
 
 fn build_prompt(ctx: &DecisionContext<'_>) -> String {
@@ -167,13 +175,15 @@ fn build_prompt(ctx: &DecisionContext<'_>) -> String {
         let events: Vec<_> = ctx
             .recent_events
             .iter()
-            .map(|e| json!({
-                "ts": e.ts,
-                "kind": e.kind,
-                "summary": trunc(&e.summary, 200),
-                "severity": format!("{:?}", e.severity),
-                "source": e.source,
-            }))
+            .map(|e| {
+                json!({
+                    "ts": e.ts,
+                    "kind": e.kind,
+                    "summary": trunc(&e.summary, 200),
+                    "severity": format!("{:?}", e.severity),
+                    "source": e.source,
+                })
+            })
             .collect();
         serde_json::to_string_pretty(&events).unwrap_or_else(|_| "[]".to_string())
     };
@@ -182,14 +192,16 @@ fn build_prompt(ctx: &DecisionContext<'_>) -> String {
         let related: Vec<_> = ctx
             .related_incidents
             .iter()
-            .map(|r| json!({
-                "ts": r.ts,
-                "incident_id": r.incident_id,
-                "severity": format!("{:?}", r.severity),
-                "title": trunc(&r.title, 200),
-                "summary": trunc(&r.summary, 300),
-                "entities": r.entities,
-            }))
+            .map(|r| {
+                json!({
+                    "ts": r.ts,
+                    "incident_id": r.incident_id,
+                    "severity": format!("{:?}", r.severity),
+                    "title": trunc(&r.title, 200),
+                    "summary": trunc(&r.summary, 300),
+                    "entities": r.entities,
+                })
+            })
             .collect();
         serde_json::to_string_pretty(&related).unwrap_or_else(|_| "[]".to_string())
     };
@@ -269,7 +281,10 @@ mod tests {
     #[test]
     fn extract_json_strips_surrounding_prose() {
         let text = r#"Here is my decision: {"action":"ignore","confidence":0.5} — done."#;
-        assert_eq!(extract_json(text), Some(r#"{"action":"ignore","confidence":0.5}"#));
+        assert_eq!(
+            extract_json(text),
+            Some(r#"{"action":"ignore","confidence":0.5}"#)
+        );
     }
 
     #[test]
