@@ -119,20 +119,20 @@ pub fn parse_sshd_line(line: &str, host: &str) -> Option<Event> {
         return None;
     }
     // Extract the message part after "sshd[pid]: "
-    let msg = line.splitn(2, "]: ").nth(1)?.trim();
+    let msg = line.split_once("]: ")?.1.trim();
     parse_sshd_message(msg, host, "auth.log")
 }
 
 /// Parse the raw sshd message string (without syslog prefix) into an Event.
 /// `source` is the event source label (e.g. "auth.log" or "journald").
 pub fn parse_sshd_message(msg: &str, host: &str, source: &str) -> Option<Event> {
+    let meta = EventMeta { host, source };
     if msg.starts_with("Failed password for invalid user") {
         // Failed password for invalid user <user> from <ip> port <port> ssh2
         let user = word_after(msg, "for invalid user")?;
         let ip = word_after(msg, "from")?;
         Some(make_event(
-            host,
-            source,
+            &meta,
             "ssh.login_failed",
             Severity::Info,
             format!("Failed login — invalid user {user} from {ip}"),
@@ -144,8 +144,7 @@ pub fn parse_sshd_message(msg: &str, host: &str, source: &str) -> Option<Event> 
         let user = word_after(msg, "for")?;
         let ip = word_after(msg, "from")?;
         Some(make_event(
-            host,
-            source,
+            &meta,
             "ssh.login_failed",
             Severity::Info,
             format!("Failed login for {user} from {ip}"),
@@ -157,8 +156,7 @@ pub fn parse_sshd_message(msg: &str, host: &str, source: &str) -> Option<Event> 
         let user = word_after(msg, "Invalid user")?;
         let ip = word_after(msg, "from")?;
         Some(make_event(
-            host,
-            source,
+            &meta,
             "ssh.login_failed",
             Severity::Info,
             format!("Invalid user {user} from {ip}"),
@@ -176,8 +174,7 @@ pub fn parse_sshd_message(msg: &str, host: &str, source: &str) -> Option<Event> 
         let user = word_after(msg, "for")?;
         let ip = word_after(msg, "from")?;
         Some(make_event(
-            host,
-            source,
+            &meta,
             "ssh.login_success",
             Severity::Info,
             format!("Login accepted for {user} from {ip} via {method}"),
@@ -190,9 +187,13 @@ pub fn parse_sshd_message(msg: &str, host: &str, source: &str) -> Option<Event> 
     }
 }
 
+struct EventMeta<'a> {
+    host: &'a str,
+    source: &'a str,
+}
+
 fn make_event(
-    host: &str,
-    source: &str,
+    meta: &EventMeta<'_>,
     kind: &str,
     severity: Severity,
     summary: String,
@@ -202,8 +203,8 @@ fn make_event(
 ) -> Event {
     Event {
         ts: Utc::now(),
-        host: host.to_string(),
-        source: source.to_string(),
+        host: meta.host.to_string(),
+        source: meta.source.to_string(),
         kind: kind.to_string(),
         severity,
         summary,

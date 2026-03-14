@@ -2,6 +2,13 @@
 name = "innerwarden_core"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "Shared event, incident, and entity types for InnerWarden."
+keywords = ["security", "observability", "incident-response", "telemetry", "rust"]
+categories = ["data-structures", "network-programming"]
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }

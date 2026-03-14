@@ -374,10 +374,10 @@ struct IpAccumulator {
 
 impl IpAccumulator {
     fn update_time(&mut self, ts: chrono::DateTime<Utc>) {
-        if self.first_seen.map_or(true, |existing| ts < existing) {
+        if self.first_seen.is_none_or(|existing| ts < existing) {
             self.first_seen = Some(ts);
         }
-        if self.last_seen.map_or(true, |existing| ts > existing) {
+        if self.last_seen.is_none_or(|existing| ts > existing) {
             self.last_seen = Some(ts);
         }
     }
@@ -1262,15 +1262,14 @@ fn build_pivot_shortcuts(
     let mut shortcuts = Vec::new();
     let mut seen = BTreeSet::new();
 
-    let push_token =
-        |token: String, shortcuts: &mut Vec<String>, seen: &mut BTreeSet<String>| {
-            if token.is_empty() {
-                return;
-            }
-            if seen.insert(token.clone()) {
-                shortcuts.push(token);
-            }
-        };
+    let push_token = |token: String, shortcuts: &mut Vec<String>, seen: &mut BTreeSet<String>| {
+        if token.is_empty() {
+            return;
+        }
+        if seen.insert(token.clone()) {
+            shortcuts.push(token);
+        }
+    };
 
     push_token(
         format!("{}:{}", subject_type.as_str(), subject),

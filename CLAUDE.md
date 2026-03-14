@@ -500,7 +500,7 @@ Premium│ honeypot            │ ✅ hardening 8.7 (containment `process|names
 Para adicionar uma skill da comunidade:
 1. Criar struct que implemente `ResponseSkill` trait em `skills/builtin/`
 2. Registrar em `SkillRegistry::default_builtin()`
-3. Abrir PR em https://github.com/maiconburn/innerwarden
+3. Abrir PR em https://github.com/maiconesteves/innerwarden
 
 O trait `ResponseSkill` exige: `id()`, `name()`, `description()`, `tier()`, `applicable_to()`, `execute()`.
 
@@ -643,9 +643,16 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 > deve ser refletida no CLAUDE.md no mesmo commit. Se não está documentado aqui,
 > não existe para quem retomar o projeto.
 
+Documentação pública do repositório:
+- `README.md`
+- `CONTRIBUTING.md`
+- `SECURITY.md`
+- `CODE_OF_CONDUCT.md`
+- `docs/index.md`
+
 **Durante o production trial (execução paralela):**
 
-- Desenvolvimento contínuo em branch local dedicada (`codex-dev`)
+- Desenvolvimento contínuo em branch local dedicada (`codex/*`)
 - Host de trial permanece estável sem upgrade automático
 - Promoção para produção só acontece por fase, com validação explícita
 - Plano ativo versionado em `docs/development-plan.md`
@@ -696,7 +703,7 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase 8.7 (concluída): perfis de jail mais restritivos + receiver attestation no handoff externo
 - Fase 8.8 (concluída): interação média realista — SSH via `russh` (key exchange + captura de credenciais) + HTTP com login page fake (captura de formulário)
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
-- Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md`, `docs/phase-8-honeypot-real-rebuild.md`, `docs/phase-8-honeypot-hardening.md`, `docs/phase-8-honeypot-sandbox-runtime.md`, `docs/phase-8-honeypot-advanced-containment.md`, `docs/phase-8-honeypot-runtime-jail-trusted-handoff.md`, `docs/phase-8-honeypot-runtime-profile-attested-handoff.md` e `docs/phase-8-honeypot-medium-interaction.md`
+- Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/public-readiness-checklist.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md`, `docs/phase-8-honeypot-real-rebuild.md`, `docs/phase-8-honeypot-hardening.md`, `docs/phase-8-honeypot-sandbox-runtime.md`, `docs/phase-8-honeypot-advanced-containment.md`, `docs/phase-8-honeypot-runtime-jail-trusted-handoff.md`, `docs/phase-8-honeypot-runtime-profile-attested-handoff.md` e `docs/phase-8-honeypot-medium-interaction.md`
 
 ---
 

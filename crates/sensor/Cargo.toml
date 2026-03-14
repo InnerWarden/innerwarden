@@ -2,6 +2,13 @@
 name = "innerwarden-sensor"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "Deterministic host-security telemetry sensor for InnerWarden."
+keywords = ["security", "observability", "linux", "telemetry", "rust"]
+categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
 innerwarden_core = { path = "../core" }

@@ -299,7 +299,10 @@ fn parse_decision(content: &str) -> Result<AiDecision> {
         "request_confirmation" => AiAction::RequestConfirmation {
             summary: raw.reason.clone(),
         },
-        "ignore" | _ => {
+        "ignore" => AiAction::Ignore {
+            reason: raw.reason.clone(),
+        },
+        _ => {
             if raw.action != "ignore" {
                 warn!(action = %raw.action, "unknown AI action — defaulting to ignore");
             }

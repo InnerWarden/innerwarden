@@ -4,3 +4,7 @@
 *.swo
 .DS_Store
 .env
+
+.claude/
+trial-report-*.md
+trial-report-*.json

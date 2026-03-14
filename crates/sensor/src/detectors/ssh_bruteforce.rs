@@ -38,7 +38,7 @@ impl SshBruteforceDetector {
 
         // Advance the sliding window: drop entries older than cutoff
         let entries = self.windows.entry(ip.clone()).or_default();
-        while entries.front().map_or(false, |&t| t < cutoff) {
+        while entries.front().is_some_and(|&t| t < cutoff) {
             entries.pop_front();
         }
         entries.push_back(now);

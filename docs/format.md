@@ -4,7 +4,7 @@
 ```json
 {
   "ts": "2026-03-12T05:00:00Z",
-  "host": "instance-maiconburn",
+  "host": "demo-host",
   "source": "auth.log",
   "kind": "ssh.login_failed",
   "severity": "info",
@@ -19,7 +19,7 @@
 ```json
 {
   "ts": "2026-03-13T18:10:00Z",
-  "host": "instance-maiconburn",
+  "host": "demo-host",
   "source": "auditd",
   "kind": "shell.command_exec",
   "severity": "info",
@@ -38,7 +38,7 @@
 ```json
 {
   "ts": "2026-03-13T18:10:02Z",
-  "host": "instance-maiconburn",
+  "host": "demo-host",
   "source": "auditd",
   "kind": "shell.tty_input",
   "severity": "low",
@@ -60,7 +60,7 @@
 ```json
 {
   "ts": "2026-03-12T05:05:00Z",
-  "host": "instance-maiconburn",
+  "host": "demo-host",
   "incident_id": "ssh_bruteforce:1.2.3.4:2026-03-12T05:05Z",
   "severity": "high",
   "title": "Possible SSH brute force",
@@ -76,7 +76,7 @@
 ```json
 {
   "ts": "2026-03-13T18:20:00Z",
-  "host": "instance-maiconburn",
+  "host": "demo-host",
   "incident_id": "sudo_abuse:deploy:2026-03-13T18:20Z",
   "severity": "critical",
   "title": "Suspicious sudo behavior detected for user deploy",

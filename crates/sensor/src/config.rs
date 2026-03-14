@@ -76,16 +76,10 @@ impl Default for JournaldConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct DockerConfig {
     #[serde(default)]
     pub enabled: bool,
-}
-
-impl Default for DockerConfig {
-    fn default() -> Self {
-        Self { enabled: false }
-    }
 }
 
 #[derive(Debug, Deserialize)]

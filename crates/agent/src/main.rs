@@ -1042,9 +1042,8 @@ async fn process_narrative_tick(
         &events_path,
         cursor.events_offset(&today),
     )
-    .map_err(|e| {
+    .inspect_err(|_| {
         state.telemetry.observe_error("event_reader");
-        e
     })?;
 
     let events_count = new_events.entries.len();
@@ -1056,17 +1055,14 @@ async fn process_narrative_tick(
         let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
         // Always read from offset 0 — summary covers the full day, not just new entries
         let all_events =
-            reader::read_new_entries::<innerwarden_core::event::Event>(&events_path, 0).map_err(
-                |e| {
+            reader::read_new_entries::<innerwarden_core::event::Event>(&events_path, 0)
+                .inspect_err(|_| {
                     state.telemetry.observe_error("narrative_reader");
-                    e
-                },
-            )?;
+                })?;
         let all_incidents =
             reader::read_new_entries::<innerwarden_core::incident::Incident>(&incidents_path, 0)
-                .map_err(|e| {
+                .inspect_err(|_| {
                     state.telemetry.observe_error("narrative_reader");
-                    e
                 })?;
 
         let host = all_events

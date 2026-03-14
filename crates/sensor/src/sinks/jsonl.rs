@@ -61,11 +61,7 @@ impl JsonlWriter {
     }
 
     fn events_writer(&mut self, today: NaiveDate) -> Result<&mut DatedWriter> {
-        if self
-            .events_writer
-            .as_ref()
-            .map_or(true, |w| w.date != today)
-        {
+        if self.events_writer.as_ref().is_none_or(|w| w.date != today) {
             let path = self
                 .data_dir
                 .join(format!("events-{}.jsonl", today.format("%Y-%m-%d")));
@@ -78,7 +74,7 @@ impl JsonlWriter {
         if self
             .incidents_writer
             .as_ref()
-            .map_or(true, |w| w.date != today)
+            .is_none_or(|w| w.date != today)
         {
             let path = self
                 .data_dir

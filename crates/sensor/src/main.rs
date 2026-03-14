@@ -34,6 +34,19 @@ struct Cli {
     config: String,
 }
 
+struct DetectorSet {
+    ssh: Option<SshBruteforceDetector>,
+    credential_stuffing: Option<CredentialStuffingDetector>,
+    port_scan: Option<PortScanDetector>,
+    sudo_abuse: Option<SudoAbuseDetector>,
+}
+
+#[derive(Default)]
+struct WriteStats {
+    events_written: u64,
+    incidents_written: u64,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -71,7 +84,7 @@ async fn main() -> Result<()> {
     let shared_exec_audit_offset = Arc::new(AtomicU64::new(0));
 
     // SSH brute force detector (stateful, lives in main loop)
-    let mut ssh_detector = cfg.detectors.ssh_bruteforce.enabled.then(|| {
+    let ssh_detector = cfg.detectors.ssh_bruteforce.enabled.then(|| {
         let d = &cfg.detectors.ssh_bruteforce;
         info!(
             threshold = d.threshold,
@@ -80,7 +93,7 @@ async fn main() -> Result<()> {
         );
         SshBruteforceDetector::new(&cfg.agent.host_id, d.threshold, d.window_seconds)
     });
-    let mut credential_stuffing_detector = cfg.detectors.credential_stuffing.enabled.then(|| {
+    let credential_stuffing_detector = cfg.detectors.credential_stuffing.enabled.then(|| {
         let d = &cfg.detectors.credential_stuffing;
         info!(
             threshold = d.threshold,
@@ -89,7 +102,7 @@ async fn main() -> Result<()> {
         );
         CredentialStuffingDetector::new(&cfg.agent.host_id, d.threshold, d.window_seconds)
     });
-    let mut port_scan_detector = cfg.detectors.port_scan.enabled.then(|| {
+    let port_scan_detector = cfg.detectors.port_scan.enabled.then(|| {
         let d = &cfg.detectors.port_scan;
         info!(
             threshold = d.threshold,
@@ -98,7 +111,7 @@ async fn main() -> Result<()> {
         );
         PortScanDetector::new(&cfg.agent.host_id, d.threshold, d.window_seconds)
     });
-    let mut sudo_abuse_detector = cfg.detectors.sudo_abuse.enabled.then(|| {
+    let sudo_abuse_detector = cfg.detectors.sudo_abuse.enabled.then(|| {
         let d = &cfg.detectors.sudo_abuse;
         info!(
             threshold = d.threshold,
@@ -107,6 +120,12 @@ async fn main() -> Result<()> {
         );
         SudoAbuseDetector::new(&cfg.agent.host_id, d.threshold, d.window_seconds)
     });
+    let mut detectors = DetectorSet {
+        ssh: ssh_detector,
+        credential_stuffing: credential_stuffing_detector,
+        port_scan: port_scan_detector,
+        sudo_abuse: sudo_abuse_detector,
+    };
 
     // Spawn auth_log collector
     if cfg.collectors.auth_log.enabled {
@@ -228,8 +247,7 @@ async fn main() -> Result<()> {
     };
 
     // Main loop: drain events, run detectors, write output
-    let mut events_written = 0u64;
-    let mut incidents_written = 0u64;
+    let mut stats = WriteStats::default();
 
     // Flush every 5 seconds regardless of event count
     let mut flush_ticker = time::interval(time::Duration::from_secs(5));
@@ -244,12 +262,8 @@ async fn main() -> Result<()> {
                         process_event(
                             ev,
                             &mut writer,
-                            &mut ssh_detector,
-                            &mut credential_stuffing_detector,
-                            &mut port_scan_detector,
-                            &mut sudo_abuse_detector,
-                            &mut events_written,
-                            &mut incidents_written,
+                            &mut detectors,
+                            &mut stats,
                         );
                         false
                     }
@@ -283,12 +297,8 @@ async fn main() -> Result<()> {
                         process_event(
                             ev,
                             &mut writer,
-                            &mut ssh_detector,
-                            &mut credential_stuffing_detector,
-                            &mut port_scan_detector,
-                            &mut sudo_abuse_detector,
-                            &mut events_written,
-                            &mut incidents_written,
+                            &mut detectors,
+                            &mut stats,
                         );
                         false
                     }
@@ -315,7 +325,7 @@ async fn main() -> Result<()> {
         }
 
         // Also flush every 50 events as a safety net
-        if events_written % 50 == 0 && events_written > 0 {
+        if stats.events_written > 0 && stats.events_written.is_multiple_of(50) {
             if let Err(e) = writer.flush() {
                 warn!("count-based flush failed: {e:#}");
             }
@@ -323,7 +333,11 @@ async fn main() -> Result<()> {
     }
 
     writer.flush()?;
-    info!(events_written, incidents_written, "flushed output");
+    info!(
+        events_written = stats.events_written,
+        incidents_written = stats.incidents_written,
+        "flushed output"
+    );
 
     // Persist collector state using the latest values from the shared Arcs
     let auth_offset = shared_auth_offset.load(Ordering::Relaxed);
@@ -354,81 +368,55 @@ async fn main() -> Result<()> {
 fn process_event(
     ev: innerwarden_core::event::Event,
     writer: &mut JsonlWriter,
-    ssh_detector: &mut Option<SshBruteforceDetector>,
-    credential_stuffing_detector: &mut Option<CredentialStuffingDetector>,
-    port_scan_detector: &mut Option<PortScanDetector>,
-    sudo_abuse_detector: &mut Option<SudoAbuseDetector>,
-    events_written: &mut u64,
-    incidents_written: &mut u64,
+    detectors: &mut DetectorSet,
+    stats: &mut WriteStats,
 ) {
     info!(kind = %ev.kind, summary = %ev.summary, "event");
     if let Err(e) = writer.write_event(&ev) {
         warn!(kind = %ev.kind, "failed to write event: {e:#}");
     } else {
-        *events_written += 1;
+        stats.events_written += 1;
     }
 
-    if let Some(ref mut det) = ssh_detector {
+    if let Some(ref mut det) = detectors.ssh {
         if let Some(incident) = det.process(&ev) {
-            info!(
-                incident_id = %incident.incident_id,
-                severity = ?incident.severity,
-                title = %incident.title,
-                "INCIDENT"
-            );
-            if let Err(e) = writer.write_incident(&incident) {
-                warn!(incident_id = %incident.incident_id, "failed to write incident: {e:#}");
-            } else {
-                *incidents_written += 1;
-            }
+            write_incident(writer, stats, incident);
         }
     }
 
-    if let Some(ref mut det) = credential_stuffing_detector {
+    if let Some(ref mut det) = detectors.credential_stuffing {
         if let Some(incident) = det.process(&ev) {
-            info!(
-                incident_id = %incident.incident_id,
-                severity = ?incident.severity,
-                title = %incident.title,
-                "INCIDENT"
-            );
-            if let Err(e) = writer.write_incident(&incident) {
-                warn!(incident_id = %incident.incident_id, "failed to write incident: {e:#}");
-            } else {
-                *incidents_written += 1;
-            }
+            write_incident(writer, stats, incident);
         }
     }
 
-    if let Some(ref mut det) = port_scan_detector {
+    if let Some(ref mut det) = detectors.port_scan {
         if let Some(incident) = det.process(&ev) {
-            info!(
-                incident_id = %incident.incident_id,
-                severity = ?incident.severity,
-                title = %incident.title,
-                "INCIDENT"
-            );
-            if let Err(e) = writer.write_incident(&incident) {
-                warn!(incident_id = %incident.incident_id, "failed to write incident: {e:#}");
-            } else {
-                *incidents_written += 1;
-            }
+            write_incident(writer, stats, incident);
         }
     }
 
-    if let Some(ref mut det) = sudo_abuse_detector {
+    if let Some(ref mut det) = detectors.sudo_abuse {
         if let Some(incident) = det.process(&ev) {
-            info!(
-                incident_id = %incident.incident_id,
-                severity = ?incident.severity,
-                title = %incident.title,
-                "INCIDENT"
-            );
-            if let Err(e) = writer.write_incident(&incident) {
-                warn!(incident_id = %incident.incident_id, "failed to write incident: {e:#}");
-            } else {
-                *incidents_written += 1;
-            }
+            write_incident(writer, stats, incident);
         }
+    }
+}
+
+fn write_incident(
+    writer: &mut JsonlWriter,
+    stats: &mut WriteStats,
+    incident: innerwarden_core::incident::Incident,
+) {
+    info!(
+        incident_id = %incident.incident_id,
+        severity = ?incident.severity,
+        title = %incident.title,
+        "INCIDENT"
+    );
+    if let Err(e) = writer.write_incident(&incident) {
+        warn!(incident_id = %incident.incident_id, "failed to write incident: {e:#}");
+    } else {
+        stats.incidents_written += 1;
     }
 }

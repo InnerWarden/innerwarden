@@ -1,6 +1,6 @@
 [agent]
 # Unique id for this host
-host_id = "instance-maiconburn"
+host_id = "demo-host"
 
 [output]
 # Directory where JSONL + state live

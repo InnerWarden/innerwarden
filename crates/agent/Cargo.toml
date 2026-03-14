@@ -2,6 +2,13 @@
 name = "innerwarden-agent"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "AI-assisted analysis, dashboard, and response agent for InnerWarden."
+keywords = ["security", "incident-response", "dashboard", "linux", "rust"]
+categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
 innerwarden_core = { path = "../core" }
