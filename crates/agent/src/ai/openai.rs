@@ -265,9 +265,19 @@ fn default_threat() -> String {
     "medium".to_string()
 }
 
-/// Public re-export for Anthropic provider (same JSON schema).
+/// Public re-export for Anthropic and Ollama providers (same JSON schema).
 pub fn parse_decision_pub(content: &str) -> Result<AiDecision> {
     parse_decision(content)
+}
+
+/// Public re-export of the prompt builder for providers that share the same prompt.
+pub fn build_prompt_pub(ctx: &DecisionContext<'_>) -> String {
+    build_prompt(ctx)
+}
+
+/// Public re-export of the system prompt string.
+pub fn system_prompt() -> &'static str {
+    SYSTEM_PROMPT
 }
 
 fn parse_decision(content: &str) -> Result<AiDecision> {

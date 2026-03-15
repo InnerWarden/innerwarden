@@ -193,7 +193,22 @@ pub fn build_provider(cfg: &AiConfig) -> Box<dyn AiProvider> {
             cfg.resolved_api_key(),
             cfg.model.clone(),
         )),
-        "ollama" => Box::new(ollama::OllamaProvider),
+        "ollama" => {
+            let base_url = if !cfg.base_url.is_empty() {
+                cfg.base_url.clone()
+            } else {
+                std::env::var("OLLAMA_BASE_URL")
+                    .unwrap_or_else(|_| "http://localhost:11434".to_string())
+            };
+            // For Ollama the default gpt-4o-mini model name is meaningless;
+            // fall back to llama3.2 so first-run works out of the box.
+            let model = if cfg.model.is_empty() || cfg.model == "gpt-4o-mini" {
+                "llama3.2".to_string()
+            } else {
+                cfg.model.clone()
+            };
+            Box::new(ollama::OllamaProvider::new(base_url, model))
+        }
         other => {
             tracing::warn!(
                 provider = other,

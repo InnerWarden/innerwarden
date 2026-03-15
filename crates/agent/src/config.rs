@@ -141,6 +141,14 @@ pub struct AiConfig {
     /// Poll interval for the fast incident-check loop (seconds)
     #[serde(default = "default_incident_poll_secs")]
     pub incident_poll_secs: u64,
+
+    /// Base URL for the AI provider endpoint.
+    /// - openai: defaults to https://api.openai.com (leave empty)
+    /// - anthropic: defaults to https://api.anthropic.com (leave empty)
+    /// - ollama: defaults to http://localhost:11434 (override for remote Ollama)
+    /// Can also be set via OLLAMA_BASE_URL env var for Ollama.
+    #[serde(default)]
+    pub base_url: String,
 }
 
 impl Default for AiConfig {
@@ -153,6 +161,7 @@ impl Default for AiConfig {
             context_events: default_context_events(),
             confidence_threshold: default_confidence_threshold(),
             incident_poll_secs: default_incident_poll_secs(),
+            base_url: String::new(),
         }
     }
 }

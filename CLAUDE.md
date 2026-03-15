@@ -38,7 +38,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Deduplicação intra-tick por IP: evita chamadas AI duplicadas no mesmo tick de 2s
 - ✅ **Decision cooldown** (1h) — suprime chamadas AI repetidas para o mesmo scope `action:detector:entity` dentro de uma janela de 1h; pré-carregado de `decisions-*.jsonl` (hoje + ontem) na inicialização; suporta `suspend_user_sudo` (campo `target_user` em `DecisionEntry`)
 - ✅ **Blocklist atualizada imediatamente** após qualquer decisão `block_ip`, mesmo quando `responder.enabled = false` — evita re-avaliação AI do mesmo IP em ticks seguintes
-- ✅ **Multi-provider AI** — OpenAI real (MVP), Anthropic real (claude-haiku-4-5-20251001 default), Ollama como stub extensível
+- ✅ **Multi-provider AI** — OpenAI real, Anthropic real (claude-haiku-4-5-20251001 default), Ollama real (local LLM — llama3.2, mistral, gemma2, qwen2.5, etc.)
 - ✅ Análise AI em tempo real de incidentes High/Critical
 - ✅ AI seleciona a melhor ação com confidence score (0.0–1.0)
 - ✅ Sanitização de decisão AI: `block_ip` sem `target_ip` é rebaixado para `ignore`
@@ -383,9 +383,11 @@ timeout_secs = 10
 
 [ai]
 enabled = true
-provider = "openai"        # openai | anthropic | ollama (stub)
-# api_key = ""             # ou env var OPENAI_API_KEY
+provider = "openai"        # openai | anthropic | ollama
+# api_key = ""             # ou env var OPENAI_API_KEY / ANTHROPIC_API_KEY
 model = "gpt-4o-mini"      # qualquer modelo do provider
+# base_url = ""            # ollama: override endpoint (default http://localhost:11434)
+                           # ou env var OLLAMA_BASE_URL
 context_events = 20        # eventos recentes enviados como contexto
 confidence_threshold = 0.8 # abaixo disso → não auto-executa
 incident_poll_secs = 2     # intervalo do loop rápido
@@ -693,7 +695,6 @@ Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8):
 
 Próximas direções:
 - **`innerwarden module search`** — registry central em TOML hospedado; `search <termo>` lista módulos da comunidade com `install_url`
-- **Ollama provider real** — stub → implementação real para uso local/offline
 - **Fase D10** — notificações por browser (Web Notifications API) quando o dashboard está em background
 - **Integration recipes** — ✅ sistema de recipes declarativo (`integrations/`) com specs para Falco, Wazuh, osquery; geração de collectors via AI a partir de recipe + module-authoring.md
 - **FalcoLogCollector** — ✅ implementado; `crates/sensor/src/collectors/falco_log.rs`; incident passthrough para High/Critical; módulo `falco-integration/`; 12 testes
