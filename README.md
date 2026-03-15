@@ -145,6 +145,23 @@ Before using this outside local testing, read these guardrails carefully:
 - honeypot features are bounded and opt-in, but still require operational judgment
 - AI is advisory unless you explicitly allow auto-execution and accept the configured confidence threshold
 
+## Telemetry Stack
+
+InnerWarden sits at the response layer. Connect any combination of the tools below to expand detection coverage across the host and network.
+
+| Layer | Tool | What it detects | Status |
+|---|---|---|---|
+| Kernel / process | Falco | syscalls, container escapes, shell spawns | ✅ integrated |
+| Network | Suricata | port scans, exploit attempts, C2 traffic | ✅ integrated |
+| Host observability | osquery | file changes, new listeners, cron/sudoers mods | ✅ integrated |
+| Auth / shell | InnerWarden sensor | SSH brute-force, sudo abuse, shell commands | built-in |
+
+All layers feed the same AI triage engine. Enable what fits your stack.
+
+AI providers: OpenAI, Anthropic, or **Ollama** (local — no data leaves your server).
+
+See [docs/integrated-setup.md](docs/integrated-setup.md) for a step-by-step setup guide.
+
 ## Quickstart
 
 ### 1. Build and test
