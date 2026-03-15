@@ -2422,6 +2422,53 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
         }
     }
 
+    // Fail2ban integration — only when fail2ban.enabled = true
+    {
+        let fail2ban_enabled = agent_doc
+            .as_ref()
+            .and_then(|doc| doc.get("fail2ban"))
+            .and_then(|t| t.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if fail2ban_enabled {
+            let fb_bin = std::path::Path::new("/usr/bin/fail2ban-client").exists()
+                || std::path::Path::new("/usr/local/bin/fail2ban-client").exists();
+            cfg.push(if fb_bin {
+                Check::ok("fail2ban-client binary found")
+            } else {
+                Check::fail(
+                    "fail2ban-client not found but fail2ban.enabled=true",
+                    "sudo apt-get install fail2ban",
+                )
+            });
+
+            // Check fail2ban service is running
+            let fb_running = if is_macos {
+                false // fail2ban is Linux-only
+            } else {
+                std::process::Command::new("fail2ban-client")
+                    .args(["ping"])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            };
+            cfg.push(if fb_running {
+                Check::ok("fail2ban daemon is responding (ping ok)")
+            } else if is_macos {
+                Check::warn(
+                    "fail2ban is Linux-only — integration will not run on macOS",
+                    "disable [fail2ban] enabled=false in agent.toml on macOS",
+                )
+            } else {
+                Check::warn(
+                    "fail2ban daemon is not responding (fail2ban-client ping failed)",
+                    "sudo systemctl start fail2ban",
+                )
+            });
+        }
+    }
+
     run_section(cfg, &mut total_issues);
 
     // ── Telegram ──────────────────────────────────────────

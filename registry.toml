@@ -155,6 +155,26 @@ tier        = "open"
 builtin     = true
 enables     = []   # configured via [crowdsec] in agent.toml
 
+[[modules]]
+id          = "fail2ban-integration"
+name        = "Fail2ban Integration"
+version     = "0.1.0"
+description = "Polls fail2ban for active bans and enforces them via InnerWarden's block skills — unifies all ban decisions into a single audit trail"
+tags        = ["fail2ban", "threat-intelligence", "blocklist", "bans"]
+tier        = "open"
+builtin     = true
+enables     = []
+
+[[modules]]
+id          = "geoip-enrichment"
+name        = "GeoIP Enrichment"
+version     = "0.1.0"
+description = "Enriches AI triage context with country, city, ISP and ASN via ip-api.com — no API key required, free tier 45 req/min"
+tags        = ["geoip", "enrichment", "threat-intelligence", "geolocation"]
+tier        = "open"
+builtin     = true
+enables     = []
+
 # ---------------------------------------------------------------------------
 # Community modules — add yours here via pull request
 # ---------------------------------------------------------------------------

@@ -32,6 +32,10 @@ pub struct AgentConfig {
     pub crowdsec: CrowdSecConfig,
     #[serde(default)]
     pub abuseipdb: AbuseIpDbConfig,
+    #[serde(default)]
+    pub fail2ban: Fail2BanConfig,
+    #[serde(default)]
+    pub geoip: GeoIpConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -1025,6 +1029,57 @@ impl Default for AbuseIpDbConfig {
 
 fn default_abuseipdb_max_age_days() -> u32 {
     30
+}
+
+// ---------------------------------------------------------------------------
+// Fail2ban
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct Fail2BanConfig {
+    /// Enable fail2ban polling (default: false)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// How often to poll fail2ban for new ban decisions (seconds, default: 60)
+    #[serde(default = "default_fail2ban_poll_secs")]
+    pub poll_secs: u64,
+
+    /// Jails to poll. Empty = all active jails (from `fail2ban-client status`).
+    #[serde(default)]
+    pub jails: Vec<String>,
+}
+
+impl Default for Fail2BanConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            poll_secs: default_fail2ban_poll_secs(),
+            jails: vec![],
+        }
+    }
+}
+
+fn default_fail2ban_poll_secs() -> u64 {
+    60
+}
+
+// ---------------------------------------------------------------------------
+// GeoIP enrichment
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct GeoIpConfig {
+    /// Enable IP geolocation enrichment via ip-api.com (default: false).
+    /// No API key required. Free tier: 45 requests/minute.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+impl Default for GeoIpConfig {
+    fn default() -> Self {
+        Self { enabled: false }
+    }
 }
 
 // ---------------------------------------------------------------------------

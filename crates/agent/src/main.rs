@@ -6,6 +6,8 @@ mod crowdsec;
 mod dashboard;
 mod data_retention;
 mod decisions;
+mod fail2ban;
+mod geoip;
 mod narrative;
 mod reader;
 mod report;
@@ -121,6 +123,10 @@ struct AgentState {
     crowdsec: Option<crowdsec::CrowdSecState>,
     /// AbuseIPDB client for IP reputation enrichment (None when disabled).
     abuseipdb: Option<abuseipdb::AbuseIpDbClient>,
+    /// Fail2ban sync state (None when fail2ban.enabled = false).
+    fail2ban: Option<fail2ban::Fail2BanState>,
+    /// GeoIP client for IP geolocation enrichment via ip-api.com (None when disabled).
+    geoip_client: Option<geoip::GeoIpClient>,
 }
 
 const DECISION_COOLDOWN_SECS: i64 = 3600;
@@ -582,6 +588,18 @@ async fn main() -> Result<()> {
         } else {
             None
         },
+        fail2ban: if cfg.fail2ban.enabled {
+            info!("Fail2ban integration enabled");
+            Some(fail2ban::Fail2BanState::new(&cfg.fail2ban))
+        } else {
+            None
+        },
+        geoip_client: if cfg.geoip.enabled {
+            info!("GeoIP enrichment enabled (ip-api.com, free tier)");
+            Some(geoip::GeoIpClient::new())
+        } else {
+            None
+        },
     };
 
     let state_path = cli.data_dir.join("agent-state.json");
@@ -620,6 +638,9 @@ async fn main() -> Result<()> {
         let mut incident_ticker = tokio::time::interval(tokio::time::Duration::from_secs(ai_poll));
         let mut crowdsec_ticker = tokio::time::interval(tokio::time::Duration::from_secs(
             cfg.crowdsec.poll_secs.max(10),
+        ));
+        let mut fail2ban_ticker = tokio::time::interval(tokio::time::Duration::from_secs(
+            cfg.fail2ban.poll_secs.max(10),
         ));
 
         // SIGTERM / SIGINT
@@ -679,6 +700,20 @@ async fn main() -> Result<()> {
                     }
                     false
                 }
+                _ = fail2ban_ticker.tick() => {
+                    if let Some(ref mut fb) = state.fail2ban {
+                        let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
+                        fail2ban::sync_tick(
+                            fb,
+                            &mut state.blocklist,
+                            &state.skill_registry,
+                            &cfg,
+                            &mut state.decision_writer,
+                            &host,
+                        ).await;
+                    }
+                    false
+                }
                 _ = sigterm.recv() => {
                     info!("SIGTERM received — shutting down");
                     true
@@ -720,6 +755,20 @@ async fn main() -> Result<()> {
                         let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
                         crowdsec::sync_tick(
                             cs,
+                            &mut state.blocklist,
+                            &state.skill_registry,
+                            &cfg,
+                            &mut state.decision_writer,
+                            &host,
+                        ).await;
+                    }
+                    false
+                }
+                _ = fail2ban_ticker.tick() => {
+                    if let Some(ref mut fb) = state.fail2ban {
+                        let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
+                        fail2ban::sync_tick(
+                            fb,
                             &mut state.blocklist,
                             &state.skill_registry,
                             &cfg,
@@ -1041,6 +1090,22 @@ async fn process_incidents(
             None
         };
 
+        // Optionally enrich with IP geolocation data
+        let ip_geo = if let Some(ref client) = state.geoip_client {
+            let primary_ip = incident
+                .entities
+                .iter()
+                .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
+                .map(|e| e.value.as_str());
+            if let Some(ip) = primary_ip {
+                client.lookup(ip).await
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let ctx = ai::DecisionContext {
             incident,
             recent_events: recent,
@@ -1054,6 +1119,7 @@ async fn process_incidents(
                 })
                 .collect(),
             ip_reputation,
+            ip_geo,
         };
 
         state.telemetry.observe_ai_sent();
@@ -1933,6 +1999,8 @@ mod tests {
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
+            fail2ban: None,
+            geoip_client: None,
         };
 
         // 4. Run the incident tick
@@ -2039,6 +2107,8 @@ mod tests {
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
+            fail2ban: None,
+            geoip_client: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2120,6 +2190,8 @@ mod tests {
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
+            fail2ban: None,
+            geoip_client: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2213,6 +2285,8 @@ mod tests {
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
+            fail2ban: None,
+            geoip_client: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2283,6 +2357,8 @@ mod tests {
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
+            fail2ban: None,
+            geoip_client: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2365,6 +2441,8 @@ mod tests {
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
+            fail2ban: None,
+            geoip_client: None,
         };
 
         let mut cursor = reader::AgentCursor::default();

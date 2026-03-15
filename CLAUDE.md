@@ -80,6 +80,9 @@ Agente de defesa autônomo para servidores Linux e macOS. Dois componentes Rust:
 - ✅ **Dashboard D10** — tab Report: navegação principal "Investigate / Report" no header. `GET /api/report[?date=YYYY-MM-DD]` computa `TrialReport` on-demand via `report::compute_for_date`. `GET /api/report/dates` lista datas disponíveis. Tab renderiza KPIs, tendências dia-a-dia, anomaly hints com badges de severidade, tabela de saúde operacional, top IPs, incidents by type e sugestões. Seletor de data para navegar histórico. `data_retention.rs`: limpeza automática de arquivos antigos por tipo (`events_keep_days`, `incidents_keep_days`, `decisions_keep_days`, `telemetry_keep_days`, `reports_keep_days`), configurável em `[data]` no agent.toml, rodada no startup e no loop lento (30s).
 - ✅ **Telegram T.1** — notificações push: `send_incident_alert()` enviado para todo incidente High/Critical no tick rápido, com badge de severidade, ícone de fonte (🔬 falco, 🌐 suricata, 🔍 osquery, 🔐 ssh), resumo de entidades e botão deep-link opcional para o dashboard. Configurado via `[telegram]` no agent.toml ou vars de ambiente `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`.
 - ✅ **Telegram T.2** — aprovações bidirecionais: quando AI retorna `RequestConfirmation`, o agent envia inline keyboard (✅ Aprovar / ❌ Rejeitar) via Telegram. Polling task long-poll (25 s) detecta resposta do operador; ao aprovar, executa a ação e registra em `decisions-*.jsonl` com `ai_provider: "telegram:<operador>"`. TTL configurável (default 10 min); expirado → descartado. Suporta comando `/status` no bot.
+- ✅ **AbuseIPDB enrichment** — lookup antes do call AI; injetado no prompt como `IP REPUTATION (AbuseIPDB):`; fail-silent (rate limit, timeout, parse error → None); módulo `abuseipdb-enrichment/`
+- ✅ **Fail2ban integration** — `fail2ban::sync_tick` polls `fail2ban-client` CLI via `spawn_blocking`; bans não-privados não na blocklist são aplicados via block skills; `ai_provider: "fail2ban:<jail>"`; módulo `fail2ban-integration/`
+- ✅ **GeoIP enrichment** — ip-api.com free (45 req/min, sem API key); injetado no prompt como `IP GEOLOCATION:`; fail-silent; módulo `geoip-enrichment/`
 
 ---
 
@@ -168,6 +171,8 @@ crates/
       decisions.rs           — DecisionWriter + DecisionEntry (audit trail JSONL)
       telegram.rs            — TelegramClient: T.1 notifications + T.2 inline-keyboard approvals + polling loop
       abuseipdb.rs           — AbuseIpDbClient: IP reputation enrichment via AbuseIPDB API v2; IpReputation + as_context_line(); 6 testes
+      fail2ban.rs            — Fail2BanClient: polls fail2ban-client CLI for active bans; sync_tick enforces via block skills; 5 testes
+      geoip.rs               — GeoIpClient: ip-api.com lookup (free, no key); GeoInfo + as_context_line(); injected into AI prompt; 5 testes
       ai/
         mod.rs               — AiProvider trait, AiDecision, AiAction, algorithm gate, factory
         openai.rs            — implementação real OpenAI (gpt-4o-mini)
@@ -208,6 +213,8 @@ modules/                           — soluções verticais empacotadas (ver doc
   suricata-integration/            — Suricata network IDS alerts → incidents (built-in, incident passthrough sev 1-2)
   nginx-error-monitor/             — nginx error.log → web_scan → block-ip (built-in)
   abuseipdb-enrichment/            — AbuseIPDB IP reputation → AI context enrichment (built-in)
+  fail2ban-integration/            — fail2ban active bans → block skills enforcement (built-in)
+  geoip-enrichment/                — ip-api.com geolocation → AI context enrichment (built-in, no API key)
   osquery-integration/             — osquery differential results → events (built-in, observability, sem passthrough)
 docs/
   module-authoring.md              — guia completo para criar módulos + passo-a-passo Claude Code/Codex
@@ -225,7 +232,7 @@ integrations/                      — integration recipes (declarative specs fo
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 400 testes (127 sensor + 157 agent + 116 ctl)
+make test             # 410 testes (127 sensor + 167 agent + 116 ctl)
 make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -508,6 +515,8 @@ modules/
   search-protection/    — nginx access log → search_abuse → block-ip (M.3)
   nginx-error-monitor/  — nginx error.log → web_scan → block-ip
   abuseipdb-enrichment/ — AbuseIPDB IP reputation → AI context enrichment
+  fail2ban-integration/ — fail2ban active bans → block skills enforcement
+  geoip-enrichment/     — ip-api.com geolocation → AI context enrichment (no API key)
 ```
 
 Cada módulo contém:
@@ -625,7 +634,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 400 testes (127 sensor + 157 agent + 116 ctl) — todos devem passar
+make test   # 410 testes (127 sensor + 167 agent + 116 ctl) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -739,6 +748,10 @@ Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8):
 - **NginxErrorCollector:** ✅ implementado; `crates/sensor/src/collectors/nginx_error.rs`; emite `http.error` com client IP, level, request; skipa debug/notice; crit/alert emitidos mesmo sem client; 8 testes
 - **WebScanDetector:** ✅ implementado; `crates/sensor/src/detectors/web_scan.rs`; sliding window por IP em `http.error` events; módulo `nginx-error-monitor/`; 6 testes
 - **AbuseIPDB enrichment:** ✅ implementado; `crates/agent/src/abuseipdb.rs`; lookup antes do call AI para IPs de incidentes High/Critical; injetado no prompt como `IP REPUTATION (AbuseIPDB):`; fail-silent (rate limit, timeout, parse error não bloqueiam o agent); módulo `abuseipdb-enrichment/`; 6 testes
+- **Fail2ban integration:** ✅ implementado; `crates/agent/src/fail2ban.rs`; `Fail2BanClient` polls `fail2ban-client status` + `fail2ban-client status <jail>` via `spawn_blocking`; `sync_tick` emite `block_ip` para IPs banidos não-privados ainda não na blocklist; `ai_provider: "fail2ban:<jail>"`; módulo `fail2ban-integration/`; 5 testes
+- **GeoIP enrichment:** ✅ implementado; `crates/agent/src/geoip.rs`; lookup em `ip-api.com` (free, 45 req/min, sem API key); injetado no prompt como `IP GEOLOCATION:`; `GeoInfo { country, country_code, city, isp, asn }`; fail-silent; módulo `geoip-enrichment/`; 5 testes
+- **doctor fail2ban:** ✅ seção em `innerwarden doctor`; verifica `fail2ban-client` binary + responsividade de `ping`; warning em macOS
+- **doctor AbuseIPDB:** ✅ seção condicional quando `abuseipdb.enabled = true`; resolve key de config / env var / agent.env; valida comprimento mínimo da chave
 
 Próximas direções:
 - **Q.2 — VM end-to-end:** subir Ubuntu 22.04 + Falco + Suricata + osquery + InnerWarden, gerar tráfego simulado, validar UC-1 a UC-4 (user-side)

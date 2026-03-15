@@ -115,6 +115,8 @@ pub struct DecisionContext<'a> {
     pub available_skills: Vec<SkillInfo>,
     /// Optional AbuseIPDB reputation data for the primary IP (enrichment).
     pub ip_reputation: Option<crate::abuseipdb::IpReputation>,
+    /// Optional geolocation data for the primary IP (enrichment via ip-api.com).
+    pub ip_geo: Option<crate::geoip::GeoInfo>,
 }
 
 #[derive(Debug, Clone, Serialize)]
