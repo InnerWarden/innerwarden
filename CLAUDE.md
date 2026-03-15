@@ -27,6 +27,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Fail-open: erros de I/O em collectors são logados, nunca derrubam o agente
 - ✅ Flush duplo: por contagem (50 eventos) + por tempo (intervalo de 5s)
 - ✅ Graceful shutdown (SIGINT/SIGTERM) com persistência de cursors
+- ✅ **Collector `falco_log`** — tail de `/var/log/falco/falco.log` (JSONL); mapeia priority → Severity; extrai entidades de `output_fields` (IP, user, container, pod); incident passthrough automático para High/Critical (Falco já fez a detecção, InnerWarden só tria e responde); 12 testes
 
 ### Agent (`innerwarden-agent`)
 - ✅ Leitura incremental de JSONL via byte-offset cursors (sem re-leitura)
@@ -191,6 +192,7 @@ modules/                           — soluções verticais empacotadas (ver doc
   threat-capture/                  — monitor-ip + honeypot (built-in, Premium)
   search-protection/               — nginx access log → search_abuse → block-ip (built-in, M.3)
   execution-guard/                 — shell.command_exec + sudo.command → execution_guard AST detector (built-in, observe mode)
+  falco-integration/               — Falco eBPF/syscall alerts → incidents (built-in, incident passthrough High+)
 docs/
   module-authoring.md              — guia completo para criar módulos + passo-a-passo Claude Code/Codex
   integration-recipes.md           — formato de recipe + guia de geração por AI + fluxo de contribuição
@@ -207,7 +209,7 @@ integrations/                      — integration recipes (declarative specs fo
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 305 testes (64 sensor + 125 agent + 116 ctl)
+make test             # 332 testes (91 sensor + 125 agent + 116 ctl)
 make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -589,7 +591,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 320 testes (79 sensor + 125 agent + 116 ctl) — todos devem passar
+make test   # 332 testes (91 sensor + 125 agent + 116 ctl) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -684,7 +686,8 @@ Próximas direções:
 - **`innerwarden module search`** — registry central em TOML hospedado; `search <termo>` lista módulos da comunidade com `install_url`
 - **Ollama provider real** — stub → implementação real para uso local/offline
 - **Fase D10** — notificações por browser (Web Notifications API) quando o dashboard está em background
-- **Integration recipes** — ✅ sistema de recipes declarativo (`integrations/`) com specs para Falco, Wazuh, osquery; geração de collectors via AI a partir de recipe + module-authoring.md. Próximos: implementar `FalcoLogCollector`, `WazuhAlertsCollector`, `OsqueryLogCollector` em `crates/sensor/src/collectors/`
+- **Integration recipes** — ✅ sistema de recipes declarativo (`integrations/`) com specs para Falco, Wazuh, osquery; geração de collectors via AI a partir de recipe + module-authoring.md
+- **FalcoLogCollector** — ✅ implementado; `crates/sensor/src/collectors/falco_log.rs`; incident passthrough para High/Critical; módulo `falco-integration/`; 12 testes. Próximos: `SuricataEveCollector`, `OsqueryLogCollector`
 
 Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/public-readiness-checklist.md`
 

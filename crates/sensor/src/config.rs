@@ -38,6 +38,25 @@ pub struct CollectorsConfig {
     pub exec_audit: ExecAuditConfig,
     #[serde(default)]
     pub nginx_access: NginxAccessConfig,
+    #[serde(default)]
+    pub falco_log: FalcoLogConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FalcoLogConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_falco_log_path")]
+    pub path: String,
+}
+
+impl Default for FalcoLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: default_falco_log_path(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -348,6 +367,10 @@ fn default_search_abuse_window_seconds() -> u64 {
 
 fn default_search_abuse_path_prefix() -> String {
     "/api/search".to_string()
+}
+
+fn default_falco_log_path() -> String {
+    "/var/log/falco/falco.log".to_string()
 }
 
 fn default_execution_guard_mode() -> String {

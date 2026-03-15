@@ -12,7 +12,8 @@ use anyhow::Result;
 use clap::Parser;
 use collectors::{
     auth_log::AuthLogCollector, docker::DockerCollector, exec_audit::ExecAuditCollector,
-    integrity::IntegrityCollector, journald::JournaldCollector, nginx_access::NginxAccessCollector,
+    falco_log::FalcoLogCollector, integrity::IntegrityCollector, journald::JournaldCollector,
+    nginx_access::NginxAccessCollector,
 };
 use detectors::credential_stuffing::CredentialStuffingDetector;
 use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
@@ -87,6 +88,7 @@ async fn main() -> Result<()> {
     let shared_docker_since: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let shared_exec_audit_offset = Arc::new(AtomicU64::new(0));
     let shared_nginx_offset = Arc::new(AtomicU64::new(0));
+    let shared_falco_offset = Arc::new(AtomicU64::new(0));
 
     // SSH brute force detector (stateful, lives in main loop)
     let ssh_detector = cfg.detectors.ssh_bruteforce.enabled.then(|| {
@@ -289,6 +291,25 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Spawn falco_log collector
+    if cfg.collectors.falco_log.enabled {
+        let fc = &cfg.collectors.falco_log;
+        let offset = state
+            .get_cursor("falco_log")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        shared_falco_offset.store(offset, Ordering::Relaxed);
+        let collector = FalcoLogCollector::new(&fc.path, &cfg.agent.host_id, offset);
+        info!(path = %fc.path, offset, "starting falco_log collector");
+        let tx_falco = tx.clone();
+        let shared = Arc::clone(&shared_falco_offset);
+        tokio::spawn(async move {
+            if let Err(e) = collector.run(tx_falco, shared).await {
+                tracing::error!("falco_log collector error: {e:#}");
+            }
+        });
+    }
+
     // Drop the original tx — each collector holds its own clone.
     // When all collector tasks finish, all senders drop and rx.recv() returns None.
     drop(tx);
@@ -416,10 +437,20 @@ async fn main() -> Result<()> {
     let nginx_offset = shared_nginx_offset.load(Ordering::Relaxed);
     state.set_cursor("nginx_access", serde_json::json!(nginx_offset));
 
+    let falco_offset = shared_falco_offset.load(Ordering::Relaxed);
+    state.set_cursor("falco_log", serde_json::json!(falco_offset));
+
     state.save(&state_path)?;
     info!(auth_offset, "state saved");
 
     Ok(())
+}
+
+/// Sources that already performed their own detection.
+/// High/Critical events from these sources are promoted directly to incidents
+/// without going through an InnerWarden detector.
+fn is_passthrough_source(source: &str) -> bool {
+    matches!(source, "falco")
 }
 
 fn process_event(
@@ -428,11 +459,29 @@ fn process_event(
     detectors: &mut DetectorSet,
     stats: &mut WriteStats,
 ) {
+    use innerwarden_core::event::Severity;
+
     info!(kind = %ev.kind, summary = %ev.summary, "event");
     if let Err(e) = writer.write_event(&ev) {
         warn!(kind = %ev.kind, "failed to write event: {e:#}");
     } else {
         stats.events_written += 1;
+    }
+
+    // Incident passthrough: tools that already ran their own detection
+    // (Falco, Suricata) emit High/Critical events that are incidents by definition.
+    if is_passthrough_source(&ev.source) {
+        let is_actionable = matches!(
+            ev.severity,
+            Severity::High | Severity::Critical
+        );
+        if is_actionable {
+            if let Some(incident) = passthrough_incident(&ev) {
+                write_incident(writer, stats, incident);
+            }
+        }
+        // Passthrough sources don't need InnerWarden detectors — return early.
+        return;
     }
 
     if let Some(ref mut det) = detectors.ssh {
@@ -470,6 +519,44 @@ fn process_event(
             write_incident(writer, stats, incident);
         }
     }
+}
+
+/// Build an Incident directly from an event emitted by a passthrough source
+/// (Falco, Suricata). The external tool already detected the threat; this
+/// promotes it into InnerWarden's incident pipeline for AI triage and response.
+fn passthrough_incident(
+    ev: &innerwarden_core::event::Event,
+) -> Option<innerwarden_core::incident::Incident> {
+    use innerwarden_core::incident::Incident;
+
+    let incident_id = format!(
+        "{}:{}:{}",
+        ev.source,
+        ev.kind,
+        ev.ts.format("%Y-%m-%dT%H:%MZ")
+    );
+
+    let recommended_checks = match ev.source.as_str() {
+        "falco" => vec![
+            "Review Falco alert details".to_string(),
+            "Investigate related container/process activity".to_string(),
+            "Check for lateral movement indicators".to_string(),
+        ],
+        _ => vec!["Review source alert details".to_string()],
+    };
+
+    Some(Incident {
+        ts: ev.ts,
+        host: ev.host.clone(),
+        incident_id,
+        severity: ev.severity.clone(),
+        title: ev.summary.clone(),
+        summary: format!("[{}] {}", ev.source.to_uppercase(), ev.summary),
+        evidence: serde_json::json!([ev.details]),
+        recommended_checks,
+        tags: ev.tags.clone(),
+        entities: ev.entities.clone(),
+    })
 }
 
 fn write_incident(
