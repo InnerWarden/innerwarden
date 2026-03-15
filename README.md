@@ -20,7 +20,7 @@ Without Inner Warden:
 04:00  Maybe someone blocks the IP manually
 ???    Maybe the attacker is already inside
 
-With Inner Warden:
+With Inner Warden (auto-execution enabled):
 
 00:00  Attacker starts SSH brute force from 203.0.113.10
 00:45  Detector fires: 8 failed logins in 5 minutes
