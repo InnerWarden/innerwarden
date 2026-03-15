@@ -1233,7 +1233,7 @@ dependencies = [
  "futures-core",
  "hmac",
  "innerwarden_core",
- "rand_core 0.6.4",
+ "rand_core 0.9.5",
  "reqwest",
  "rpassword",
  "russh",
