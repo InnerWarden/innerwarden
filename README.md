@@ -61,6 +61,8 @@ Premium skills (honeypot, monitor-ip) are opt-in.
 | `sudo_abuse` | Burst of suspicious privileged commands by a user |
 | `search_abuse` | High-rate requests hammering expensive HTTP endpoints |
 | `execution_guard` | Suspicious shell commands via AST analysis (tree-sitter-bash) |
+| `web_scan` | HTTP error floods from one IP — automated path traversal and LFI probing |
+| `user_agent_scanner` | Requests carrying known scanner User-Agents (Nikto, sqlmap, Nuclei, 17 more) |
 
 `execution_guard` parses commands structurally. It catches `curl | sh` pipelines, `/tmp` execution, reverse shell patterns, and staged download-chmod-execute sequences.
 
@@ -75,7 +77,7 @@ Premium skills (honeypot, monitor-ip) are opt-in.
 ```
 
 **Sensor** — collects signals from the host. No AI, no HTTP, fully deterministic.
-Sources: auth.log, journald, Docker events, file integrity, nginx access log, shell audit (opt-in), macOS unified log. Optional: Falco, Suricata, osquery integration.
+Sources: auth.log, journald, Docker events, file integrity (with cron and SSH key tampering detection), nginx access/error logs, shell audit (opt-in), macOS unified log, syslog/kern.log (firewall drops). Optional: Falco, Suricata, osquery, Wazuh integration.
 
 **Agent** — reads incidents, applies an algorithm gate (skip low severity, private IPs, already-blocked), optionally calls AI for triage, and executes the chosen skill.
 
@@ -128,6 +130,9 @@ Detectors and skills are packaged into modules — enable what you need:
 | `falco-integration` | Kernel/container anomalies (Falco) | Incident passthrough |
 | `suricata-integration` | Network IDS alerts (Suricata) | Incident passthrough |
 | `osquery-integration` | Host state queries (osquery) | Enriched events |
+| `wazuh-integration` | Wazuh HIDS alerts | Incident passthrough |
+| `nginx-error-monitor` | HTTP error floods and path traversal probes | Block IP |
+| `slack-notify` | Incident notifications to Slack | — (notification only) |
 
 ```bash
 innerwarden enable block-ip
@@ -252,6 +257,7 @@ innerwarden enable block-ip                   # activate (ufw by default)
 innerwarden enable block-ip --param backend=iptables  # activate with a specific backend
 innerwarden disable block-ip                  # deactivate and clean up
 innerwarden --dry-run enable block-ip         # preview what enable would do
+innerwarden scan                              # detect installed tools and recommend modules
 ```
 
 ---
@@ -268,7 +274,7 @@ Pre-built binaries: `x86_64` and `aarch64` for both platforms.
 ## Build and test
 
 ```bash
-make test    # 374 tests
+make test    # 480 tests
 make build   # debug build (sensor + agent + ctl)
 ```
 
@@ -293,7 +299,7 @@ No. It starts in observe-only mode. You enable response skills and disable dry-r
 No. Detection, logging, dashboards, and reports all work without AI. The AI layer adds confidence-scored triage for automated decisions — it is optional.
 
 **How is this different from Fail2ban?**
-Fail2ban blocks IPs based on regex patterns. Inner Warden has six detectors, eight response skills (including sudo suspension, honeypots, and traffic capture), AI-assisted triage, Telegram approval workflows, and a full investigation dashboard.
+Fail2ban blocks IPs based on regex patterns. Inner Warden has eight detectors, eight response skills (including sudo suspension, honeypots, and traffic capture), AI-assisted triage, Telegram approval workflows, and a full investigation dashboard.
 
 **Can I add custom detectors or skills?**
 Yes. See [module authoring guide](docs/module-authoring.md).

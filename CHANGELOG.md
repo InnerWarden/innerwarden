@@ -9,6 +9,48 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Sensor (`innerwarden-sensor`)
+
+**New collectors**
+- `wazuh_alerts` — tails `/var/ossec/logs/alerts/alerts.json`; maps `rule.level` to severity (0–15 → Debug/Low/Medium/High/Critical); passthrough for High/Critical; extracts `data.srcip`, `data.dstuser`, `agent.name`
+- `nginx_error` — tails nginx `error.log`; parses `[level]` + client IP + request; emits `http.error` events feeding the `web_scan` detector
+- `macos_log` — `log stream` subprocess (macOS only); reuses SSH parser; emits `sudo.command` events
+- `syslog_firewall` — tails `/var/log/syslog` or `/var/log/kern.log`; parses iptables, nftables, and UFW DROP entries (`SRC=`, `DPT=`, `PROTO=`); emits `network.connection_blocked` feeding the `port_scan` detector; alternative to journald for servers without systemd
+
+**New detectors**
+- `web_scan` — sliding window of `http.error` events per IP; fires `web_scan` incident (High) when threshold exceeded; dedup within window
+- `user_agent_scanner` — stateless User-Agent matching against 20 scanner signatures (Nikto, sqlmap, Nuclei, Masscan, Gobuster, ffuf, Burp Suite, Metasploit, and more); emits `http.scanner_ua` (High) on first match; dedup by `(ip, scanner)` in 10-minute window; MITRE T1595 / T1595.002
+
+**Enhanced integrity detection**
+- SSH `authorized_keys` tampering: changes to `authorized_keys` files emit `ssh.authorized_keys_changed` (High) instead of generic `file.changed`; extracts username from path; MITRE T1098.004; user entity attached
+- Cron tampering: changes to `/etc/crontab`, `/etc/cron.d/*`, `/etc/cron.{hourly,daily,weekly,monthly}/*`, `/var/spool/cron/crontabs/<user>` emit `cron.tampering` (High); username extracted from user crontab paths; MITRE T1053.003
+
+**Docker privilege escalation detection**
+- On `container.start`, spawns `docker inspect` in background (non-blocking); detects `--privileged` flag, docker.sock mount, and dangerous capabilities (`SYS_ADMIN`, `NET_ADMIN`, `SYS_PTRACE`, `SYS_MODULE`); emits `container.privileged` (High), `container.sock_mount` (High), `container.dangerous_cap` (Medium)
+
+### Agent (`innerwarden-agent`)
+
+**New integrations**
+- Slack notifications: `SlackClient` posts Block Kit messages via Incoming Webhook; severity emoji + coloured sidebar + optional deep-link button; configured via `[slack]` in `agent.toml` or `SLACK_WEBHOOK_URL`; no OAuth or API token needed
+- Fail2ban integration: polls `fail2ban-client banned` output; enforces active bans via block skills; unified audit trail
+- GeoIP enrichment: enriches AI triage context with country, city, ISP, and ASN via ip-api.com; no API key; free tier 45 req/min
+- CrowdSec integration: polls CrowdSec Local API for crowd-sourced ban decisions; enforces them via block skills
+
+**Response skills**
+- `block-ip-pf` — IP block via macOS Packet Filter (`pfctl -t innerwarden-blocked -T add`); Open tier
+
+### Control plane (`innerwarden` / `innerwarden-ctl`)
+
+- `innerwarden scan` — probes the local machine (sshd, Docker, nginx, fail2ban, Falco, Suricata, osquery, Wazuh, pf, ufw, iptables, auditd); scores and ranks all built-in modules by relevance; interactive Q&A loop reads module README files for in-terminal documentation
+
+### Module system
+
+New built-in modules: `wazuh-integration`, `nginx-error-monitor`, `falco-integration`, `suricata-integration`, `osquery-integration`, `slack-notify`, `fail2ban-integration`, `geoip-enrichment`, `abuseipdb-enrichment`, `crowdsec-integration`
+
+### Test coverage
+
+480 tests across three crates (185 sensor + 172 agent + 123 ctl).
+
 ---
 
 ## [0.1.0] — 2026-03-15
@@ -95,7 +137,7 @@ Initial public release.
 
 ### Module system
 
-Built-in modules: `ssh-protection`, `network-defense`, `sudo-protection`, `file-integrity`, `container-security`, `threat-capture`, `search-protection`
+Built-in modules (initial): `ssh-protection`, `network-defense`, `sudo-protection`, `file-integrity`, `container-security`, `threat-capture`, `search-protection`, `execution-guard`
 
 Each module ships: `module.toml` manifest, config examples, documentation, and tests.
 
@@ -109,7 +151,7 @@ Each module ships: `module.toml` manifest, config examples, documentation, and t
 
 ### Test coverage
 
-374 tests across three crates (145 agent + 116 ctl + 113 sensor).
+374 tests across three crates (145 agent + 116 ctl + 113 sensor) at time of release.
 
 ---
 
