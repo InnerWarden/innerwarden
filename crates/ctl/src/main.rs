@@ -12,6 +12,7 @@ mod module_manifest;
 mod module_package;
 mod module_validator;
 mod preflight;
+mod scan;
 mod sudoers;
 mod systemd;
 mod upgrade;
@@ -89,6 +90,18 @@ enum Command {
 
     /// Run system diagnostics and print fix hints for any issues found
     Doctor,
+
+    /// Scan this machine and recommend the best modules for your setup.
+    ///
+    /// Runs a quick system probe, scores each module, and shows a clear
+    /// priority list.  Type a module name or number at the prompt to read
+    /// its detailed docs.
+    Scan {
+        /// Directory to look for module docs (default: ./modules or
+        /// /usr/local/share/innerwarden/modules)
+        #[arg(long, default_value = "")]
+        modules_dir: String,
+    },
 
     /// Check for a newer release and optionally upgrade all binaries
     Upgrade {
@@ -343,6 +356,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Doctor => cmd_doctor(&cli, &registry),
+        Command::Scan { ref modules_dir } => scan::cmd_scan(modules_dir),
         Command::Upgrade {
             check,
             yes,

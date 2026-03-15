@@ -134,6 +134,7 @@ crates/
         search_protection.rs  — enable/disable search-protection (nginx collector + search_abuse + rate-limit-nginx)
       module_manifest.rs     — ModuleManifest parser + collector/detector ID → config section lookup + sudoers rule generator
       module_validator.rs    — validação estática de pacotes de módulo
+      scan.rs                — SystemProbes + score_modules + cmd_scan; Q&A interativo; 7 testes
   sensor/   — binário innerwarden-sensor
     src/
       main.rs
@@ -238,7 +239,7 @@ integrations/                      — integration recipes (declarative specs fo
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 445 testes (157 sensor + 172 agent + 116 ctl)
+make test             # 452 testes (157 sensor + 172 agent + 123 ctl)
 make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -255,6 +256,9 @@ innerwarden enable shell-audit      # ativa exec_audit (com privacy gate)
 innerwarden enable shell-audit --yes  # pula confirmação interativa
 innerwarden disable block-ip        # desativa capability (reverte config + sudoers + restart)
 innerwarden --dry-run enable block-ip  # mostra o que seria feito
+innerwarden scan                    # detecta serviços/ferramentas instalados, pontua módulos e recomenda
+                                    # os melhores para este servidor (ESSENTIAL/RECOMMENDED/OPTIONAL);
+                                    # prompt interativo: digitar nome ou número de módulo exibe README
 innerwarden doctor                  # diagnóstico completo com fix hints; exit 1 se houver issues
                                     # inclui seção Telegram quando enabled=true: valida bot_token
                                     # (formato <id>:<secret>) e chat_id (numérico), resolve via
@@ -642,7 +646,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 445 testes (157 sensor + 172 agent + 116 ctl) — todos devem passar
+make test   # 452 testes (157 sensor + 172 agent + 123 ctl) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -768,6 +772,7 @@ Próximas direções:
 - **Q.2 — VM end-to-end:** subir Ubuntu 22.04 + Falco + Suricata + osquery + InnerWarden, gerar tráfego simulado, validar UC-1 a UC-4 (user-side)
 - **L.5 — Repositório público:** confirmar sem credenciais, adicionar tópicos GitHub, habilitar Discussions
 - **`innerwarden module search`:** ✅ registry central em `registry.toml`; `search <termo>` filtra por nome/descrição/tags; `install <name>` resolve short names via registry
+- **`innerwarden scan`:** ✅ probe automático (sshd, docker, nginx, fail2ban, falco, suricata, osquery, wazuh, crowdsec, firewall, auditd, log files, OS); score por módulo (Essential/Recommended/Optional/NotAvailable); output formatado com estrelas + razão contextual + comando de ativação; Q&A interativo (número ou nome → exibe README do módulo); fail-silent em todos os probes (sem root); 7 testes
 - **Fase D11** — notificações por browser (Web Notifications API) quando o dashboard está em background
 - **Windows (v0.3.0 planned):** `sysmon_evtx` collector + `windows_event_log` collector + `block-ip-netsh` skill + `chocolatey`/`winget` install recipe. Tracked via platform-support issues.
 
