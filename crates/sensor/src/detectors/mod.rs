@@ -1,4 +1,5 @@
 pub mod credential_stuffing;
+pub mod execution_guard;
 pub mod port_scan;
 pub mod search_abuse;
 pub mod ssh_bruteforce;

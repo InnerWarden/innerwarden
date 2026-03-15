@@ -22,6 +22,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Detector de SSH credential stuffing por IP (spray de múltiplos usuários em janela)
 - ✅ Detector de port scan por IP (sliding window por portas de destino únicas em logs de firewall)
 - ✅ Detector de abuso de `sudo` por usuário (`sudo_abuse`: burst de comandos privilegiados suspeitos por janela)
+- ✅ **Detector `execution_guard`** — análise estrutural de comandos via AST (`tree-sitter-bash`) + scoring de risco por evento + correlação de sequência por usuário (download→chmod→execute em janela deslizante); emite incidentes `suspicious_execution` com score, sinais e evidência; modo `observe` (apenas detecta, sem bloqueio); extensões planejadas: `contain` e `strict`
 - ✅ Output JSONL append-only com rotação diária automática
 - ✅ Fail-open: erros de I/O em collectors são logados, nunca derrubam o agente
 - ✅ Flush duplo: por contagem (50 eventos) + por tempo (intervalo de 5s)
@@ -139,6 +140,7 @@ crates/
         port_scan.rs         — portas de destino únicas por IP (firewall logs)
         sudo_abuse.rs        — burst de comandos sudo suspeitos por usuário (janela + threshold)
         search_abuse.rs      — sliding window por IP+path (nginx http.request events)
+        execution_guard.rs   — AST (tree-sitter-bash) + argv analysis + timeline correlation por usuário
       sinks/
         jsonl.rs             — DatedWriter com rotação diária
         state.rs             — load/save atômico de cursors
@@ -188,6 +190,7 @@ modules/                           — soluções verticais empacotadas (ver doc
   container-security/              — Docker lifecycle events (built-in, observability only)
   threat-capture/                  — monitor-ip + honeypot (built-in, Premium)
   search-protection/               — nginx access log → search_abuse → block-ip (built-in, M.3)
+  execution-guard/                 — shell.command_exec + sudo.command → execution_guard AST detector (built-in, observe mode)
 docs/
   module-authoring.md              — guia completo para criar módulos + passo-a-passo Claude Code/Codex
 ```
@@ -580,7 +583,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 305 testes (64 sensor + 125 agent + 116 ctl) — todos devem passar
+make test   # 320 testes (79 sensor + 125 agent + 116 ctl) — todos devem passar
 ```
 
 Fixtures em `testdata/`:

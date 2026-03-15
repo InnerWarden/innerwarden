@@ -133,6 +133,8 @@ pub struct DetectorsConfig {
     pub sudo_abuse: SudoAbuseConfig,
     #[serde(default)]
     pub search_abuse: SearchAbuseConfig,
+    #[serde(default)]
+    pub execution_guard: ExecutionGuardConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -256,6 +258,30 @@ impl Default for SearchAbuseConfig {
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ExecutionGuardConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Execution mode. Only "observe" is implemented in this version.
+    /// Future: "contain" (suspend-user-sudo + isolate session) and
+    ///         "strict" (pre-execution interception via eBPF/LSM).
+    #[serde(default = "default_execution_guard_mode")]
+    pub mode: String,
+    /// Correlation window for timeline sequence detection (default: 300s)
+    #[serde(default = "default_execution_guard_window_seconds")]
+    pub window_seconds: u64,
+}
+
+impl Default for ExecutionGuardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: default_execution_guard_mode(),
+            window_seconds: default_execution_guard_window_seconds(),
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -322,6 +348,14 @@ fn default_search_abuse_window_seconds() -> u64 {
 
 fn default_search_abuse_path_prefix() -> String {
     "/api/search".to_string()
+}
+
+fn default_execution_guard_mode() -> String {
+    "observe".to_string()
+}
+
+fn default_execution_guard_window_seconds() -> u64 {
+    300
 }
 
 pub fn load(path: &str) -> Result<Config> {

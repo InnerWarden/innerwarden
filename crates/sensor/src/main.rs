@@ -15,6 +15,7 @@ use collectors::{
     integrity::IntegrityCollector, journald::JournaldCollector, nginx_access::NginxAccessCollector,
 };
 use detectors::credential_stuffing::CredentialStuffingDetector;
+use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
 use detectors::port_scan::PortScanDetector;
 use detectors::search_abuse::SearchAbuseDetector;
 use detectors::ssh_bruteforce::SshBruteforceDetector;
@@ -41,6 +42,7 @@ struct DetectorSet {
     port_scan: Option<PortScanDetector>,
     sudo_abuse: Option<SudoAbuseDetector>,
     search_abuse: Option<SearchAbuseDetector>,
+    execution_guard: Option<ExecutionGuardDetector>,
 }
 
 #[derive(Default)]
@@ -138,12 +140,26 @@ async fn main() -> Result<()> {
             &d.path_prefix,
         )
     });
+    let execution_guard_detector = cfg.detectors.execution_guard.enabled.then(|| {
+        let d = &cfg.detectors.execution_guard;
+        info!(
+            mode = %d.mode,
+            window_seconds = d.window_seconds,
+            "execution_guard detector enabled"
+        );
+        ExecutionGuardDetector::new(
+            &cfg.agent.host_id,
+            d.window_seconds,
+            ExecutionMode::from_str(&d.mode),
+        )
+    });
     let mut detectors = DetectorSet {
         ssh: ssh_detector,
         credential_stuffing: credential_stuffing_detector,
         port_scan: port_scan_detector,
         sudo_abuse: sudo_abuse_detector,
         search_abuse: search_abuse_detector,
+        execution_guard: execution_guard_detector,
     };
 
     // Spawn auth_log collector
@@ -444,6 +460,12 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.search_abuse {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.execution_guard {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }
