@@ -4,8 +4,8 @@
 > Para visão geral, instalação e uso inicial, comece por `README.md`.
 > O conteúdo abaixo existe para preservar contexto operacional aprofundado do projeto.
 
-Observabilidade e resposta autônoma de host com dois componentes Rust:
-**sensor** (coleta determinística, zero AI) e **agent** (inteligência em tempo real).
+Agente de defesa autônomo para servidores Linux e macOS. Dois componentes Rust:
+**sensor** (detecção determinística, zero AI) e **agent** (triagem inteligente + skills de resposta).
 
 ---
 

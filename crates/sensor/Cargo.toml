@@ -6,8 +6,8 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-description = "Deterministic host-security telemetry sensor for InnerWarden."
-keywords = ["security", "observability", "linux", "telemetry", "rust"]
+description = "Deterministic threat detection sensor for InnerWarden — a self-defending security agent."
+keywords = ["security", "intrusion-detection", "linux", "host-security", "rust"]
 categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
