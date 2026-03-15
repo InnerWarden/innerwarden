@@ -23,6 +23,7 @@ use detectors::port_scan::PortScanDetector;
 use detectors::search_abuse::SearchAbuseDetector;
 use detectors::ssh_bruteforce::SshBruteforceDetector;
 use detectors::sudo_abuse::SudoAbuseDetector;
+use detectors::user_agent_scanner::UserAgentScannerDetector;
 use detectors::web_scan::WebScanDetector;
 use sinks::{jsonl::JsonlWriter, state::State};
 use tokio::sync::mpsc;
@@ -47,6 +48,7 @@ struct DetectorSet {
     sudo_abuse: Option<SudoAbuseDetector>,
     search_abuse: Option<SearchAbuseDetector>,
     web_scan: Option<WebScanDetector>,
+    user_agent_scanner: Option<UserAgentScannerDetector>,
     execution_guard: Option<ExecutionGuardDetector>,
 }
 
@@ -159,6 +161,10 @@ async fn main() -> Result<()> {
         );
         WebScanDetector::new(&cfg.agent.host_id, d.threshold, d.window_seconds)
     });
+    let user_agent_scanner_detector = cfg.detectors.user_agent_scanner.enabled.then(|| {
+        info!("user_agent_scanner detector enabled");
+        UserAgentScannerDetector::new(&cfg.agent.host_id)
+    });
     let execution_guard_detector = cfg.detectors.execution_guard.enabled.then(|| {
         let d = &cfg.detectors.execution_guard;
         info!(
@@ -179,6 +185,7 @@ async fn main() -> Result<()> {
         sudo_abuse: sudo_abuse_detector,
         search_abuse: search_abuse_detector,
         web_scan: web_scan_detector,
+        user_agent_scanner: user_agent_scanner_detector,
         execution_guard: execution_guard_detector,
     };
 
@@ -636,6 +643,12 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.web_scan {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.user_agent_scanner {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }

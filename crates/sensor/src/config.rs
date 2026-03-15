@@ -227,6 +227,8 @@ pub struct DetectorsConfig {
     #[serde(default)]
     pub web_scan: WebScanConfig,
     #[serde(default)]
+    pub user_agent_scanner: UserAgentScannerConfig,
+    #[serde(default)]
     pub execution_guard: ExecutionGuardConfig,
 }
 
@@ -508,6 +510,18 @@ impl Default for WebScanConfig {
             threshold: default_web_scan_threshold(),
             window_seconds: default_web_scan_window_seconds(),
         }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UserAgentScannerConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+impl Default for UserAgentScannerConfig {
+    fn default() -> Self {
+        Self { enabled: false }
     }
 }
 

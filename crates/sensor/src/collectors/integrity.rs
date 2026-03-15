@@ -132,6 +132,11 @@ fn make_change_event(path: &Path, new_hash: &str, old_hash: &str, host: &str) ->
         return ev;
     }
 
+    // Detect cron tampering — emit a specific event with MITRE T1053.003 tagging.
+    if let Some(ev) = make_cron_event(path, new_hash, old_hash, host) {
+        return ev;
+    }
+
     Event {
         ts: Utc::now(),
         host: host.to_string(),
@@ -225,6 +230,83 @@ fn extract_ssh_username(path: &Path) -> Option<String> {
         return None;
     }
     Some(candidate.to_string())
+}
+
+/// Returns a specific cron tampering event when `path` is a cron-related file.
+/// Returns None for all other file types (caller falls through to generic event).
+///
+/// Detects changes to:
+/// - `/etc/crontab`
+/// - `/etc/cron.d/*` and `/etc/cron.{hourly,daily,weekly,monthly}/*`
+/// - `/var/spool/cron/crontabs/<user>` (user crontabs — extracts username)
+///
+/// Tagged as MITRE ATT&CK T1053.003 (Scheduled Task/Job: Cron).
+fn make_cron_event(path: &Path, new_hash: &str, old_hash: &str, host: &str) -> Option<Event> {
+    let path_str = path.display().to_string();
+
+    let is_etc_crontab = path_str == "/etc/crontab";
+    let is_cron_dir = [
+        "/etc/cron.d/",
+        "/etc/cron.hourly/",
+        "/etc/cron.daily/",
+        "/etc/cron.weekly/",
+        "/etc/cron.monthly/",
+    ]
+    .iter()
+    .any(|prefix| path_str.starts_with(prefix));
+    // /var/spool/cron/crontabs/<user> (Linux) or /var/spool/cron/<user> (macOS/BSDs)
+    let is_user_crontab = path_str.starts_with("/var/spool/cron/");
+
+    if !is_etc_crontab && !is_cron_dir && !is_user_crontab {
+        return None;
+    }
+
+    // For user crontabs, username is the last path component (the filename itself)
+    let username: Option<String> = if is_user_crontab {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| !n.is_empty())
+            .map(|n| n.to_string())
+    } else {
+        None
+    };
+
+    let summary = match &username {
+        Some(user) => format!("Cron job modified for user '{user}': {path_str}"),
+        None => format!("Cron configuration modified: {path_str}"),
+    };
+
+    let mut entities = vec![EntityRef::path(path_str.clone())];
+    if let Some(ref user) = username {
+        entities.push(EntityRef::user(user.clone()));
+    }
+
+    Some(Event {
+        ts: Utc::now(),
+        host: host.to_string(),
+        source: "integrity".to_string(),
+        kind: "cron.tampering".to_string(),
+        severity: Severity::High,
+        summary,
+        details: serde_json::json!({
+            "path": path_str,
+            "username": username,
+            "old_hash": &old_hash[..12.min(old_hash.len())],
+            "new_hash": &new_hash[..12.min(new_hash.len())],
+            "mitre": {
+                "technique": "T1053.003",
+                "tactic": "Persistence",
+                "name": "Scheduled Task/Job: Cron"
+            },
+        }),
+        tags: vec![
+            "integrity".to_string(),
+            "cron".to_string(),
+            "persistence".to_string(),
+            "T1053.003".to_string(),
+        ],
+        entities,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -363,5 +445,83 @@ mod tests {
         let path = Path::new("/etc/authorized_keys");
         let user = extract_ssh_username(path);
         assert!(user.is_none());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Cron tampering tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn etc_crontab_emits_cron_tampering_event() {
+        let fake_hash_old = "a".repeat(64);
+        let fake_hash_new = "b".repeat(64);
+        let path = Path::new("/etc/crontab");
+        let ev = make_change_event(path, &fake_hash_new, &fake_hash_old, "host");
+        assert_eq!(ev.kind, "cron.tampering");
+        assert_eq!(ev.severity, Severity::High);
+        assert!(ev.tags.contains(&"T1053.003".to_string()));
+        assert!(ev.tags.contains(&"persistence".to_string()));
+    }
+
+    #[test]
+    fn cron_d_file_emits_cron_tampering_event() {
+        let fake_hash_old = "a".repeat(64);
+        let fake_hash_new = "b".repeat(64);
+        let path = Path::new("/etc/cron.d/my-job");
+        let ev = make_change_event(path, &fake_hash_new, &fake_hash_old, "host");
+        assert_eq!(ev.kind, "cron.tampering");
+        assert!(ev.tags.contains(&"cron".to_string()));
+    }
+
+    #[test]
+    fn cron_daily_file_emits_cron_tampering_event() {
+        let fake_hash_old = "a".repeat(64);
+        let fake_hash_new = "b".repeat(64);
+        let path = Path::new("/etc/cron.daily/logrotate");
+        let ev = make_change_event(path, &fake_hash_new, &fake_hash_old, "host");
+        assert_eq!(ev.kind, "cron.tampering");
+    }
+
+    #[test]
+    fn user_crontab_extracts_username() {
+        let fake_hash_old = "a".repeat(64);
+        let fake_hash_new = "b".repeat(64);
+        let path = Path::new("/var/spool/cron/crontabs/alice");
+        let ev = make_change_event(path, &fake_hash_new, &fake_hash_old, "host");
+        assert_eq!(ev.kind, "cron.tampering");
+        assert!(ev.summary.contains("alice"));
+    }
+
+    #[test]
+    fn user_crontab_has_user_entity() {
+        use innerwarden_core::entities::EntityType;
+        let fake_hash_old = "a".repeat(64);
+        let fake_hash_new = "b".repeat(64);
+        let path = Path::new("/var/spool/cron/crontabs/bob");
+        let ev = make_change_event(path, &fake_hash_new, &fake_hash_old, "host");
+        let has_user = ev
+            .entities
+            .iter()
+            .any(|e| e.r#type == EntityType::User && e.value == "bob");
+        assert!(has_user);
+    }
+
+    #[test]
+    fn cron_tampering_has_mitre_in_details() {
+        let fake_hash_old = "a".repeat(64);
+        let fake_hash_new = "b".repeat(64);
+        let path = Path::new("/etc/crontab");
+        let ev = make_change_event(path, &fake_hash_new, &fake_hash_old, "host");
+        assert_eq!(ev.details["mitre"]["technique"], "T1053.003");
+        assert_eq!(ev.details["mitre"]["tactic"], "Persistence");
+    }
+
+    #[test]
+    fn non_cron_file_falls_through_to_generic_event() {
+        let fake_hash_old = "a".repeat(64);
+        let fake_hash_new = "b".repeat(64);
+        let path = Path::new("/etc/passwd");
+        let ev = make_change_event(path, &fake_hash_new, &fake_hash_old, "host");
+        assert_eq!(ev.kind, "file.changed");
     }
 }

@@ -17,7 +17,7 @@ Agente de defesa autônomo para servidores Linux e macOS. Dois componentes Rust:
 - ✅ Trilha opcional de shell via `auditd` (`type=EXECVE`) com parser de comando executado
 - ✅ Ingestão opcional de `auditd type=TTY` (alto impacto de privacidade, gated por config)
 - ✅ Monitoramento de Docker events (start / stop / die / OOM) + **privilege escalation detection**: `docker inspect` no `container.start`; detecta `--privileged`, docker.sock mount (`HostConfig.Binds` + `Mounts`), `CapAdd` perigoso (`SYS_ADMIN`, `NET_ADMIN`, `SYS_PTRACE`, `SYS_MODULE`); emite `container.privileged` (High), `container.sock_mount` (High), `container.dangerous_cap` (Medium); 10 testes
-- ✅ Integridade de arquivos via SHA-256 polling configurável + **SSH key tampering detection**: quando o arquivo alterado é `authorized_keys`, emite `ssh.authorized_keys_changed` (High) em vez de `file.changed`; extrai username do path (`/home/<user>/.ssh/` → user); inclui entidade User + tags `persistence`, `T1098.004` (MITRE ATT&CK); detalhes com `mitre.technique`; 8 testes
+- ✅ Integridade de arquivos via SHA-256 polling configurável + **SSH key tampering detection**: quando o arquivo alterado é `authorized_keys`, emite `ssh.authorized_keys_changed` (High) em vez de `file.changed`; extrai username do path (`/home/<user>/.ssh/` → user); inclui entidade User + tags `persistence`, `T1098.004` (MITRE ATT&CK); detalhes com `mitre.technique`; 8 testes + **Cron tampering detection**: quando `/etc/crontab`, `/etc/cron.d/*`, `/etc/cron.{hourly,daily,weekly,monthly}/*` ou `/var/spool/cron/crontabs/<user>` são alterados, emite `cron.tampering` (High) em vez de `file.changed`; extrai username de user crontabs; tags `persistence`, `T1053.003` (MITRE ATT&CK Scheduled Task/Job: Cron); 7 testes
 - ✅ Detector de SSH brute-force (sliding window por IP, threshold configurável)
 - ✅ Detector de SSH credential stuffing por IP (spray de múltiplos usuários em janela)
 - ✅ Detector de port scan por IP (sliding window por portas de destino únicas em logs de firewall)
@@ -31,6 +31,7 @@ Agente de defesa autônomo para servidores Linux e macOS. Dois componentes Rust:
 - ✅ **Collector `suricata_eve`** — tail de `/var/log/suricata/eve.json` (JSONL); suporta event_types configurável (alert, dns, http, tls, anomaly por default); mapeia severity Suricata inverso (1→Critical, 2→High, 3→Medium); incident passthrough para alert severity 1+2; builders por tipo (alert, dns, http, tls, anomaly); extrai IP, service (hostname HTTP); 10 testes
 - ✅ **Collector `osquery_log`** — tail de `/var/log/osquery/osqueryd.results.log` (JSONL); lê differential results (action=added/snapshot, skipa removed); severity por prefixo de query name (sudoers→High, listening_ports/crontab→Medium, processes/users→Low); filtra IPs privados; extrai IP remoto, path, user (preferência decorations); summaries contextuais por query slug; 9 testes
 - ✅ **Collector `wazuh_alerts`** — tail de `/var/ossec/logs/alerts/alerts.json` (JSONL); severity por `rule.level` (0-2→Debug, 3-6→Low, 7-9→Medium, 10-11→High, 12-15→Critical); kind de `rule.groups[0]` com prefixo `wazuh.`; extrai `data.srcip` (IP), `data.dstuser` (user), `agent.name` (service); incident passthrough para High/Critical; módulo `wazuh-integration/`; 12 testes
+- ✅ **Detector `user_agent_scanner`** — detecção imediata de scanners de segurança por User-Agent em eventos `http.request` do nginx_access; 20 assinaturas conhecidas (Nikto, sqlmap, Nuclei, Masscan, Zgrab, wfuzz, DirBuster, Gobuster, ffuf, Acunetix, w3af, AppScan, OpenVAS, Nessus, Burp Suite, Metasploit, Nmap, python-requests, go-http-client); emite `http.scanner_ua` (High) na primeira ocorrência; dedup por `(ip, scanner)` em janela de 10min; tags MITRE `T1595`, `T1595.002` (Active Scanning: Vulnerability Scanning); 11 testes
 
 ### Agent (`innerwarden-agent`)
 - ✅ Leitura incremental de JSONL via byte-offset cursors (sem re-leitura)
@@ -157,6 +158,7 @@ crates/
         search_abuse.rs      — sliding window por IP+path (nginx http.request events)
         web_scan.rs          — sliding window por IP (nginx http.error events); detecta scanners/probes; 6 testes
         execution_guard.rs   — AST (tree-sitter-bash) + argv analysis + timeline correlation por usuário
+        user_agent_scanner.rs — UA-based scanner detection (http.request); 20 signatures; dedup 10min; MITRE T1595/T1595.002; 11 testes
       sinks/
         jsonl.rs             — DatedWriter com rotação diária
         state.rs             — load/save atômico de cursors
@@ -239,7 +241,7 @@ integrations/                      — integration recipes (declarative specs fo
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 452 testes (157 sensor + 172 agent + 123 ctl)
+make test             # 470 testes (175 sensor + 172 agent + 123 ctl)
 make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -371,6 +373,10 @@ window_seconds = 60
 enabled = false       # recomendado habilitar com política clara de resposta e governança
 threshold = 3         # comandos sudo suspeitos por usuário na janela
 window_seconds = 300
+
+[detectors.user_agent_scanner]
+enabled = false       # recomendado habilitar se nginx_access.enabled = true
+# Sem parâmetros de threshold — qualquer UA de scanner conhecido é incidente imediato
 ```
 
 ### Variáveis de ambiente (`.env`)
@@ -646,7 +652,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 452 testes (157 sensor + 172 agent + 123 ctl) — todos devem passar
+make test   # 470 testes (175 sensor + 172 agent + 123 ctl) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
