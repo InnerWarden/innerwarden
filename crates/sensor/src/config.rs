@@ -48,12 +48,31 @@ pub struct CollectorsConfig {
     pub osquery_log: OsqueryLogConfig,
     #[serde(default)]
     pub macos_log: MacosLogConfig,
+    #[serde(default)]
+    pub wazuh_alerts: WazuhAlertsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MacosLogConfig {
     #[serde(default)]
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WazuhAlertsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_wazuh_alerts_path")]
+    pub path: String,
+}
+
+impl Default for WazuhAlertsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: default_wazuh_alerts_path(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -441,6 +460,10 @@ fn default_suricata_event_types() -> Vec<String> {
 
 fn default_falco_log_path() -> String {
     "/var/log/falco/falco.log".to_string()
+}
+
+fn default_wazuh_alerts_path() -> String {
+    "/var/ossec/logs/alerts/alerts.json".to_string()
 }
 
 fn default_execution_guard_mode() -> String {

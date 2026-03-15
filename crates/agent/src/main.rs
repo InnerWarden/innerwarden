@@ -12,6 +12,7 @@ mod narrative;
 mod reader;
 mod report;
 mod skills;
+mod slack;
 mod telegram;
 mod telemetry;
 mod webhook;
@@ -127,6 +128,8 @@ struct AgentState {
     fail2ban: Option<fail2ban::Fail2BanState>,
     /// GeoIP client for IP geolocation enrichment via ip-api.com (None when disabled).
     geoip_client: Option<geoip::GeoIpClient>,
+    /// Slack client for incident notifications (None when disabled).
+    slack_client: Option<slack::SlackClient>,
 }
 
 const DECISION_COOLDOWN_SECS: i64 = 3600;
@@ -528,6 +531,28 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Build Slack client (None when disabled or unconfigured)
+    let slack_client: Option<slack::SlackClient> = if cfg.slack.enabled {
+        let url = cfg.slack.resolved_webhook_url();
+        if url.is_empty() {
+            warn!("slack.enabled = true but webhook_url not configured — disabling");
+            None
+        } else {
+            match slack::SlackClient::new(&url) {
+                Ok(c) => {
+                    info!("Slack notifications enabled");
+                    Some(c)
+                }
+                Err(e) => {
+                    warn!("failed to create Slack client: {e:#}");
+                    None
+                }
+            }
+        }
+    } else {
+        None
+    };
+
     // Create approval channel — polling task is spawned after state is built (continuous mode only)
     let (approval_tx, approval_rx_for_state) =
         tokio::sync::mpsc::channel::<telegram::ApprovalResult>(64);
@@ -600,6 +625,7 @@ async fn main() -> Result<()> {
         } else {
             None
         },
+        slack_client,
     };
 
     let state_path = cli.data_dir.join("agent-state.json");
@@ -900,6 +926,13 @@ async fn process_incidents(
         None
     };
 
+    // Pre-compute Slack threshold (None = slack disabled)
+    let slack_min_rank: Option<u8> = if cfg.slack.enabled && state.slack_client.is_some() {
+        Some(webhook::severity_rank(&cfg.slack.parsed_min_severity()))
+    } else {
+        None
+    };
+
     // Drain any pending T.2 approval results from the Telegram polling task
     let pending_approvals: Vec<telegram::ApprovalResult> = {
         let mut results = Vec::new();
@@ -988,6 +1021,22 @@ async fn process_incidents(
                 if let Some(tg) = tg {
                     if let Err(e) = tg.send_incident_alert(incident).await {
                         warn!(incident_id = %incident.incident_id, "Telegram alert failed: {e:#}");
+                    }
+                }
+            }
+        }
+
+        // 1c. Slack — push notification via Incoming Webhook
+        if let Some(min_rank) = slack_min_rank {
+            if webhook::severity_rank(&incident.severity) >= min_rank {
+                if let Some(ref sc) = state.slack_client {
+                    let dashboard_url = if cfg.slack.dashboard_url.is_empty() {
+                        None
+                    } else {
+                        Some(cfg.slack.dashboard_url.as_str())
+                    };
+                    if let Err(e) = sc.send_incident_alert(incident, dashboard_url).await {
+                        warn!(incident_id = %incident.incident_id, "Slack alert failed: {e:#}");
                     }
                 }
             }
@@ -2001,6 +2050,7 @@ mod tests {
             abuseipdb: None,
             fail2ban: None,
             geoip_client: None,
+            slack_client: None,
         };
 
         // 4. Run the incident tick
@@ -2109,6 +2159,7 @@ mod tests {
             abuseipdb: None,
             fail2ban: None,
             geoip_client: None,
+            slack_client: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2192,6 +2243,7 @@ mod tests {
             abuseipdb: None,
             fail2ban: None,
             geoip_client: None,
+            slack_client: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2287,6 +2339,7 @@ mod tests {
             abuseipdb: None,
             fail2ban: None,
             geoip_client: None,
+            slack_client: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2359,6 +2412,7 @@ mod tests {
             abuseipdb: None,
             fail2ban: None,
             geoip_client: None,
+            slack_client: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2443,6 +2497,7 @@ mod tests {
             abuseipdb: None,
             fail2ban: None,
             geoip_client: None,
+            slack_client: None,
         };
 
         let mut cursor = reader::AgentCursor::default();

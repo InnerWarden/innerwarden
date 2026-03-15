@@ -9,3 +9,4 @@ pub mod nginx_access;
 pub mod nginx_error;
 pub mod osquery_log;
 pub mod suricata_eve;
+pub mod wazuh_alerts;

@@ -2621,6 +2621,83 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
 
             run_section(tg, &mut total_issues);
         }
+
+        // Only check Slack when enabled = true in agent config.
+        let slack_enabled = agent_toml
+            .as_ref()
+            .and_then(|doc| doc.get("slack"))
+            .and_then(|t| t.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if slack_enabled {
+            println!("\nSlack");
+            let mut sl = Vec::new();
+
+            let env_file_path = cli
+                .agent_config
+                .parent()
+                .map(|p| p.join("agent.env"))
+                .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+            // Resolve webhook_url: config → env var → agent.env file
+            let url_in_config = agent_toml
+                .as_ref()
+                .and_then(|doc| doc.get("slack"))
+                .and_then(|t| t.get("webhook_url"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let url_in_env = std::env::var("SLACK_WEBHOOK_URL")
+                .ok()
+                .filter(|s| !s.is_empty());
+            let url_in_file = std::fs::read_to_string(&env_file_path)
+                .map(|s| {
+                    s.lines()
+                        .find(|l| l.starts_with("SLACK_WEBHOOK_URL="))
+                        .and_then(|l| l.split_once('=').map(|x| x.1))
+                        .filter(|v| !v.is_empty())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or(None);
+            let resolved_url = url_in_config.or(url_in_env).or(url_in_file);
+
+            match &resolved_url {
+                None => {
+                    sl.push(Check::fail(
+                        "SLACK_WEBHOOK_URL not set",
+                        format!(
+                            "1. In Slack: Apps → Incoming Webhooks → Add to Slack\n\
+                             2. Choose a channel and copy the Webhook URL\n\
+                             3. Add to {}:\n\
+                             \n   SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T.../B.../...",
+                            env_file_path.display()
+                        ),
+                    ));
+                }
+                Some(url) => {
+                    let looks_valid = url.starts_with("https://hooks.slack.com/services/")
+                        && url.len() > 50;
+                    sl.push(if looks_valid {
+                        Check::ok("SLACK_WEBHOOK_URL is set and format looks correct")
+                    } else {
+                        Check::warn(
+                            "SLACK_WEBHOOK_URL is set but format looks wrong",
+                            "URL should start with https://hooks.slack.com/services/T.../B.../...\n\
+                             Get a fresh webhook URL from your Slack workspace settings",
+                        )
+                    });
+                }
+            }
+
+            if resolved_url.is_some() {
+                sl.push(Check::ok(
+                    "Slack configured — test it: innerwarden-agent --config /etc/innerwarden/agent.toml --once",
+                ));
+            }
+
+            run_section(sl, &mut total_issues);
+        }
     }
 
     // ── Capabilities ──────────────────────────────────────

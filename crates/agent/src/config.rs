@@ -36,6 +36,8 @@ pub struct AgentConfig {
     pub fail2ban: Fail2BanConfig,
     #[serde(default)]
     pub geoip: GeoIpConfig,
+    #[serde(default)]
+    pub slack: SlackConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -704,6 +706,74 @@ impl Default for TelegramConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Slack
+// ---------------------------------------------------------------------------
+
+/// Configuration for Slack Incoming Webhook notifications.
+#[derive(Debug, Deserialize)]
+pub struct SlackConfig {
+    /// Enable Slack notifications (default: false)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Slack Incoming Webhook URL.
+    /// Example: "https://hooks.slack.com/services/T.../B.../..."
+    /// Prefer env var SLACK_WEBHOOK_URL.
+    #[serde(default)]
+    pub webhook_url: String,
+
+    /// Minimum severity to notify (default: "high").
+    /// Accepted values: "debug", "info", "low", "medium", "high", "critical"
+    #[serde(default = "default_slack_min_severity")]
+    pub min_severity: String,
+
+    /// Optional base URL for dashboard deep-links in messages.
+    /// Example: "http://your-server:8787"
+    #[serde(default)]
+    pub dashboard_url: String,
+}
+
+impl SlackConfig {
+    /// Resolve webhook_url: config field takes precedence, then env var SLACK_WEBHOOK_URL.
+    pub fn resolved_webhook_url(&self) -> String {
+        if !self.webhook_url.is_empty() {
+            return self.webhook_url.clone();
+        }
+        std::env::var("SLACK_WEBHOOK_URL").unwrap_or_default()
+    }
+
+    /// Parse min_severity string into a Severity, defaulting to High on error.
+    pub fn parsed_min_severity(&self) -> Severity {
+        match self.min_severity.to_lowercase().as_str() {
+            "debug" => Severity::Debug,
+            "info" => Severity::Info,
+            "low" => Severity::Low,
+            "medium" => Severity::Medium,
+            "high" => Severity::High,
+            "critical" => Severity::Critical,
+            other => {
+                tracing::warn!(
+                    min_severity = other,
+                    "unrecognised slack min_severity — defaulting to 'high'"
+                );
+                Severity::High
+            }
+        }
+    }
+}
+
+impl Default for SlackConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            webhook_url: String::new(),
+            min_severity: default_slack_min_severity(),
+            dashboard_url: String::new(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Loader
 // ---------------------------------------------------------------------------
 
@@ -947,6 +1017,10 @@ fn default_data_reports_keep_days() -> usize {
 }
 
 fn default_telegram_min_severity() -> String {
+    "high".to_string()
+}
+
+fn default_slack_min_severity() -> String {
     "high".to_string()
 }
 

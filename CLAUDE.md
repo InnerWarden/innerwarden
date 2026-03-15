@@ -30,6 +30,7 @@ Agente de defesa autônomo para servidores Linux e macOS. Dois componentes Rust:
 - ✅ **Collector `falco_log`** — tail de `/var/log/falco/falco.log` (JSONL); mapeia priority → Severity; extrai entidades de `output_fields` (IP, user, container, pod); incident passthrough automático para High/Critical (Falco já fez a detecção, InnerWarden só tria e responde); 12 testes
 - ✅ **Collector `suricata_eve`** — tail de `/var/log/suricata/eve.json` (JSONL); suporta event_types configurável (alert, dns, http, tls, anomaly por default); mapeia severity Suricata inverso (1→Critical, 2→High, 3→Medium); incident passthrough para alert severity 1+2; builders por tipo (alert, dns, http, tls, anomaly); extrai IP, service (hostname HTTP); 10 testes
 - ✅ **Collector `osquery_log`** — tail de `/var/log/osquery/osqueryd.results.log` (JSONL); lê differential results (action=added/snapshot, skipa removed); severity por prefixo de query name (sudoers→High, listening_ports/crontab→Medium, processes/users→Low); filtra IPs privados; extrai IP remoto, path, user (preferência decorations); summaries contextuais por query slug; 9 testes
+- ✅ **Collector `wazuh_alerts`** — tail de `/var/ossec/logs/alerts/alerts.json` (JSONL); severity por `rule.level` (0-2→Debug, 3-6→Low, 7-9→Medium, 10-11→High, 12-15→Critical); kind de `rule.groups[0]` com prefixo `wazuh.`; extrai `data.srcip` (IP), `data.dstuser` (user), `agent.name` (service); incident passthrough para High/Critical; módulo `wazuh-integration/`; 12 testes
 
 ### Agent (`innerwarden-agent`)
 - ✅ Leitura incremental de JSONL via byte-offset cursors (sem re-leitura)
@@ -83,6 +84,7 @@ Agente de defesa autônomo para servidores Linux e macOS. Dois componentes Rust:
 - ✅ **AbuseIPDB enrichment** — lookup antes do call AI; injetado no prompt como `IP REPUTATION (AbuseIPDB):`; fail-silent (rate limit, timeout, parse error → None); módulo `abuseipdb-enrichment/`
 - ✅ **Fail2ban integration** — `fail2ban::sync_tick` polls `fail2ban-client` CLI via `spawn_blocking`; bans não-privados não na blocklist são aplicados via block skills; `ai_provider: "fail2ban:<jail>"`; módulo `fail2ban-integration/`
 - ✅ **GeoIP enrichment** — ip-api.com free (45 req/min, sem API key); injetado no prompt como `IP GEOLOCATION:`; fail-silent; módulo `geoip-enrichment/`
+- ✅ **Slack notify** — `SlackClient` com Incoming Webhook POST; Block Kit com emoji + sidebar colorida + context row (host, entity, incident_id) + botão deep-link opcional para dashboard; `SlackConfig` com `webhook_url` / `SLACK_WEBHOOK_URL` / `min_severity` / `dashboard_url`; módulo `slack-notify/`; 5 testes
 
 ---
 
@@ -145,6 +147,7 @@ crates/
         nginx_access.rs      — tail nginx access log (Combined Log Format), emite http.request
         nginx_error.rs       — tail nginx error.log; emite http.error (warn/error/crit com client IP); 8 testes
         macos_log.rs         — subprocess `log stream` (macOS); reusa parser SSH; emite sudo.command
+        wazuh_alerts.rs      — tail /var/ossec/logs/alerts/alerts.json; severity por rule.level; incident passthrough High/Critical; 12 testes
       detectors/
         ssh_bruteforce.rs    — sliding window por IP
         credential_stuffing.rs — spray de usuários distintos por IP
@@ -173,6 +176,7 @@ crates/
       abuseipdb.rs           — AbuseIpDbClient: IP reputation enrichment via AbuseIPDB API v2; IpReputation + as_context_line(); 6 testes
       fail2ban.rs            — Fail2BanClient: polls fail2ban-client CLI for active bans; sync_tick enforces via block skills; 5 testes
       geoip.rs               — GeoIpClient: ip-api.com lookup (free, no key); GeoInfo + as_context_line(); injected into AI prompt; 5 testes
+      slack.rs               — SlackClient: Incoming Webhook POST with Block Kit; severity emoji + color sidebar; optional dashboard deep-link; 5 testes
       ai/
         mod.rs               — AiProvider trait, AiDecision, AiAction, algorithm gate, factory
         openai.rs            — implementação real OpenAI (gpt-4o-mini)
@@ -215,6 +219,8 @@ modules/                           — soluções verticais empacotadas (ver doc
   abuseipdb-enrichment/            — AbuseIPDB IP reputation → AI context enrichment (built-in)
   fail2ban-integration/            — fail2ban active bans → block skills enforcement (built-in)
   geoip-enrichment/                — ip-api.com geolocation → AI context enrichment (built-in, no API key)
+  wazuh-integration/               — Wazuh HIDS alerts → incidents (built-in, incident passthrough High+, 12 testes)
+  slack-notify/                    — Slack Incoming Webhook notifications (built-in)
   osquery-integration/             — osquery differential results → events (built-in, observability, sem passthrough)
 docs/
   module-authoring.md              — guia completo para criar módulos + passo-a-passo Claude Code/Codex
@@ -232,7 +238,7 @@ integrations/                      — integration recipes (declarative specs fo
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 410 testes (127 sensor + 167 agent + 116 ctl)
+make test             # 427 testes (139 sensor + 172 agent + 116 ctl)
 make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -517,6 +523,8 @@ modules/
   abuseipdb-enrichment/ — AbuseIPDB IP reputation → AI context enrichment
   fail2ban-integration/ — fail2ban active bans → block skills enforcement
   geoip-enrichment/     — ip-api.com geolocation → AI context enrichment (no API key)
+  wazuh-integration/    — Wazuh HIDS alerts → incidents (passthrough High+)
+  slack-notify/         — Slack Incoming Webhook notifications
 ```
 
 Cada módulo contém:
@@ -634,7 +642,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 410 testes (127 sensor + 167 agent + 116 ctl) — todos devem passar
+make test   # 427 testes (139 sensor + 172 agent + 116 ctl) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -750,8 +758,11 @@ Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8):
 - **AbuseIPDB enrichment:** ✅ implementado; `crates/agent/src/abuseipdb.rs`; lookup antes do call AI para IPs de incidentes High/Critical; injetado no prompt como `IP REPUTATION (AbuseIPDB):`; fail-silent (rate limit, timeout, parse error não bloqueiam o agent); módulo `abuseipdb-enrichment/`; 6 testes
 - **Fail2ban integration:** ✅ implementado; `crates/agent/src/fail2ban.rs`; `Fail2BanClient` polls `fail2ban-client status` + `fail2ban-client status <jail>` via `spawn_blocking`; `sync_tick` emite `block_ip` para IPs banidos não-privados ainda não na blocklist; `ai_provider: "fail2ban:<jail>"`; módulo `fail2ban-integration/`; 5 testes
 - **GeoIP enrichment:** ✅ implementado; `crates/agent/src/geoip.rs`; lookup em `ip-api.com` (free, 45 req/min, sem API key); injetado no prompt como `IP GEOLOCATION:`; `GeoInfo { country, country_code, city, isp, asn }`; fail-silent; módulo `geoip-enrichment/`; 5 testes
+- **Wazuh integration:** ✅ implementado; `crates/sensor/src/collectors/wazuh_alerts.rs`; tail de `/var/ossec/logs/alerts/alerts.json` (JSONL); severity por `rule.level` (0-15 → Debug/Low/Medium/High/Critical); kind de `rule.groups[0]` com prefixo `wazuh.`; extrai `data.srcip` (IP), `data.dstuser` (user), `agent.name` (service); incident passthrough para High/Critical; módulo `wazuh-integration/`; 12 testes
+- **Slack notify:** ✅ implementado; `crates/agent/src/slack.rs`; Incoming Webhook POST com Block Kit; emoji + sidebar colorida + context row + botão deep-link; `SlackConfig` com key resolution config/env/agent.env; módulo `slack-notify/`; 5 testes
 - **doctor fail2ban:** ✅ seção em `innerwarden doctor`; verifica `fail2ban-client` binary + responsividade de `ping`; warning em macOS
 - **doctor AbuseIPDB:** ✅ seção condicional quando `abuseipdb.enabled = true`; resolve key de config / env var / agent.env; valida comprimento mínimo da chave
+- **doctor Slack:** ✅ seção condicional quando `slack.enabled = true`; resolve `SLACK_WEBHOOK_URL` de config / env var / agent.env; valida formato da URL
 
 Próximas direções:
 - **Q.2 — VM end-to-end:** subir Ubuntu 22.04 + Falco + Suricata + osquery + InnerWarden, gerar tráfego simulado, validar UC-1 a UC-4 (user-side)

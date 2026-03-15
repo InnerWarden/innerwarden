@@ -126,6 +126,16 @@ builtin     = true
 enables     = []
 
 [[modules]]
+id          = "wazuh-integration"
+name        = "Wazuh Integration"
+version     = "0.1.0"
+description = "Ingests Wazuh HIDS alerts (level >= 10) and routes High+ severity incidents through InnerWarden's AI triage"
+tags        = ["wazuh", "hids", "fim", "compliance", "mitre"]
+tier        = "open"
+builtin     = true
+enables     = []
+
+[[modules]]
 id          = "nginx-error-monitor"
 name        = "Nginx Error Monitor"
 version     = "0.1.0"
@@ -171,6 +181,16 @@ name        = "GeoIP Enrichment"
 version     = "0.1.0"
 description = "Enriches AI triage context with country, city, ISP and ASN via ip-api.com — no API key required, free tier 45 req/min"
 tags        = ["geoip", "enrichment", "threat-intelligence", "geolocation"]
+tier        = "open"
+builtin     = true
+enables     = []
+
+[[modules]]
+id          = "slack-notify"
+name        = "Slack Notify"
+version     = "0.1.0"
+description = "Sends incident alerts to a Slack channel via Incoming Webhook — Block Kit messages with severity badge, summary, and optional dashboard deep-link"
+tags        = ["slack", "notifications", "alerting"]
 tier        = "open"
 builtin     = true
 enables     = []

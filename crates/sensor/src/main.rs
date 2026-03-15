@@ -15,7 +15,7 @@ use collectors::{
     falco_log::FalcoLogCollector, integrity::IntegrityCollector, journald::JournaldCollector,
     macos_log::MacosLogCollector, nginx_access::NginxAccessCollector,
     nginx_error::NginxErrorCollector, osquery_log::OsqueryLogCollector,
-    suricata_eve::SuricataEveCollector,
+    suricata_eve::SuricataEveCollector, wazuh_alerts::WazuhAlertsCollector,
 };
 use detectors::credential_stuffing::CredentialStuffingDetector;
 use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
@@ -96,6 +96,7 @@ async fn main() -> Result<()> {
     let shared_falco_offset = Arc::new(AtomicU64::new(0));
     let shared_suricata_offset = Arc::new(AtomicU64::new(0));
     let shared_osquery_offset = Arc::new(AtomicU64::new(0));
+    let shared_wazuh_offset = Arc::new(AtomicU64::new(0));
 
     // SSH brute force detector (stateful, lives in main loop)
     let ssh_detector = cfg.detectors.ssh_bruteforce.enabled.then(|| {
@@ -402,6 +403,25 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Spawn wazuh_alerts collector
+    if cfg.collectors.wazuh_alerts.enabled {
+        let wc = &cfg.collectors.wazuh_alerts;
+        let offset = state
+            .get_cursor("wazuh_alerts")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        shared_wazuh_offset.store(offset, Ordering::Relaxed);
+        let collector = WazuhAlertsCollector::new(&wc.path, &cfg.agent.host_id, offset);
+        info!(path = %wc.path, offset, "starting wazuh_alerts collector");
+        let tx_wazuh = tx.clone();
+        let shared = Arc::clone(&shared_wazuh_offset);
+        tokio::spawn(async move {
+            if let Err(e) = collector.run(tx_wazuh, shared).await {
+                tracing::error!("wazuh_alerts collector error: {e:#}");
+            }
+        });
+    }
+
     // Drop the original tx — each collector holds its own clone.
     // When all collector tasks finish, all senders drop and rx.recv() returns None.
     drop(tx);
@@ -541,6 +561,9 @@ async fn main() -> Result<()> {
     let osquery_offset = shared_osquery_offset.load(Ordering::Relaxed);
     state.set_cursor("osquery_log", serde_json::json!(osquery_offset));
 
+    let wazuh_offset = shared_wazuh_offset.load(Ordering::Relaxed);
+    state.set_cursor("wazuh_alerts", serde_json::json!(wazuh_offset));
+
     state.save(&state_path)?;
     info!(auth_offset, "state saved");
 
@@ -551,7 +574,7 @@ async fn main() -> Result<()> {
 /// High/Critical events from these sources are promoted directly to incidents
 /// without going through an InnerWarden detector.
 fn is_passthrough_source(source: &str) -> bool {
-    matches!(source, "falco" | "suricata")
+    matches!(source, "falco" | "suricata" | "wazuh")
 }
 
 fn process_event(
@@ -649,6 +672,11 @@ fn passthrough_incident(
         "suricata" => vec![
             "Review Suricata IDS signature".to_string(),
             "Check network flow context in eve.json".to_string(),
+            "Consider blocking source IP if attack pattern confirmed".to_string(),
+        ],
+        "wazuh" => vec![
+            "Review Wazuh alert rule and level".to_string(),
+            "Check agent logs for additional context".to_string(),
             "Consider blocking source IP if attack pattern confirmed".to_string(),
         ],
         _ => vec!["Review source alert details".to_string()],
