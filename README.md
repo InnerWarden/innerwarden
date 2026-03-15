@@ -30,7 +30,7 @@ With Inner Warden (auto-execution enabled):
 00:47  Decision logged to audit trail. Server defended itself.
 ```
 
-No human needed. Full audit trail. Reversible.
+No human needed when auto-execution is enabled; otherwise approvals/alerts apply. Full audit trail. Reversible.
 
 ---
 
