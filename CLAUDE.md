@@ -17,7 +17,7 @@ Agente de defesa autônomo para servidores Linux e macOS. Dois componentes Rust:
 - ✅ Trilha opcional de shell via `auditd` (`type=EXECVE`) com parser de comando executado
 - ✅ Ingestão opcional de `auditd type=TTY` (alto impacto de privacidade, gated por config)
 - ✅ Monitoramento de Docker events (start / stop / die / OOM) + **privilege escalation detection**: `docker inspect` no `container.start`; detecta `--privileged`, docker.sock mount (`HostConfig.Binds` + `Mounts`), `CapAdd` perigoso (`SYS_ADMIN`, `NET_ADMIN`, `SYS_PTRACE`, `SYS_MODULE`); emite `container.privileged` (High), `container.sock_mount` (High), `container.dangerous_cap` (Medium); 10 testes
-- ✅ Integridade de arquivos via SHA-256 polling configurável
+- ✅ Integridade de arquivos via SHA-256 polling configurável + **SSH key tampering detection**: quando o arquivo alterado é `authorized_keys`, emite `ssh.authorized_keys_changed` (High) em vez de `file.changed`; extrai username do path (`/home/<user>/.ssh/` → user); inclui entidade User + tags `persistence`, `T1098.004` (MITRE ATT&CK); detalhes com `mitre.technique`; 8 testes
 - ✅ Detector de SSH brute-force (sliding window por IP, threshold configurável)
 - ✅ Detector de SSH credential stuffing por IP (spray de múltiplos usuários em janela)
 - ✅ Detector de port scan por IP (sliding window por portas de destino únicas em logs de firewall)
@@ -238,7 +238,7 @@ integrations/                      — integration recipes (declarative specs fo
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 437 testes (149 sensor + 172 agent + 116 ctl)
+make test             # 445 testes (157 sensor + 172 agent + 116 ctl)
 make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -642,7 +642,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 437 testes (149 sensor + 172 agent + 116 ctl) — todos devem passar
+make test   # 445 testes (157 sensor + 172 agent + 116 ctl) — todos devem passar
 ```
 
 Fixtures em `testdata/`:

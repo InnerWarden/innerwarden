@@ -127,6 +127,11 @@ fn hash_file(path: &Path) -> io::Result<String> {
 }
 
 fn make_change_event(path: &Path, new_hash: &str, old_hash: &str, host: &str) -> Event {
+    // Detect authorized_keys changes — emit a specific event with username and MITRE tagging.
+    if let Some(ev) = make_ssh_key_event(path, new_hash, old_hash, host) {
+        return ev;
+    }
+
     Event {
         ts: Utc::now(),
         host: host.to_string(),
@@ -142,6 +147,84 @@ fn make_change_event(path: &Path, new_hash: &str, old_hash: &str, host: &str) ->
         tags: vec!["integrity".to_string(), "file".to_string()],
         entities: vec![EntityRef::path(path.display().to_string())],
     }
+}
+
+/// Returns a specific SSH key tampering event when `path` is an authorized_keys file.
+/// Returns None for all other file types (caller falls through to generic event).
+///
+/// Extracts the username from the path: `/home/<user>/.ssh/authorized_keys` or
+/// `/root/.ssh/authorized_keys`. Tagged as MITRE ATT&CK T1098.004 (Account Manipulation:
+/// SSH Authorized Keys).
+fn make_ssh_key_event(path: &Path, new_hash: &str, old_hash: &str, host: &str) -> Option<Event> {
+    let filename = path.file_name()?.to_str()?;
+    if filename != "authorized_keys" {
+        return None;
+    }
+
+    // Extract username from path components:
+    // /home/<user>/.ssh/authorized_keys → user = <user>
+    // /root/.ssh/authorized_keys        → user = "root"
+    let path_str = path.display().to_string();
+    let username = extract_ssh_username(path);
+
+    let summary = match &username {
+        Some(user) => format!("SSH authorized_keys modified for user '{user}': {path_str}"),
+        None => format!("SSH authorized_keys modified: {path_str}"),
+    };
+
+    let mut entities = vec![EntityRef::path(path_str.clone())];
+    if let Some(ref user) = username {
+        entities.push(EntityRef::user(user.clone()));
+    }
+
+    Some(Event {
+        ts: Utc::now(),
+        host: host.to_string(),
+        source: "integrity".to_string(),
+        kind: "ssh.authorized_keys_changed".to_string(),
+        severity: Severity::High,
+        summary,
+        details: serde_json::json!({
+            "path": path_str,
+            "username": username,
+            "old_hash": &old_hash[..12.min(old_hash.len())],
+            "new_hash": &new_hash[..12.min(new_hash.len())],
+            "mitre": { "technique": "T1098.004", "tactic": "Persistence", "name": "Account Manipulation: SSH Authorized Keys" },
+        }),
+        tags: vec![
+            "integrity".to_string(),
+            "ssh".to_string(),
+            "persistence".to_string(),
+            "T1098.004".to_string(),
+        ],
+        entities,
+    })
+}
+
+/// Extract a username from an authorized_keys path.
+/// `/home/<user>/.ssh/authorized_keys` → Some("<user>")
+/// `/root/.ssh/authorized_keys`        → Some("root")
+/// Anything else                       → None
+fn extract_ssh_username(path: &Path) -> Option<String> {
+    let components: Vec<_> = path.components().collect();
+    // Minimum: / home <user> .ssh authorized_keys  → 5 components
+    // or:      / root .ssh authorized_keys          → 4 components
+    let n = components.len();
+    if n < 4 {
+        return None;
+    }
+    // Check that second-to-last component is ".ssh"
+    let ssh_dir = components[n - 2].as_os_str().to_str()?;
+    if ssh_dir != ".ssh" {
+        return None;
+    }
+    // For /root/.ssh/authorized_keys the parent of .ssh is "root"
+    // For /home/alice/.ssh/authorized_keys the parent of .ssh is "alice"
+    let candidate = components[n - 3].as_os_str().to_str()?;
+    if candidate.is_empty() {
+        return None;
+    }
+    Some(candidate.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -203,5 +286,82 @@ mod tests {
         assert!(result.is_ok());
         let (events, _) = result.unwrap();
         assert!(events.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // SSH key tampering tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn authorized_keys_change_emits_ssh_specific_event() {
+        let fake_hash_old = "a".repeat(64);
+        let fake_hash_new = "b".repeat(64);
+        let path = Path::new("/home/alice/.ssh/authorized_keys");
+        let ev = make_change_event(path, &fake_hash_new, &fake_hash_old, "host");
+        assert_eq!(ev.kind, "ssh.authorized_keys_changed");
+        assert_eq!(ev.severity, Severity::High);
+        assert!(ev.summary.contains("alice"));
+    }
+
+    #[test]
+    fn root_authorized_keys_extracts_root_username() {
+        let path = Path::new("/root/.ssh/authorized_keys");
+        let user = extract_ssh_username(path);
+        assert_eq!(user.as_deref(), Some("root"));
+    }
+
+    #[test]
+    fn home_user_authorized_keys_extracts_username() {
+        let path = Path::new("/home/deploy/.ssh/authorized_keys");
+        let user = extract_ssh_username(path);
+        assert_eq!(user.as_deref(), Some("deploy"));
+    }
+
+    #[test]
+    fn non_authorized_keys_file_uses_generic_event() {
+        let fake_hash_old = "a".repeat(64);
+        let fake_hash_new = "b".repeat(64);
+        let path = Path::new("/etc/ssh/sshd_config");
+        let ev = make_change_event(path, &fake_hash_new, &fake_hash_old, "host");
+        assert_eq!(ev.kind, "file.changed");
+    }
+
+    #[test]
+    fn authorized_keys_event_has_persistence_tags() {
+        let fake_hash_old = "a".repeat(64);
+        let fake_hash_new = "b".repeat(64);
+        let path = Path::new("/home/bob/.ssh/authorized_keys");
+        let ev = make_change_event(path, &fake_hash_new, &fake_hash_old, "host");
+        assert!(ev.tags.contains(&"T1098.004".to_string()));
+        assert!(ev.tags.contains(&"persistence".to_string()));
+        assert!(ev.tags.contains(&"ssh".to_string()));
+    }
+
+    #[test]
+    fn authorized_keys_event_includes_user_entity() {
+        use innerwarden_core::entities::EntityType;
+        let fake_hash_old = "a".repeat(64);
+        let fake_hash_new = "b".repeat(64);
+        let path = Path::new("/home/carol/.ssh/authorized_keys");
+        let ev = make_change_event(path, &fake_hash_new, &fake_hash_old, "host");
+        let has_user_entity = ev.entities.iter().any(|e| e.r#type == EntityType::User && e.value == "carol");
+        assert!(has_user_entity);
+    }
+
+    #[test]
+    fn authorized_keys_event_has_mitre_in_details() {
+        let fake_hash_old = "a".repeat(64);
+        let fake_hash_new = "b".repeat(64);
+        let path = Path::new("/home/dave/.ssh/authorized_keys");
+        let ev = make_change_event(path, &fake_hash_new, &fake_hash_old, "host");
+        assert_eq!(ev.details["mitre"]["technique"], "T1098.004");
+    }
+
+    #[test]
+    fn non_ssh_dir_path_returns_none_for_username() {
+        // /etc/authorized_keys — not under .ssh/
+        let path = Path::new("/etc/authorized_keys");
+        let user = extract_ssh_username(path);
+        assert!(user.is_none());
     }
 }
