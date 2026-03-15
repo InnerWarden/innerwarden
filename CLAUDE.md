@@ -62,7 +62,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Modo `--once` para processamento batch
 - ✅ Modo `--report` v2: gera relatório operacional do trial com deltas dia-a-dia + anomaly hints + seção de telemetria (`trial-report-YYYY-MM-DD.{md,json}`) sem alterar estado; inclui seção `recent_window` com janela deslizante real de 6h (abrange ontem+hoje, usa campo `ts` e `action_type` corretos)
 - ✅ Carregamento automático de `.env` na inicialização (dotenvy, fail-silent)
-- ✅ Replay QA harness end-to-end (`make replay-qa`) com assertions estáveis de artefatos
+- ✅ Replay QA harness end-to-end (`make replay-qa`) com fixtures multi-source (auth_log + falco_log + suricata_eve + osquery_log) e assertions de source por collector
 - ✅ Playbook de rollout hardening + smoke checks remotos (`make rollout-precheck/postcheck`)
 - ✅ Correlação temporal leve de incidentes por janela + pivôs (`ip`, `user`, `detector`) com contexto para AI e clusters narráveis
 - ✅ Telemetria operacional leve (JSONL) com métricas de ingestão, detectores, gate, AI, latência, erros e dry-run vs execução real
@@ -263,7 +263,7 @@ make run-agent        # agent lendo ./data/
 make run-dashboard    # dashboard read-only em http://127.0.0.1:8787 (requer auth env vars)
 innerwarden-agent --dashboard-generate-password-hash  # gera hash Argon2 para auth do dashboard
 innerwarden-agent --report --data-dir ./data  # gera trial-report-YYYY-MM-DD.{md,json}
-make replay-qa        # replay end-to-end com assertions estáveis de artefatos
+make replay-qa        # replay end-to-end multi-source (auth_log + falco_log + suricata_eve + osquery_log)
 make ops-check DATA_DIR=./data  # quick ops-check da janela de 6h do último trial-report-*.json
 
 # Cross-compile para Linux arm64 (requer cargo-zigbuild + zig)
@@ -693,13 +693,28 @@ Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8):
 - **Fase D9:** ✅ busca inline — `<input type="search">` filtra cards client-side por qualquer texto visível; sem round-trip; re-aplicado após refreshLeft/refreshLeftLive
 - **Anthropic provider real:** ✅ POST `/v1/messages`, modelo padrão `claude-haiku-4-5-20251001`, troca automática do default OpenAI, `extract_json()` tolerante a prose, reutiliza `parse_decision` do openai.rs; 5 testes
 
+- **Telegram T.1 + T.2:** ✅ notificações High/Critical + aprovação inline keyboard; `telegram.rs` + config `[telegram]`; polling task em modo contínuo; 11 testes
+- **Ollama provider real:** ✅ POST `/api/chat`, `format: "json"`, `message.content`, `extract_json()` para prose, 120s timeout; 5 testes
+- **doctor provider-aware:** ✅ lê `[ai] provider` do agent.toml; valida OPENAI_API_KEY / ANTHROPIC_API_KEY / Ollama por provider; hints de rotação de chave + journalctl
+- **doctor Telegram:** ✅ section só quando `telegram.enabled = true`; valida formato bot token + chat_id; hints @BotFather / @userinfobot para iniciantes
+- **doctor integrations:** ✅ Falco (binary, service, log, json_output), Suricata (binary, service, eve.json, ET rules), osquery (binary, service, results log, schedule config)
+- **Q.1 replay-qa multi-source:** ✅ fixtures `sample-falco.jsonl` + `sample-suricata-eve.jsonl` + `sample-osquery.jsonl`; assertions de source por collector em `events-*.jsonl`
+- **L.1 install.sh --with-integrations:** ✅ detecta + oferece instalar Falco/Suricata/osquery; patches idempotentes no sensor.toml; reinicia sensor
+- **L.2 README Telemetry Stack:** ✅ seção 4-layer detection table + Ollama + link integrated-setup.md
+- **L.3 CI verde:** ✅ 365 testes passando (139 agent + 116 ctl + 110 sensor)
+- **L.4 CHANGELOG v0.1.0:** ✅ `CHANGELOG.md` com entrada completa — sensor, agent, skills, dashboard, ctl, módulos, infra
+- **Q.3 docs/integrated-setup.md:** ✅ guia Ubuntu 22.04: Falco + Suricata + osquery + InnerWarden + Telegram
+- **Q.4 doctor integrations:** ✅ (ver doctor integrations acima)
+- **Integration recipes:** ✅ sistema de recipes declarativo (`integrations/`) com specs para Falco, Wazuh, osquery; geração de collectors via AI a partir de recipe + module-authoring.md
+- **FalcoLogCollector:** ✅ implementado; `crates/sensor/src/collectors/falco_log.rs`; incident passthrough para High/Critical; módulo `falco-integration/`; 12 testes
+- **SuricataEveCollector:** ✅ implementado; `crates/sensor/src/collectors/suricata_eve.rs`; alert/dns/http/tls/anomaly; incident passthrough sev 1-2; módulo `suricata-integration/`; 10 testes
+- **OsqueryLogCollector:** ✅ implementado; `crates/sensor/src/collectors/osquery_log.rs`; severity por prefixo de query name (4 tiers); `removed` actions filtradas; IP privado filtrado; extrai IP (remote), path, user (decorations); summarys contextuais por query slug; módulo `osquery-integration/`; 9 testes
+
 Próximas direções:
+- **Q.2 — VM end-to-end:** subir Ubuntu 22.04 + Falco + Suricata + osquery + InnerWarden, gerar tráfego simulado, validar UC-1 a UC-4 (user-side)
+- **L.5 — Repositório público:** confirmar sem credenciais, adicionar tópicos GitHub, habilitar Discussions
 - **`innerwarden module search`** — registry central em TOML hospedado; `search <termo>` lista módulos da comunidade com `install_url`
 - **Fase D10** — notificações por browser (Web Notifications API) quando o dashboard está em background
-- **Integration recipes** — ✅ sistema de recipes declarativo (`integrations/`) com specs para Falco, Wazuh, osquery; geração de collectors via AI a partir de recipe + module-authoring.md
-- **FalcoLogCollector** — ✅ implementado; `crates/sensor/src/collectors/falco_log.rs`; incident passthrough para High/Critical; módulo `falco-integration/`; 12 testes
-- **SuricataEveCollector** — ✅ implementado; `crates/sensor/src/collectors/suricata_eve.rs`; alert/dns/http/tls/anomaly; incident passthrough sev 1-2; módulo `suricata-integration/`; 10 testes
-- **OsqueryLogCollector** — ✅ implementado; `crates/sensor/src/collectors/osquery_log.rs`; severity por prefixo de query name (4 tiers); `removed` actions filtradas; IP privado filtrado; extrai IP (remote), path, user (decorations); summarys contextuais por query slug; módulo `osquery-integration/`; 9 testes
 
 Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/public-readiness-checklist.md`
 

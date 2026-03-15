@@ -27,6 +27,14 @@ GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IW_USER="innerwarden"
 
+# Parse flags
+WITH_INTEGRATIONS=0
+for arg in "$@"; do
+  case "$arg" in
+    --with-integrations) WITH_INTEGRATIONS=1 ;;
+  esac
+done
+
 BIN_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/innerwarden"
 DATA_DIR="/var/lib/innerwarden"
@@ -522,6 +530,214 @@ ProtectHome=yes
 WantedBy=multi-user.target
 EOF
 
+# ── Integration installer ─────────────────────────────────────────────────────
+#
+# Called when --with-integrations is passed.
+# Detects Falco / Suricata / osquery, offers to install missing ones,
+# then patches /etc/innerwarden/config.toml with their collector sections.
+
+FALCO_LOG_PATH="/var/log/falco/events.json"
+SURICATA_EVE_PATH="/var/log/suricata/eve.json"
+OSQUERY_LOG_PATH="/var/log/osquery/osqueryd.results.log"
+
+_integration_installed() {
+  local binary="$1"
+  command -v "$binary" >/dev/null 2>&1
+}
+
+_offer_install_falco() {
+  if _integration_installed falco; then
+    log "Falco already installed: $(falco --version 2>/dev/null | head -1 || echo 'version unknown')"
+    return 0
+  fi
+  if [[ -t 0 ]]; then
+    echo
+    echo "Falco is not installed."
+    echo "  It detects anomalous syscall behaviour (container escapes, suspicious shells, etc.)."
+    if ! prompt_yes_no "Install Falco now?" "yes"; then
+      log "skipping Falco installation"
+      return 1
+    fi
+  else
+    log "Falco not found; skipping (non-interactive mode)"
+    return 1
+  fi
+
+  log "installing Falco..."
+  run_root bash -c '
+    curl -fsSL https://falco.org/repo/falcosecurity-packages.asc \
+      | gpg --dearmor -o /usr/share/keyrings/falco-archive-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/falco-archive-keyring.gpg] \
+https://download.falco.org/packages/deb stable main" \
+      | tee /etc/apt/sources.list.d/falcosecurity.list > /dev/null
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y falco
+  '
+
+  # Enable JSON output if falco is freshly installed
+  local falco_cfg="/etc/falco/falco.yaml"
+  if run_root test -f "$falco_cfg"; then
+    if ! run_root grep -q "json_output: true" "$falco_cfg"; then
+      run_root sed -i 's/json_output: false/json_output: true/' "$falco_cfg" 2>/dev/null || true
+      run_root bash -c "echo 'json_output: true' >> $falco_cfg" 2>/dev/null || true
+      log "Falco: enabled json_output in $falco_cfg"
+    fi
+    local log_dir
+    log_dir="$(dirname "$FALCO_LOG_PATH")"
+    run_root mkdir -p "$log_dir"
+    if ! run_root grep -q "json_include_output_property" "$falco_cfg" 2>/dev/null; then
+      run_root bash -c "cat >> $falco_cfg <<'FALCOCFG'
+
+# Added by innerwarden installer
+file_output:
+  enabled: true
+  keep_alive: false
+  filename: $FALCO_LOG_PATH
+FALCOCFG
+"
+    fi
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    run_root systemctl enable --now falco 2>/dev/null || true
+  fi
+  log "Falco installed and started"
+  return 0
+}
+
+_offer_install_suricata() {
+  if _integration_installed suricata; then
+    log "Suricata already installed: $(suricata --build-info 2>/dev/null | grep 'Suricata version' | head -1 || echo 'version unknown')"
+    return 0
+  fi
+  if [[ -t 0 ]]; then
+    echo
+    echo "Suricata is not installed."
+    echo "  It detects network-level threats (port scans, C2 callbacks, exploit attempts) via IDS/IPS rules."
+    if ! prompt_yes_no "Install Suricata now?" "yes"; then
+      log "skipping Suricata installation"
+      return 1
+    fi
+  else
+    log "Suricata not found; skipping (non-interactive mode)"
+    return 1
+  fi
+
+  log "installing Suricata + Emerging Threats rules..."
+  run_root bash -c '
+    DEBIAN_FRONTEND=noninteractive apt-get install -y suricata suricata-update
+    suricata-update 2>&1 | tail -5
+    systemctl enable --now suricata 2>/dev/null || true
+  '
+  log "Suricata installed and started (eve.json → $SURICATA_EVE_PATH)"
+  return 0
+}
+
+_offer_install_osquery() {
+  if _integration_installed osqueryd; then
+    log "osquery already installed: $(osqueryd --version 2>/dev/null | head -1 || echo 'version unknown')"
+    return 0
+  fi
+  if [[ -t 0 ]]; then
+    echo
+    echo "osquery is not installed."
+    echo "  It exposes host state (listening ports, crontabs, startup items, users) via SQL queries."
+    if ! prompt_yes_no "Install osquery now?" "yes"; then
+      log "skipping osquery installation"
+      return 1
+    fi
+  else
+    log "osquery not found; skipping (non-interactive mode)"
+    return 1
+  fi
+
+  log "installing osquery..."
+  run_root bash -c '
+    export OSQUERY_KEY=1484120AC4E9F8A1A577AEEE97A80C63C9D8B80B
+    apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys "$OSQUERY_KEY" 2>/dev/null || \
+      curl -fsSL "https://pkg.osquery.io/deb/pubkey.gpg" | apt-key add -
+    add-apt-repository "deb [arch=amd64] https://pkg.osquery.io/deb deb main" -y 2>/dev/null || \
+      echo "deb [arch=amd64] https://pkg.osquery.io/deb deb main" \
+        > /etc/apt/sources.list.d/osquery.list
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y osquery
+    systemctl enable --now osqueryd 2>/dev/null || true
+  '
+  log "osquery installed and started (results log → $OSQUERY_LOG_PATH)"
+  return 0
+}
+
+_append_integration_collector() {
+  local section="$1"   # TOML section text to append
+  local marker="$2"    # unique string to check before appending (idempotent)
+  if run_root grep -q "$marker" "${SENSOR_CONFIG}" 2>/dev/null; then
+    log "sensor config already contains $marker — skipping"
+    return
+  fi
+  local tmp
+  tmp="$(mktemp)"
+  run_root cat "${SENSOR_CONFIG}" > "$tmp"
+  printf '\n%s\n' "$section" >> "$tmp"
+  run_root install -o root -g "${IW_USER}" -m 640 "$tmp" "${SENSOR_CONFIG}"
+  rm -f "$tmp"
+}
+
+install_integrations() {
+  echo
+  log "=== Integration setup (--with-integrations) ==="
+  echo "  InnerWarden can ingest alerts from Falco, Suricata, and osquery."
+  echo "  Each tool covers a different detection layer."
+  echo
+
+  local need_restart=0
+
+  if _offer_install_falco; then
+    _append_integration_collector \
+      "[collectors.falco_log]
+enabled = true
+path = \"${FALCO_LOG_PATH}\"" \
+      "collectors.falco_log"
+    need_restart=1
+    log "Falco collector added to sensor config"
+  fi
+
+  if _offer_install_suricata; then
+    _append_integration_collector \
+      "[collectors.suricata_eve]
+enabled = true
+path = \"${SURICATA_EVE_PATH}\"
+event_types = [\"alert\", \"anomaly\"]" \
+      "collectors.suricata_eve"
+    need_restart=1
+    log "Suricata EVE collector added to sensor config"
+  fi
+
+  if _offer_install_osquery; then
+    _append_integration_collector \
+      "[collectors.osquery_log]
+enabled = true
+path = \"${OSQUERY_LOG_PATH}\"" \
+      "collectors.osquery_log"
+    need_restart=1
+    log "osquery collector added to sensor config"
+  fi
+
+  if [[ "$need_restart" -eq 1 ]]; then
+    log "restarting innerwarden-sensor to apply integration config..."
+    run_root systemctl restart innerwarden-sensor
+    if run_root systemctl is-active --quiet innerwarden-sensor; then
+      log "innerwarden-sensor restarted successfully"
+    else
+      log "WARNING: innerwarden-sensor failed to restart — check: sudo journalctl -u innerwarden-sensor -n 50"
+    fi
+  else
+    log "no integration collectors were added"
+  fi
+
+  echo
+  log "Integration setup complete. Run 'innerwarden doctor' to validate."
+}
+
 log "reloading systemd and starting services..."
 run_root systemctl daemon-reload
 run_root systemctl enable innerwarden-sensor innerwarden-agent >/dev/null
@@ -534,6 +750,10 @@ fi
 
 if ! run_root systemctl is-active --quiet innerwarden-agent; then
   fail "innerwarden-agent failed to start. Check: sudo journalctl -u innerwarden-agent -n 200"
+fi
+
+if [[ "${WITH_INTEGRATIONS}" -eq 1 ]]; then
+  install_integrations
 fi
 
 log "installation complete."
@@ -550,6 +770,11 @@ echo "  sudo systemctl status innerwarden-agent --no-pager"
 echo "  sudo journalctl -u innerwarden-sensor -f --no-pager"
 echo "  sudo journalctl -u innerwarden-agent -f --no-pager"
 echo "  ls -lah ${DATA_DIR}"
+echo
+echo "To add Falco + Suricata + osquery integration:"
+echo "  curl -fsSL .../install.sh | sudo bash -s -- --with-integrations"
+echo "  # or on an existing install:"
+echo "  sudo bash install.sh --with-integrations"
 echo
 echo "To move to dry-run execution validation later:"
 echo "  1) Edit ${AGENT_CONFIG}"
