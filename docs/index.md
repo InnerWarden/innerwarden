@@ -42,6 +42,10 @@ All completed phase docs have been moved to `docs/archive/` for reference:
 - `docs/archive/phase-8-honeypot-runtime-profile-attested-handoff.md`
 - `docs/archive/phase-8-honeypot-medium-interaction.md`
 
+## Launch
+
+- [docs/launch-plan.md](launch-plan.md) — launch todo list: Telegram, use cases, cross-platform, release checklist
+
 ## Maintainer-Oriented Docs
 
 - [CLAUDE.md](../CLAUDE.md) — operational reference for maintainers
