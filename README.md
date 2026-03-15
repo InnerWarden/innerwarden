@@ -5,7 +5,7 @@ A self-defending security agent for Linux and macOS servers.
 Three binaries (two daemons + a CLI). Installs in 10 seconds. Detects attacks and can respond automatically when response skills are enabled (non-dry-run mode).
 
 ```bash
-curl -fsSL https://get.innerwarden.dev | bash
+curl -fsSL https://github.com/maiconburn/innerwarden/releases/latest/download/install.sh | sudo bash
 ```
 
 ---
@@ -144,30 +144,24 @@ innerwarden module enable /path/to/module
 
 ## Install
 
-**Prerequisite:** export your AI provider key before running (or the installer will prompt for it):
+Export your AI provider key first (or the installer will prompt for it):
 
 ```bash
 export OPENAI_API_KEY=sk-...
-```
-
-Then install (requires root or sudo):
-
-```bash
 curl -fsSL https://github.com/maiconburn/innerwarden/releases/latest/download/install.sh | sudo bash
 ```
 
 What it does:
 - Creates a dedicated `innerwarden` service user
-- Downloads pre-built binaries for your architecture (~10 s), verified with SHA-256
-- Creates config in `/etc/innerwarden/` and data directory
+- Downloads pre-built binaries for your architecture (x86_64 or aarch64), SHA-256 verified
+- Writes config to `/etc/innerwarden/` and creates the data directory
 - Starts `innerwarden-sensor` + `innerwarden-agent` via systemd (Linux) or launchd (macOS)
-- Starts in safe trial mode: AI analysis on, no actions taken (`responder.enabled = false`, `dry_run = true`)
+- Safe posture by default: AI runs and logs what it would do, no response skills enabled, `dry_run = true`
 
 With integrations (Falco, Suricata, osquery):
 ```bash
 curl -fsSL https://github.com/maiconburn/innerwarden/releases/latest/download/install.sh | sudo bash -s -- --with-integrations
 ```
-Detects and optionally installs Falco, Suricata, and osquery with pre-configured collectors.
 
 Build from source:
 ```bash
@@ -182,21 +176,41 @@ innerwarden doctor     # diagnose any issues with fix hints
 innerwarden list       # see available capabilities and modules
 ```
 
-To enable active response when you trust what you see:
-1. Edit `/etc/innerwarden/agent.toml`
-2. Set `[responder] enabled = true` (keep `dry_run = true` to validate first)
-3. Restart: `sudo systemctl restart innerwarden-agent`
-4. When confident: set `dry_run = false` and restart
-
-### Control plane
+Enable response skills when ready. Each `enable` command patches the config, writes sudoers rules, and restarts the relevant service — no manual editing needed:
 
 ```bash
-innerwarden list                    # capabilities and modules
-innerwarden status                  # services + what's active
-innerwarden doctor                  # diagnostics with fix hints
-innerwarden upgrade                 # fetch latest release (SHA-256 verified)
-innerwarden enable block-ip         # activate IP blocking
-innerwarden disable block-ip        # deactivate
+innerwarden enable block-ip          # IP blocking via ufw (default), iptables, or nftables
+innerwarden enable sudo-protection   # detect sudo abuse and suspend user sudo rights
+innerwarden enable shell-audit       # shell command trail via auditd (prompts for privacy consent)
+```
+
+After enabling, the responder is active but still in `dry_run = true` mode — it logs what it would do without executing. When you trust the decisions, flip one flag in `/etc/innerwarden/agent.toml`:
+
+```toml
+[responder]
+dry_run = false
+```
+
+Then restart: `sudo systemctl restart innerwarden-agent` (Linux) or `sudo launchctl kickstart -k system/com.innerwarden.agent` (macOS).
+
+### Updates
+
+```bash
+innerwarden upgrade          # fetch and install the latest release (SHA-256 verified)
+innerwarden upgrade --check  # check if an update is available without installing
+```
+
+### Control plane reference
+
+```bash
+innerwarden list                              # capabilities and modules with status
+innerwarden status                            # services + active capabilities
+innerwarden status block-ip                   # status of a specific capability
+innerwarden doctor                            # diagnostics with fix hints
+innerwarden enable block-ip                   # activate (ufw by default)
+innerwarden enable block-ip --param backend=iptables  # activate with a specific backend
+innerwarden disable block-ip                  # deactivate and clean up
+innerwarden --dry-run enable block-ip         # preview what enable would do
 ```
 
 ---
