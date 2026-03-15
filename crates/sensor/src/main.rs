@@ -15,7 +15,8 @@ use collectors::{
     falco_log::FalcoLogCollector, integrity::IntegrityCollector, journald::JournaldCollector,
     macos_log::MacosLogCollector, nginx_access::NginxAccessCollector,
     nginx_error::NginxErrorCollector, osquery_log::OsqueryLogCollector,
-    suricata_eve::SuricataEveCollector, wazuh_alerts::WazuhAlertsCollector,
+    suricata_eve::SuricataEveCollector, syslog_firewall::SyslogFirewallCollector,
+    wazuh_alerts::WazuhAlertsCollector,
 };
 use detectors::credential_stuffing::CredentialStuffingDetector;
 use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
@@ -99,6 +100,7 @@ async fn main() -> Result<()> {
     let shared_suricata_offset = Arc::new(AtomicU64::new(0));
     let shared_osquery_offset = Arc::new(AtomicU64::new(0));
     let shared_wazuh_offset = Arc::new(AtomicU64::new(0));
+    let shared_syslog_firewall_offset = Arc::new(AtomicU64::new(0));
 
     // SSH brute force detector (stateful, lives in main loop)
     let ssh_detector = cfg.detectors.ssh_bruteforce.enabled.then(|| {
@@ -429,6 +431,25 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Spawn syslog_firewall collector
+    if cfg.collectors.syslog_firewall.enabled {
+        let sc = &cfg.collectors.syslog_firewall;
+        let offset = state
+            .get_cursor("syslog_firewall")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        shared_syslog_firewall_offset.store(offset, Ordering::Relaxed);
+        let collector = SyslogFirewallCollector::new(&sc.path, &cfg.agent.host_id, offset);
+        info!(path = %sc.path, offset, "starting syslog_firewall collector");
+        let tx_syslog = tx.clone();
+        let shared = Arc::clone(&shared_syslog_firewall_offset);
+        tokio::spawn(async move {
+            if let Err(e) = collector.run(tx_syslog, shared).await {
+                tracing::error!("syslog_firewall collector error: {e:#}");
+            }
+        });
+    }
+
     // Drop the original tx — each collector holds its own clone.
     // When all collector tasks finish, all senders drop and rx.recv() returns None.
     drop(tx);
@@ -570,6 +591,9 @@ async fn main() -> Result<()> {
 
     let wazuh_offset = shared_wazuh_offset.load(Ordering::Relaxed);
     state.set_cursor("wazuh_alerts", serde_json::json!(wazuh_offset));
+
+    let syslog_firewall_offset = shared_syslog_firewall_offset.load(Ordering::Relaxed);
+    state.set_cursor("syslog_firewall", serde_json::json!(syslog_firewall_offset));
 
     state.save(&state_path)?;
     info!(auth_offset, "state saved");

@@ -50,6 +50,8 @@ pub struct CollectorsConfig {
     pub macos_log: MacosLogConfig,
     #[serde(default)]
     pub wazuh_alerts: WazuhAlertsConfig,
+    #[serde(default)]
+    pub syslog_firewall: SyslogFirewallConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -535,6 +537,29 @@ fn default_web_scan_threshold() -> usize {
 
 fn default_web_scan_window_seconds() -> u64 {
     60
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SyslogFirewallConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to syslog or kern.log. Defaults to /var/log/syslog on Debian/Ubuntu,
+    /// /var/log/kern.log is a common alternative.
+    #[serde(default = "default_syslog_firewall_path")]
+    pub path: String,
+}
+
+impl Default for SyslogFirewallConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: default_syslog_firewall_path(),
+        }
+    }
+}
+
+fn default_syslog_firewall_path() -> String {
+    "/var/log/syslog".to_string()
 }
 
 pub fn load(path: &str) -> Result<Config> {

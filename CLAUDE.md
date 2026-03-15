@@ -32,6 +32,7 @@ Agente de defesa autônomo para servidores Linux e macOS. Dois componentes Rust:
 - ✅ **Collector `osquery_log`** — tail de `/var/log/osquery/osqueryd.results.log` (JSONL); lê differential results (action=added/snapshot, skipa removed); severity por prefixo de query name (sudoers→High, listening_ports/crontab→Medium, processes/users→Low); filtra IPs privados; extrai IP remoto, path, user (preferência decorations); summaries contextuais por query slug; 9 testes
 - ✅ **Collector `wazuh_alerts`** — tail de `/var/ossec/logs/alerts/alerts.json` (JSONL); severity por `rule.level` (0-2→Debug, 3-6→Low, 7-9→Medium, 10-11→High, 12-15→Critical); kind de `rule.groups[0]` com prefixo `wazuh.`; extrai `data.srcip` (IP), `data.dstuser` (user), `agent.name` (service); incident passthrough para High/Critical; módulo `wazuh-integration/`; 12 testes
 - ✅ **Detector `user_agent_scanner`** — detecção imediata de scanners de segurança por User-Agent em eventos `http.request` do nginx_access; 20 assinaturas conhecidas (Nikto, sqlmap, Nuclei, Masscan, Zgrab, wfuzz, DirBuster, Gobuster, ffuf, Acunetix, w3af, AppScan, OpenVAS, Nessus, Burp Suite, Metasploit, Nmap, python-requests, go-http-client); emite `http.scanner_ua` (High) na primeira ocorrência; dedup por `(ip, scanner)` em janela de 10min; tags MITRE `T1595`, `T1595.002` (Active Scanning: Vulnerability Scanning); 11 testes
+- ✅ **Collector `syslog_firewall`** — tail de `/var/log/syslog` (ou `/var/log/kern.log`); parse de linhas iptables/nftables/UFW DROP (`SRC=`, `DPT=`, `PROTO=`, `IN=`); emite `network.connection_blocked` (Low) que alimenta o detector `port_scan` existente; suporta UFW `[UFW BLOCK]`, iptables LOG e nftables; ignora ICMP (sem DPT=); cursor byte-offset com resume-on-restart; 10 testes
 
 ### Agent (`innerwarden-agent`)
 - ✅ Leitura incremental de JSONL via byte-offset cursors (sem re-leitura)
@@ -150,6 +151,7 @@ crates/
         nginx_error.rs       — tail nginx error.log; emite http.error (warn/error/crit com client IP); 8 testes
         macos_log.rs         — subprocess `log stream` (macOS); reusa parser SSH; emite sudo.command
         wazuh_alerts.rs      — tail /var/ossec/logs/alerts/alerts.json; severity por rule.level; incident passthrough High/Critical; 12 testes
+        syslog_firewall.rs   — tail /var/log/syslog; parse iptables/nftables/UFW DROP (SRC=, DPT=); emite network.connection_blocked → port_scan; 10 testes
       detectors/
         ssh_bruteforce.rs    — sliding window por IP
         credential_stuffing.rs — spray de usuários distintos por IP
@@ -241,7 +243,7 @@ integrations/                      — integration recipes (declarative specs fo
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 470 testes (175 sensor + 172 agent + 123 ctl)
+make test             # 480 testes (185 sensor + 172 agent + 123 ctl)
 make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -353,6 +355,10 @@ enabled = true
 enabled = true
 poll_seconds = 60
 paths = ["/etc/ssh/sshd_config", "/etc/sudoers"]
+
+[collectors.syslog_firewall]
+enabled = false        # alternativa ao journald.kernel para servidores sem journald
+path = "/var/log/syslog"  # ou /var/log/kern.log; feeds port_scan detector
 
 [detectors.ssh_bruteforce]
 enabled = true
@@ -652,7 +658,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 470 testes (175 sensor + 172 agent + 123 ctl) — todos devem passar
+make test   # 480 testes (185 sensor + 172 agent + 123 ctl) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
