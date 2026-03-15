@@ -29,6 +29,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Graceful shutdown (SIGINT/SIGTERM) com persistência de cursors
 - ✅ **Collector `falco_log`** — tail de `/var/log/falco/falco.log` (JSONL); mapeia priority → Severity; extrai entidades de `output_fields` (IP, user, container, pod); incident passthrough automático para High/Critical (Falco já fez a detecção, InnerWarden só tria e responde); 12 testes
 - ✅ **Collector `suricata_eve`** — tail de `/var/log/suricata/eve.json` (JSONL); suporta event_types configurável (alert, dns, http, tls, anomaly por default); mapeia severity Suricata inverso (1→Critical, 2→High, 3→Medium); incident passthrough para alert severity 1+2; builders por tipo (alert, dns, http, tls, anomaly); extrai IP, service (hostname HTTP); 10 testes
+- ✅ **Collector `osquery_log`** — tail de `/var/log/osquery/osqueryd.results.log` (JSONL); lê differential results (action=added/snapshot, skipa removed); severity por prefixo de query name (sudoers→High, listening_ports/crontab→Medium, processes/users→Low); filtra IPs privados; extrai IP remoto, path, user (preferência decorations); summaries contextuais por query slug; 9 testes
 
 ### Agent (`innerwarden-agent`)
 - ✅ Leitura incremental de JSONL via byte-offset cursors (sem re-leitura)
