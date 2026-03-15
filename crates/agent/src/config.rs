@@ -24,6 +24,8 @@ pub struct AgentConfig {
     pub honeypot: HoneypotConfig,
     #[serde(default)]
     pub responder: ResponderConfig,
+    #[serde(default)]
+    pub telegram: TelegramConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -598,6 +600,90 @@ impl Default for ResponderConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Telegram
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct TelegramConfig {
+    /// Enable Telegram notifications (T.1) and approval bot (T.2)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Telegram bot token. Prefer env var TELEGRAM_BOT_TOKEN.
+    #[serde(default)]
+    pub bot_token: String,
+
+    /// Telegram chat ID to send messages to. Prefer env var TELEGRAM_CHAT_ID.
+    #[serde(default)]
+    pub chat_id: String,
+
+    /// Minimum severity to send T.1 notifications (default: "high").
+    /// Accepted values: "debug", "info", "low", "medium", "high", "critical"
+    #[serde(default = "default_telegram_min_severity")]
+    pub min_severity: String,
+
+    /// Optional base URL for dashboard deep-links in notification messages.
+    /// Example: "http://your-server:8787"
+    #[serde(default)]
+    pub dashboard_url: String,
+
+    /// TTL in seconds for pending T.2 operator approval requests (default: 600 = 10 min).
+    /// Unanswered requests are discarded as "ignore" when they expire.
+    #[serde(default = "default_telegram_approval_ttl_secs")]
+    pub approval_ttl_secs: u64,
+}
+
+impl TelegramConfig {
+    /// Resolve bot_token: config field takes precedence, then env var TELEGRAM_BOT_TOKEN.
+    pub fn resolved_bot_token(&self) -> String {
+        if !self.bot_token.is_empty() {
+            return self.bot_token.clone();
+        }
+        std::env::var("TELEGRAM_BOT_TOKEN").unwrap_or_default()
+    }
+
+    /// Resolve chat_id: config field takes precedence, then env var TELEGRAM_CHAT_ID.
+    pub fn resolved_chat_id(&self) -> String {
+        if !self.chat_id.is_empty() {
+            return self.chat_id.clone();
+        }
+        std::env::var("TELEGRAM_CHAT_ID").unwrap_or_default()
+    }
+
+    /// Parse min_severity string into a Severity, defaulting to High on error.
+    pub fn parsed_min_severity(&self) -> Severity {
+        match self.min_severity.to_lowercase().as_str() {
+            "debug" => Severity::Debug,
+            "info" => Severity::Info,
+            "low" => Severity::Low,
+            "medium" => Severity::Medium,
+            "high" => Severity::High,
+            "critical" => Severity::Critical,
+            other => {
+                tracing::warn!(
+                    min_severity = other,
+                    "unrecognised telegram min_severity — defaulting to 'high'"
+                );
+                Severity::High
+            }
+        }
+    }
+}
+
+impl Default for TelegramConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bot_token: String::new(),
+            chat_id: String::new(),
+            min_severity: default_telegram_min_severity(),
+            dashboard_url: String::new(),
+            approval_ttl_secs: default_telegram_approval_ttl_secs(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Loader
 // ---------------------------------------------------------------------------
 
@@ -785,6 +871,14 @@ fn default_honeypot_http_max_requests() -> usize {
     10
 }
 
+fn default_telegram_min_severity() -> String {
+    "high".to_string()
+}
+
+fn default_telegram_approval_ttl_secs() -> u64 {
+    600
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -876,6 +970,12 @@ mod tests {
             .is_empty());
         assert!(!cfg.honeypot.redirect.enabled);
         assert_eq!(cfg.honeypot.redirect.backend, "iptables");
+        assert!(!cfg.telegram.enabled);
+        assert!(cfg.telegram.bot_token.is_empty());
+        assert!(cfg.telegram.chat_id.is_empty());
+        assert_eq!(cfg.telegram.min_severity, "high");
+        assert!(cfg.telegram.dashboard_url.is_empty());
+        assert_eq!(cfg.telegram.approval_ttl_secs, 600);
     }
 
     #[test]
@@ -962,6 +1062,14 @@ attestation_expected_receiver = "receiver-a"
 [honeypot.redirect]
 enabled = true
 backend = "iptables"
+
+[telegram]
+enabled = true
+bot_token = "1234567890:AAAAAAAAAA"
+chat_id = "-1001234567890"
+min_severity = "critical"
+dashboard_url = "http://my-server:8787"
+approval_ttl_secs = 300
 "#
         )
         .unwrap();
@@ -1079,6 +1187,12 @@ backend = "iptables"
         );
         assert!(cfg.honeypot.redirect.enabled);
         assert_eq!(cfg.honeypot.redirect.backend, "iptables");
+        assert!(cfg.telegram.enabled);
+        assert_eq!(cfg.telegram.bot_token, "1234567890:AAAAAAAAAA");
+        assert_eq!(cfg.telegram.chat_id, "-1001234567890");
+        assert_eq!(cfg.telegram.parsed_min_severity(), Severity::Critical);
+        assert_eq!(cfg.telegram.dashboard_url, "http://my-server:8787");
+        assert_eq!(cfg.telegram.approval_ttl_secs, 300);
     }
 
     #[test]

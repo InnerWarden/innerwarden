@@ -1,0 +1,596 @@
+/// Telegram notification and approval channel for InnerWarden.
+///
+/// T.1 — Notifications: sends an alert message for every High/Critical incident.
+/// T.2 — Approvals: sends an inline-keyboard message when the AI requests human
+///        confirmation; polls for button presses and sends results back to the
+///        main loop via a channel.
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use innerwarden_core::incident::Incident;
+use serde::Deserialize;
+use tokio::sync::mpsc;
+use tracing::{debug, warn};
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/// An approval result received from the operator via Telegram.
+#[derive(Debug, Clone)]
+pub struct ApprovalResult {
+    pub incident_id: String,
+    pub approved: bool,
+    pub operator_name: String,
+}
+
+/// Tracks a pending confirmation while waiting for the operator's response.
+#[derive(Debug, Clone)]
+pub struct PendingConfirmation {
+    pub incident_id: String,
+    pub telegram_message_id: i64,
+    pub action_description: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+// ---------------------------------------------------------------------------
+// Client
+// ---------------------------------------------------------------------------
+
+pub struct TelegramClient {
+    bot_token: String,
+    chat_id: String,
+    dashboard_url: Option<String>,
+    http: reqwest::Client,
+}
+
+impl TelegramClient {
+    pub fn new(
+        bot_token: impl Into<String>,
+        chat_id: impl Into<String>,
+        dashboard_url: Option<String>,
+    ) -> Result<Self> {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .context("failed to build Telegram HTTP client")?;
+        Ok(Self {
+            bot_token: bot_token.into(),
+            chat_id: chat_id.into(),
+            dashboard_url,
+            http,
+        })
+    }
+
+    fn api_url(&self, method: &str) -> String {
+        format!("https://api.telegram.org/bot{}/{}", self.bot_token, method)
+    }
+
+    // -----------------------------------------------------------------------
+    // T.1 — Incident notification
+    // -----------------------------------------------------------------------
+
+    /// Send a notification message for a High/Critical incident.
+    /// Failures are logged as warnings and never propagate — fail-open.
+    pub async fn send_incident_alert(&self, incident: &Incident) -> Result<()> {
+        let text = format_incident_message(incident, self.dashboard_url.as_deref());
+
+        let mut body = serde_json::json!({
+            "chat_id": self.chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true,
+        });
+
+        // Add a deep-link button if dashboard URL is configured
+        if let Some(ref base_url) = self.dashboard_url {
+            if let Some(ip) = first_ip_entity(incident) {
+                let link = format!(
+                    "{base_url}/?subject_type=ip&subject={ip}&date={}",
+                    incident.ts.format("%Y-%m-%d")
+                );
+                body["reply_markup"] = serde_json::json!({
+                    "inline_keyboard": [[{
+                        "text": "🔍 Investigate in dashboard",
+                        "url": link
+                    }]]
+                });
+            }
+        }
+
+        self.post_json("sendMessage", &body).await
+    }
+
+    // -----------------------------------------------------------------------
+    // T.2 — Confirmation request (inline keyboard: Approve / Reject)
+    // -----------------------------------------------------------------------
+
+    /// Send a confirmation-request message with Approve/Reject inline keyboard.
+    /// Returns the Telegram message ID so the caller can track the pending approval.
+    pub async fn send_confirmation_request(
+        &self,
+        incident: &Incident,
+        action_description: &str,
+        confidence: f32,
+        expires_secs: u64,
+    ) -> Result<i64> {
+        let sev = severity_label(incident);
+        let source_icon = source_icon(&incident.tags);
+        let entity_line = entity_summary(incident);
+        let pct = (confidence * 100.0) as u32;
+
+        let text = format!(
+            "{source_icon} {sev} — <b>{host}</b>\n\
+             <b>{title}</b>\n\
+             \n\
+             Ação proposta: <code>{action}</code>\n\
+             Confiança da AI: {pct}% (abaixo do threshold de execução automática)\n\
+             {entity_line}\n\
+             \n\
+             ⏱ Expira em {expires_secs}s. Sem resposta = <i>ignorar</i>.",
+            host = escape_html(&incident.host),
+            title = escape_html(&incident.title),
+            action = escape_html(action_description),
+            entity_line = entity_line,
+            sev = sev,
+            source_icon = source_icon,
+            pct = pct,
+            expires_secs = expires_secs,
+        );
+
+        let id = &incident.incident_id;
+        let body = serde_json::json!({
+            "chat_id": self.chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "reply_markup": {
+                "inline_keyboard": [[
+                    { "text": "✅ Aprovar", "callback_data": format!("approve:{id}") },
+                    { "text": "❌ Rejeitar", "callback_data": format!("reject:{id}") }
+                ]]
+            }
+        });
+
+        let resp = self.post_json_with_response("sendMessage", &body).await?;
+        let msg_id = resp["result"]["message_id"]
+            .as_i64()
+            .context("Telegram sendMessage returned no message_id")?;
+        Ok(msg_id)
+    }
+
+    /// Edit a confirmation message to show the final outcome (removes the keyboard).
+    pub async fn resolve_confirmation(
+        &self,
+        message_id: i64,
+        approved: bool,
+        operator: &str,
+    ) -> Result<()> {
+        let label = if approved { "✅ Aprovado" } else { "❌ Rejeitado" };
+        let body = serde_json::json!({
+            "chat_id": self.chat_id,
+            "message_id": message_id,
+            "reply_markup": { "inline_keyboard": [] }
+        });
+        // Remove inline keyboard
+        let _ = self.post_json("editMessageReplyMarkup", &body).await;
+
+        // Send follow-up result message
+        let text = format!("{label} por {operator}.", operator = escape_html(operator));
+        let body2 = serde_json::json!({
+            "chat_id": self.chat_id,
+            "text": text,
+            "reply_to_message_id": message_id,
+        });
+        self.post_json("sendMessage", &body2).await
+    }
+
+    // -----------------------------------------------------------------------
+    // Polling loop (background task)
+    // -----------------------------------------------------------------------
+
+    /// Polls Telegram for updates and sends ApprovalResults to `approval_tx`.
+    /// Designed to run as a background tokio task — exits when `approval_tx` is closed.
+    ///
+    /// Uses long-polling (timeout=25s) so this blocks for up to 25s between updates.
+    /// Any errors are logged and the loop continues.
+    pub async fn run_polling(self: std::sync::Arc<Self>, approval_tx: mpsc::Sender<ApprovalResult>) {
+        let mut offset: i64 = 0;
+
+        loop {
+            if approval_tx.is_closed() {
+                break;
+            }
+
+            match self.get_updates(offset).await {
+                Ok(updates) => {
+                    for update in updates {
+                        offset = update.update_id + 1;
+
+                        if let Some(callback) = update.callback_query {
+                            let operator = callback
+                                .from
+                                .first_name
+                                .clone()
+                                .unwrap_or_else(|| "unknown".to_string());
+
+                            if let Some(data) = &callback.data {
+                                if let Some(result) = parse_callback(data, &operator) {
+                                    // Answer the callback to remove the "loading" state
+                                    let _ = self.answer_callback(&callback.id).await;
+                                    if approval_tx.send(result).await.is_err() {
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Handle text commands: /status
+                        if let Some(msg) = update.message {
+                            if let Some(text) = &msg.text {
+                                if text.trim() == "/status" || text.starts_with("/status ") {
+                                    debug!("Telegram /status command received");
+                                    // Signal via a special ApprovalResult with empty incident_id
+                                    let _ = approval_tx
+                                        .send(ApprovalResult {
+                                            incident_id: "__status__".to_string(),
+                                            approved: true,
+                                            operator_name: msg
+                                                .from
+                                                .and_then(|f| f.first_name)
+                                                .unwrap_or_default(),
+                                        })
+                                        .await;
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Telegram poll error: {e:#}");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Low-level API calls
+    // -----------------------------------------------------------------------
+
+    async fn get_updates(&self, offset: i64) -> Result<Vec<Update>> {
+        let url = self.api_url("getUpdates");
+        let resp = self
+            .http
+            .get(&url)
+            .query(&[
+                ("offset", offset.to_string()),
+                ("timeout", "25".to_string()),
+                ("allowed_updates", r#"["message","callback_query"]"#.to_string()),
+            ])
+            .send()
+            .await
+            .context("getUpdates request failed")?
+            .json::<serde_json::Value>()
+            .await
+            .context("getUpdates JSON parse failed")?;
+
+        if !resp["ok"].as_bool().unwrap_or(false) {
+            let desc = resp["description"].as_str().unwrap_or("unknown error");
+            warn!("Telegram getUpdates error: {desc}");
+            return Ok(vec![]);
+        }
+
+        let updates: Vec<Update> = serde_json::from_value(resp["result"].clone())
+            .unwrap_or_default();
+        Ok(updates)
+    }
+
+    async fn answer_callback(&self, callback_query_id: &str) -> Result<()> {
+        let body = serde_json::json!({ "callback_query_id": callback_query_id });
+        self.post_json("answerCallbackQuery", &body).await
+    }
+
+    async fn post_json(&self, method: &str, body: &serde_json::Value) -> Result<()> {
+        self.post_json_with_response(method, body).await?;
+        Ok(())
+    }
+
+    async fn post_json_with_response(
+        &self,
+        method: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let url = self.api_url(method);
+        let resp = self
+            .http
+            .post(&url)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("Telegram {method} failed"))?
+            .json::<serde_json::Value>()
+            .await
+            .with_context(|| format!("Telegram {method} JSON parse failed"))?;
+
+        if !resp["ok"].as_bool().unwrap_or(false) {
+            let desc = resp["description"]
+                .as_str()
+                .unwrap_or("unknown Telegram error");
+            warn!(method, "Telegram API error: {desc}");
+        }
+
+        Ok(resp)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Polling response types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Default)]
+struct Update {
+    update_id: i64,
+    #[serde(default)]
+    message: Option<Message>,
+    #[serde(default)]
+    callback_query: Option<CallbackQuery>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Message {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    from: Option<User>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CallbackQuery {
+    id: String,
+    from: User,
+    #[serde(default)]
+    data: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct User {
+    #[serde(default)]
+    first_name: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+fn format_incident_message(incident: &Incident, dashboard_url: Option<&str>) -> String {
+    let sev = severity_label(incident);
+    let source_icon = source_icon(&incident.tags);
+    let entity_line = entity_summary(incident);
+
+    let summary_trunc = if incident.summary.len() > 200 {
+        format!("{}…", &incident.summary[..200])
+    } else {
+        incident.summary.clone()
+    };
+
+    let link_line = dashboard_url
+        .and_then(|base| first_ip_entity(incident).map(|ip| (base, ip)))
+        .map(|(base, ip)| {
+            format!(
+                "\n🔗 <a href=\"{}/?subject_type=ip&subject={}&date={}\">Investigar no dashboard</a>",
+                base,
+                ip,
+                incident.ts.format("%Y-%m-%d")
+            )
+        })
+        .unwrap_or_default();
+
+    format!(
+        "{source_icon} {sev} — <b>{host}</b>\n\
+         <b>{title}</b>\n\
+         {entity_line}\n\
+         <i>{summary}</i>{link_line}",
+        host = escape_html(&incident.host),
+        title = escape_html(&incident.title),
+        summary = escape_html(&summary_trunc),
+        entity_line = entity_line,
+        sev = sev,
+        source_icon = source_icon,
+        link_line = link_line,
+    )
+}
+
+fn severity_label(incident: &Incident) -> &'static str {
+    use innerwarden_core::event::Severity::*;
+    match incident.severity {
+        Critical => "🔴 <b>CRITICAL</b>",
+        High => "🟠 <b>HIGH</b>",
+        Medium => "🟡 MEDIUM",
+        Low => "🟢 LOW",
+        _ => "⚪ INFO",
+    }
+}
+
+fn source_icon(tags: &[String]) -> &'static str {
+    if tags.iter().any(|t| t == "falco") {
+        "🔬"
+    } else if tags.iter().any(|t| t == "suricata") {
+        "🌐"
+    } else if tags.iter().any(|t| t == "osquery") {
+        "🔍"
+    } else if tags.iter().any(|t| t == "ssh" || t == "sshd") {
+        "🔐"
+    } else {
+        "📋"
+    }
+}
+
+fn entity_summary(incident: &Incident) -> String {
+    use innerwarden_core::entities::EntityType::*;
+    let parts: Vec<String> = incident
+        .entities
+        .iter()
+        .take(3)
+        .map(|e| match e.r#type {
+            Ip => format!("IP: <code>{}</code>", escape_html(&e.value)),
+            User => format!("User: <code>{}</code>", escape_html(&e.value)),
+            Container => format!("Container: <code>{}</code>", escape_html(&e.value)),
+            Path => format!("Path: <code>{}</code>", escape_html(&e.value)),
+            Service => format!("Service: <code>{}</code>", escape_html(&e.value)),
+        })
+        .collect();
+    parts.join(" · ")
+}
+
+fn first_ip_entity(incident: &Incident) -> Option<String> {
+    incident
+        .entities
+        .iter()
+        .find(|e| matches!(e.r#type, innerwarden_core::entities::EntityType::Ip))
+        .map(|e| e.value.clone())
+}
+
+/// Parse a Telegram callback_data string into an ApprovalResult.
+/// Format: "approve:{incident_id}" or "reject:{incident_id}"
+fn parse_callback(data: &str, operator: &str) -> Option<ApprovalResult> {
+    if let Some(id) = data.strip_prefix("approve:") {
+        return Some(ApprovalResult {
+            incident_id: id.to_string(),
+            approved: true,
+            operator_name: operator.to_string(),
+        });
+    }
+    if let Some(id) = data.strip_prefix("reject:") {
+        return Some(ApprovalResult {
+            incident_id: id.to_string(),
+            approved: false,
+            operator_name: operator.to_string(),
+        });
+    }
+    None
+}
+
+/// Escape HTML special characters for Telegram HTML parse mode.
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use innerwarden_core::{
+        entities::EntityRef,
+        event::Severity,
+        incident::Incident,
+    };
+
+    fn make_incident(severity: Severity, tags: Vec<String>, entities: Vec<EntityRef>) -> Incident {
+        Incident {
+            ts: Utc::now(),
+            host: "web-server-01".to_string(),
+            incident_id: "ssh_bruteforce:1.2.3.4:2026-03-15T15:00Z".to_string(),
+            severity,
+            title: "Possible SSH brute force from 1.2.3.4".to_string(),
+            summary: "15 failed SSH logins in 5 minutes".to_string(),
+            evidence: serde_json::json!([]),
+            recommended_checks: vec![],
+            tags,
+            entities,
+        }
+    }
+
+    #[test]
+    fn format_critical_message_contains_key_fields() {
+        let inc = make_incident(
+            Severity::Critical,
+            vec!["falco".to_string()],
+            vec![EntityRef::ip("1.2.3.4".to_string())],
+        );
+        let msg = format_incident_message(&inc, None);
+        assert!(msg.contains("CRITICAL"));
+        assert!(msg.contains("web-server-01"));
+        assert!(msg.contains("SSH brute force"));
+        assert!(msg.contains("1.2.3.4"));
+        assert!(msg.contains("🔬"), "falco icon should appear");
+    }
+
+    #[test]
+    fn format_high_message_with_dashboard_url() {
+        let inc = make_incident(
+            Severity::High,
+            vec!["suricata".to_string()],
+            vec![EntityRef::ip("203.0.113.10".to_string())],
+        );
+        let msg = format_incident_message(&inc, Some("http://127.0.0.1:8787"));
+        assert!(msg.contains("HIGH"));
+        assert!(msg.contains("🌐"), "suricata icon");
+        assert!(msg.contains("Investigar no dashboard"));
+        assert!(msg.contains("203.0.113.10"));
+    }
+
+    #[test]
+    fn source_icon_picks_correct_icon() {
+        assert_eq!(source_icon(&["falco".to_string()]), "🔬");
+        assert_eq!(source_icon(&["suricata".to_string()]), "🌐");
+        assert_eq!(source_icon(&["osquery".to_string()]), "🔍");
+        assert_eq!(source_icon(&["ssh".to_string()]), "🔐");
+        assert_eq!(source_icon(&["other".to_string()]), "📋");
+    }
+
+    #[test]
+    fn parse_callback_approve() {
+        let result = parse_callback("approve:ssh_bruteforce:1.2.3.4:2026Z", "Alice").unwrap();
+        assert!(result.approved);
+        assert_eq!(result.incident_id, "ssh_bruteforce:1.2.3.4:2026Z");
+        assert_eq!(result.operator_name, "Alice");
+    }
+
+    #[test]
+    fn parse_callback_reject() {
+        let result = parse_callback("reject:some:incident:id", "Bob").unwrap();
+        assert!(!result.approved);
+        assert_eq!(result.incident_id, "some:incident:id");
+    }
+
+    #[test]
+    fn parse_callback_unknown_returns_none() {
+        assert!(parse_callback("unknown:foo", "user").is_none());
+        assert!(parse_callback("", "user").is_none());
+    }
+
+    #[test]
+    fn escape_html_handles_specials() {
+        assert_eq!(escape_html("<b>test & \"value\"</b>"), "&lt;b&gt;test &amp; &quot;value&quot;&lt;/b&gt;");
+    }
+
+    #[test]
+    fn severity_label_covers_all() {
+        let make = |sev| make_incident(sev, vec![], vec![]);
+        assert!(severity_label(&make(Severity::Critical)).contains("CRITICAL"));
+        assert!(severity_label(&make(Severity::High)).contains("HIGH"));
+        assert!(severity_label(&make(Severity::Medium)).contains("MEDIUM"));
+    }
+
+    #[test]
+    fn first_ip_entity_returns_first_ip() {
+        let inc = make_incident(
+            Severity::High,
+            vec![],
+            vec![
+                EntityRef::user("bob".to_string()),
+                EntityRef::ip("10.0.0.1".to_string()),
+                EntityRef::ip("203.0.113.10".to_string()),
+            ],
+        );
+        assert_eq!(first_ip_entity(&inc), Some("10.0.0.1".to_string()));
+    }
+}

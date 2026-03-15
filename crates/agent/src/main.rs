@@ -7,6 +7,7 @@ mod narrative;
 mod reader;
 mod report;
 mod skills;
+mod telegram;
 mod telemetry;
 mod webhook;
 
@@ -95,6 +96,21 @@ struct AgentState {
     /// Tracks when the daily narrative was last written so we can enforce a
     /// minimum interval and avoid rewriting on every 30-second tick.
     last_narrative_at: Option<std::time::Instant>,
+    /// Telegram client for T.1 notifications and T.2 approvals (None when disabled).
+    telegram_client: Option<Arc<telegram::TelegramClient>>,
+    /// Pending T.2 operator confirmations keyed by incident_id.
+    /// Stores the original decision and incident so the action can be executed when approved.
+    pending_confirmations: HashMap<
+        String,
+        (
+            telegram::PendingConfirmation,
+            ai::AiDecision,
+            innerwarden_core::incident::Incident,
+        ),
+    >,
+    /// Receives approval results from the Telegram polling task.
+    /// Drained at the start of every incident tick via try_recv.
+    approval_rx: Option<tokio::sync::mpsc::Receiver<telegram::ApprovalResult>>,
 }
 
 const DECISION_COOLDOWN_SECS: i64 = 3600;
@@ -399,6 +415,38 @@ async fn main() -> Result<()> {
         bl
     };
 
+    // Build Telegram client (None when disabled or misconfigured)
+    let telegram_client: Option<Arc<telegram::TelegramClient>> = if cfg.telegram.enabled {
+        let token = cfg.telegram.resolved_bot_token();
+        let chat_id = cfg.telegram.resolved_chat_id();
+        if token.is_empty() || chat_id.is_empty() {
+            warn!("telegram.enabled = true but bot_token/chat_id not configured — disabling");
+            None
+        } else {
+            let dashboard_url = if cfg.telegram.dashboard_url.is_empty() {
+                None
+            } else {
+                Some(cfg.telegram.dashboard_url.clone())
+            };
+            match telegram::TelegramClient::new(token, chat_id, dashboard_url) {
+                Ok(c) => {
+                    info!("Telegram client initialised (T.1 notifications enabled)");
+                    Some(Arc::new(c))
+                }
+                Err(e) => {
+                    warn!("failed to create Telegram client: {e:#}");
+                    None
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    // Create approval channel — polling task is spawned after state is built (continuous mode only)
+    let (approval_tx, approval_rx_for_state) =
+        tokio::sync::mpsc::channel::<telegram::ApprovalResult>(64);
+
     let mut state = AgentState {
         skill_registry: skills::SkillRegistry::default_builtin(),
         blocklist: startup_blocklist,
@@ -433,6 +481,9 @@ async fn main() -> Result<()> {
             None
         },
         last_narrative_at: load_last_narrative_instant(&cli.data_dir),
+        telegram_client,
+        pending_confirmations: HashMap::new(),
+        approval_rx: None, // set below in continuous mode
     };
 
     let state_path = cli.data_dir.join("agent-state.json");
@@ -451,6 +502,14 @@ async fn main() -> Result<()> {
         cursor.save(&state_path)?;
         info!(new_events, incidents_handled = handled, "run complete");
     } else {
+        // Activate approval channel and start Telegram polling task
+        state.approval_rx = Some(approval_rx_for_state);
+        if let Some(ref tg) = state.telegram_client {
+            let tg_clone = tg.clone();
+            tokio::spawn(async move { tg_clone.run_polling(approval_tx).await });
+            info!("Telegram polling task started (T.2 approvals enabled)");
+        }
+
         let ai_poll = cfg.ai.incident_poll_secs;
         info!(
             narrative_interval_secs = cli.interval,
@@ -648,6 +707,34 @@ async fn process_incidents(
         None
     };
 
+    // Pre-compute Telegram T.1 threshold (None = telegram disabled)
+    let telegram_min_rank: Option<u8> = if cfg.telegram.enabled && state.telegram_client.is_some()
+    {
+        Some(webhook::severity_rank(&cfg.telegram.parsed_min_severity()))
+    } else {
+        None
+    };
+
+    // Drain any pending T.2 approval results from the Telegram polling task
+    let pending_approvals: Vec<telegram::ApprovalResult> = {
+        let mut results = Vec::new();
+        if let Some(rx) = state.approval_rx.as_mut() {
+            while let Ok(r) = rx.try_recv() {
+                results.push(r);
+            }
+        }
+        results
+    };
+    for approval in pending_approvals {
+        process_telegram_approval(approval, data_dir, cfg, state).await;
+    }
+
+    // Expire stale pending confirmations
+    let now = chrono::Utc::now();
+    state
+        .pending_confirmations
+        .retain(|_, (pending, _, _)| pending.expires_at > now);
+
     // Pre-compute AI context (only if AI is configured)
     let ai_enabled = cfg.ai.enabled && state.ai_provider.is_some();
     let (all_events, skill_infos, ai_provider, provider_name, already_blocked, mut blocked_set) =
@@ -704,6 +791,19 @@ async fn process_incidents(
                 {
                     state.telemetry.observe_error("webhook");
                     warn!(incident_id = %incident.incident_id, "webhook failed: {e:#}");
+                }
+            }
+        }
+
+        // 1b. Telegram T.1 — push notification for High/Critical incidents
+        if let Some(min_rank) = telegram_min_rank {
+            if webhook::severity_rank(&incident.severity) >= min_rank {
+                // Clone the Arc to avoid holding a borrow on state during the await
+                let tg = state.telegram_client.clone();
+                if let Some(tg) = tg {
+                    if let Err(e) = tg.send_incident_alert(incident).await {
+                        warn!(incident_id = %incident.incident_id, "Telegram alert failed: {e:#}");
+                    }
                 }
             }
         }
@@ -1045,6 +1145,36 @@ async fn execute_decision(
             }
         }
         AiAction::RequestConfirmation { summary } => {
+            // T.2 — send inline keyboard approval request via Telegram when enabled
+            let tg = state.telegram_client.clone();
+            if let Some(tg) = tg {
+                let ttl = cfg.telegram.approval_ttl_secs;
+                match tg
+                    .send_confirmation_request(incident, summary, decision.confidence, ttl)
+                    .await
+                {
+                    Ok(msg_id) => {
+                        let now = chrono::Utc::now();
+                        let pending = telegram::PendingConfirmation {
+                            incident_id: incident.incident_id.clone(),
+                            telegram_message_id: msg_id,
+                            action_description: summary.clone(),
+                            created_at: now,
+                            expires_at: now
+                                + chrono::Duration::seconds(ttl as i64),
+                        };
+                        state.pending_confirmations.insert(
+                            incident.incident_id.clone(),
+                            (pending, decision.clone(), incident.clone()),
+                        );
+                        return "pending: operator confirmation requested via Telegram".to_string();
+                    }
+                    Err(e) => {
+                        warn!("Telegram confirmation request failed: {e:#}");
+                    }
+                }
+            }
+            // Fallback: webhook notification when Telegram is not configured
             if cfg.webhook.enabled && !cfg.webhook.url.is_empty() {
                 let payload = serde_json::json!({
                     "type": "confirmation_required",
@@ -1058,7 +1188,7 @@ async fn execute_decision(
                     Err(e) => format!("confirmation webhook failed: {e}"),
                 }
             } else {
-                "confirmation requested (no webhook configured)".to_string()
+                "confirmation requested (no Telegram or webhook configured)".to_string()
             }
         }
         AiAction::Ignore { reason } => {
@@ -1271,6 +1401,80 @@ async fn append_honeypot_marker_event(
     file.flush().await?;
 
     Ok(events_path)
+}
+
+// ---------------------------------------------------------------------------
+// Telegram T.2 approval handler
+// ---------------------------------------------------------------------------
+
+/// Process a single operator approval result received from the Telegram polling task.
+/// Resolves and executes (or discards) the pending confirmation, writes an audit entry,
+/// and informs the operator via Telegram of the outcome.
+async fn process_telegram_approval(
+    result: telegram::ApprovalResult,
+    data_dir: &Path,
+    cfg: &config::AgentConfig,
+    state: &mut AgentState,
+) {
+    // /status command — log it; a real status reply can be added later
+    if result.incident_id == "__status__" {
+        info!(operator = %result.operator_name, "Telegram /status command received");
+        return;
+    }
+
+    let Some((pending, decision, incident)) =
+        state.pending_confirmations.remove(&result.incident_id)
+    else {
+        debug!(
+            incident_id = %result.incident_id,
+            "Telegram approval for unknown or expired incident — ignoring"
+        );
+        return;
+    };
+
+    // Acknowledge in Telegram: remove inline keyboard and add follow-up message
+    let tg = state.telegram_client.clone();
+    if let Some(ref tg) = tg {
+        let _ = tg
+            .resolve_confirmation(
+                pending.telegram_message_id,
+                result.approved,
+                &result.operator_name,
+            )
+            .await;
+    }
+
+    let exec_result = if result.approved {
+        info!(
+            incident_id = %result.incident_id,
+            operator = %result.operator_name,
+            "operator approved action via Telegram"
+        );
+        execute_decision(&decision, &incident, data_dir, cfg, state).await
+    } else {
+        info!(
+            incident_id = %result.incident_id,
+            operator = %result.operator_name,
+            "operator rejected action via Telegram"
+        );
+        format!("rejected by operator {}", result.operator_name)
+    };
+
+    // Audit trail with ai_provider = "telegram:<operator>"
+    if let Some(writer) = &mut state.decision_writer {
+        let provider = format!("telegram:{}", result.operator_name);
+        let entry = decisions::build_entry(
+            &incident.incident_id,
+            &incident.host,
+            &provider,
+            &decision,
+            cfg.responder.dry_run,
+            &exec_result,
+        );
+        if let Err(e) = writer.write(&entry) {
+            warn!("failed to write Telegram decision entry: {e:#}");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1540,6 +1744,9 @@ mod tests {
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
             last_narrative_at: None,
+            telegram_client: None,
+            pending_confirmations: HashMap::new(),
+            approval_rx: None,
         };
 
         // 4. Run the incident tick
@@ -1640,6 +1847,9 @@ mod tests {
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
             last_narrative_at: None,
+            telegram_client: None,
+            pending_confirmations: HashMap::new(),
+            approval_rx: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -1715,6 +1925,9 @@ mod tests {
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
             last_narrative_at: None,
+            telegram_client: None,
+            pending_confirmations: HashMap::new(),
+            approval_rx: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -1802,6 +2015,9 @@ mod tests {
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
             last_narrative_at: None,
+            telegram_client: None,
+            pending_confirmations: HashMap::new(),
+            approval_rx: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -1866,6 +2082,9 @@ mod tests {
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
             last_narrative_at: None,
+            telegram_client: None,
+            pending_confirmations: HashMap::new(),
+            approval_rx: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -1942,6 +2161,9 @@ mod tests {
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
             last_narrative_at: None,
+            telegram_client: None,
+            pending_confirmations: HashMap::new(),
+            approval_rx: None,
         };
 
         let mut cursor = reader::AgentCursor::default();

@@ -76,6 +76,8 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ **Dashboard D7** — timeline ao vivo: SSE aciona `refreshLeftLive()` em vez de reload completo. Novos cards de entidade aparecem com animação CSS `cardSlideIn` (slide + borda cyan). KPIs piscam em cyan (`kpiFlash`) quando o valor muda. Cards existentes têm contagens atualizadas silenciosamente. Scroll e seleção preservados. `state.knownItemValues` (Set) rastreia entidades renderizadas para diff incremental.
 - ✅ **Dashboard D8** — alertas push de incidentes: file watcher lê novas linhas de `incidents-*.jsonl` por byte offset a cada 2 s; para severidade High/Critical emite evento SSE `alert` com payload `{ severity, title, entity_type, entity_value }`. Frontend exibe `showAlertToast()` — badge colorido (vermelho/laranja), título e link clicável `→ IP/entidade` que abre diretamente o journey panel. Toast persiste 8 s.
 - ✅ **Dashboard D9** — busca inline de entidades: campo `<input type="search">` acima da lista filtra cards em tempo real por qualquer texto visível (IP, detector, severidade, contagens) — sem round-trip ao servidor, sem reload, scroll preservado. Mensagem "No matches for X" quando nenhum card passa no filtro. Filtro re-aplicado automaticamente após `refreshLeft()` e `refreshLeftLive()`.
+- ✅ **Telegram T.1** — notificações push: `send_incident_alert()` enviado para todo incidente High/Critical no tick rápido, com badge de severidade, ícone de fonte (🔬 falco, 🌐 suricata, 🔍 osquery, 🔐 ssh), resumo de entidades e botão deep-link opcional para o dashboard. Configurado via `[telegram]` no agent.toml ou vars de ambiente `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`.
+- ✅ **Telegram T.2** — aprovações bidirecionais: quando AI retorna `RequestConfirmation`, o agent envia inline keyboard (✅ Aprovar / ❌ Rejeitar) via Telegram. Polling task long-poll (25 s) detecta resposta do operador; ao aprovar, executa a ação e registra em `decisions-*.jsonl` com `ai_provider: "telegram:<operador>"`. TTL configurável (default 10 min); expirado → descartado. Suporta comando `/status` no bot.
 
 ---
 
@@ -83,7 +85,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 
 **sensor** coleta host activity (auth_log, journald, docker, integrity, exec_audit opcional) via `mpsc::channel(1024)`, passa por detectors stateful (ssh_bruteforce, credential_stuffing, port_scan, sudo_abuse) e escreve `events-*.jsonl` + `incidents-*.jsonl` no `data_dir` compartilhado.
 
-**agent** lê incrementalmente via byte-offset cursors. Loop rápido (2s): webhook → algorithm gate (severity < High / IP privado / já bloqueado → skip) → AI provider → executor (confidence ≥ threshold AND auto_execute) → skill (block_ip / monitor_ip / honeypot / suspend_user_sudo) → `decisions-*.jsonl`. Loop lento (30s): regenera `summary-*.md` com throttle de 5min.
+**agent** lê incrementalmente via byte-offset cursors. Loop rápido (2s): webhook + Telegram T.1 → algorithm gate (severity < High / IP privado / já bloqueado → skip) → AI provider → executor (confidence ≥ threshold AND auto_execute) → skill (block_ip / monitor_ip / honeypot / suspend_user_sudo) → `decisions-*.jsonl`; Telegram T.2 polling task em background envia confirmações pendentes ao operador e executa ação aprovada. Loop lento (30s): regenera `summary-*.md` com throttle de 5min.
 
 ### Saídas geradas por dia
 
@@ -158,6 +160,7 @@ crates/
       narrative.rs           — geração de Markdown diário (generate/write/cleanup)
       webhook.rs             — HTTP POST de notificações de incidente
       decisions.rs           — DecisionWriter + DecisionEntry (audit trail JSONL)
+      telegram.rs            — TelegramClient: T.1 notifications + T.2 inline-keyboard approvals + polling loop
       ai/
         mod.rs               — AiProvider trait, AiDecision, AiAction, algorithm gate, factory
         openai.rs            — implementação real OpenAI (gpt-4o-mini)
