@@ -1883,6 +1883,224 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
         println!("  (no capabilities enabled — run 'innerwarden list' to see options)");
     }
 
+    // ── Integrations ──────────────────────────────────────
+    // Only show this section when at least one integration collector is enabled.
+    {
+        let sensor_doc: Option<toml_edit::DocumentMut> = cli
+            .sensor_config
+            .exists()
+            .then(|| std::fs::read_to_string(&cli.sensor_config).ok())
+            .flatten()
+            .and_then(|s| s.parse().ok());
+
+        let collector_enabled = |name: &str| -> bool {
+            sensor_doc
+                .as_ref()
+                .and_then(|doc| doc.get("collectors"))
+                .and_then(|c| c.get(name))
+                .and_then(|s| s.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        };
+
+        let collector_str = |name: &str, key: &str, default: &str| -> String {
+            sensor_doc
+                .as_ref()
+                .and_then(|doc| doc.get("collectors"))
+                .and_then(|c| c.get(name))
+                .and_then(|s| s.get(key))
+                .and_then(|v| v.as_str())
+                .unwrap_or(default)
+                .to_string()
+        };
+
+        let falco_enabled = collector_enabled("falco_log");
+        let suricata_enabled = collector_enabled("suricata_eve");
+        let osquery_enabled = collector_enabled("osquery_log");
+        let any_integration = falco_enabled || suricata_enabled || osquery_enabled;
+
+        if any_integration {
+            println!("\nIntegrations");
+
+            // ── Falco ──────────────────────────────────────
+            if falco_enabled {
+                println!("  Falco");
+                let mut falco = Vec::new();
+
+                let falco_binary = std::path::Path::new("/usr/bin/falco").exists()
+                    || std::path::Path::new("/usr/local/bin/falco").exists();
+                falco.push(if falco_binary {
+                    Check::ok("Falco binary found")
+                } else {
+                    Check::fail(
+                        "Falco binary not found (/usr/bin/falco or /usr/local/bin/falco)",
+                        "sudo apt-get install falco",
+                    )
+                });
+
+                let falco_active = systemd::is_service_active("falco")
+                    || systemd::is_service_active("falco-modern-bpf");
+                falco.push(if falco_active {
+                    Check::ok("Falco service is running")
+                } else {
+                    Check::warn(
+                        "Falco service is not running",
+                        "sudo systemctl start falco",
+                    )
+                });
+
+                let falco_log =
+                    collector_str("falco_log", "path", "/var/log/falco/falco.log");
+                let log_ok = std::path::Path::new(&falco_log).exists()
+                    && std::fs::metadata(&falco_log)
+                        .map(|m| m.len() == 0 || true)
+                        .unwrap_or(false);
+                falco.push(if log_ok {
+                    Check::ok(format!("Falco log file exists ({})", falco_log))
+                } else {
+                    Check::fail(
+                        format!("Falco log file not found or not readable ({})", falco_log),
+                        "sudo mkdir -p /var/log/falco && sudo systemctl restart falco",
+                    )
+                });
+
+                let falco_yaml = std::fs::read_to_string("/etc/falco/falco.yaml")
+                    .unwrap_or_default();
+                let json_output_ok = falco_yaml.contains("json_output: true");
+                falco.push(if json_output_ok {
+                    Check::ok("Falco json_output is enabled")
+                } else {
+                    Check::warn(
+                        "Falco json_output not enabled — events will not be parseable",
+                        "echo 'json_output: true' | sudo tee -a /etc/falco/falco.yaml && sudo systemctl restart falco",
+                    )
+                });
+
+                run_section(falco, &mut total_issues);
+            }
+
+            // ── Suricata ───────────────────────────────────
+            if suricata_enabled {
+                println!("  Suricata");
+                let mut suri = Vec::new();
+
+                let suri_binary = std::path::Path::new("/usr/bin/suricata").exists();
+                suri.push(if suri_binary {
+                    Check::ok("Suricata binary found")
+                } else {
+                    Check::fail(
+                        "Suricata binary not found (/usr/bin/suricata)",
+                        "sudo apt-get install suricata",
+                    )
+                });
+
+                let suri_active = systemd::is_service_active("suricata");
+                suri.push(if suri_active {
+                    Check::ok("Suricata service is running")
+                } else {
+                    Check::warn(
+                        "Suricata service is not running",
+                        "sudo systemctl start suricata",
+                    )
+                });
+
+                let eve_log =
+                    collector_str("suricata_eve", "path", "/var/log/suricata/eve.json");
+                let eve_ok = std::path::Path::new(&eve_log).exists();
+                suri.push(if eve_ok {
+                    Check::ok(format!("Suricata eve.json exists ({})", eve_log))
+                } else {
+                    Check::fail(
+                        format!("Suricata eve.json not found ({})", eve_log),
+                        "sudo systemctl restart suricata  # creates eve.json on first run",
+                    )
+                });
+
+                let rules_present = std::path::Path::new(
+                    "/var/lib/suricata/rules/suricata.rules",
+                )
+                .exists()
+                    || std::fs::read_dir("/etc/suricata/rules/")
+                        .map(|mut d| d.any(|e| {
+                            e.map(|e| {
+                                e.path()
+                                    .extension()
+                                    .and_then(|x| x.to_str())
+                                    == Some("rules")
+                            })
+                            .unwrap_or(false)
+                        }))
+                        .unwrap_or(false);
+                suri.push(if rules_present {
+                    Check::ok("Suricata ET rules present")
+                } else {
+                    Check::warn(
+                        "Suricata ET rules not found",
+                        "sudo suricata-update && sudo systemctl restart suricata",
+                    )
+                });
+
+                run_section(suri, &mut total_issues);
+            }
+
+            // ── osquery ────────────────────────────────────
+            if osquery_enabled {
+                println!("  osquery");
+                let mut osq = Vec::new();
+
+                let osq_binary = std::path::Path::new("/usr/bin/osqueryd").exists()
+                    || std::path::Path::new("/usr/local/bin/osqueryd").exists();
+                osq.push(if osq_binary {
+                    Check::ok("osqueryd binary found")
+                } else {
+                    Check::fail(
+                        "osqueryd binary not found (/usr/bin/osqueryd or /usr/local/bin/osqueryd)",
+                        "sudo apt-get install osquery  # see modules/osquery-integration/docs/README.md",
+                    )
+                });
+
+                let osq_active = systemd::is_service_active("osqueryd");
+                osq.push(if osq_active {
+                    Check::ok("osqueryd service is running")
+                } else {
+                    Check::warn(
+                        "osqueryd service is not running",
+                        "sudo systemctl start osqueryd",
+                    )
+                });
+
+                let results_log = collector_str(
+                    "osquery_log",
+                    "path",
+                    "/var/log/osquery/osqueryd.results.log",
+                );
+                let results_ok = std::path::Path::new(&results_log).exists();
+                osq.push(if results_ok {
+                    Check::ok(format!("osquery results log exists ({})", results_log))
+                } else {
+                    Check::warn(
+                        format!("osquery results log not found yet ({})", results_log),
+                        "ensure log_result_events=true in /etc/osquery/osquery.conf, then wait 60s for first query",
+                    )
+                });
+
+                let osq_conf = std::fs::read_to_string("/etc/osquery/osquery.conf")
+                    .unwrap_or_default();
+                let has_schedule = osq_conf.contains("\"schedule\"");
+                osq.push(if has_schedule {
+                    Check::ok("osquery config contains scheduled queries")
+                } else {
+                    Check::warn(
+                        "osquery config does not contain scheduled queries",
+                        "copy the recommended queries from modules/osquery-integration/config/sensor.example.toml into /etc/osquery/osquery.conf",
+                    )
+                });
+
+                run_section(osq, &mut total_issues);
+            }
+        }
+    }
+
     // ── Summary ───────────────────────────────────────────
     println!();
     println!("{}", "─".repeat(48));
