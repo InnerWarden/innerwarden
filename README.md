@@ -2,7 +2,7 @@
 
 A self-defending security agent for Linux and macOS servers.
 
-Three binaries (two daemons + a CLI). Installs in 10 seconds. Detects attacks and responds automatically.
+Three binaries (two daemons + a CLI). Installs in 10 seconds. Detects attacks and can respond automatically when response skills are enabled (non-dry-run mode).
 
 ```bash
 curl -fsSL https://get.innerwarden.dev | bash
