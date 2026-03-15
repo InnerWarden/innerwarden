@@ -53,10 +53,9 @@ impl SuricataEveCollector {
             let host = self.host.clone();
             let offset = self.offset;
             let event_types = self.event_types.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                poll(&path, &host, offset, &event_types)
-            })
-            .await?;
+            let result =
+                tokio::task::spawn_blocking(move || poll(&path, &host, offset, &event_types))
+                    .await?;
 
             match result {
                 Ok((events, new_offset)) => {
@@ -85,12 +84,7 @@ impl SuricataEveCollector {
 // File poller
 // ---------------------------------------------------------------------------
 
-fn poll(
-    path: &Path,
-    host: &str,
-    offset: u64,
-    event_types: &[String],
-) -> Result<(Vec<Event>, u64)> {
+fn poll(path: &Path, host: &str, offset: u64, event_types: &[String]) -> Result<(Vec<Event>, u64)> {
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -192,20 +186,19 @@ pub fn parse_eve_event(line: &str, host: &str, event_types: &[String]) -> ParseR
     let dest_ip = v["dest_ip"].as_str().unwrap_or("").to_string();
     let proto = v["proto"].as_str().unwrap_or("").to_lowercase();
 
-    let (kind, severity, summary, details, extra_tags) =
-        match event_type {
-            "alert" => build_alert(&v, &src_ip, &dest_ip, &proto),
-            "dns" => build_dns(&v, &src_ip),
-            "http" => build_http(&v, &src_ip),
-            "tls" => build_tls(&v, &src_ip),
-            "anomaly" => build_anomaly(&v, &src_ip),
-            other => {
-                let kind = format!("suricata.{}", slug(other));
-                let summary = format!("Suricata {other} event");
-                let details = v.clone();
-                (kind, Severity::Info, summary, details, vec![])
-            }
-        };
+    let (kind, severity, summary, details, extra_tags) = match event_type {
+        "alert" => build_alert(&v, &src_ip, &dest_ip, &proto),
+        "dns" => build_dns(&v, &src_ip),
+        "http" => build_http(&v, &src_ip),
+        "tls" => build_tls(&v, &src_ip),
+        "anomaly" => build_anomaly(&v, &src_ip),
+        other => {
+            let kind = format!("suricata.{}", slug(other));
+            let summary = format!("Suricata {other} event");
+            let details = v.clone();
+            (kind, Severity::Info, summary, details, vec![])
+        }
+    };
 
     let mut entities = Vec::new();
 
@@ -309,7 +302,13 @@ fn build_dns(
         "tx_id": v["tx_id"],
     });
 
-    (kind, Severity::Info, summary, details, vec!["dns".to_string()])
+    (
+        kind,
+        Severity::Info,
+        summary,
+        details,
+        vec!["dns".to_string()],
+    )
 }
 
 fn build_http(
@@ -322,7 +321,11 @@ fn build_http(
     let url = http["url"].as_str().unwrap_or("/");
     let status = http["status"].as_u64().unwrap_or(0);
 
-    let severity = if status >= 400 { Severity::Low } else { Severity::Info };
+    let severity = if status >= 400 {
+        Severity::Low
+    } else {
+        Severity::Info
+    };
     let summary = format!("{method} {hostname}{url} from {src_ip} (HTTP {status})");
     let details = serde_json::json!({
         "method": method,
@@ -486,7 +489,10 @@ mod tests {
                 assert!(ev.tags.contains(&"suricata".to_string()));
                 assert!(ev.tags.contains(&"ids".to_string()));
             }
-            other => panic!("expected Event, got {:?}", matches!(other, ParseResult::Skipped)),
+            other => panic!(
+                "expected Event, got {:?}",
+                matches!(other, ParseResult::Skipped)
+            ),
         }
     }
 
@@ -546,9 +552,7 @@ mod tests {
                 let services: Vec<_> = ev
                     .entities
                     .iter()
-                    .filter(|e| {
-                        matches!(e.r#type, innerwarden_core::entities::EntityType::Service)
-                    })
+                    .filter(|e| matches!(e.r#type, innerwarden_core::entities::EntityType::Service))
                     .collect();
                 assert!(
                     services.iter().any(|e| e.value == "victim.example.com"),
@@ -594,7 +598,10 @@ mod tests {
     fn slug_converts_correctly() {
         assert_eq!(slug("Potentially Bad Traffic"), "potentially_bad_traffic");
         assert_eq!(slug("ET EXPLOIT SSH exploit"), "et_exploit_ssh_exploit");
-        assert_eq!(slug("A Attempted Information Leak"), "a_attempted_information_leak");
+        assert_eq!(
+            slug("A Attempted Information Leak"),
+            "a_attempted_information_leak"
+        );
     }
 
     #[test]

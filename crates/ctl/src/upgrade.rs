@@ -128,9 +128,7 @@ pub fn find_asset<'a>(release: &'a GithubRelease, name: &str) -> Option<&'a Gith
 /// Download `url` to `dest`, return bytes written.
 /// Prints a simple dot-progress indicator to stdout.
 pub fn download(url: &str, dest: &Path) -> Result<u64> {
-    let resp = github_get(url)
-        .call()
-        .context("download request failed")?;
+    let resp = github_get(url).call().context("download request failed")?;
 
     let mut reader = resp.into_reader();
     let mut file =

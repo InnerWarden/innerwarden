@@ -238,11 +238,21 @@ pub fn compute_for_date(data_dir: &Path, date: Option<&str>) -> TrialReport {
     files.push(file_health_jsonl("events", &events_outcome));
 
     let incidents_outcome = parse_incidents_file(&incidents, &mut counters);
-    record_quality_hints("incidents", &incidents_outcome, analyzed_is_today, &mut counters);
+    record_quality_hints(
+        "incidents",
+        &incidents_outcome,
+        analyzed_is_today,
+        &mut counters,
+    );
     files.push(file_health_jsonl("incidents", &incidents_outcome));
 
     let decisions_outcome = parse_decisions_file(&decisions, &mut counters);
-    record_quality_hints("decisions", &decisions_outcome, analyzed_is_today, &mut counters);
+    record_quality_hints(
+        "decisions",
+        &decisions_outcome,
+        analyzed_is_today,
+        &mut counters,
+    );
     files.push(file_health_jsonl("decisions", &decisions_outcome));
 
     let summary_info = parse_plain_file(&summary);

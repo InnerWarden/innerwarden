@@ -45,8 +45,7 @@ impl FalcoLogCollector {
             let path = self.path.clone();
             let host = self.host.clone();
             let offset = self.offset;
-            let result =
-                tokio::task::spawn_blocking(move || poll(&path, &host, offset)).await?;
+            let result = tokio::task::spawn_blocking(move || poll(&path, &host, offset)).await?;
 
             match result {
                 Ok((events, new_offset)) => {

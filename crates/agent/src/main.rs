@@ -723,8 +723,7 @@ async fn process_incidents(
     };
 
     // Pre-compute Telegram T.1 threshold (None = telegram disabled)
-    let telegram_min_rank: Option<u8> = if cfg.telegram.enabled && state.telegram_client.is_some()
-    {
+    let telegram_min_rank: Option<u8> = if cfg.telegram.enabled && state.telegram_client.is_some() {
         Some(webhook::severity_rank(&cfg.telegram.parsed_min_severity()))
     } else {
         None
@@ -1175,8 +1174,7 @@ async fn execute_decision(
                             telegram_message_id: msg_id,
                             action_description: summary.clone(),
                             created_at: now,
-                            expires_at: now
-                                + chrono::Duration::seconds(ttl as i64),
+                            expires_at: now + chrono::Duration::seconds(ttl as i64),
                         };
                         state.pending_confirmations.insert(
                             incident.incident_id.clone(),

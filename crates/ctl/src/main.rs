@@ -1484,7 +1484,10 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
         sys.push(if has_launchctl {
             Check::ok("launchctl found (macOS service manager)")
         } else {
-            Check::fail("launchctl not found", "unexpected on macOS — check your PATH")
+            Check::fail(
+                "launchctl not found",
+                "unexpected on macOS — check your PATH",
+            )
         });
 
         // innerwarden user
@@ -1579,8 +1582,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                 .args(["list", plist])
                 .output()
                 .map(|o| {
-                    o.status.success()
-                        && String::from_utf8_lossy(&o.stdout).contains("\"PID\"")
+                    o.status.success() && String::from_utf8_lossy(&o.stdout).contains("\"PID\"")
                 })
                 .unwrap_or(false);
             svc.push(if running {
@@ -1678,15 +1680,13 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                 return Some(v);
             }
         }
-        std::fs::read_to_string(&env_file)
-            .ok()
-            .and_then(|s| {
-                s.lines()
-                    .find(|l| l.starts_with(&format!("{env_var}=")))
-                    .and_then(|l| l.split_once('=').map(|x| x.1))
-                    .filter(|v| !v.trim().is_empty())
-                    .map(|v| v.trim().to_string())
-            })
+        std::fs::read_to_string(&env_file).ok().and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with(&format!("{env_var}=")))
+                .and_then(|l| l.split_once('=').map(|x| x.1))
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| v.trim().to_string())
+        })
     };
 
     if !ai_enabled {
@@ -1713,7 +1713,8 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                         let log_hint = if is_macos {
                             "sudo tail -50 /usr/local/var/log/innerwarden/agent.log | grep -i '401\\|key\\|api'".to_string()
                         } else {
-                            "journalctl -u innerwarden-agent -n 50 | grep -i '401\\|key\\|api'".to_string()
+                            "journalctl -u innerwarden-agent -n 50 | grep -i '401\\|key\\|api'"
+                                .to_string()
                         };
                         cfg.push(if looks_valid {
                             Check::ok("ANTHROPIC_API_KEY is set and format looks correct")
@@ -1764,7 +1765,8 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                         let log_hint = if is_macos {
                             "sudo tail -50 /usr/local/var/log/innerwarden/agent.log | grep -i '401\\|key\\|api'".to_string()
                         } else {
-                            "journalctl -u innerwarden-agent -n 50 | grep -i '401\\|key\\|api'".to_string()
+                            "journalctl -u innerwarden-agent -n 50 | grep -i '401\\|key\\|api'"
+                                .to_string()
                         };
                         cfg.push(if looks_valid {
                             Check::ok("OPENAI_API_KEY is set and format looks correct")
@@ -1828,7 +1830,9 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
-            let token_in_env = std::env::var("TELEGRAM_BOT_TOKEN").ok().filter(|s| !s.is_empty());
+            let token_in_env = std::env::var("TELEGRAM_BOT_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty());
             let token_in_file = std::fs::read_to_string(&env_file_path)
                 .map(|s| {
                     s.lines()
@@ -1848,7 +1852,9 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
-            let chat_in_env = std::env::var("TELEGRAM_CHAT_ID").ok().filter(|s| !s.is_empty());
+            let chat_in_env = std::env::var("TELEGRAM_CHAT_ID")
+                .ok()
+                .filter(|s| !s.is_empty());
             let chat_in_file = std::fs::read_to_string(&env_file_path)
                 .map(|s| {
                     s.lines()
@@ -2057,8 +2063,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     Check::warn("Falco service is not running", falco_start_hint)
                 });
 
-                let falco_log =
-                    collector_str("falco_log", "path", "/var/log/falco/falco.log");
+                let falco_log = collector_str("falco_log", "path", "/var/log/falco/falco.log");
                 let log_ok = std::path::Path::new(&falco_log).exists()
                     && std::fs::metadata(&falco_log)
                         .map(|m| m.len() > 0)
@@ -2082,8 +2087,8 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     )
                 });
 
-                let falco_yaml = std::fs::read_to_string("/etc/falco/falco.yaml")
-                    .unwrap_or_default();
+                let falco_yaml =
+                    std::fs::read_to_string("/etc/falco/falco.yaml").unwrap_or_default();
                 let json_output_ok = falco_yaml.contains("json_output: true");
                 falco.push(if json_output_ok {
                     Check::ok("Falco json_output is enabled")
@@ -2137,8 +2142,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     Check::warn("Suricata service is not running", suri_start_hint)
                 });
 
-                let eve_log =
-                    collector_str("suricata_eve", "path", "/var/log/suricata/eve.json");
+                let eve_log = collector_str("suricata_eve", "path", "/var/log/suricata/eve.json");
                 let eve_ok = std::path::Path::new(&eve_log).exists();
                 suri.push(if eve_ok {
                     Check::ok(format!("Suricata eve.json exists ({})", eve_log))
@@ -2149,20 +2153,17 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     )
                 });
 
-                let rules_present = std::path::Path::new(
-                    "/var/lib/suricata/rules/suricata.rules",
-                )
-                .exists()
+                let rules_present = std::path::Path::new("/var/lib/suricata/rules/suricata.rules")
+                    .exists()
                     || std::fs::read_dir("/etc/suricata/rules/")
-                        .map(|mut d| d.any(|e| {
-                            e.map(|e| {
-                                e.path()
-                                    .extension()
-                                    .and_then(|x| x.to_str())
-                                    == Some("rules")
+                        .map(|mut d| {
+                            d.any(|e| {
+                                e.map(|e| {
+                                    e.path().extension().and_then(|x| x.to_str()) == Some("rules")
+                                })
+                                .unwrap_or(false)
                             })
-                            .unwrap_or(false)
-                        }))
+                        })
                         .unwrap_or(false);
                 suri.push(if rules_present {
                     Check::ok("Suricata ET rules present")
@@ -2231,8 +2232,8 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     )
                 });
 
-                let osq_conf = std::fs::read_to_string("/etc/osquery/osquery.conf")
-                    .unwrap_or_default();
+                let osq_conf =
+                    std::fs::read_to_string("/etc/osquery/osquery.conf").unwrap_or_default();
                 let has_schedule = osq_conf.contains("\"schedule\"");
                 osq.push(if has_schedule {
                     Check::ok("osquery config contains scheduled queries")

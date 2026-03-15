@@ -24,10 +24,7 @@ impl MacosLogCollector {
     /// Parses SSH and sudo events from the output.
     pub async fn run(self, tx: mpsc::Sender<Event>) -> Result<()> {
         // Check if `log` binary is available
-        let check = Command::new("log")
-            .arg("version")
-            .output()
-            .await;
+        let check = Command::new("log").arg("version").output().await;
         match check {
             Err(_) => {
                 warn!("log binary not found — macos_log collector disabled");
@@ -205,6 +202,9 @@ mod tests {
         assert_eq!(ev.source, "macos_log");
         assert_eq!(ev.details["user"], "deploy");
         assert_eq!(ev.details["run_as"], "root");
-        assert!(ev.details["command"].as_str().unwrap().contains("/usr/bin/id"));
+        assert!(ev.details["command"]
+            .as_str()
+            .unwrap()
+            .contains("/usr/bin/id"));
     }
 }

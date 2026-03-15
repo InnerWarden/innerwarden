@@ -321,12 +321,8 @@ async fn main() -> Result<()> {
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         shared_suricata_offset.store(offset, Ordering::Relaxed);
-        let collector = SuricataEveCollector::new(
-            &sc.path,
-            &cfg.agent.host_id,
-            offset,
-            sc.event_types.clone(),
-        );
+        let collector =
+            SuricataEveCollector::new(&sc.path, &cfg.agent.host_id, offset, sc.event_types.clone());
         info!(
             path = %sc.path,
             event_types = ?sc.event_types,
@@ -540,10 +536,7 @@ fn process_event(
     // Incident passthrough: tools that already ran their own detection
     // (Falco, Suricata) emit High/Critical events that are incidents by definition.
     if is_passthrough_source(&ev.source) {
-        let is_actionable = matches!(
-            ev.severity,
-            Severity::High | Severity::Critical
-        );
+        let is_actionable = matches!(ev.severity, Severity::High | Severity::Critical);
         if is_actionable {
             if let Some(incident) = passthrough_incident(&ev) {
                 write_incident(writer, stats, incident);

@@ -169,7 +169,11 @@ impl TelegramClient {
         approved: bool,
         operator: &str,
     ) -> Result<()> {
-        let label = if approved { "✅ Aprovado" } else { "❌ Rejeitado" };
+        let label = if approved {
+            "✅ Aprovado"
+        } else {
+            "❌ Rejeitado"
+        };
         let body = serde_json::json!({
             "chat_id": self.chat_id,
             "message_id": message_id,
@@ -197,7 +201,10 @@ impl TelegramClient {
     ///
     /// Uses long-polling (timeout=25s) so this blocks for up to 25s between updates.
     /// Any errors are logged and the loop continues.
-    pub async fn run_polling(self: std::sync::Arc<Self>, approval_tx: mpsc::Sender<ApprovalResult>) {
+    pub async fn run_polling(
+        self: std::sync::Arc<Self>,
+        approval_tx: mpsc::Sender<ApprovalResult>,
+    ) {
         let mut offset: i64 = 0;
 
         loop {
@@ -269,7 +276,10 @@ impl TelegramClient {
             .query(&[
                 ("offset", offset.to_string()),
                 ("timeout", "25".to_string()),
-                ("allowed_updates", r#"["message","callback_query"]"#.to_string()),
+                (
+                    "allowed_updates",
+                    r#"["message","callback_query"]"#.to_string(),
+                ),
             ])
             .send()
             .await
@@ -284,8 +294,8 @@ impl TelegramClient {
             return Ok(vec![]);
         }
 
-        let updates: Vec<Update> = serde_json::from_value(resp["result"].clone())
-            .unwrap_or_default();
+        let updates: Vec<Update> =
+            serde_json::from_value(resp["result"].clone()).unwrap_or_default();
         Ok(updates)
     }
 
@@ -490,11 +500,7 @@ fn escape_html(s: &str) -> String {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use innerwarden_core::{
-        entities::EntityRef,
-        event::Severity,
-        incident::Incident,
-    };
+    use innerwarden_core::{entities::EntityRef, event::Severity, incident::Incident};
 
     fn make_incident(severity: Severity, tags: Vec<String>, entities: Vec<EntityRef>) -> Incident {
         Incident {
@@ -572,7 +578,10 @@ mod tests {
 
     #[test]
     fn escape_html_handles_specials() {
-        assert_eq!(escape_html("<b>test & \"value\"</b>"), "&lt;b&gt;test &amp; &quot;value&quot;&lt;/b&gt;");
+        assert_eq!(
+            escape_html("<b>test & \"value\"</b>"),
+            "&lt;b&gt;test &amp; &quot;value&quot;&lt;/b&gt;"
+        );
     }
 
     #[test]

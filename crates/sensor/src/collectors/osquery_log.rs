@@ -42,8 +42,7 @@ impl OsqueryLogCollector {
             let path = self.path.clone();
             let host = self.host.clone();
             let offset = self.offset;
-            let result =
-                tokio::task::spawn_blocking(move || poll(&path, &host, offset)).await?;
+            let result = tokio::task::spawn_blocking(move || poll(&path, &host, offset)).await?;
 
             match result {
                 Ok((events, new_offset)) => {
@@ -338,9 +337,8 @@ fn is_valid_ip(addr: &str) -> bool {
     }
     // Skip private/RFC1918 ranges — these are usually the monitored host's own
     // addresses and add noise to entity extraction
-    if addr.starts_with("10.")
-        || addr.starts_with("192.168.")
-        || addr.starts_with("fe80:")  // link-local IPv6
+    if addr.starts_with("10.") || addr.starts_with("192.168.") || addr.starts_with("fe80:")
+    // link-local IPv6
     {
         return false;
     }

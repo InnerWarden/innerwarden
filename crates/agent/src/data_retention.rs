@@ -39,7 +39,10 @@ pub fn cleanup(data_dir: &Path, cfg: &DataRetentionConfig) -> usize {
         let name = name.to_string_lossy();
 
         for (prefix, suffix, keep_days) in patterns {
-            let Some(mid) = name.strip_prefix(prefix).and_then(|s| s.strip_suffix(*suffix)) else {
+            let Some(mid) = name
+                .strip_prefix(prefix)
+                .and_then(|s| s.strip_suffix(*suffix))
+            else {
                 continue;
             };
             let Ok(file_date) = NaiveDate::parse_from_str(mid, "%Y-%m-%d") else {
@@ -102,8 +105,14 @@ mod tests {
         let removed = cleanup(tmp.path(), &cfg);
 
         assert_eq!(removed, 1, "only the 8-day-old file should be removed");
-        assert!(!tmp.path().join(format!("events-{}.jsonl", old.format("%Y-%m-%d"))).exists());
-        assert!(tmp.path().join(format!("events-{}.jsonl", recent.format("%Y-%m-%d"))).exists());
+        assert!(!tmp
+            .path()
+            .join(format!("events-{}.jsonl", old.format("%Y-%m-%d")))
+            .exists());
+        assert!(tmp
+            .path()
+            .join(format!("events-{}.jsonl", recent.format("%Y-%m-%d")))
+            .exists());
     }
 
     #[test]
@@ -119,7 +128,10 @@ mod tests {
         let removed = cleanup(tmp.path(), &cfg);
 
         assert_eq!(removed, 0);
-        assert!(tmp.path().join(format!("decisions-{}.jsonl", recent.format("%Y-%m-%d"))).exists());
+        assert!(tmp
+            .path()
+            .join(format!("decisions-{}.jsonl", recent.format("%Y-%m-%d")))
+            .exists());
     }
 
     #[test]
