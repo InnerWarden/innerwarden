@@ -6,8 +6,8 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-description = "AI-assisted analysis, dashboard, and response agent for InnerWarden."
-keywords = ["security", "incident-response", "dashboard", "linux", "rust"]
+description = "AI-assisted defense agent with response skills for InnerWarden."
+keywords = ["security", "incident-response", "autonomous-defense", "linux", "rust"]
 categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]

@@ -4,12 +4,13 @@ Thanks for contributing to InnerWarden.
 
 ## Before You Start
 
-InnerWarden touches host telemetry, incident detection, and optional response automation. Please optimize for:
+InnerWarden is a self-defending security agent. It detects threats on the host and responds with bounded, auditable defensive actions. Please optimize for:
 
 - deterministic sensor behavior
-- fail-open behavior for collectors and sinks
-- conservative defaults
+- fail-open design for collectors and sinks
+- conservative defaults (dry-run, observe-only)
 - explicit documentation for any behavioral change
+- safety in response skills (bounded, reversible, audited)
 
 ## Development Workflow
 
@@ -29,7 +30,7 @@ make test
 
 If a change affects any of the following, update docs in the same PR:
 
-- capabilities
+- detection or response capabilities
 - generated artifacts
 - configuration
 - deployment/update flow
@@ -56,17 +57,18 @@ Please include:
 - any migration or rollout impact
 - commands you used to validate it
 
-If you changed responder behavior, dashboard behavior, or incident schemas, call that out explicitly.
+If you changed response skills, detection logic, or incident schemas, call that out explicitly.
 
 ## Scope Guidance
 
 Good contributions:
 
-- detector improvements
+- new detectors or detector improvements
+- new response skills
 - operational safety improvements
-- documentation and rollout hardening
 - test coverage and replay coverage
-- dashboard investigation UX improvements
+- documentation and setup guides
+- module authoring
 
 Changes that need extra care:
 
