@@ -142,6 +142,26 @@ enum ConfigureCommand {
         #[arg(long)]
         base_url: Option<String>,
     },
+
+    /// Enable or disable the responder and control dry-run mode
+    ///
+    /// Examples:
+    ///   innerwarden configure responder --enable
+    ///   innerwarden configure responder --enable --dry-run false
+    ///   innerwarden configure responder --disable
+    Responder {
+        /// Enable the responder (responder.enabled = true)
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+
+        /// Disable the responder (responder.enabled = false)
+        #[arg(long, conflicts_with = "enable")]
+        disable: bool,
+
+        /// Set dry-run mode: true (observe only) or false (execute for real)
+        #[arg(long, value_name = "BOOL")]
+        dry_run: Option<bool>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -303,6 +323,11 @@ fn main() -> Result<()> {
                 model.as_deref(),
                 base_url.as_deref(),
             ),
+            ConfigureCommand::Responder {
+                enable,
+                disable,
+                dry_run,
+            } => cmd_configure_responder(&cli, *enable, *disable, *dry_run),
         },
         Command::Module { ref command } => match command {
             ModuleCommand::Validate { ref path, strict } => cmd_module_validate(path, *strict),
@@ -1543,6 +1568,67 @@ fn cmd_configure_ai(
 
     println!();
     println!("AI configured. Run 'innerwarden doctor' to validate.");
+    Ok(())
+}
+
+fn cmd_configure_responder(
+    cli: &Cli,
+    enable: bool,
+    disable: bool,
+    dry_run_flag: Option<bool>,
+) -> Result<()> {
+    if !enable && !disable && dry_run_flag.is_none() {
+        anyhow::bail!(
+            "nothing to do — specify at least one flag.\n\nExamples:\n  innerwarden configure responder --enable\n  innerwarden configure responder --enable --dry-run false\n  innerwarden configure responder --disable"
+        );
+    }
+
+    // Apply responder.enabled
+    if enable || disable {
+        let value = enable;
+        if cli.dry_run {
+            println!("  [dry-run] would set [responder] enabled={value} in {}", cli.agent_config.display());
+        } else {
+            config_editor::write_bool(&cli.agent_config, "responder", "enabled", value)?;
+            println!("  [ok] responder.enabled = {value}");
+        }
+    }
+
+    // Apply responder.dry_run
+    if let Some(dr) = dry_run_flag {
+        if cli.dry_run {
+            println!("  [dry-run] would set [responder] dry_run={dr} in {}", cli.agent_config.display());
+        } else {
+            config_editor::write_bool(&cli.agent_config, "responder", "dry_run", dr)?;
+            println!("  [ok] responder.dry_run = {dr}");
+        }
+    }
+
+    // Restart agent
+    let is_macos = std::env::consts::OS == "macos";
+    if cli.dry_run {
+        let restart_cmd = if is_macos {
+            "sudo launchctl kickstart -k system/com.innerwarden.agent"
+        } else {
+            "sudo systemctl restart innerwarden-agent"
+        };
+        println!("  [dry-run] would restart: {restart_cmd}");
+    } else if is_macos {
+        systemd::restart_launchd("com.innerwarden.agent", false)?;
+        println!("  [ok] innerwarden-agent restarted");
+    } else {
+        systemd::restart_service("innerwarden-agent", false)?;
+        println!("  [ok] innerwarden-agent restarted");
+    }
+
+    println!();
+    if enable && dry_run_flag == Some(false) {
+        println!("Responder is live. Decisions will execute for real.");
+    } else if disable {
+        println!("Responder disabled. System observes only.");
+    } else {
+        println!("Responder updated. Run 'innerwarden status' to confirm.");
+    }
     Ok(())
 }
 
