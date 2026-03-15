@@ -233,6 +233,9 @@ innerwarden enable shell-audit --yes  # pula confirmação interativa
 innerwarden disable block-ip        # desativa capability (reverte config + sudoers + restart)
 innerwarden --dry-run enable block-ip  # mostra o que seria feito
 innerwarden doctor                  # diagnóstico completo com fix hints; exit 1 se houver issues
+                                    # inclui seção Telegram quando enabled=true: valida bot_token
+                                    # (formato <id>:<secret>) e chat_id (numérico), resolve via
+                                    # config / env var / agent.env, hints passo-a-passo para @BotFather e @userinfobot
 innerwarden upgrade                 # busca novo release no GitHub e instala atomicamente
 innerwarden upgrade --check         # só verifica se há update disponível, não instala
 

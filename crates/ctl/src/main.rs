@@ -1571,6 +1571,154 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
 
     run_section(cfg, &mut total_issues);
 
+    // ── Telegram ──────────────────────────────────────────
+    // Only check Telegram when enabled = true in agent config.
+    {
+        let agent_toml: Option<toml_edit::DocumentMut> = cli
+            .agent_config
+            .exists()
+            .then(|| std::fs::read_to_string(&cli.agent_config).ok())
+            .flatten()
+            .and_then(|s| s.parse().ok());
+
+        let telegram_enabled = agent_toml
+            .as_ref()
+            .and_then(|doc| doc.get("telegram"))
+            .and_then(|t| t.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if telegram_enabled {
+            println!("\nTelegram");
+            let mut tg = Vec::new();
+
+            let env_file_path = cli
+                .agent_config
+                .parent()
+                .map(|p| p.join("agent.env"))
+                .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+            // Resolve bot_token: config → env var → agent.env file
+            let token_in_config = agent_toml
+                .as_ref()
+                .and_then(|doc| doc.get("telegram"))
+                .and_then(|t| t.get("bot_token"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let token_in_env = std::env::var("TELEGRAM_BOT_TOKEN").ok().filter(|s| !s.is_empty());
+            let token_in_file = std::fs::read_to_string(&env_file_path)
+                .map(|s| {
+                    s.lines()
+                        .find(|l| l.starts_with("TELEGRAM_BOT_TOKEN="))
+                        .and_then(|l| l.splitn(2, '=').nth(1))
+                        .filter(|v| !v.is_empty())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or(None);
+            let resolved_token = token_in_config.or(token_in_env).or(token_in_file);
+
+            // Resolve chat_id: config → env var → agent.env file
+            let chat_in_config = agent_toml
+                .as_ref()
+                .and_then(|doc| doc.get("telegram"))
+                .and_then(|t| t.get("chat_id"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let chat_in_env = std::env::var("TELEGRAM_CHAT_ID").ok().filter(|s| !s.is_empty());
+            let chat_in_file = std::fs::read_to_string(&env_file_path)
+                .map(|s| {
+                    s.lines()
+                        .find(|l| l.starts_with("TELEGRAM_CHAT_ID="))
+                        .and_then(|l| l.splitn(2, '=').nth(1))
+                        .filter(|v| !v.is_empty())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or(None);
+            let resolved_chat = chat_in_config.or(chat_in_env).or(chat_in_file);
+
+            // Check bot_token presence
+            match &resolved_token {
+                None => {
+                    tg.push(Check::fail(
+                        "TELEGRAM_BOT_TOKEN not set",
+                        format!(
+                            "1. Open Telegram and message @BotFather\n\
+                             2. Send /newbot and follow the steps\n\
+                             3. Copy the token and add to {}:\n\
+                             \n   TELEGRAM_BOT_TOKEN=1234567890:AABBccDDeeffGGHH...",
+                            env_file_path.display()
+                        ),
+                    ));
+                }
+                Some(token) => {
+                    // Validate format: <digits>:<35+ alphanumeric chars>
+                    let looks_valid = token.contains(':') && {
+                        let mut parts = token.splitn(2, ':');
+                        let id_part = parts.next().unwrap_or("");
+                        let secret_part = parts.next().unwrap_or("");
+                        id_part.chars().all(|c| c.is_ascii_digit())
+                            && !id_part.is_empty()
+                            && secret_part.len() >= 20
+                    };
+                    tg.push(if looks_valid {
+                        Check::ok("TELEGRAM_BOT_TOKEN is set and format looks correct")
+                    } else {
+                        Check::warn(
+                            "TELEGRAM_BOT_TOKEN is set but format looks wrong",
+                            "Token should look like: 1234567890:AABBccDDeeffGGHHiijjKK...\n\
+                             Get a fresh token from @BotFather on Telegram",
+                        )
+                    });
+                }
+            }
+
+            // Check chat_id presence
+            match &resolved_chat {
+                None => {
+                    tg.push(Check::fail(
+                        "TELEGRAM_CHAT_ID not set",
+                        format!(
+                            "1. Open Telegram and message @userinfobot\n\
+                             2. It will reply with your chat ID (a number, e.g. 123456789)\n\
+                             3. For a group/channel the ID starts with -100\n\
+                             4. Add to {}:\n\
+                             \n   TELEGRAM_CHAT_ID=123456789",
+                            env_file_path.display()
+                        ),
+                    ));
+                }
+                Some(chat_id) => {
+                    // Chat ID should be numeric (possibly negative for groups)
+                    let looks_valid = chat_id
+                        .trim_start_matches('-')
+                        .chars()
+                        .all(|c| c.is_ascii_digit())
+                        && !chat_id.is_empty();
+                    tg.push(if looks_valid {
+                        Check::ok("TELEGRAM_CHAT_ID is set and format looks correct")
+                    } else {
+                        Check::warn(
+                            "TELEGRAM_CHAT_ID is set but format looks wrong",
+                            "Chat ID should be a number like 123456789 (personal) or -1001234567890 (group/channel)\n\
+                             Message @userinfobot on Telegram to find yours",
+                        )
+                    });
+                }
+            }
+
+            // If both token and chat_id are valid, suggest a connectivity smoke-test
+            if resolved_token.is_some() && resolved_chat.is_some() {
+                tg.push(Check::ok(
+                    "Telegram configured — test it: innerwarden-agent --config /etc/innerwarden/agent.toml --once",
+                ));
+            }
+
+            run_section(tg, &mut total_issues);
+        }
+    }
+
     // ── Capabilities ──────────────────────────────────────
     println!("\nCapabilities");
     let opts = make_opts(cli, HashMap::new(), false);
