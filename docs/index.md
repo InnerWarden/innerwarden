@@ -15,6 +15,12 @@
 - `docs/assets/screenshots/` — public dashboard preview images
 - `scripts/capture_dashboard_previews.sh` — regeneration helper for dashboard preview assets
 
+## Extensibility
+
+- [docs/module-authoring.md](module-authoring.md) — guide for building custom modules
+- [docs/integration-recipes.md](integration-recipes.md) — integration recipe format: connect Falco, Wazuh, osquery, and other tools
+- [integrations/README.md](../integrations/README.md) — available recipes (Falco, Wazuh, osquery)
+
 ## Active Roadmap
 
 - [docs/phase-d5-attacker-path-viewer.md](phase-d5-attacker-path-viewer.md) — planned: dashboard story-first attacker path

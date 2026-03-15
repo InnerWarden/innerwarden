@@ -193,6 +193,12 @@ modules/                           — soluções verticais empacotadas (ver doc
   execution-guard/                 — shell.command_exec + sudo.command → execution_guard AST detector (built-in, observe mode)
 docs/
   module-authoring.md              — guia completo para criar módulos + passo-a-passo Claude Code/Codex
+  integration-recipes.md           — formato de recipe + guia de geração por AI + fluxo de contribuição
+integrations/                      — integration recipes (declarative specs for external tool collectors)
+  README.md                        — índice de recipes disponíveis
+  falco/recipe.toml                — Falco eBPF/syscall runtime security (file_tail, incident_passthrough)
+  wazuh/recipe.toml                — Wazuh HIDS / FIM / compliance (file_tail, incident_passthrough)
+  osquery/recipe.toml              — osquery host observability (file_tail, no passthrough)
 ```
 
 ---
@@ -678,6 +684,7 @@ Próximas direções:
 - **`innerwarden module search`** — registry central em TOML hospedado; `search <termo>` lista módulos da comunidade com `install_url`
 - **Ollama provider real** — stub → implementação real para uso local/offline
 - **Fase D10** — notificações por browser (Web Notifications API) quando o dashboard está em background
+- **Integration recipes** — ✅ sistema de recipes declarativo (`integrations/`) com specs para Falco, Wazuh, osquery; geração de collectors via AI a partir de recipe + module-authoring.md. Próximos: implementar `FalcoLogCollector`, `WazuhAlertsCollector`, `OsqueryLogCollector` em `crates/sensor/src/collectors/`
 
 Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/public-readiness-checklist.md`
 
