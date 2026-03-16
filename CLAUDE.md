@@ -816,6 +816,7 @@ Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8):
 - **doctor fail2ban:** ✅ seção em `innerwarden doctor`; verifica `fail2ban-client` binary + responsividade de `ping`; warning em macOS
 - **doctor AbuseIPDB:** ✅ seção condicional quando `abuseipdb.enabled = true`; resolve key de config / env var / agent.env; valida comprimento mínimo da chave
 - **doctor Slack:** ✅ seção condicional quando `slack.enabled = true`; resolve `SLACK_WEBHOOK_URL` de config / env var / agent.env; valida formato da URL
+- **Plain-language alerts:** ✅ Telegram, Slack, e narrativa diária usam linguagem natural; `plain_action()` converte comandos técnicos de firewall em frases legíveis; `human_event_kind()` (20+ traduções); `human_detector_name()`; TL;DR block no topo da narrativa; context row do Slack usa timestamp no lugar de incident_id técnico
 - **Cloudflare integration:** ✅ `cloudflare.rs`; `push_block(ip, reason)`; `CloudflareConfig` com `zone_id`, `api_token` / `CLOUDFLARE_API_TOKEN`, `auto_push_blocks`, `block_notes_prefix`; módulo `cloudflare-integration/`; 6 testes
 - **AbuseIPDB auto-block gate:** ✅ `abuseipdb.auto_block_threshold` (u8, 0=disabled); quando score ≥ threshold, block sem chamar AI; `ai_provider: "abuseipdb"` no audit trail
 - **AI circuit breaker:** ✅ `ai.circuit_breaker_threshold` + `circuit_breaker_cooldown_secs`; `AgentState.circuit_breaker_until`; suspende AI analysis quando volume de incidentes explode
