@@ -91,6 +91,15 @@ enum Command {
     /// Run system diagnostics and print fix hints for any issues found
     Doctor,
 
+    /// First-time setup wizard — get from zero to fully operational.
+    ///
+    /// Walks you through: AI provider, Telegram alerts, responder mode.
+    /// Safe to re-run — skips steps that are already configured.
+    ///
+    /// Examples:
+    ///   innerwarden setup
+    Setup,
+
     /// Scan this machine and recommend the best modules for your setup.
     ///
     /// Runs a quick system probe, scores each module, and shows a clear
@@ -610,6 +619,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Doctor => cmd_doctor(&cli, &registry),
+        Command::Setup => cmd_setup(&cli),
         Command::Scan { ref modules_dir } => scan::cmd_scan(modules_dir),
         Command::Upgrade {
             check,
@@ -2281,6 +2291,226 @@ fn write_env_key(env_path: &Path, key: &str, value: &str) -> Result<()> {
         .with_context(|| format!("cannot write {}", tmp.display()))?;
     std::fs::rename(&tmp, env_path)
         .with_context(|| format!("cannot update {}", env_path.display()))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden setup
+// ---------------------------------------------------------------------------
+
+fn cmd_setup(cli: &Cli) -> Result<()> {
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+    let env_vars = load_env_file(&env_file);
+
+    let agent_doc: Option<toml_edit::DocumentMut> = std::fs::read_to_string(&cli.agent_config)
+        .ok()
+        .and_then(|s| s.parse().ok());
+    let is_enabled = |section: &str| -> bool {
+        agent_doc
+            .as_ref()
+            .and_then(|v| v.get(section))
+            .and_then(|s| s.get("enabled"))
+            .and_then(|e| e.as_bool())
+            .unwrap_or(false)
+    };
+    let has_env = |key: &str| -> bool {
+        env_vars.get(key).map_or(false, |v| !v.is_empty())
+            || std::env::var(key).map_or(false, |v| !v.is_empty())
+    };
+
+    let ai_ok = is_enabled("ai");
+    let telegram_ok = has_env("TELEGRAM_BOT_TOKEN") && has_env("TELEGRAM_CHAT_ID");
+    let responder_ok = is_enabled("responder");
+
+    // ── Welcome ───────────────────────────────────────────────────────────
+    println!("InnerWarden — first-time setup\n");
+    println!("Scanning your system to see what's installed...\n");
+
+    let probes = scan::run_probes();
+    let recs = scan::score_modules(&probes);
+
+    // Print compact scan summary — essential modules only
+    let essential: Vec<&scan::ModuleRec> = recs
+        .iter()
+        .filter(|r| matches!(r.tier, scan::Tier::Essential))
+        .collect();
+    let recommended: Vec<&scan::ModuleRec> = recs
+        .iter()
+        .filter(|r| matches!(r.tier, scan::Tier::Recommended))
+        .collect();
+
+    if !essential.is_empty() {
+        println!("Detected on this host:");
+        for r in &essential {
+            println!("  ★ {}  — {}", r.name, r.why.split('.').next().unwrap_or(""));
+        }
+        println!();
+    }
+    if !recommended.is_empty() {
+        println!("Also available:");
+        for r in &recommended {
+            println!("  · {}  — {}", r.name, r.why.split('.').next().unwrap_or(""));
+        }
+        println!();
+    }
+    println!("Run 'innerwarden scan' after setup for the full module advisor.\n");
+    println!("{}", "─".repeat(56));
+
+    println!();
+    println!("Now configuring the essentials in 3 steps:");
+    println!("  1. AI provider    — brains for threat analysis");
+    println!("  2. Telegram       — real-time alerts on your phone");
+    println!("  3. Responder      — decide how to react to threats\n");
+    println!("You can skip any step and run it later with 'innerwarden configure'.\n");
+    println!("{}", "─".repeat(56));
+
+    // ── Step 1: AI ────────────────────────────────────────────────────────
+    println!();
+    if ai_ok {
+        println!("Step 1/3 — AI provider   ✅ already configured\n");
+    } else {
+        println!("Step 1/3 — AI provider\n");
+        println!("InnerWarden uses AI to analyse threats and decide how to respond.");
+        println!("Options:");
+        println!("  1. Ollama (recommended) — free, no credit card, runs in the cloud");
+        println!("  2. OpenAI               — requires API key (paid)");
+        println!("  3. Anthropic            — requires API key (paid)");
+        println!("  s. Skip for now\n");
+        let choice = prompt("Choose [1/2/3/s]")?;
+        println!();
+        match choice.trim().to_lowercase().as_str() {
+            "1" | "" => {
+                if let Err(e) = cmd_ai_install(cli, "qwen3-coder:480b", None, true) {
+                    println!("  Could not configure Ollama automatically: {e:#}");
+                    println!("  Run later:  innerwarden ai install");
+                }
+            }
+            "2" => {
+                if let Err(e) = cmd_configure_ai(cli, "openai", None, None, None) {
+                    println!("  Skipped AI setup: {e:#}");
+                }
+            }
+            "3" => {
+                if let Err(e) = cmd_configure_ai(cli, "anthropic", None, None, None) {
+                    println!("  Skipped AI setup: {e:#}");
+                }
+            }
+            _ => println!("  Skipped. Run later:  innerwarden configure ai"),
+        }
+    }
+
+    println!("{}", "─".repeat(56));
+
+    // ── Step 2: Telegram ──────────────────────────────────────────────────
+    println!();
+    if telegram_ok {
+        println!("Step 2/3 — Telegram alerts   ✅ already configured\n");
+    } else {
+        println!("Step 2/3 — Telegram alerts\n");
+        println!("Get instant alerts on your phone whenever a threat is detected.");
+        println!("You'll need a free Telegram account.\n");
+        print!("Set up Telegram now? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut ans = String::new();
+        std::io::stdin().read_line(&mut ans)?;
+        println!();
+        if ans.trim().to_lowercase() != "n" {
+            if let Err(e) = cmd_configure_telegram(cli, None, None, false) {
+                println!("  Skipped Telegram: {e:#}");
+                println!("  Run later:  innerwarden configure telegram");
+            }
+        } else {
+            println!("  Skipped. Run later:  innerwarden configure telegram");
+        }
+    }
+
+    println!("{}", "─".repeat(56));
+
+    // ── Step 3: Responder ─────────────────────────────────────────────────
+    println!();
+    if responder_ok {
+        let dry = agent_doc
+            .as_ref()
+            .and_then(|v| v.get("responder"))
+            .and_then(|r| r.get("dry_run"))
+            .and_then(|d| d.as_bool())
+            .unwrap_or(true);
+        let mode = if dry { "observe (dry-run)" } else { "live (executing actions)" };
+        println!("Step 3/3 — Responder   ✅ already configured ({mode})\n");
+    } else {
+        println!("Step 3/3 — Responder\n");
+        println!("The responder decides what to do when a threat is confirmed:");
+        println!("  observe — AI analyses threats, logs decisions, never blocks anything");
+        println!("  dry-run — AI decides and shows what it would do (safe for testing)");
+        println!("  live    — AI blocks attackers automatically (requires block skill)\n");
+        println!("Recommended for first setup: observe or dry-run.\n");
+        print!("Configure now? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut ans = String::new();
+        std::io::stdin().read_line(&mut ans)?;
+        println!();
+        if ans.trim().to_lowercase() != "n" {
+            if let Err(e) = cmd_configure_responder(cli, false, false, None) {
+                println!("  Skipped responder: {e:#}");
+                println!("  Run later:  innerwarden configure responder");
+            }
+        } else {
+            println!("  Skipped. Run later:  innerwarden configure responder");
+        }
+    }
+
+    println!("{}", "─".repeat(56));
+
+    // ── Summary ───────────────────────────────────────────────────────────
+    // Re-read state after all changes
+    let env_vars2 = load_env_file(&env_file);
+    let agent_doc2: Option<toml_edit::DocumentMut> = std::fs::read_to_string(&cli.agent_config)
+        .ok()
+        .and_then(|s| s.parse().ok());
+    let is_enabled2 = |section: &str| -> bool {
+        agent_doc2
+            .as_ref()
+            .and_then(|v| v.get(section))
+            .and_then(|s| s.get("enabled"))
+            .and_then(|e| e.as_bool())
+            .unwrap_or(false)
+    };
+    let has_env2 = |key: &str| -> bool {
+        env_vars2.get(key).map_or(false, |v| !v.is_empty())
+            || std::env::var(key).map_or(false, |v| !v.is_empty())
+    };
+
+    println!();
+    println!("Setup complete!\n");
+    let ai_done = is_enabled2("ai");
+    let tg_done = has_env2("TELEGRAM_BOT_TOKEN") && has_env2("TELEGRAM_CHAT_ID");
+    let resp_done = is_enabled2("responder");
+    println!(
+        "  AI provider   {}",
+        if ai_done { "✅ configured" } else { "○  not set up" }
+    );
+    println!(
+        "  Telegram      {}",
+        if tg_done { "✅ configured" } else { "○  not set up" }
+    );
+    println!(
+        "  Responder     {}",
+        if resp_done { "✅ configured" } else { "○  not set up" }
+    );
+
+    println!();
+    println!("Useful commands:");
+    println!("  innerwarden status         — overview of services and today's activity");
+    println!("  innerwarden incidents      — list recent threats");
+    println!("  innerwarden report         — daily security narrative");
+    println!("  innerwarden configure      — set up more integrations");
+    println!("  innerwarden doctor         — diagnose any issues");
+    println!("  innerwarden test-alert     — verify notifications are working");
+
     Ok(())
 }
 
