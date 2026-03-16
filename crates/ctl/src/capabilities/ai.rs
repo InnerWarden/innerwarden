@@ -33,7 +33,10 @@ impl Preflight for ApiKeyAvailable {
     fn check(&self) -> Result<(), PreflightError> {
         match self.provider.as_str() {
             "openai" => {
-                if std::env::var("OPENAI_API_KEY").unwrap_or_default().is_empty() {
+                if std::env::var("OPENAI_API_KEY")
+                    .unwrap_or_default()
+                    .is_empty()
+                {
                     return Err(PreflightError::new("OPENAI_API_KEY not set").with_hint(
                         "Export OPENAI_API_KEY or add it to /etc/innerwarden/agent.env",
                     ));
@@ -168,9 +171,7 @@ impl Capability for AiCapability {
         // 4. [ai] base_url (only for ollama or explicit param)
         if let Some(url) = self.base_url(opts) {
             config_editor::write_str(&opts.agent_config, "ai", "base_url", &url)?;
-            effects.push(CapabilityEffect::new(format!(
-                "[ai] base_url = \"{url}\""
-            )));
+            effects.push(CapabilityEffect::new(format!("[ai] base_url = \"{url}\"")));
         }
 
         // 5. Restart agent
@@ -185,8 +186,16 @@ impl Capability for AiCapability {
 
     fn planned_disable_effects(&self, opts: &ActivationOptions) -> Vec<CapabilityEffect> {
         let agent = opts.agent_config.display().to_string();
+        let current = config_editor::read_str(&opts.agent_config, "ai", "provider");
+        let provider_note = if current.is_empty() {
+            String::new()
+        } else {
+            format!(" (current provider: {current})")
+        };
         vec![
-            CapabilityEffect::new(format!("Patch {agent}: [ai] enabled = false")),
+            CapabilityEffect::new(format!(
+                "Patch {agent}: [ai] enabled = false{provider_note}"
+            )),
             CapabilityEffect::new("Restart innerwarden-agent"),
         ]
     }
@@ -308,10 +317,7 @@ mod tests {
             "gpt-4o-mini"
         );
         // No base_url for openai
-        assert_eq!(
-            config_editor::read_str(agent.path(), "ai", "base_url"),
-            ""
-        );
+        assert_eq!(config_editor::read_str(agent.path(), "ai", "base_url"), "");
     }
 
     #[test]
