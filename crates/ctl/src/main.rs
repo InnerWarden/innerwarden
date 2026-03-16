@@ -3426,8 +3426,12 @@ fn cmd_configure_telegram(
     println!();
     println!("Telegram is ready.");
     println!();
-    println!("  Your bot sends alerts — it does not respond to general messages.");
-    println!("  Send /status to your bot to request a health check at any time.");
+    println!("  Your bot sends alerts and responds to commands:");
+    println!("    /menu       — interactive button menu");
+    println!("    /status     — system overview");
+    println!("    /incidents  — last incidents");
+    println!("    /decisions  — last decisions");
+    println!("    /ask <q>    — ask the AI a question");
     println!();
     println!("Next steps:");
     println!("  innerwarden status       — check services and active capabilities");
@@ -3456,7 +3460,7 @@ fn send_telegram_test(token: &str, chat_id: &str) -> Result<()> {
     let url = format!("https://api.telegram.org/bot{token}/sendMessage");
     let body = serde_json::json!({
         "chat_id": chat_id,
-        "text": "✅ <b>InnerWarden connected</b>\n\nYou'll receive alerts here when High or Critical threats are detected on your server.\n\n<b>Note:</b> This bot sends notifications only — it does not respond to general messages. Use /status to request a health check.",
+        "text": "✅ <b>InnerWarden connected</b>\n\nYou'll receive alerts here when High or Critical threats are detected on your server.\n\n<b>Commands:</b>\n/menu — interactive button menu\n/status — system overview\n/incidents — last incidents\n/decisions — last decisions\n/ask &lt;question&gt; — ask the AI\n\nOr just type a question in plain text.",
         "parse_mode": "HTML"
     });
     let resp = ureq::post(&url)
