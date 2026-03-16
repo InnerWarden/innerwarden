@@ -1876,9 +1876,137 @@ async fn process_telegram_approval(
     cfg: &config::AgentConfig,
     state: &mut AgentState,
 ) {
-    // /status command — log it; a real status reply can be added later
+    // Helper macro: fire-and-forget a Telegram reply
+    macro_rules! tg_reply {
+        ($text:expr) => {
+            if let Some(ref tg) = state.telegram_client {
+                let tg = tg.clone();
+                let text = $text.to_string();
+                tokio::spawn(async move {
+                    let _ = tg.send_text_message(&text).await;
+                });
+            }
+        };
+    }
+
+    // Bot-only commands: handle before checking pending_confirmations
     if result.incident_id == "__status__" {
         info!(operator = %result.operator_name, "Telegram /status command received");
+        if cfg.telegram.bot.enabled {
+            let today = chrono::Local::now()
+                .date_naive()
+                .format("%Y-%m-%d")
+                .to_string();
+            let incident_count = count_jsonl_lines(data_dir, &format!("incidents-{today}.jsonl"));
+            let decision_count = count_jsonl_lines(data_dir, &format!("decisions-{today}.jsonl"));
+            let dry_run_label = if cfg.responder.dry_run { "on" } else { "off" };
+            let ai_label = if cfg.ai.enabled {
+                cfg.ai.provider.as_str()
+            } else {
+                "not configured"
+            };
+            let text = format!(
+                "🛡 InnerWarden Status\n\nToday: {incident_count} incidents, {decision_count} decisions\nDry-run: {dry_run_label}\nAI: {ai_label}\n\nUse /help for commands.",
+            );
+            tg_reply!(text);
+        }
+        return;
+    }
+
+    if result.incident_id == "__help__" {
+        info!(operator = %result.operator_name, "Telegram /help command received");
+        if cfg.telegram.bot.enabled {
+            let text = "🤖 InnerWarden Bot Commands\n\n\
+                /status — system overview\n\
+                /incidents — last 5 incidents\n\
+                /decisions — last 5 decisions\n\
+                /ask <question> — ask the AI anything\n  or just type your question directly\n\n\
+                I can answer questions about your server's security, explain incidents, \
+                suggest actions, and help you configure InnerWarden.";
+            tg_reply!(text);
+        }
+        return;
+    }
+
+    if result.incident_id == "__incidents__" {
+        info!(operator = %result.operator_name, "Telegram /incidents command received");
+        if cfg.telegram.bot.enabled {
+            let today = chrono::Local::now()
+                .date_naive()
+                .format("%Y-%m-%d")
+                .to_string();
+            let text = read_last_incidents(data_dir, &today, 5);
+            tg_reply!(text);
+        }
+        return;
+    }
+
+    if result.incident_id == "__decisions__" {
+        info!(operator = %result.operator_name, "Telegram /decisions command received");
+        if cfg.telegram.bot.enabled {
+            let today = chrono::Local::now()
+                .date_naive()
+                .format("%Y-%m-%d")
+                .to_string();
+            let text = read_last_decisions(data_dir, &today, 5);
+            tg_reply!(text);
+        }
+        return;
+    }
+
+    if result.incident_id == "__unknown_cmd__" {
+        info!(operator = %result.operator_name, "Telegram unknown command received");
+        if cfg.telegram.bot.enabled {
+            tg_reply!("Unknown command. Use /help to see available commands.");
+        }
+        return;
+    }
+
+    if let Some(question) = result.incident_id.strip_prefix("__ask__:") {
+        let question = question.to_string();
+        info!(operator = %result.operator_name, question = %question, "Telegram /ask command received");
+        if cfg.telegram.bot.enabled {
+            let today = chrono::Local::now()
+                .date_naive()
+                .format("%Y-%m-%d")
+                .to_string();
+            let context_snippet = read_last_incidents_raw(data_dir, &today, 3);
+            let system_prompt = if context_snippet.is_empty() {
+                cfg.telegram.bot.personality.clone()
+            } else {
+                format!(
+                    "{}\n\nRecent incidents on this server:\n{}",
+                    cfg.telegram.bot.personality, context_snippet
+                )
+            };
+
+            if let Some(ref ai) = state.ai_provider {
+                let ai = ai.clone();
+                let tg = state.telegram_client.clone();
+                tokio::spawn(async move {
+                    match ai.chat(&system_prompt, &question).await {
+                        Ok(reply) => {
+                            if let Some(ref tg) = tg {
+                                let _ = tg.send_text_message(&reply).await;
+                            }
+                        }
+                        Err(e) => {
+                            warn!("AI chat error for Telegram /ask: {e:#}");
+                            if let Some(ref tg) = tg {
+                                let _ = tg
+                                    .send_text_message(&format!(
+                                        "AI error: {}",
+                                        e.to_string().chars().take(200).collect::<String>()
+                                    ))
+                                    .await;
+                            }
+                        }
+                    }
+                });
+            } else {
+                tg_reply!("AI is not configured. Run: innerwarden configure ai");
+            }
+        }
         return;
     }
 
@@ -1953,6 +2081,168 @@ async fn process_telegram_approval(
             warn!("failed to write Telegram decision entry: {e:#}");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Telegram bot helper functions
+// ---------------------------------------------------------------------------
+
+/// Count the number of lines in a JSONL file in data_dir (fail-silent → 0).
+fn count_jsonl_lines(data_dir: &Path, filename: &str) -> usize {
+    let path = data_dir.join(filename);
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => contents.lines().filter(|l| !l.trim().is_empty()).count(),
+        Err(_) => 0,
+    }
+}
+
+/// Read the last N incidents from today's incidents file, formatted for display.
+fn read_last_incidents(data_dir: &Path, today: &str, n: usize) -> String {
+    let path = data_dir.join(format!("incidents-{today}.jsonl"));
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return "No incidents recorded today.".to_string(),
+    };
+
+    let lines: Vec<&str> = contents.lines().filter(|l| !l.trim().is_empty()).collect();
+
+    if lines.is_empty() {
+        return "No incidents recorded today.".to_string();
+    }
+
+    let last_n: Vec<&str> = lines.iter().rev().take(n).copied().collect::<Vec<_>>();
+    let now = chrono::Utc::now();
+
+    let formatted: Vec<String> = last_n
+        .into_iter()
+        .rev()
+        .filter_map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            let severity = v["severity"].as_str().unwrap_or("?").to_uppercase();
+            let title = v["title"].as_str().unwrap_or("unknown").to_string();
+            let entity = v["entities"]
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(|e| e["value"].as_str())
+                .unwrap_or("?")
+                .to_string();
+            let ts_str = v["ts"].as_str().unwrap_or("");
+            let age = chrono::DateTime::parse_from_rfc3339(ts_str)
+                .ok()
+                .map(|t| {
+                    let mins = now
+                        .signed_duration_since(t.with_timezone(&chrono::Utc))
+                        .num_minutes();
+                    if mins < 1 {
+                        "just now".to_string()
+                    } else {
+                        format!("{mins}m ago")
+                    }
+                })
+                .unwrap_or_default();
+            Some(format!("[{severity}] {title} — {entity} {age}"))
+        })
+        .collect();
+
+    if formatted.is_empty() {
+        "No parseable incidents today.".to_string()
+    } else {
+        format!(
+            "Last {} incidents:\n{}",
+            formatted.len(),
+            formatted.join("\n")
+        )
+    }
+}
+
+/// Read the last N decisions from today's decisions file, formatted for display.
+fn read_last_decisions(data_dir: &Path, today: &str, n: usize) -> String {
+    let path = data_dir.join(format!("decisions-{today}.jsonl"));
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return "No decisions recorded today.".to_string(),
+    };
+
+    let lines: Vec<&str> = contents.lines().filter(|l| !l.trim().is_empty()).collect();
+
+    if lines.is_empty() {
+        return "No decisions recorded today.".to_string();
+    }
+
+    let last_n: Vec<&str> = lines.iter().rev().take(n).copied().collect::<Vec<_>>();
+
+    let formatted: Vec<String> = last_n
+        .into_iter()
+        .rev()
+        .filter_map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            let action = v["action_type"].as_str().unwrap_or("?").to_string();
+            let target = v["target_ip"]
+                .as_str()
+                .or_else(|| v["target_user"].as_str())
+                .unwrap_or("?")
+                .to_string();
+            let confidence = v["confidence"].as_f64().unwrap_or(0.0);
+            let dry_run = v["dry_run"].as_bool().unwrap_or(true);
+            let mode = if dry_run { "dry-run" } else { "live" };
+            Some(format!(
+                "[{action}] {target} — {:.0}% confidence — {mode}",
+                confidence * 100.0
+            ))
+        })
+        .collect();
+
+    if formatted.is_empty() {
+        "No parseable decisions today.".to_string()
+    } else {
+        format!(
+            "Last {} decisions:\n{}",
+            formatted.len(),
+            formatted.join("\n")
+        )
+    }
+}
+
+/// Read the last N incidents as compact JSON strings (for AI context).
+fn read_last_incidents_raw(data_dir: &Path, today: &str, n: usize) -> String {
+    let path = data_dir.join(format!("incidents-{today}.jsonl"));
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+
+    let lines: Vec<&str> = contents.lines().filter(|l| !l.trim().is_empty()).collect();
+
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    lines
+        .iter()
+        .rev()
+        .take(n)
+        .map(|l| {
+            // Summarise to avoid sending huge JSON blobs to the AI
+            serde_json::from_str::<serde_json::Value>(l)
+                .ok()
+                .map(|v| {
+                    format!(
+                        "[{}] {} — {}",
+                        v["severity"].as_str().unwrap_or("?"),
+                        v["title"].as_str().unwrap_or("?"),
+                        v["summary"]
+                            .as_str()
+                            .unwrap_or("")
+                            .chars()
+                            .take(120)
+                            .collect::<String>()
+                    )
+                })
+                .unwrap_or_default()
+        })
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -2113,6 +2403,9 @@ mod tests {
         async fn decide(&self, _ctx: &ai::DecisionContext<'_>) -> anyhow::Result<ai::AiDecision> {
             Ok(self.decision.clone())
         }
+        async fn chat(&self, _system_prompt: &str, _user_message: &str) -> anyhow::Result<String> {
+            Ok("mock chat response".to_string())
+        }
     }
 
     struct CountingMockAiProvider {
@@ -2128,6 +2421,9 @@ mod tests {
         async fn decide(&self, _ctx: &ai::DecisionContext<'_>) -> anyhow::Result<ai::AiDecision> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.decision.clone())
+        }
+        async fn chat(&self, _system_prompt: &str, _user_message: &str) -> anyhow::Result<String> {
+            Ok("mock chat response".to_string())
         }
     }
 
@@ -2146,6 +2442,10 @@ mod tests {
             self.last_related_count
                 .store(ctx.related_incidents.len(), Ordering::SeqCst);
             Ok(self.decision.clone())
+        }
+
+        async fn chat(&self, _system_prompt: &str, _user_message: &str) -> anyhow::Result<String> {
+            Ok("mock chat response".to_string())
         }
     }
 

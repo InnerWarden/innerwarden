@@ -648,6 +648,34 @@ impl Default for ResponderConfig {
 // Telegram
 // ---------------------------------------------------------------------------
 
+/// Configuration for the Telegram conversational bot interface.
+#[derive(Debug, Deserialize, Clone)]
+pub struct TelegramBotConfig {
+    /// Enable the conversational bot interface (default: true).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Personality prompt prepended to all bot AI interactions.
+    #[serde(default = "default_bot_personality")]
+    pub personality: String,
+}
+
+fn default_bot_personality() -> String {
+    "You are a security assistant for InnerWarden, a server defense system. \
+     Be concise, direct, and helpful. Use plain text — no markdown headers, \
+     minimal formatting. When asked about the system, report facts clearly. \
+     When asked about threats, be analytical but brief."
+        .to_string()
+}
+
+impl Default for TelegramBotConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            personality: default_bot_personality(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TelegramConfig {
     /// Enable Telegram notifications (T.1) and approval bot (T.2)
@@ -682,6 +710,10 @@ pub struct TelegramConfig {
     /// Omit or comment out to disable.
     #[serde(default)]
     pub daily_summary_hour: Option<u8>,
+
+    /// Conversational bot configuration.
+    #[serde(default)]
+    pub bot: TelegramBotConfig,
 }
 
 impl TelegramConfig {
@@ -731,6 +763,7 @@ impl Default for TelegramConfig {
             dashboard_url: String::new(),
             approval_ttl_secs: default_telegram_approval_ttl_secs(),
             daily_summary_hour: None,
+            bot: TelegramBotConfig::default(),
         }
     }
 }

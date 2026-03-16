@@ -37,6 +37,56 @@ impl AiProvider for OpenAiProvider {
         "openai"
     }
 
+    async fn chat(&self, system_prompt: &str, user_message: &str) -> Result<String> {
+        if self.api_key.is_empty() {
+            anyhow::bail!(
+                "OpenAI API key not configured. Set OPENAI_API_KEY env var or [ai].api_key in config."
+            );
+        }
+
+        debug!(model = %self.model, "calling OpenAI API for chat");
+
+        let body = serde_json::json!({
+            "model": self.model,
+            "messages": [
+                { "role": "system", "content": system_prompt },
+                { "role": "user",   "content": user_message }
+            ],
+            "temperature": 0.7,
+            "max_tokens": 600,
+        });
+
+        let resp = self
+            .client
+            .post("https://api.openai.com/v1/chat/completions")
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .context("OpenAI chat API request failed")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "OpenAI chat API returned {status}: {}",
+                text.chars().take(300).collect::<String>()
+            );
+        }
+
+        let completion: ChatCompletion = resp
+            .json()
+            .await
+            .context("failed to parse OpenAI chat response")?;
+
+        completion
+            .choices
+            .into_iter()
+            .next()
+            .and_then(|c| c.message.content)
+            .context("OpenAI chat returned empty response")
+    }
+
     async fn decide(&self, ctx: &DecisionContext<'_>) -> Result<AiDecision> {
         if self.api_key.is_empty() {
             bail!(

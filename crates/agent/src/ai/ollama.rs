@@ -55,6 +55,62 @@ impl AiProvider for OllamaProvider {
         "ollama"
     }
 
+    async fn chat(&self, system_prompt: &str, user_message: &str) -> Result<String> {
+        let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
+
+        debug!(model = %self.model, url = %url, "calling Ollama API for chat");
+
+        let body = serde_json::json!({
+            "model": self.model,
+            "messages": [
+                { "role": "system", "content": system_prompt },
+                { "role": "user",   "content": user_message }
+            ],
+            "stream": false,
+        });
+
+        let mut req = self.client.post(&url).json(&body);
+
+        if let Some(ref key) = self.api_key {
+            req = req.bearer_auth(key);
+        }
+
+        let resp = req.send().await.with_context(|| {
+            if self.api_key.is_some() {
+                format!("Ollama cloud chat request to {url} failed — check network connectivity")
+            } else {
+                format!(
+                    "Ollama chat request to {url} failed — is Ollama running? \
+                     Start it with: ollama serve"
+                )
+            }
+        })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            bail!(
+                "Ollama chat returned {status}: {}",
+                text.chars().take(300).collect::<String>()
+            );
+        }
+
+        let completion: OllamaResponse = resp
+            .json()
+            .await
+            .context("failed to parse Ollama chat response")?;
+
+        let content = completion.message.content;
+        if content.is_empty() {
+            bail!(
+                "Ollama chat returned an empty response for model {}",
+                self.model
+            );
+        }
+
+        Ok(content)
+    }
+
     async fn decide(&self, ctx: &DecisionContext<'_>) -> Result<AiDecision> {
         let prompt = build_prompt_pub(ctx);
         let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));

@@ -281,24 +281,45 @@ impl TelegramClient {
                             }
                         }
 
-                        // Handle text commands: /status
+                        // Handle text commands and free-form messages
                         if let Some(msg) = update.message {
                             if let Some(text) = &msg.text {
-                                if text.trim() == "/status" || text.starts_with("/status ") {
+                                let text = text.trim().to_string();
+                                let operator = msg
+                                    .from
+                                    .as_ref()
+                                    .and_then(|f| f.first_name.clone())
+                                    .unwrap_or_default();
+
+                                let incident_id = if text == "/status"
+                                    || text.starts_with("/status ")
+                                {
                                     debug!("Telegram /status command received");
-                                    // Signal via a special ApprovalResult with empty incident_id
-                                    let _ = approval_tx
-                                        .send(ApprovalResult {
-                                            incident_id: "__status__".to_string(),
-                                            approved: true,
-                                            always: false,
-                                            operator_name: msg
-                                                .from
-                                                .and_then(|f| f.first_name)
-                                                .unwrap_or_default(),
-                                        })
-                                        .await;
-                                }
+                                    "__status__".to_string()
+                                } else if text == "/help" || text.starts_with("/help ") {
+                                    "__help__".to_string()
+                                } else if text == "/incidents" || text.starts_with("/incidents ") {
+                                    "__incidents__".to_string()
+                                } else if text == "/decisions" || text.starts_with("/decisions ") {
+                                    "__decisions__".to_string()
+                                } else if !text.starts_with('/') || text.starts_with("/ask ") {
+                                    // Free-form text or /ask <question> — route to AI
+                                    let question =
+                                        text.strip_prefix("/ask ").unwrap_or(&text).to_string();
+                                    format!("__ask__:{question}")
+                                } else {
+                                    // Unknown command — send help hint
+                                    "__unknown_cmd__".to_string()
+                                };
+
+                                let _ = approval_tx
+                                    .send(ApprovalResult {
+                                        incident_id,
+                                        approved: true,
+                                        always: false,
+                                        operator_name: operator,
+                                    })
+                                    .await;
                             }
                         }
                     }

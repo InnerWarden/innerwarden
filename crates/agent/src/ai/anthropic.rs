@@ -49,6 +49,58 @@ impl AiProvider for AnthropicProvider {
         "anthropic"
     }
 
+    async fn chat(&self, system_prompt: &str, user_message: &str) -> Result<String> {
+        if self.api_key.is_empty() {
+            bail!(
+                "Anthropic API key not configured. \
+                 Set ANTHROPIC_API_KEY env var or [ai].api_key in agent.toml."
+            );
+        }
+
+        debug!(model = %self.model, "calling Anthropic API for chat");
+
+        let body = serde_json::json!({
+            "model": self.model,
+            "max_tokens": 600,
+            "system": system_prompt,
+            "messages": [
+                { "role": "user", "content": user_message }
+            ],
+        });
+
+        let resp = self
+            .client
+            .post(ANTHROPIC_API_URL)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .context("Anthropic chat API request failed")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            bail!(
+                "Anthropic chat API returned {status}: {}",
+                text.chars().take(300).collect::<String>()
+            );
+        }
+
+        let msg_resp: MessagesResponse = resp
+            .json()
+            .await
+            .context("failed to parse Anthropic chat response")?;
+
+        msg_resp
+            .content
+            .into_iter()
+            .find(|b| b.r#type == "text")
+            .map(|b| b.text)
+            .context("Anthropic chat returned empty response")
+    }
+
     async fn decide(&self, ctx: &DecisionContext<'_>) -> Result<AiDecision> {
         if self.api_key.is_empty() {
             bail!(

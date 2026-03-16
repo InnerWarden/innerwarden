@@ -4217,6 +4217,22 @@ fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
         .map(|p| p.join("agent.env"))
         .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
 
+    // Detect permission-denied early so the user gets a useful hint
+    if env_file.exists() {
+        if let Err(e) = std::fs::read_to_string(&env_file) {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                eprintln!("Permission denied reading {}", env_file.display());
+                eprintln!("Credentials are stored in a protected file.");
+                eprintln!();
+                let args: Vec<String> = std::env::args().collect();
+                let cmd_args = args[1..].join(" ");
+                eprintln!("Run with sudo:");
+                eprintln!("  sudo innerwarden {cmd_args}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Load agent.env for credentials
     let env_vars = load_env_file(&env_file);
 

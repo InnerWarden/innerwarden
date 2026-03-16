@@ -141,6 +141,10 @@ pub trait AiProvider: Send + Sync {
 
     /// Analyse an incident and return a decision.
     async fn decide(&self, ctx: &DecisionContext<'_>) -> Result<AiDecision>;
+
+    /// Send a free-form chat message with a system prompt and get a plain-text response.
+    /// Used by the Telegram conversational bot.
+    async fn chat(&self, system_prompt: &str, user_message: &str) -> Result<String>;
 }
 
 // ---------------------------------------------------------------------------

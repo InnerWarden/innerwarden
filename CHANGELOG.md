@@ -11,6 +11,33 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.7] — 2026-03-16
+
+### Agent (`innerwarden-agent`)
+
+**Conversational Telegram bot (T.3)**
+- The Telegram bot now responds to messages — it is no longer notification-only
+- `/status` — system overview: services, today's incident and decision counts, dry-run flag, AI provider
+- `/incidents` — last 5 incidents with severity, title, entity, and relative time
+- `/decisions` — last 5 decisions with action, target, confidence, and mode
+- `/help` — list all available bot commands
+- `/ask <question>` or any free-form text — routes the question to the configured AI provider with recent incident context and returns a plain-text answer
+- Unknown slash commands show a hint to use `/help`
+- Configurable bot personality: `[telegram.bot] personality = "..."` in agent.toml
+- All bot responses are gated by `[telegram.bot] enabled = true` (default: true)
+- AI providers (OpenAI, Anthropic, Ollama) all implement a new `chat()` method for free-form responses
+
+### Control plane (`innerwarden` / `innerwarden-ctl`)
+
+**Bug fix**
+- `innerwarden test-alert` now detects when `/etc/innerwarden/agent.env` is unreadable (permission denied) and prints a clear `sudo innerwarden test-alert` hint instead of silently reporting all channels as "not configured"
+
+### Test coverage
+
+502 tests across three crates (185 sensor + 178 agent + 139 ctl).
+
+---
+
 ## [0.1.6] — 2026-03-16
 
 ### Control plane (`innerwarden` / `innerwarden-ctl`)
