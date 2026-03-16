@@ -33,7 +33,10 @@ pub fn generate(
         .filter(|i| matches!(i.severity, Severity::High | Severity::Critical))
         .count();
     let tldr = if incidents.is_empty() {
-        format!("✅ Quiet day on **{host}** — no threats detected out of {} logged events.", events.len())
+        format!(
+            "✅ Quiet day on **{host}** — no threats detected out of {} logged events.",
+            events.len()
+        )
     } else if high_plus == 0 {
         format!(
             "🟡 **{host}** had {} low-severity alert{} today across {} logged events. Nothing critical.",

@@ -504,7 +504,11 @@ fn incident_quip(incident: &Incident) -> &'static str {
 fn plain_action(action: &str) -> String {
     let a = action.trim();
     // block-ip variants
-    if a.contains("ufw deny from") || a.contains("iptables") || a.contains("nftables") || a.contains("pfctl") {
+    if a.contains("ufw deny from")
+        || a.contains("iptables")
+        || a.contains("nftables")
+        || a.contains("pfctl")
+    {
         let ip = a.split_whitespace().last().unwrap_or("IP");
         return format!("Block {ip} at the firewall");
     }

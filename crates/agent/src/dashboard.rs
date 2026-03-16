@@ -1158,14 +1158,12 @@ async fn api_quickwins(State(state): State<DashboardState>) -> Json<serde_json::
                         continue;
                     }
                     // Find IP entity
-                    let ip = v["entities"]
-                        .as_array()
-                        .and_then(|arr| {
-                            arr.iter()
-                                .find(|e| e["type"].as_str() == Some("Ip"))
-                                .and_then(|e| e["value"].as_str())
-                                .map(|s| s.to_string())
-                        });
+                    let ip = v["entities"].as_array().and_then(|arr| {
+                        arr.iter()
+                            .find(|e| e["type"].as_str() == Some("Ip"))
+                            .and_then(|e| e["value"].as_str())
+                            .map(|s| s.to_string())
+                    });
                     if let Some(ip_str) = ip {
                         if seen_ips.contains(&ip_str) {
                             continue; // already handled or deduped

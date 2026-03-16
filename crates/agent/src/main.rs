@@ -231,7 +231,9 @@ fn decision_cooldown_key_from_entry(entry: &decisions::DecisionEntry) -> Option<
 }
 
 fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn recent_decision_dates() -> Vec<String> {
@@ -2044,8 +2046,7 @@ async fn process_narrative_tick(
                 if let Some(hour) = cfg.telegram.daily_summary_hour {
                     let now_local = chrono::Local::now();
                     let today_naive = now_local.date_naive();
-                    let already_sent = state
-                        .last_daily_summary_telegram == Some(today_naive);
+                    let already_sent = state.last_daily_summary_telegram == Some(today_naive);
                     if !already_sent && now_local.hour() >= u32::from(hour) {
                         if let Some(tg) = &state.telegram_client {
                             let preview: String = md.chars().take(3800).collect();

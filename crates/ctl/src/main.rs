@@ -850,7 +850,9 @@ fn main() -> Result<()> {
             }
             Some(ConfigureCommand::Geoip) => cmd_configure_geoip(&cli),
             Some(ConfigureCommand::Fail2ban) => cmd_configure_fail2ban(&cli),
-            Some(ConfigureCommand::Watchdog { interval }) => cmd_configure_watchdog(&cli, *interval),
+            Some(ConfigureCommand::Watchdog { interval }) => {
+                cmd_configure_watchdog(&cli, *interval)
+            }
         },
         Command::Module { ref command } => match command {
             ModuleCommand::Validate { ref path, strict } => cmd_module_validate(path, *strict),
@@ -936,7 +938,15 @@ fn main() -> Result<()> {
             ref format,
             ref output,
             ref data_dir,
-        } => cmd_export(&cli, kind, from.as_deref(), to.as_deref(), format, output.as_deref(), data_dir),
+        } => cmd_export(
+            &cli,
+            kind,
+            from.as_deref(),
+            to.as_deref(),
+            format,
+            output.as_deref(),
+            data_dir,
+        ),
         Command::Tail {
             ref r#type,
             interval,
@@ -2542,14 +2552,22 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
     if !essential.is_empty() {
         println!("Detected on this host:");
         for r in &essential {
-            println!("  ★ {}  — {}", r.name, r.why.split('.').next().unwrap_or(""));
+            println!(
+                "  ★ {}  — {}",
+                r.name,
+                r.why.split('.').next().unwrap_or("")
+            );
         }
         println!();
     }
     if !recommended.is_empty() {
         println!("Also available:");
         for r in &recommended {
-            println!("  · {}  — {}", r.name, r.why.split('.').next().unwrap_or(""));
+            println!(
+                "  · {}  — {}",
+                r.name,
+                r.why.split('.').next().unwrap_or("")
+            );
         }
         println!();
     }
@@ -2636,7 +2654,11 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
             .and_then(|r| r.get("dry_run"))
             .and_then(|d| d.as_bool())
             .unwrap_or(true);
-        let mode = if dry { "observe (dry-run)" } else { "live (executing actions)" };
+        let mode = if dry {
+            "observe (dry-run)"
+        } else {
+            "live (executing actions)"
+        };
         println!("Step 3/4 — Responder   ✅ already configured ({mode})\n");
     } else {
         println!("Step 3/4 — Responder\n");
@@ -2674,7 +2696,12 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
             println!("Step 4/4 — Enable protection modules\n");
             println!("Based on what's installed on this host, these modules are recommended:\n");
             for (i, r) in essential_unset.iter().enumerate() {
-                println!("  {}. {}  — {}", i + 1, r.name, r.why.split('.').next().unwrap_or(""));
+                println!(
+                    "  {}. {}  — {}",
+                    i + 1,
+                    r.name,
+                    r.why.split('.').next().unwrap_or("")
+                );
                 println!("     Enable with:  {}", r.enable_hint);
             }
             println!();
@@ -2743,15 +2770,27 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
     let resp_done = is_enabled2("responder");
     println!(
         "  AI provider   {}",
-        if ai_done { "✅ configured" } else { "○  not set up" }
+        if ai_done {
+            "✅ configured"
+        } else {
+            "○  not set up"
+        }
     );
     println!(
         "  Telegram      {}",
-        if tg_done { "✅ configured" } else { "○  not set up" }
+        if tg_done {
+            "✅ configured"
+        } else {
+            "○  not set up"
+        }
     );
     println!(
         "  Responder     {}",
-        if resp_done { "✅ configured" } else { "○  not set up" }
+        if resp_done {
+            "✅ configured"
+        } else {
+            "○  not set up"
+        }
     );
 
     println!();
@@ -2868,7 +2907,9 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
         "9" => cmd_configure_responder(cli, false, false, None),
         "10" => cmd_configure_watchdog(cli, 10),
         "q" | "Q" | "" => {
-            println!("Tip: run 'innerwarden configure <name>' to jump directly to any integration.");
+            println!(
+                "Tip: run 'innerwarden configure <name>' to jump directly to any integration."
+            );
             Ok(())
         }
         _ => {
@@ -3060,7 +3101,9 @@ fn cmd_configure_responder_interactive(cli: &Cli) -> Result<()> {
                 println!("  [dry-run] would set responder.enabled=true, dry_run=true");
             }
             restart_agent(cli);
-            println!("\nDry-run mode enabled. InnerWarden will log what it would do but take no action.");
+            println!(
+                "\nDry-run mode enabled. InnerWarden will log what it would do but take no action."
+            );
             println!("Check decisions-*.jsonl to review. When ready, run:");
             println!("  innerwarden configure responder --enable --dry-run false");
         }
@@ -3089,7 +3132,9 @@ fn cmd_configure_responder_interactive(cli: &Cli) -> Result<()> {
             }
             restart_agent(cli);
             println!("\nResponder is LIVE. InnerWarden will act automatically on high-confidence threats.");
-            println!("Monitor decisions: tail -f /var/lib/innerwarden/decisions-$(date +%Y-%m-%d).jsonl");
+            println!(
+                "Monitor decisions: tail -f /var/lib/innerwarden/decisions-$(date +%Y-%m-%d).jsonl"
+            );
         }
         _ => {
             anyhow::bail!("invalid choice — enter 1, 2, or 3");
@@ -3190,9 +3235,18 @@ fn cmd_configure_telegram(
 
     // ── Save credentials ───────────────────────────────────────────────────
     if cli.dry_run {
-        println!("\n  [dry-run] would write TELEGRAM_BOT_TOKEN=... to {}", env_file.display());
-        println!("  [dry-run] would write TELEGRAM_CHAT_ID={chat_id} to {}", env_file.display());
-        println!("  [dry-run] would set [telegram] enabled=true in {}", cli.agent_config.display());
+        println!(
+            "\n  [dry-run] would write TELEGRAM_BOT_TOKEN=... to {}",
+            env_file.display()
+        );
+        println!(
+            "  [dry-run] would write TELEGRAM_CHAT_ID={chat_id} to {}",
+            env_file.display()
+        );
+        println!(
+            "  [dry-run] would set [telegram] enabled=true in {}",
+            cli.agent_config.display()
+        );
     } else {
         write_env_key(&env_file, "TELEGRAM_BOT_TOKEN", &token)?;
         write_env_key(&env_file, "TELEGRAM_CHAT_ID", &chat_id)?;
@@ -3270,7 +3324,10 @@ fn send_telegram_test(token: &str, chat_id: &str) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let json: serde_json::Value = resp.into_json()?;
     if json["ok"].as_bool() != Some(true) {
-        anyhow::bail!("{}", json["description"].as_str().unwrap_or("unknown error"));
+        anyhow::bail!(
+            "{}",
+            json["description"].as_str().unwrap_or("unknown error")
+        );
     }
     Ok(())
 }
@@ -3322,8 +3379,14 @@ fn cmd_configure_slack(
 
     // ── Save credentials ───────────────────────────────────────────────────
     if cli.dry_run {
-        println!("\n  [dry-run] would write SLACK_WEBHOOK_URL=... to {}", env_file.display());
-        println!("  [dry-run] would set [slack] enabled=true min_severity={min_severity} in {}", cli.agent_config.display());
+        println!(
+            "\n  [dry-run] would write SLACK_WEBHOOK_URL=... to {}",
+            env_file.display()
+        );
+        println!(
+            "  [dry-run] would set [slack] enabled=true min_severity={min_severity} in {}",
+            cli.agent_config.display()
+        );
     } else {
         write_env_key(&env_file, "SLACK_WEBHOOK_URL", &webhook_url)?;
         println!("\n  [ok] Webhook URL saved to {}", env_file.display());
@@ -3570,8 +3633,14 @@ fn cmd_configure_dashboard(cli: &Cli, user: &str, password_arg: Option<&str>) ->
     };
 
     if cli.dry_run {
-        println!("\n  [dry-run] would write INNERWARDEN_DASHBOARD_USER={user} to {}", env_file.display());
-        println!("  [dry-run] would write INNERWARDEN_DASHBOARD_PASSWORD_HASH=<hash> to {}", env_file.display());
+        println!(
+            "\n  [dry-run] would write INNERWARDEN_DASHBOARD_USER={user} to {}",
+            env_file.display()
+        );
+        println!(
+            "  [dry-run] would write INNERWARDEN_DASHBOARD_PASSWORD_HASH=<hash> to {}",
+            env_file.display()
+        );
         println!("  [dry-run] would add --dashboard to service ExecStart if missing");
     } else {
         write_env_key(&env_file, "INNERWARDEN_DASHBOARD_USER", user)?;
@@ -3653,7 +3722,11 @@ fn ensure_dashboard_flag_in_service(cli: &Cli) {
 fn which_bin(name: &str) -> Option<PathBuf> {
     std::env::var("PATH").ok()?.split(':').find_map(|dir| {
         let p = PathBuf::from(dir).join(name);
-        if p.exists() { Some(p) } else { None }
+        if p.exists() {
+            Some(p)
+        } else {
+            None
+        }
     })
 }
 
@@ -3690,8 +3763,14 @@ fn cmd_configure_abuseipdb(cli: &Cli, api_key_arg: Option<&str>) -> Result<()> {
     }
 
     if cli.dry_run {
-        println!("\n  [dry-run] would write ABUSEIPDB_API_KEY=... to {}", env_file.display());
-        println!("  [dry-run] would set [abuseipdb] enabled=true in {}", cli.agent_config.display());
+        println!(
+            "\n  [dry-run] would write ABUSEIPDB_API_KEY=... to {}",
+            env_file.display()
+        );
+        println!(
+            "  [dry-run] would set [abuseipdb] enabled=true in {}",
+            cli.agent_config.display()
+        );
     } else {
         write_env_key(&env_file, "ABUSEIPDB_API_KEY", &api_key)?;
         println!("\n  [ok] API key saved to {}", env_file.display());
@@ -3712,7 +3791,10 @@ fn cmd_configure_abuseipdb(cli: &Cli, api_key_arg: Option<&str>) -> Result<()> {
 
 fn cmd_configure_geoip(cli: &Cli) -> Result<()> {
     if cli.dry_run {
-        println!("[dry-run] would set [geoip] enabled=true in {}", cli.agent_config.display());
+        println!(
+            "[dry-run] would set [geoip] enabled=true in {}",
+            cli.agent_config.display()
+        );
         return Ok(());
     }
 
@@ -3783,7 +3865,10 @@ fn cmd_configure_fail2ban(cli: &Cli) -> Result<()> {
     }
 
     if cli.dry_run {
-        println!("[dry-run] would set [fail2ban] enabled=true in {}", cli.agent_config.display());
+        println!(
+            "[dry-run] would set [fail2ban] enabled=true in {}",
+            cli.agent_config.display()
+        );
         return Ok(());
     }
 
@@ -3804,7 +3889,10 @@ fn cmd_configure_fail2ban(cli: &Cli) -> Result<()> {
 fn cmd_configure_watchdog(cli: &Cli, interval_mins: u64) -> Result<()> {
     if std::env::consts::OS == "macos" {
         println!("On macOS, use a launchd plist instead of cron.");
-        println!("Create /Library/LaunchDaemons/com.innerwarden.watchdog.plist with an interval of {}s.", interval_mins * 60);
+        println!(
+            "Create /Library/LaunchDaemons/com.innerwarden.watchdog.plist with an interval of {}s.",
+            interval_mins * 60
+        );
         println!("Or run: innerwarden watchdog --notify (manually, or via a scheduled job).");
         return Ok(());
     }
@@ -3833,7 +3921,10 @@ fn cmd_configure_watchdog(cli: &Cli, interval_mins: u64) -> Result<()> {
     // Check if already installed
     if current.contains("innerwarden watchdog") {
         println!("Watchdog cron is already installed:");
-        for line in current.lines().filter(|l| l.contains("innerwarden watchdog")) {
+        for line in current
+            .lines()
+            .filter(|l| l.contains("innerwarden watchdog"))
+        {
             println!("  {line}");
         }
         println!();
@@ -4051,9 +4142,7 @@ fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
             }
             _ => {
                 if test_only == Some("telegram") {
-                    println!(
-                        "  Telegram ... not configured (run: innerwarden configure telegram)"
-                    );
+                    println!("  Telegram ... not configured (run: innerwarden configure telegram)");
                     any_failed = true;
                 } else {
                     println!("  Telegram ... skipped (not configured)");
@@ -4146,9 +4235,7 @@ fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
             }
             _ => {
                 if test_only == Some("webhook") {
-                    println!(
-                        "  Webhook .... not configured (run: innerwarden configure webhook)"
-                    );
+                    println!("  Webhook .... not configured (run: innerwarden configure webhook)");
                     any_failed = true;
                 } else {
                     println!("  Webhook .... skipped (not configured)");
@@ -4201,7 +4288,10 @@ fn send_telegram_message_md(token: &str, chat_id: &str, text: &str) -> Result<()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let json: serde_json::Value = resp.into_json()?;
     if json["ok"].as_bool() != Some(true) {
-        anyhow::bail!("{}", json["description"].as_str().unwrap_or("unknown error"));
+        anyhow::bail!(
+            "{}",
+            json["description"].as_str().unwrap_or("unknown error")
+        );
     }
     Ok(())
 }
@@ -4299,7 +4389,12 @@ fn cmd_report(cli: &Cli, date_arg: &str, data_dir: &std::path::Path) -> Result<(
 // innerwarden watchdog
 // ---------------------------------------------------------------------------
 
-fn cmd_watchdog(cli: &Cli, threshold_secs: u64, notify: bool, data_dir: &std::path::Path) -> Result<()> {
+fn cmd_watchdog(
+    cli: &Cli,
+    threshold_secs: u64,
+    notify: bool,
+    data_dir: &std::path::Path,
+) -> Result<()> {
     // Try to read data_dir from agent.toml if using default
     let effective_dir = if data_dir == std::path::Path::new("/var/lib/innerwarden") {
         cli.agent_config
@@ -4342,7 +4437,10 @@ fn cmd_watchdog(cli: &Cli, threshold_secs: u64, notify: bool, data_dir: &std::pa
             println!("⚠️  No telemetry file found in {}", effective_dir.display());
             println!("   The agent may not be running: innerwarden status");
             if notify {
-                maybe_send_watchdog_alert(cli, "InnerWarden agent appears offline — no telemetry files found.");
+                maybe_send_watchdog_alert(
+                    cli,
+                    "InnerWarden agent appears offline — no telemetry files found.",
+                );
             }
             return Ok(());
         }
@@ -4377,9 +4475,15 @@ fn cmd_watchdog(cli: &Cli, threshold_secs: u64, notify: bool, data_dir: &std::pa
             }
         }
         None => {
-            println!("⚠️  Could not determine agent liveness from {}", telemetry_path.display());
+            println!(
+                "⚠️  Could not determine agent liveness from {}",
+                telemetry_path.display()
+            );
             if notify {
-                maybe_send_watchdog_alert(cli, "InnerWarden watchdog could not verify agent health.");
+                maybe_send_watchdog_alert(
+                    cli,
+                    "InnerWarden watchdog could not verify agent health.",
+                );
             }
         }
     }
@@ -4397,9 +4501,7 @@ fn cmd_watchdog_status(cli: &Cli, data_dir: &Path) -> Result<()> {
 
     // ── Cron entry ────────────────────────────────────────
     println!("\nCron schedule");
-    let crontab = std::process::Command::new("crontab")
-        .arg("-l")
-        .output();
+    let crontab = std::process::Command::new("crontab").arg("-l").output();
 
     match crontab {
         Ok(out) if out.status.success() => {
@@ -4411,7 +4513,9 @@ fn cmd_watchdog_status(cli: &Cli, data_dir: &Path) -> Result<()> {
                 Some(line) => {
                     println!("  ✅ Installed: {line}");
                     // Parse interval from */N prefix
-                    if let Some(interval) = line.split_whitespace().next()
+                    if let Some(interval) = line
+                        .split_whitespace()
+                        .next()
                         .and_then(|s| s.strip_prefix("*/"))
                         .and_then(|n| n.parse::<u64>().ok())
                     {
@@ -4420,7 +4524,9 @@ fn cmd_watchdog_status(cli: &Cli, data_dir: &Path) -> Result<()> {
                 }
                 None => {
                     println!("  ○ Not installed");
-                    println!("    Run 'innerwarden configure watchdog' to set up automatic monitoring.");
+                    println!(
+                        "    Run 'innerwarden configure watchdog' to set up automatic monitoring."
+                    );
                 }
             }
         }
@@ -4448,9 +4554,13 @@ fn cmd_watchdog_status(cli: &Cli, data_dir: &Path) -> Result<()> {
     let telemetry_path = {
         let today_p = effective_dir.join(format!("telemetry-{today}.jsonl"));
         let yest_p = effective_dir.join(format!("telemetry-{yesterday}.jsonl"));
-        if today_p.exists() { Some(today_p) }
-        else if yest_p.exists() { Some(yest_p) }
-        else { None }
+        if today_p.exists() {
+            Some(today_p)
+        } else if yest_p.exists() {
+            Some(yest_p)
+        } else {
+            None
+        }
     };
 
     match telemetry_path {
@@ -4509,18 +4619,39 @@ fn cmd_tune(cli: &Cli, days: u64, yes: bool, data_dir: &Path) -> Result<()> {
     // ── Collect per-detector event counts and incident counts ──
     // Detectors we know how to tune
     let detectors = [
-        ("ssh_bruteforce",    "ssh.login_failed",         "detectors.ssh_bruteforce.threshold"),
-        ("credential_stuffing","ssh.invalid_user",        "detectors.credential_stuffing.threshold"),
-        ("sudo_abuse",        "sudo.command",             "detectors.sudo_abuse.threshold"),
-        ("search_abuse",      "http.request",             "detectors.search_abuse.threshold"),
-        ("web_scan",          "http.error",               "detectors.web_scan.threshold"),
-        ("port_scan",         "network.connection_blocked","detectors.port_scan.threshold"),
+        (
+            "ssh_bruteforce",
+            "ssh.login_failed",
+            "detectors.ssh_bruteforce.threshold",
+        ),
+        (
+            "credential_stuffing",
+            "ssh.invalid_user",
+            "detectors.credential_stuffing.threshold",
+        ),
+        (
+            "sudo_abuse",
+            "sudo.command",
+            "detectors.sudo_abuse.threshold",
+        ),
+        (
+            "search_abuse",
+            "http.request",
+            "detectors.search_abuse.threshold",
+        ),
+        ("web_scan", "http.error", "detectors.web_scan.threshold"),
+        (
+            "port_scan",
+            "network.connection_blocked",
+            "detectors.port_scan.threshold",
+        ),
     ];
 
     // Events per kind over the window
     let mut event_counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     // Incidents per detector
-    let mut incident_counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    let mut incident_counts: std::collections::HashMap<String, u64> =
+        std::collections::HashMap::new();
 
     for i in 0..days {
         let date = epoch_secs_to_date(now_secs.saturating_sub(i * 86400));
@@ -4528,7 +4659,9 @@ fn cmd_tune(cli: &Cli, days: u64, yes: bool, data_dir: &Path) -> Result<()> {
         let events_path = effective_dir.join(format!("events-{date}.jsonl"));
         if let Ok(content) = std::fs::read_to_string(&events_path) {
             for line in content.lines().filter(|l| !l.trim().is_empty()) {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
                 if let Some(kind) = v["kind"].as_str() {
                     *event_counts.entry(kind.to_string()).or_insert(0) += 1;
                 }
@@ -4538,7 +4671,9 @@ fn cmd_tune(cli: &Cli, days: u64, yes: bool, data_dir: &Path) -> Result<()> {
         let incidents_path = effective_dir.join(format!("incidents-{date}.jsonl"));
         if let Ok(content) = std::fs::read_to_string(&incidents_path) {
             for line in content.lines().filter(|l| !l.trim().is_empty()) {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
                 if let Some(id) = v["incident_id"].as_str() {
                     // incident_id format: detector:entity:seq
                     let detector = id.split(':').next().unwrap_or("");
@@ -4560,7 +4695,8 @@ fn cmd_tune(cli: &Cli, days: u64, yes: bool, data_dir: &Path) -> Result<()> {
         if parts.len() != 3 {
             return None;
         }
-        sensor_toml.as_ref()
+        sensor_toml
+            .as_ref()
             .and_then(|doc| doc.get(parts[0]))
             .and_then(|t| t.get(parts[1]))
             .and_then(|d| d.get(parts[2]))
@@ -4593,7 +4729,7 @@ fn cmd_tune(cli: &Cli, days: u64, yes: bool, data_dir: &Path) -> Result<()> {
 
         // Heuristic: if daily noise >> threshold → suggest raising it
         // If incident rate is very high (> 5/day) → suggest lowering threshold
-        let incidents_per_day = incidents as f64 / days as f64 ;
+        let incidents_per_day = incidents as f64 / days as f64;
         let suggested = if incidents_per_day > 10.0 && current_val > 3 {
             // Very noisy — lower threshold so we catch earlier
             (current_val - 1).max(2)
@@ -4611,12 +4747,21 @@ fn cmd_tune(cli: &Cli, days: u64, yes: bool, data_dir: &Path) -> Result<()> {
             continue; // no suggestion needed
         }
 
-        let direction = if suggested > current_val { "raise" } else { "lower" };
+        let direction = if suggested > current_val {
+            "raise"
+        } else {
+            "lower"
+        };
         let reason = format!(
             "{} events/day, {} incidents in {days} days — {direction} to reduce noise",
             events_per_day, incidents
         );
-        suggestions.push(Suggestion { detector, current, suggested, reason });
+        suggestions.push(Suggestion {
+            detector,
+            current,
+            suggested,
+            reason,
+        });
     }
 
     if !has_data {
@@ -4633,18 +4778,30 @@ fn cmd_tune(cli: &Cli, days: u64, yes: bool, data_dir: &Path) -> Result<()> {
     }
 
     println!("\nSuggested threshold changes:\n");
-    println!("  {:<22}  {:>8}  {:>9}  Reason", "Detector", "Current", "Suggested");
+    println!(
+        "  {:<22}  {:>8}  {:>9}  Reason",
+        "Detector", "Current", "Suggested"
+    );
     println!("  {}", "─".repeat(72));
     for s in &suggestions {
-        let cur_str = s.current.map(|v| v.to_string()).unwrap_or_else(|| "default".to_string());
-        println!("  {:<22}  {:>8}  {:>9}  {}", s.detector, cur_str, s.suggested, s.reason);
+        let cur_str = s
+            .current
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "default".to_string());
+        println!(
+            "  {:<22}  {:>8}  {:>9}  {}",
+            s.detector, cur_str, s.suggested, s.reason
+        );
     }
 
     // ── Apply if confirmed ─────────────────────────────────
     let apply = if yes {
         true
     } else {
-        print!("\nApply these changes to {}? [y/N] ", cli.sensor_config.display());
+        print!(
+            "\nApply these changes to {}? [y/N] ",
+            cli.sensor_config.display()
+        );
         let _ = std::io::stdout().flush();
         let mut input = String::new();
         let _ = std::io::stdin().read_line(&mut input);
@@ -4657,12 +4814,17 @@ fn cmd_tune(cli: &Cli, days: u64, yes: bool, data_dir: &Path) -> Result<()> {
     }
 
     if cli.dry_run {
-        println!("[dry-run] Would patch {} with {} change(s)", cli.sensor_config.display(), suggestions.len());
+        println!(
+            "[dry-run] Would patch {} with {} change(s)",
+            cli.sensor_config.display(),
+            suggestions.len()
+        );
         return Ok(());
     }
 
     // Patch sensor.toml
-    let mut doc: toml_edit::DocumentMut = sensor_content.parse()
+    let mut doc: toml_edit::DocumentMut = sensor_content
+        .parse()
         .with_context(|| format!("failed to parse {}", cli.sensor_config.display()))?;
 
     for s in &suggestions {
@@ -4674,7 +4836,8 @@ fn cmd_tune(cli: &Cli, days: u64, yes: bool, data_dir: &Path) -> Result<()> {
             .map(|(_, _, p)| p.split('.').collect())
             .unwrap_or_default();
         if parts.len() == 3 {
-            if let Some(section) = doc.get_mut(parts[0])
+            if let Some(section) = doc
+                .get_mut(parts[0])
                 .and_then(|t| t.as_table_mut())
                 .and_then(|t| t.get_mut(parts[1]))
                 .and_then(|t| t.as_table_mut())
@@ -4799,12 +4962,16 @@ fn cmd_incidents(cli: &Cli, days: u64, severity_filter: &str, data_dir: &Path) -
                 .unwrap_or("");
             let sev_tag = match sev {
                 "Critical" => "[CRITICAL]",
-                "High"     => "[HIGH]    ",
-                "Medium"   => "[MEDIUM]  ",
-                "Low"      => "[LOW]     ",
-                _          => "[INFO]    ",
+                "High" => "[HIGH]    ",
+                "Medium" => "[MEDIUM]  ",
+                "Low" => "[LOW]     ",
+                _ => "[INFO]    ",
             };
-            let ip_part = if ip.is_empty() { String::new() } else { format!("  {ip}") };
+            let ip_part = if ip.is_empty() {
+                String::new()
+            } else {
+                format!("  {ip}")
+            };
             println!("  {time}  {sev_tag}  {title}{ip_part}");
             total += 1;
         }
@@ -4813,7 +4980,10 @@ fn cmd_incidents(cli: &Cli, days: u64, severity_filter: &str, data_dir: &Path) -
 
     if total == 0 {
         if severity_filter != "low" {
-            println!("No {} or higher incidents found in the last {} day(s).", severity_filter, days);
+            println!(
+                "No {} or higher incidents found in the last {} day(s).",
+                severity_filter, days
+            );
         } else {
             println!("No incidents found in the last {} day(s). Quiet!", days);
         }
@@ -4826,10 +4996,10 @@ fn cmd_incidents(cli: &Cli, days: u64, severity_filter: &str, data_dir: &Path) -
 fn severity_rank(sev: &str) -> u8 {
     match sev.to_lowercase().as_str() {
         "critical" => 5,
-        "high"     => 4,
-        "medium"   => 3,
-        "low"      => 2,
-        _          => 1,
+        "high" => 4,
+        "medium" => 3,
+        "low" => 2,
+        _ => 1,
     }
 }
 
@@ -4876,33 +5046,38 @@ fn cmd_block(cli: &Cli, ip: &str, reason: &str, data_dir: &Path) -> Result<()> {
 
     if cli.dry_run {
         println!("  [dry-run] would run block command for {ip}");
-        println!("  [dry-run] would record in {}/decisions-*.jsonl", effective_dir.display());
+        println!(
+            "  [dry-run] would record in {}/decisions-*.jsonl",
+            effective_dir.display()
+        );
         return Ok(());
     }
 
     // Execute the block
     let blocked = match backend.as_str() {
-        "iptables" => {
-            std::process::Command::new("sudo")
-                .args(["iptables", "-A", "INPUT", "-s", ip, "-j", "DROP"])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        }
-        "nftables" => {
-            std::process::Command::new("sudo")
-                .args(["nft", "add", "element", "ip", "filter", "innerwarden-blocked", &format!("{{ {ip} }}")])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        }
-        "pf" => {
-            std::process::Command::new("sudo")
-                .args(["pfctl", "-t", "innerwarden-blocked", "-T", "add", ip])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        }
+        "iptables" => std::process::Command::new("sudo")
+            .args(["iptables", "-A", "INPUT", "-s", ip, "-j", "DROP"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
+        "nftables" => std::process::Command::new("sudo")
+            .args([
+                "nft",
+                "add",
+                "element",
+                "ip",
+                "filter",
+                "innerwarden-blocked",
+                &format!("{{ {ip} }}"),
+            ])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
+        "pf" => std::process::Command::new("sudo")
+            .args(["pfctl", "-t", "innerwarden-blocked", "-T", "add", ip])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
         _ => {
             // ufw (default)
             std::process::Command::new("sudo")
@@ -4949,32 +5124,37 @@ fn cmd_unblock(cli: &Cli, ip: &str, reason: &str, data_dir: &Path) -> Result<()>
 
     if cli.dry_run {
         println!("  [dry-run] would remove block for {ip}");
-        println!("  [dry-run] would record in {}/decisions-*.jsonl", effective_dir.display());
+        println!(
+            "  [dry-run] would record in {}/decisions-*.jsonl",
+            effective_dir.display()
+        );
         return Ok(());
     }
 
     let unblocked = match backend.as_str() {
-        "iptables" => {
-            std::process::Command::new("sudo")
-                .args(["iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        }
-        "nftables" => {
-            std::process::Command::new("sudo")
-                .args(["nft", "delete", "element", "ip", "filter", "innerwarden-blocked", &format!("{{ {ip} }}")])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        }
-        "pf" => {
-            std::process::Command::new("sudo")
-                .args(["pfctl", "-t", "innerwarden-blocked", "-T", "delete", ip])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        }
+        "iptables" => std::process::Command::new("sudo")
+            .args(["iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
+        "nftables" => std::process::Command::new("sudo")
+            .args([
+                "nft",
+                "delete",
+                "element",
+                "ip",
+                "filter",
+                "innerwarden-blocked",
+                &format!("{{ {ip} }}"),
+            ])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
+        "pf" => std::process::Command::new("sudo")
+            .args(["pfctl", "-t", "innerwarden-blocked", "-T", "delete", ip])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
         _ => {
             // ufw: delete the deny rule
             std::process::Command::new("sudo")
@@ -5188,9 +5368,9 @@ fn cmd_export(
     let to = to_arg.unwrap_or(&today).to_string();
 
     let prefix = match kind {
-        "events"    => "events",
+        "events" => "events",
         "decisions" => "decisions",
-        _           => "incidents",
+        _ => "incidents",
     };
 
     // Collect all matching JSONL lines across the date range
@@ -5289,7 +5469,11 @@ fn cmd_export(
 
 fn cmd_tail(cli: &Cli, kind: &str, interval_secs: u64, data_dir: &Path) -> Result<()> {
     let effective_dir = resolve_data_dir(cli, data_dir);
-    let prefix = if kind == "events" { "events" } else { "incidents" };
+    let prefix = if kind == "events" {
+        "events"
+    } else {
+        "incidents"
+    };
 
     println!("Streaming {kind}... (Ctrl-C to stop)\n");
 
@@ -5354,12 +5538,16 @@ fn print_tail_entry(v: &serde_json::Value, kind: &str) {
             .unwrap_or("");
         let sev_tag = match sev {
             "Critical" => "[CRITICAL]",
-            "High"     => "[HIGH]    ",
-            "Medium"   => "[MEDIUM]  ",
-            "Low"      => "[LOW]     ",
-            _          => "[INFO]    ",
+            "High" => "[HIGH]    ",
+            "Medium" => "[MEDIUM]  ",
+            "Low" => "[LOW]     ",
+            _ => "[INFO]    ",
         };
-        let ip_part = if ip.is_empty() { String::new() } else { format!("  {ip}") };
+        let ip_part = if ip.is_empty() {
+            String::new()
+        } else {
+            format!("  {ip}")
+        };
         println!("{time}  {sev_tag}  {title}{ip_part}");
     }
 }
@@ -5433,16 +5621,20 @@ fn cmd_decisions(cli: &Cli, days: u64, action_filter: Option<&str>, data_dir: &P
             } else {
                 String::new()
             };
-            let target_part = if target.is_empty() { String::new() } else { format!("  {target}") };
+            let target_part = if target.is_empty() {
+                String::new()
+            } else {
+                format!("  {target}")
+            };
 
             let action_tag = match action {
-                "block_ip"           => "[BLOCK]      ",
-                "suspend_user_sudo"  => "[SUSPEND]    ",
-                "ignore"             => "[IGNORE]     ",
-                "monitor"            => "[MONITOR]    ",
-                "honeypot"           => "[HONEYPOT]   ",
+                "block_ip" => "[BLOCK]      ",
+                "suspend_user_sudo" => "[SUSPEND]    ",
+                "ignore" => "[IGNORE]     ",
+                "monitor" => "[MONITOR]    ",
+                "honeypot" => "[HONEYPOT]   ",
                 "request_confirmation" => "[PENDING]    ",
-                _                    => "[UNKNOWN]    ",
+                _ => "[UNKNOWN]    ",
             };
 
             println!("  {time}  {action_tag}{target_part}{conf_tag}{provider_tag}{dry_tag}");
@@ -5460,7 +5652,10 @@ fn cmd_decisions(cli: &Cli, days: u64, action_filter: Option<&str>, data_dir: &P
             println!("Run 'innerwarden status' to check.");
         }
     } else {
-        println!("{total} decision(s) shown.  Full audit trail: {}/decisions-*.jsonl", effective_dir.display());
+        println!(
+            "{total} decision(s) shown.  Full audit trail: {}/decisions-*.jsonl",
+            effective_dir.display()
+        );
     }
     Ok(())
 }
@@ -5502,19 +5697,29 @@ fn cmd_entity(cli: &Cli, target: &str, days: u64, data_dir: &Path) -> Result<()>
         let events_path = effective_dir.join(format!("events-{date}.jsonl"));
         if let Ok(content) = std::fs::read_to_string(&events_path) {
             for line in content.lines().filter(|l| !l.trim().is_empty()) {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
                 let matched = if is_ip {
-                    v["entities"].as_array().map(|arr| {
-                        arr.iter().any(|e| {
-                            e["type"].as_str() == Some("Ip") && e["value"].as_str() == Some(target)
+                    v["entities"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter().any(|e| {
+                                e["type"].as_str() == Some("Ip")
+                                    && e["value"].as_str() == Some(target)
+                            })
                         })
-                    }).unwrap_or(false)
+                        .unwrap_or(false)
                 } else {
-                    v["entities"].as_array().map(|arr| {
-                        arr.iter().any(|e| {
-                            e["type"].as_str() == Some("User") && e["value"].as_str() == Some(target)
+                    v["entities"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter().any(|e| {
+                                e["type"].as_str() == Some("User")
+                                    && e["value"].as_str() == Some(target)
+                            })
                         })
-                    }).unwrap_or(false)
+                        .unwrap_or(false)
                 };
                 if matched {
                     entries.push(Entry {
@@ -5532,19 +5737,29 @@ fn cmd_entity(cli: &Cli, target: &str, days: u64, data_dir: &Path) -> Result<()>
         let incidents_path = effective_dir.join(format!("incidents-{date}.jsonl"));
         if let Ok(content) = std::fs::read_to_string(&incidents_path) {
             for line in content.lines().filter(|l| !l.trim().is_empty()) {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
                 let matched = if is_ip {
-                    v["entities"].as_array().map(|arr| {
-                        arr.iter().any(|e| {
-                            e["type"].as_str() == Some("Ip") && e["value"].as_str() == Some(target)
+                    v["entities"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter().any(|e| {
+                                e["type"].as_str() == Some("Ip")
+                                    && e["value"].as_str() == Some(target)
+                            })
                         })
-                    }).unwrap_or(false)
+                        .unwrap_or(false)
                 } else {
-                    v["entities"].as_array().map(|arr| {
-                        arr.iter().any(|e| {
-                            e["type"].as_str() == Some("User") && e["value"].as_str() == Some(target)
+                    v["entities"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter().any(|e| {
+                                e["type"].as_str() == Some("User")
+                                    && e["value"].as_str() == Some(target)
+                            })
                         })
-                    }).unwrap_or(false)
+                        .unwrap_or(false)
                 };
                 if matched {
                     entries.push(Entry {
@@ -5562,7 +5777,9 @@ fn cmd_entity(cli: &Cli, target: &str, days: u64, data_dir: &Path) -> Result<()>
         let decisions_path = effective_dir.join(format!("decisions-{date}.jsonl"));
         if let Ok(content) = std::fs::read_to_string(&decisions_path) {
             for line in content.lines().filter(|l| !l.trim().is_empty()) {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
                 let ip_match = is_ip && v["target_ip"].as_str() == Some(target);
                 let user_match = !is_ip && v["target_user"].as_str() == Some(target);
                 if ip_match || user_match {
@@ -5596,7 +5813,7 @@ fn cmd_entity(cli: &Cli, target: &str, days: u64, data_dir: &Path) -> Result<()>
     entries.sort_by(|a, b| a.ts.cmp(&b.ts));
 
     let entity_type = if is_ip { "IP" } else { "User" };
-    let event_count   = entries.iter().filter(|e| e.kind == "event").count();
+    let event_count = entries.iter().filter(|e| e.kind == "event").count();
     let incident_count = entries.iter().filter(|e| e.kind == "incident").count();
     let decision_count = entries.iter().filter(|e| e.kind == "decision").count();
 
@@ -5606,19 +5823,23 @@ fn cmd_entity(cli: &Cli, target: &str, days: u64, data_dir: &Path) -> Result<()>
     println!("{}", "─".repeat(72));
 
     for entry in &entries {
-        let time = if entry.ts.len() >= 16 { &entry.ts[..16] } else { &entry.ts };
+        let time = if entry.ts.len() >= 16 {
+            &entry.ts[..16]
+        } else {
+            &entry.ts
+        };
         let kind_tag = match entry.kind {
             "incident" => "[INCIDENT]  ",
             "decision" => "[DECISION]  ",
-            _          => "[event]     ",
+            _ => "[event]     ",
         };
         let sev_tag = if entry.kind == "event" || entry.kind == "incident" {
             match entry.severity.as_str() {
                 "Critical" => " CRITICAL",
-                "High"     => " HIGH    ",
-                "Medium"   => " MEDIUM  ",
-                "Low"      => " LOW     ",
-                _          => "         ",
+                "High" => " HIGH    ",
+                "Medium" => " MEDIUM  ",
+                "Low" => " LOW     ",
+                _ => "         ",
             }
         } else {
             "         "
@@ -5645,13 +5866,10 @@ fn cmd_completions(shell: &str) -> Result<()> {
     let mut cmd = Cli::command();
     let shell_enum = match shell.to_lowercase().as_str() {
         "bash" => Shell::Bash,
-        "zsh"  => Shell::Zsh,
+        "zsh" => Shell::Zsh,
         "fish" => Shell::Fish,
-        other  => {
-            anyhow::bail!(
-                "unsupported shell '{}' — supported: bash, zsh, fish",
-                other
-            )
+        other => {
+            anyhow::bail!("unsupported shell '{}' — supported: bash, zsh, fish", other)
         }
     };
 
@@ -6407,17 +6625,20 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
             .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
         let env_content = std::fs::read_to_string(&env_path).unwrap_or_default();
 
-        let has_user = env_content.lines().any(|l| l.starts_with("INNERWARDEN_DASHBOARD_USER="))
+        let has_user = env_content
+            .lines()
+            .any(|l| l.starts_with("INNERWARDEN_DASHBOARD_USER="))
             || std::env::var("INNERWARDEN_DASHBOARD_USER").is_ok();
 
-        let has_hash = env_content.lines().any(|l| l.starts_with("INNERWARDEN_DASHBOARD_PASSWORD_HASH="))
+        let has_hash = env_content
+            .lines()
+            .any(|l| l.starts_with("INNERWARDEN_DASHBOARD_PASSWORD_HASH="))
             || std::env::var("INNERWARDEN_DASHBOARD_PASSWORD_HASH").is_ok();
 
         // Check if --dashboard flag is in the service ExecStart
-        let service_content = std::fs::read_to_string(
-            "/etc/systemd/system/innerwarden-agent.service",
-        )
-        .unwrap_or_default();
+        let service_content =
+            std::fs::read_to_string("/etc/systemd/system/innerwarden-agent.service")
+                .unwrap_or_default();
         let dashboard_flag_in_service = service_content.contains("--dashboard");
 
         if dashboard_flag_in_service {
@@ -6430,7 +6651,9 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
         }
 
         if has_user && has_hash {
-            db.push(Check::ok("Dashboard login is configured (credentials required)"));
+            db.push(Check::ok(
+                "Dashboard login is configured (credentials required)",
+            ));
         } else {
             db.push(Check::ok("Dashboard is open — no login required"));
             db.push(Check::ok(
@@ -6872,7 +7095,8 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                                 "agent may be stuck — check: journalctl -u innerwarden-agent -n 50",
                             ));
                         } else {
-                            liveness.push(Check::ok(format!("agent active — last write {}s ago", age)));
+                            liveness
+                                .push(Check::ok(format!("agent active — last write {}s ago", age)));
                         }
                     }
                 }
@@ -7064,7 +7288,10 @@ mod tests {
     fn completions_invalid_shell_errors() {
         let result = cmd_completions("powershell");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unsupported shell"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported shell"));
     }
 
     #[test]
