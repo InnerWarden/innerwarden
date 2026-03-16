@@ -2045,8 +2045,7 @@ async fn process_narrative_tick(
                     let now_local = chrono::Local::now();
                     let today_naive = now_local.date_naive();
                     let already_sent = state
-                        .last_daily_summary_telegram
-                        .map_or(false, |d| d == today_naive);
+                        .last_daily_summary_telegram == Some(today_naive);
                     if !already_sent && now_local.hour() >= u32::from(hour) {
                         if let Some(tg) = &state.telegram_client {
                             let preview: String = md.chars().take(3800).collect();

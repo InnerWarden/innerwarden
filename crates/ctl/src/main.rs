@@ -103,6 +103,15 @@ enum Command {
         modules_dir: String,
     },
 
+    /// First-time setup wizard.
+    ///
+    /// Scans your machine, configures AI, Telegram notifications, the
+    /// responder, and enables the most relevant modules for your setup.
+    ///
+    /// Examples:
+    ///   innerwarden setup
+    Setup,
+
     /// Check for a newer release and optionally upgrade all binaries
     Upgrade {
         /// Only check if an update is available; do not install
@@ -771,6 +780,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Doctor => cmd_doctor(&cli, &registry),
+        Command::Setup => cmd_setup(&cli),
         Command::Scan { ref modules_dir } => scan::cmd_scan(modules_dir),
         Command::Upgrade {
             check,
@@ -1010,7 +1020,7 @@ fn cmd_status_global(
             doc.get("output")
                 .and_then(|o| o.get("data_dir"))
                 .and_then(|d| d.as_str())
-                .map(|s| std::path::PathBuf::from(s))
+                .map(std::path::PathBuf::from)
         })
         .or_else(|| Some(std::path::PathBuf::from("/var/lib/innerwarden")));
 
@@ -1166,7 +1176,7 @@ fn count_jsonl_lines(path: &std::path::Path) -> usize {
 /// Read the last incident from a JSONL file and return (title, time_str).
 fn read_last_incident_summary(path: &std::path::Path) -> Option<(String, String)> {
     let content = std::fs::read_to_string(path).ok()?;
-    let last_line = content.lines().filter(|l| !l.trim().is_empty()).last()?;
+    let last_line = content.lines().rfind(|l| !l.trim().is_empty())?;
     let v: serde_json::Value = serde_json::from_str(last_line).ok()?;
     let title = v["title"].as_str()?.to_string();
     let ts = v["ts"].as_str()?;
@@ -2504,8 +2514,8 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
             .unwrap_or(false)
     };
     let has_env = |key: &str| -> bool {
-        env_vars.get(key).map_or(false, |v| !v.is_empty())
-            || std::env::var(key).map_or(false, |v| !v.is_empty())
+        env_vars.get(key).is_some_and(|v| !v.is_empty())
+            || std::env::var(key).is_ok_and(|v| !v.is_empty())
     };
 
     let ai_ok = is_enabled("ai");
@@ -2694,7 +2704,7 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
                             }
                         }
                         let registry = capability::CapabilityRegistry::default_all();
-                        if let Err(e) = cmd_enable(&cli, &registry, cap_id, params, true) {
+                        if let Err(e) = cmd_enable(cli, &registry, cap_id, params, true) {
                             println!("  Could not enable {}: {e:#}", r.name);
                         }
                     }
@@ -2722,8 +2732,8 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
             .unwrap_or(false)
     };
     let has_env2 = |key: &str| -> bool {
-        env_vars2.get(key).map_or(false, |v| !v.is_empty())
-            || std::env::var(key).map_or(false, |v| !v.is_empty())
+        env_vars2.get(key).is_some_and(|v| !v.is_empty())
+            || std::env::var(key).is_ok_and(|v| !v.is_empty())
     };
 
     println!();
@@ -2785,8 +2795,8 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
             .unwrap_or(false)
     };
     let has_env = |key: &str| -> bool {
-        env_vars.get(key).map_or(false, |v| !v.is_empty())
-            || std::env::var(key).map_or(false, |v| !v.is_empty())
+        env_vars.get(key).is_some_and(|v| !v.is_empty())
+            || std::env::var(key).is_ok_and(|v| !v.is_empty())
     };
 
     // Build status labels
@@ -2806,7 +2816,7 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
             .and_then(|doc| doc.get("slack"))
             .and_then(|s| s.get("webhook_url"))
             .and_then(|u| u.as_str())
-            .map_or(false, |s| !s.is_empty())
+            .is_some_and(|s| !s.is_empty())
     };
     let webhook_ok = agent_doc
         .as_ref()
@@ -3122,7 +3132,7 @@ fn cmd_configure_telegram(
     };
 
     // Basic format check: digits : alphanumeric
-    if !token.contains(':') || token.split(':').next().map_or(true, |s| s.is_empty()) {
+    if !token.contains(':') || token.split(':').next().is_none_or(|s| s.is_empty()) {
         anyhow::bail!(
             "token looks wrong — expected format: 123456789:ABCdef...\nGet one from @BotFather on Telegram."
         );
@@ -4015,7 +4025,7 @@ fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
     println!("InnerWarden — test alert\n");
 
     // ── Telegram ─────────────────────────────────────────────────────────
-    let try_telegram = test_only.map_or(true, |c| c == "telegram");
+    let try_telegram = test_only.is_none_or(|c| c == "telegram");
     if try_telegram {
         let token = env_vars
             .get("TELEGRAM_BOT_TOKEN")
@@ -4053,7 +4063,7 @@ fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
     }
 
     // ── Slack ─────────────────────────────────────────────────────────────
-    let try_slack = test_only.map_or(true, |c| c == "slack");
+    let try_slack = test_only.is_none_or(|c| c == "slack");
     if try_slack {
         let webhook = env_vars
             .get("SLACK_WEBHOOK_URL")
@@ -4090,7 +4100,7 @@ fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
     }
 
     // ── Webhook ───────────────────────────────────────────────────────────
-    let try_webhook = test_only.map_or(true, |c| c == "webhook");
+    let try_webhook = test_only.is_none_or(|c| c == "webhook");
     if try_webhook {
         // Read webhook URL and enabled flag from agent.toml
         let agent_doc: Option<toml_edit::DocumentMut> = cli
@@ -4212,7 +4222,7 @@ fn cmd_report(cli: &Cli, date_arg: &str, data_dir: &std::path::Path) -> Result<(
                 doc.get("output")
                     .and_then(|o| o.get("data_dir"))
                     .and_then(|d| d.as_str())
-                    .map(|s| std::path::PathBuf::from(s))
+                    .map(std::path::PathBuf::from)
             })
             .unwrap_or_else(|| data_dir.to_path_buf())
     } else {
@@ -4301,7 +4311,7 @@ fn cmd_watchdog(cli: &Cli, threshold_secs: u64, notify: bool, data_dir: &std::pa
                 doc.get("output")
                     .and_then(|o| o.get("data_dir"))
                     .and_then(|d| d.as_str())
-                    .map(|s| std::path::PathBuf::from(s))
+                    .map(std::path::PathBuf::from)
             })
             .unwrap_or_else(|| data_dir.to_path_buf())
     } else {
@@ -4583,7 +4593,7 @@ fn cmd_tune(cli: &Cli, days: u64, yes: bool, data_dir: &Path) -> Result<()> {
 
         // Heuristic: if daily noise >> threshold → suggest raising it
         // If incident rate is very high (> 5/day) → suggest lowering threshold
-        let incidents_per_day = (incidents as f64 / days as f64);
+        let incidents_per_day = incidents as f64 / days as f64 ;
         let suggested = if incidents_per_day > 10.0 && current_val > 3 {
             // Very noisy — lower threshold so we catch earlier
             (current_val - 1).max(2)
@@ -4732,7 +4742,7 @@ fn cmd_incidents(cli: &Cli, days: u64, severity_filter: &str, data_dir: &Path) -
                 v.get("output")
                     .and_then(|o| o.get("data_dir"))
                     .and_then(|d| d.as_str())
-                    .map(|s| PathBuf::from(s))
+                    .map(PathBuf::from)
             })
             .unwrap_or_else(|| data_dir.to_path_buf())
     } else {
@@ -5007,7 +5017,7 @@ fn resolve_data_dir(cli: &Cli, data_dir: &Path) -> PathBuf {
                 v.get("output")
                     .and_then(|o| o.get("data_dir"))
                     .and_then(|d| d.as_str())
-                    .map(|s| PathBuf::from(s))
+                    .map(PathBuf::from)
             })
             .unwrap_or_else(|| data_dir.to_path_buf())
     } else {
@@ -5070,8 +5080,7 @@ fn cmd_sensor_status(cli: &Cli, data_dir: &Path) -> Result<()> {
         .and_then(|content| {
             content
                 .lines()
-                .filter(|l| !l.trim().is_empty())
-                .last()
+                .rfind(|l| !l.trim().is_empty())
                 .and_then(|line| serde_json::from_str(line).ok())
         });
 
