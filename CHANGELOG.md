@@ -55,7 +55,7 @@ New built-in modules: `wazuh-integration`, `nginx-error-monitor`, `falco-integra
 
 ### Test coverage
 
-502 tests across three crates (185 sensor + 178 agent + 139 ctl).
+511 tests across three crates (185 sensor + 178 agent + 148 ctl).
 
 ---
 
