@@ -11,6 +11,19 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.9] — 2026-03-16
+
+### Control plane (`innerwarden` / `innerwarden-ctl`)
+
+**Bug fix**
+- Config files and `agent.env` written by `sudo innerwarden configure` / `setup` are now `chmod 640 + chgrp innerwarden` after every write — previously they were created as `root:root 600`, preventing `innerwarden-agent` (which runs as `User=innerwarden` in the systemd unit) from reading them on startup, causing a silent `Permission denied` crash
+
+### Test coverage
+
+502 tests across three crates (185 sensor + 178 agent + 139 ctl).
+
+---
+
 ## [0.1.8] — 2026-03-16
 
 ### Control plane (`innerwarden` / `innerwarden-ctl`)
