@@ -18,6 +18,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 **Bug fixes**
 - `upgrade` now starts `innerwarden-agent` if its unit file is installed but the service was stopped — previously only already-running services were restarted, so a stopped agent was silently skipped every upgrade
 - `test-alert` permission detection now works correctly when `/etc/innerwarden/` is not readable by the current user — the previous check used `Path::exists()` which returns false for inaccessible directories, causing the permission error to be swallowed silently
+- Config files written by `sudo innerwarden configure` / `setup` are now `chmod 640 + chgrp innerwarden` after every write — previously they were created as `root:root 600`, preventing `innerwarden-agent` (which runs as `User=innerwarden` in the systemd unit) from reading them and causing a silent `Permission denied` crash on startup
 
 ### Test coverage
 

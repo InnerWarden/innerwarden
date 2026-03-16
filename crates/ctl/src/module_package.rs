@@ -220,8 +220,6 @@ pub fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
-
     fn write_file(dir: &Path, name: &str, content: &str) {
         std::fs::write(dir.join(name), content).unwrap();
     }

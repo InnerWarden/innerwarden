@@ -211,11 +211,8 @@ mod tests {
         // We test the guard at the start of lookup() rather than making a network call.
         // The empty-string guard is the only sync-testable path.
         let _client = GeoIpClient::new();
-        // This is verified by the logic: if ip.is_empty() { return None; }
-        // The actual async None return for empty ip is covered by the guard.
-        assert!(
-            true,
-            "GeoIpClient::new() constructs successfully without requiring a key"
-        );
+        // GeoIpClient::new() constructs successfully without requiring a key.
+        // The empty-string guard (if ip.is_empty() { return None; }) is the
+        // only sync-testable path; network calls are skipped in unit tests.
     }
 }

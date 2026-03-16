@@ -140,8 +140,10 @@ mod tests {
         let today = Local::now().date_naive();
         write_dated_file(tmp.path(), "events-", ".jsonl", today);
 
-        let mut cfg = DataRetentionConfig::default();
-        cfg.events_keep_days = 0; // even with keep=0, today must survive
+        let cfg = DataRetentionConfig {
+            events_keep_days: 0, // even with keep=0, today must survive
+            ..Default::default()
+        };
 
         let removed = cleanup(tmp.path(), &cfg);
         assert_eq!(removed, 0);

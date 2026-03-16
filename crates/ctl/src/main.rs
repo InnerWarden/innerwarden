@@ -2516,6 +2516,17 @@ fn write_env_key(env_path: &Path, key: &str, value: &str) -> Result<()> {
         .with_context(|| format!("cannot write {}", tmp.display()))?;
     std::fs::rename(&tmp, env_path)
         .with_context(|| format!("cannot update {}", env_path.display()))?;
+    // Ensure readable by innerwarden service user (chmod 640 + chgrp innerwarden).
+    // Fail-silent — best-effort in case the group doesn't exist (e.g. local dev).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(env_path, std::fs::Permissions::from_mode(0o640));
+        let _ = std::process::Command::new("chgrp")
+            .arg("innerwarden")
+            .arg(env_path)
+            .output();
+    }
     Ok(())
 }
 
