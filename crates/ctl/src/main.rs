@@ -2666,21 +2666,82 @@ fn cmd_configure_dashboard(cli: &Cli, user: &str, password_arg: Option<&str>) ->
     if cli.dry_run {
         println!("\n  [dry-run] would write INNERWARDEN_DASHBOARD_USER={user} to {}", env_file.display());
         println!("  [dry-run] would write INNERWARDEN_DASHBOARD_PASSWORD_HASH=<hash> to {}", env_file.display());
+        println!("  [dry-run] would add --dashboard to service ExecStart if missing");
     } else {
         write_env_key(&env_file, "INNERWARDEN_DASHBOARD_USER", user)?;
         write_env_key(&env_file, "INNERWARDEN_DASHBOARD_PASSWORD_HASH", &hash)?;
         println!("\n  [ok] Credentials saved to {}", env_file.display());
     }
 
+    // Ensure --dashboard is in the service ExecStart
+    ensure_dashboard_flag_in_service(cli);
+
     restart_agent(cli);
     println!();
     println!("Dashboard configured.");
-    println!("  URL:      http://localhost:8787  (or your server IP)");
+    println!("  URL:      http://localhost:8787");
     println!("  Username: {user}");
     println!("  Password: (the one you entered)");
     println!();
+    println!("To access from your browser via SSH tunnel:");
+    println!("  ssh -L 8787:127.0.0.1:8787 user@YOUR_SERVER");
+    println!("  Then open: http://localhost:8787");
+    println!();
+    println!("If you use nginx, add this to your server block:");
+    println!("  location / {{");
+    println!("      proxy_pass http://127.0.0.1:8787;");
+    println!("      proxy_set_header Host $host;");
+    println!("      proxy_set_header Authorization $http_authorization;");
+    println!("      proxy_pass_header Authorization;");
+    println!("      proxy_http_version 1.1;");
+    println!("      proxy_buffering off;");
+    println!("  }}");
+    println!();
     println!("Run 'innerwarden doctor' to validate.");
     Ok(())
+}
+
+/// Add `--dashboard` to the innerwarden-agent service ExecStart if not already present.
+fn ensure_dashboard_flag_in_service(cli: &Cli) {
+    // Only applies to Linux systemd
+    if std::env::consts::OS == "macos" {
+        return;
+    }
+    let service_path = "/etc/systemd/system/innerwarden-agent.service";
+    let Ok(content) = std::fs::read_to_string(service_path) else {
+        return;
+    };
+    if content.contains("--dashboard") {
+        return;
+    }
+    // Patch ExecStart line to append --dashboard
+    let patched = content
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("ExecStart=") && !line.contains("--dashboard") {
+                format!("{line} --dashboard")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if cli.dry_run {
+        println!("  [dry-run] would add --dashboard to {service_path}");
+        return;
+    }
+
+    if std::fs::write(service_path, patched).is_ok() {
+        let _ = std::process::Command::new("systemctl")
+            .arg("daemon-reload")
+            .status();
+        println!("  [ok] --dashboard added to {service_path}");
+    } else {
+        println!(
+            "  [warn] could not update {service_path} — add --dashboard to ExecStart manually"
+        );
+    }
 }
 
 fn which_bin(name: &str) -> Option<PathBuf> {
@@ -3712,29 +3773,33 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
         let has_hash = env_content.lines().any(|l| l.starts_with("INNERWARDEN_DASHBOARD_PASSWORD_HASH="))
             || std::env::var("INNERWARDEN_DASHBOARD_PASSWORD_HASH").is_ok();
 
-        if has_user && has_hash {
-            db.push(Check::ok("Dashboard credentials are configured"));
-            db.push(Check::ok("Access at http://localhost:8787 (or your server IP:8787)"));
+        // Check if --dashboard flag is in the service ExecStart
+        let service_content = std::fs::read_to_string(
+            "/etc/systemd/system/innerwarden-agent.service",
+        )
+        .unwrap_or_default();
+        let dashboard_flag_in_service = service_content.contains("--dashboard");
+
+        if dashboard_flag_in_service {
+            db.push(Check::ok("--dashboard flag present in service ExecStart"));
         } else {
             db.push(Check::warn(
-                "Dashboard login not configured — anyone on the network could access it",
-                "Set up credentials: innerwarden configure dashboard",
+                "--dashboard flag is missing from innerwarden-agent.service ExecStart",
+                "Run: innerwarden configure dashboard  (it will add the flag automatically)",
             ));
-            if !has_user {
-                db.push(Check::warn(
-                    "INNERWARDEN_DASHBOARD_USER is not set",
-                    "Run: innerwarden configure dashboard",
-                ));
-            }
-            if !has_hash {
-                db.push(Check::warn(
-                    "INNERWARDEN_DASHBOARD_PASSWORD_HASH is not set",
-                    "Run: innerwarden configure dashboard",
-                ));
-            }
         }
 
-        let _ = dashboard_enabled; // checked above, field used to suppress warning
+        if has_user && has_hash {
+            db.push(Check::ok("Dashboard login is configured (credentials required)"));
+        } else {
+            db.push(Check::ok("Dashboard is open — no login required"));
+            db.push(Check::ok(
+                "To add a password (recommended if exposed publicly): innerwarden configure dashboard",
+            ));
+        }
+        db.push(Check::ok("Access at http://YOUR_SERVER_IP:8787"));
+
+        let _ = dashboard_enabled;
         run_section(db, &mut total_issues);
     }
 

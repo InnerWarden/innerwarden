@@ -641,6 +641,7 @@ EOF
     <string>${DATA_DIR}</string>
     <string>--config</string>
     <string>${CONFIG_DIR}/agent.toml</string>
+    <string>--dashboard</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -700,7 +701,7 @@ Type=simple
 User=innerwarden
 Group=innerwarden
 EnvironmentFile=/etc/innerwarden/agent.env
-ExecStart=/usr/local/bin/innerwarden-agent --data-dir /var/lib/innerwarden --config /etc/innerwarden/agent.toml
+ExecStart=/usr/local/bin/innerwarden-agent --data-dir /var/lib/innerwarden --config /etc/innerwarden/agent.toml --dashboard
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=10
@@ -1001,6 +1002,15 @@ echo
 echo "── Enable response skills ───────────────────────────────────────"
 echo "  innerwarden enable block-ip          # IP blocking (ufw by default)"
 echo "  innerwarden enable sudo-protection   # suspend sudo on abuse"
+echo
+echo "── Dashboard ───────────────────────────────────────────────────"
+if [[ "$OS_TYPE" == "Darwin" ]]; then
+echo "  http://localhost:8787  (no login required by default)"
+else
+echo "  http://$(hostname -I | awk '{print $1}' 2>/dev/null || echo YOUR_SERVER_IP):8787"
+echo "  Open in your browser — no login required by default."
+fi
+echo "  To add a password:  innerwarden configure dashboard"
 echo
 echo "── Useful commands ─────────────────────────────────────────────"
 echo "  innerwarden status   — system overview"

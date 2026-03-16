@@ -90,24 +90,38 @@ pub struct DashboardAuth {
 }
 
 impl DashboardAuth {
-    pub fn from_env() -> Result<Self> {
-        let username = std::env::var("INNERWARDEN_DASHBOARD_USER")
-            .context("missing env var INNERWARDEN_DASHBOARD_USER for dashboard authentication")?;
-        if username.trim().is_empty() {
-            anyhow::bail!("INNERWARDEN_DASHBOARD_USER cannot be empty");
+    /// Load credentials from environment variables.
+    /// Returns `None` if neither env var is set (open access mode).
+    /// Returns `Err` if vars are partially set or malformed.
+    pub fn try_from_env() -> Result<Option<Self>> {
+        let user = std::env::var("INNERWARDEN_DASHBOARD_USER").ok();
+        let hash = std::env::var("INNERWARDEN_DASHBOARD_PASSWORD_HASH").ok();
+
+        match (user, hash) {
+            (None, None) => Ok(None), // no auth configured — open access
+            (Some(username), Some(password_hash_raw)) => {
+                if username.trim().is_empty() {
+                    anyhow::bail!("INNERWARDEN_DASHBOARD_USER cannot be empty");
+                }
+                let password_hash =
+                    PasswordHashString::new(&password_hash_raw).map_err(|_| {
+                        anyhow::anyhow!(
+                            "INNERWARDEN_DASHBOARD_PASSWORD_HASH is not a valid PHC hash string"
+                        )
+                    })?;
+                Ok(Some(Self {
+                    username,
+                    password_hash,
+                }))
+            }
+            (Some(_), None) => anyhow::bail!(
+                "INNERWARDEN_DASHBOARD_USER is set but INNERWARDEN_DASHBOARD_PASSWORD_HASH is missing.\n\
+                 Generate one with: innerwarden-agent --dashboard-generate-password-hash"
+            ),
+            (None, Some(_)) => anyhow::bail!(
+                "INNERWARDEN_DASHBOARD_PASSWORD_HASH is set but INNERWARDEN_DASHBOARD_USER is missing."
+            ),
         }
-
-        let password_hash_raw = std::env::var("INNERWARDEN_DASHBOARD_PASSWORD_HASH").context(
-            "missing env var INNERWARDEN_DASHBOARD_PASSWORD_HASH (generate one with: innerwarden-agent --dashboard-generate-password-hash)",
-        )?;
-        let password_hash = PasswordHashString::new(&password_hash_raw).map_err(|_| {
-            anyhow::anyhow!("INNERWARDEN_DASHBOARD_PASSWORD_HASH is not a valid PHC hash string")
-        })?;
-
-        Ok(Self {
-            username,
-            password_hash,
-        })
     }
 
     fn verify(&self, user: &str, password: &str) -> bool {
@@ -521,9 +535,17 @@ impl IpAccumulator {
 pub async fn serve(
     data_dir: PathBuf,
     bind: String,
-    auth: DashboardAuth,
+    auth: Option<DashboardAuth>,
     action_cfg: DashboardActionConfig,
 ) -> Result<()> {
+    if auth.is_none() {
+        warn!(
+            "dashboard is running WITHOUT authentication — \
+             set INNERWARDEN_DASHBOARD_USER and INNERWARDEN_DASHBOARD_PASSWORD_HASH \
+             in agent.env to require a login"
+        );
+    }
+
     // D6: broadcast channel — capacity 64 is plenty; lagged receivers are dropped.
     let (event_tx, _) = broadcast::channel::<SsePayload>(64);
 
@@ -609,10 +631,15 @@ pub fn generate_password_hash_interactive() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn require_basic_auth(
-    State(auth): State<DashboardAuth>,
+    State(auth): State<Option<DashboardAuth>>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
+    // No credentials configured → open access
+    let Some(auth) = auth else {
+        return next.run(req).await;
+    };
+
     let Some(raw_header) = req.headers().get(header::AUTHORIZATION) else {
         return unauthorized_response();
     };

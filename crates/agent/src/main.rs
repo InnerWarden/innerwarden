@@ -431,7 +431,7 @@ async fn main() -> Result<()> {
     };
 
     if cli.dashboard {
-        let auth = dashboard::DashboardAuth::from_env()?;
+        let auth = dashboard::DashboardAuth::try_from_env()?;
         let action_cfg = dashboard::DashboardActionConfig {
             enabled: cfg.responder.enabled,
             dry_run: cfg.responder.dry_run,
