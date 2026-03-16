@@ -11,6 +11,21 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.10] — 2026-03-16
+
+### Control plane (`innerwarden` / `innerwarden-ctl`)
+
+**Bug fixes**
+- `upgrade` now fixes permissions on all existing files in `/etc/innerwarden/` — files written before v0.1.9 were `root:root 600`, blocking the agent after upgrade; `upgrade` now runs `chmod 640 + chgrp innerwarden` on every config file before restarting services
+- `innerwarden decisions` now correctly displays action type labels (`[BLOCK]`, `[MONITOR]`, `[IGNORE]`, etc.) — the field was being read as `action` but is stored as `action_type` in the JSONL audit trail
+- `innerwarden incidents` and `innerwarden entity` now correctly display severity labels (`[HIGH]`, `[CRITICAL]`, etc.) — comparison was case-sensitive but the sensor writes lowercase severity values
+
+### Test coverage
+
+502 tests across three crates (185 sensor + 178 agent + 139 ctl).
+
+---
+
 ## [0.1.9] — 2026-03-16
 
 ### Control plane (`innerwarden` / `innerwarden-ctl`)

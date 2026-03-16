@@ -2447,6 +2447,15 @@ fn cmd_upgrade(cli: &Cli, check_only: bool, yes: bool, install_dir: &Path) -> Re
         }
     }
 
+    // Fix permissions on existing config files — files written before v0.1.9 may
+    // be root:root 600, which prevents innerwarden-agent (User=innerwarden) from
+    // reading them. chmod 640 + chgrp innerwarden is fail-silent.
+    fix_config_dir_permissions(
+        cli.agent_config
+            .parent()
+            .unwrap_or(std::path::Path::new("/etc/innerwarden")),
+    );
+
     // Restart running services; also start the agent if it has a unit file but is stopped
     println!();
     for unit in &["innerwarden-sensor", "innerwarden-agent"] {
@@ -2496,6 +2505,26 @@ fn cmd_upgrade(cli: &Cli, check_only: bool, yes: bool, install_dir: &Path) -> Re
 // ---------------------------------------------------------------------------
 // Configure AI
 // ---------------------------------------------------------------------------
+
+/// Fix permissions on all config files in the innerwarden config directory.
+/// chmod 640 + chgrp innerwarden so the service user (User=innerwarden) can read them.
+/// Fail-silent — best-effort in environments where the group doesn't exist.
+fn fix_config_dir_permissions(config_dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(entries) = std::fs::read_dir(config_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640));
+            let _ = std::process::Command::new("chgrp")
+                .arg("innerwarden")
+                .arg(&path)
+                .output();
+        }
+    }
+}
 
 fn write_env_key(env_path: &Path, key: &str, value: &str) -> Result<()> {
     let existing = std::fs::read_to_string(env_path).unwrap_or_default();
@@ -5109,13 +5138,7 @@ fn cmd_incidents(cli: &Cli, days: u64, severity_filter: &str, data_dir: &Path) -
                         .and_then(|e| e["value"].as_str())
                 })
                 .unwrap_or("");
-            let sev_tag = match sev {
-                "Critical" => "[CRITICAL]",
-                "High" => "[HIGH]    ",
-                "Medium" => "[MEDIUM]  ",
-                "Low" => "[LOW]     ",
-                _ => "[INFO]    ",
-            };
+            let sev_tag = sev_tag_bracket(sev);
             let ip_part = if ip.is_empty() {
                 String::new()
             } else {
@@ -5149,6 +5172,26 @@ fn severity_rank(sev: &str) -> u8 {
         "medium" => 3,
         "low" => 2,
         _ => 1,
+    }
+}
+
+fn sev_tag_bracket(sev: &str) -> &'static str {
+    match sev.to_lowercase().as_str() {
+        "critical" => "[CRITICAL]",
+        "high" => "[HIGH]    ",
+        "medium" => "[MEDIUM]  ",
+        "low" => "[LOW]     ",
+        _ => "[INFO]    ",
+    }
+}
+
+fn sev_tag_plain(sev: &str) -> &'static str {
+    match sev.to_lowercase().as_str() {
+        "critical" => " CRITICAL",
+        "high" => " HIGH    ",
+        "medium" => " MEDIUM  ",
+        "low" => " LOW     ",
+        _ => "         ",
     }
 }
 
@@ -5721,13 +5764,7 @@ fn print_tail_entry(v: &serde_json::Value, kind: &str) {
                     .and_then(|e| e["value"].as_str())
             })
             .unwrap_or("");
-        let sev_tag = match sev {
-            "Critical" => "[CRITICAL]",
-            "High" => "[HIGH]    ",
-            "Medium" => "[MEDIUM]  ",
-            "Low" => "[LOW]     ",
-            _ => "[INFO]    ",
-        };
+        let sev_tag = sev_tag_bracket(sev);
         let ip_part = if ip.is_empty() {
             String::new()
         } else {
@@ -5773,7 +5810,7 @@ fn cmd_decisions(cli: &Cli, days: u64, action_filter: Option<&str>, data_dir: &P
             let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
             };
-            let action = v["action"].as_str().unwrap_or("unknown");
+            let action = v["action_type"].as_str().unwrap_or("unknown");
             if let Some(f) = action_filter {
                 if !action.eq_ignore_ascii_case(f) {
                     continue;
@@ -5968,7 +6005,7 @@ fn cmd_entity(cli: &Cli, target: &str, days: u64, data_dir: &Path) -> Result<()>
                 let ip_match = is_ip && v["target_ip"].as_str() == Some(target);
                 let user_match = !is_ip && v["target_user"].as_str() == Some(target);
                 if ip_match || user_match {
-                    let action = v["action"].as_str().unwrap_or("unknown");
+                    let action = v["action_type"].as_str().unwrap_or("unknown");
                     let dry_run = v["dry_run"].as_bool().unwrap_or(false);
                     let dry_tag = if dry_run { " [dry-run]" } else { "" };
                     entries.push(Entry {
@@ -6019,13 +6056,7 @@ fn cmd_entity(cli: &Cli, target: &str, days: u64, data_dir: &Path) -> Result<()>
             _ => "[event]     ",
         };
         let sev_tag = if entry.kind == "event" || entry.kind == "incident" {
-            match entry.severity.as_str() {
-                "Critical" => " CRITICAL",
-                "High" => " HIGH    ",
-                "Medium" => " MEDIUM  ",
-                "Low" => " LOW     ",
-                _ => "         ",
-            }
+            sev_tag_plain(&entry.severity)
         } else {
             "         "
         };
