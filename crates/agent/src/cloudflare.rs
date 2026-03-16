@@ -51,6 +51,7 @@ pub struct CloudflareClient {
 
 impl CloudflareClient {
     /// Create a new client. The HTTP client is configured with an 8-second timeout.
+    #[allow(dead_code)]
     pub fn new(zone_id: impl Into<String>, api_token: impl Into<String>) -> Self {
         Self::with_prefix(zone_id, api_token, "innerwarden")
     }

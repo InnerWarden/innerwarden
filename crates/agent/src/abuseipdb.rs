@@ -32,14 +32,17 @@ pub struct AbuseIpDbResponse {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AbuseIpDbData {
+    #[allow(dead_code)]
     pub ip_address: String,
     pub abuse_confidence_score: u8,   // 0–100
     pub total_reports: u32,
     pub num_distinct_users: u32,
     pub country_code: Option<String>,
     pub isp: Option<String>,
+    #[allow(dead_code)]
     pub domain: Option<String>,
     pub is_tor: Option<bool>,
+    #[allow(dead_code)]
     pub is_public: bool,
 }
 

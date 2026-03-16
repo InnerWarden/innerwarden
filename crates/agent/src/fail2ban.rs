@@ -33,6 +33,7 @@ use crate::skills::{self, Blocklist, SkillContext, SkillRegistry};
 #[derive(Debug, Clone)]
 pub struct BannedIp {
     pub ip: String,
+    #[allow(dead_code)]
     pub jail: String,
 }
 
@@ -122,14 +123,14 @@ impl Fail2BanClient {
 /// Expected output:
 /// ```text
 /// Status
-/// |- Number of jail:	2
-/// `- Jail list:	sshd, nginx-req-limit
+/// |- Number of jail:    2
+/// `- Jail list:    sshd, nginx-req-limit
 /// ```
 pub fn parse_jail_list(output: &str) -> Vec<String> {
     for line in output.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("Jail list:") {
-            let list = rest.trim_start_matches(|c: char| c == '\t' || c == ' ');
+            let list = rest.trim_start_matches(['\t', ' ']);
             return list
                 .split(',')
                 .map(|s| s.trim().to_string())
@@ -138,7 +139,7 @@ pub fn parse_jail_list(output: &str) -> Vec<String> {
         }
         // Also handle the backtick variant: "`- Jail list:\t..."
         if let Some(rest) = trimmed.strip_prefix("`- Jail list:") {
-            let list = rest.trim_start_matches(|c: char| c == '\t' || c == ' ');
+            let list = rest.trim_start_matches(['\t', ' ']);
             return list
                 .split(',')
                 .map(|s| s.trim().to_string())
@@ -146,7 +147,7 @@ pub fn parse_jail_list(output: &str) -> Vec<String> {
                 .collect();
         }
         if let Some(rest) = trimmed.strip_prefix("|- Jail list:") {
-            let list = rest.trim_start_matches(|c: char| c == '\t' || c == ' ');
+            let list = rest.trim_start_matches(['\t', ' ']);
             return list
                 .split(',')
                 .map(|s| s.trim().to_string())
@@ -163,13 +164,13 @@ pub fn parse_jail_list(output: &str) -> Vec<String> {
 /// ```text
 /// Status for the jail: sshd
 /// |- Filter
-/// |  |- Currently failed:	1
-/// |  |- Total failed:	42
-/// |  `- File list:	/var/log/auth.log
+/// |  |- Currently failed:    1
+/// |  |- Total failed:    42
+/// |  `- File list:    /var/log/auth.log
 /// `- Actions
-///    |- Currently banned:	3
-///    |- Total banned:	15
-///    `- Banned IP list:	1.2.3.4 5.6.7.8 9.10.11.12
+///    |- Currently banned:    3
+///    |- Total banned:    15
+///    `- Banned IP list:    1.2.3.4 5.6.7.8 9.10.11.12
 /// ```
 ///
 /// If "Currently banned:" is 0, returns an empty vec immediately.
@@ -181,28 +182,20 @@ pub fn parse_banned_ips(output: &str, jail: &str) -> Vec<BannedIp> {
         let trimmed = line.trim();
 
         // Parse "Currently banned:\tN" (with or without |-/`- prefix)
-        let banned_count_part = if let Some(rest) = trimmed.strip_prefix("|- Currently banned:") {
-            Some(rest)
-        } else if let Some(rest) = trimmed.strip_prefix("Currently banned:") {
-            Some(rest)
-        } else {
-            None
-        };
+        let banned_count_part = trimmed
+            .strip_prefix("|- Currently banned:")
+            .or_else(|| trimmed.strip_prefix("Currently banned:"));
         if let Some(rest) = banned_count_part {
-            let count_str = rest.trim_start_matches(|c: char| c == '\t' || c == ' ');
+            let count_str = rest.trim_start_matches(['\t', ' ']);
             if let Ok(n) = count_str.parse::<u32>() {
                 currently_banned = Some(n);
             }
         }
 
         // Parse "Banned IP list:\t..." (with or without `- prefix)
-        let ip_list_part = if let Some(rest) = trimmed.strip_prefix("`- Banned IP list:") {
-            Some(rest)
-        } else if let Some(rest) = trimmed.strip_prefix("Banned IP list:") {
-            Some(rest)
-        } else {
-            None
-        };
+        let ip_list_part = trimmed
+            .strip_prefix("`- Banned IP list:")
+            .or_else(|| trimmed.strip_prefix("Banned IP list:"));
         if let Some(rest) = ip_list_part {
             banned_ip_line = Some(rest);
         }
@@ -217,7 +210,7 @@ pub fn parse_banned_ips(output: &str, jail: &str) -> Vec<BannedIp> {
         return vec![];
     };
 
-    let ip_list = ip_list_raw.trim_start_matches(|c: char| c == '\t' || c == ' ');
+    let ip_list = ip_list_raw.trim_start_matches(['\t', ' ']);
     if ip_list.is_empty() {
         return vec![];
     }

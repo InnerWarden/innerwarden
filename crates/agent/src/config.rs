@@ -1225,7 +1225,7 @@ fn default_fail2ban_poll_secs() -> u64 {
 // GeoIP enrichment
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct GeoIpConfig {
     /// Enable IP geolocation enrichment via ip-api.com (default: false).
     /// No API key required. Free tier: 45 requests/minute.
@@ -1233,11 +1233,6 @@ pub struct GeoIpConfig {
     pub enabled: bool,
 }
 
-impl Default for GeoIpConfig {
-    fn default() -> Self {
-        Self { enabled: false }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Tests

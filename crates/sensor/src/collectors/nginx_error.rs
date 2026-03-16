@@ -92,7 +92,7 @@ impl NginxErrorCollector {
                                 entities: entry
                                     .client_ip
                                     .iter()
-                                    .map(|ip| EntityRef::ip(ip))
+                                    .map(EntityRef::ip)
                                     .collect(),
                             };
                             if tx.send(event).await.is_err() {
@@ -151,7 +151,7 @@ fn parse_line(line: &str) -> Option<NginxErrorEntry> {
 
     // Strip optional request context prefix "*NNN " from the body
     let body = if body.starts_with('*') {
-        body.splitn(2, ' ').nth(1).unwrap_or(body)
+        body.split_once(' ').map(|x| x.1).unwrap_or(body)
     } else {
         body
     };
@@ -189,9 +189,9 @@ fn extract_field(body: &str, prefix: &str) -> Option<String> {
     let after = &body[pos + prefix.len()..];
 
     // Value may be quoted (e.g. request: "GET / HTTP/1.1") or bare
-    let value = if after.starts_with('"') {
-        let end = after[1..].find('"')?;
-        after[1..end + 1].to_string()
+    let value = if let Some(inner) = after.strip_prefix('"') {
+        let end = inner.find('"')?;
+        inner[..end].to_string()
     } else {
         // Bare value — ends at comma or end-of-string
         after.split(',').next().unwrap_or("").trim().to_string()

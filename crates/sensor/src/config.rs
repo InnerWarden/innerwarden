@@ -515,17 +515,12 @@ impl Default for WebScanConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct UserAgentScannerConfig {
     #[serde(default)]
     pub enabled: bool,
 }
 
-impl Default for UserAgentScannerConfig {
-    fn default() -> Self {
-        Self { enabled: false }
-    }
-}
 
 fn default_nginx_error_path() -> String {
     "/var/log/nginx/error.log".to_string()

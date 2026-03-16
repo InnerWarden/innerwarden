@@ -33,7 +33,9 @@ use crate::skills::{self, Blocklist, SkillContext, SkillRegistry};
 pub struct CrowdSecDecision {
     pub id: i64,
     pub origin: String,
+    #[allow(dead_code)]
     pub r#type: String,
+    #[allow(dead_code)]
     pub scope: String,
     pub value: String,       // the IP address
     pub duration: String,    // e.g. "87599.956744792s"

@@ -1074,7 +1074,7 @@ fn parse_registry_toml(raw: &str) -> Vec<RegistryModule> {
             for line in block.lines() {
                 let line = line.trim();
                 if line.starts_with(&format!("{key} ")) || line.starts_with(&format!("{key}=")) {
-                    if let Some(rest) = line.splitn(2, '=').nth(1) {
+                    if let Some(rest) = line.split_once('=').map(|x| x.1) {
                         return rest.trim().trim_matches('"').to_string();
                     }
                 }
@@ -1086,7 +1086,7 @@ fn parse_registry_toml(raw: &str) -> Vec<RegistryModule> {
             for line in block.lines() {
                 let line = line.trim();
                 if line.starts_with(&format!("{key} ")) || line.starts_with(&format!("{key}=")) {
-                    if let Some(rest) = line.splitn(2, '=').nth(1) {
+                    if let Some(rest) = line.split_once('=').map(|x| x.1) {
                         return rest
                             .trim()
                             .trim_start_matches('[')
