@@ -6258,9 +6258,13 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                 )
             });
         } else {
-            cfg.push(Check::fail(
-                format!("{} config not found ({})", label, path.display()),
-                format!("create {} — see README.md for a template", path.display()),
+            cfg.push(Check::warn(
+                format!(
+                    "{} config not found ({}) — defaults are in use",
+                    label,
+                    path.display()
+                ),
+                "Run 'sudo innerwarden setup' to create your configuration",
             ));
         }
     }
@@ -6802,12 +6806,29 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                 "Dashboard login is configured (credentials required)",
             ));
         } else {
-            db.push(Check::ok("Dashboard is open — no login required"));
             db.push(Check::ok(
-                "To add a password (recommended if exposed publicly): innerwarden configure dashboard",
+                "Dashboard credentials: none set (open access when agent is running)",
+            ));
+            db.push(Check::ok(
+                "To add a password: innerwarden configure dashboard",
             ));
         }
-        db.push(Check::ok("Access at http://YOUR_SERVER_IP:8787"));
+
+        // Check if the dashboard is actually reachable
+        let dashboard_up = ureq::get("http://127.0.0.1:8787/api/status")
+            .timeout(std::time::Duration::from_secs(2))
+            .call()
+            .is_ok();
+        if dashboard_up {
+            db.push(Check::ok(
+                "Dashboard is reachable at http://YOUR_SERVER_IP:8787",
+            ));
+        } else if dashboard_flag_in_service {
+            db.push(Check::warn(
+                "Dashboard port 8787 is not responding",
+                "Start the agent:  sudo systemctl start innerwarden-agent",
+            ));
+        }
 
         let _ = dashboard_enabled;
         run_section(db, &mut total_issues);
@@ -7264,6 +7285,13 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
         println!("All checks passed — system looks healthy.");
     } else {
         println!("{total_issues} issue(s) found — review hints above.");
+        // If configs are missing, offer a one-command path forward
+        let configs_missing = !cli.sensor_config.exists() || !cli.agent_config.exists();
+        if configs_missing {
+            println!();
+            println!("Getting started:  sudo innerwarden setup");
+            println!("  Walks you through AI, Telegram, and essential modules.");
+        }
         std::process::exit(1);
     }
     Ok(())

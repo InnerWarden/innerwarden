@@ -23,6 +23,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `configure telegram` completion shows explicit next steps: `status`, `doctor`, `test-alert`
 - AI provider picker: `innerwarden configure` (option 1) now shows an interactive sub-menu for all three providers instead of silently failing with no key; prompts for the API key inline for OpenAI and Anthropic
 - Setup wizard and configure menu now present all AI providers with balanced descriptions — no provider is labelled as the only recommended option; all costs and free tiers are described fairly
+- `doctor` no longer reports missing config files as `[fail]`; both sensor and agent run with built-in defaults, so missing configs are `[warn]` with a hint to run `innerwarden setup`
+- `doctor` summary now suggests `sudo innerwarden setup` when configs are absent
+- Dashboard section in `doctor` now does a real HTTP probe of port 8787 — shows `[warn]` if the agent is not running instead of falsely reporting the dashboard as open
 
 ### Test coverage
 
