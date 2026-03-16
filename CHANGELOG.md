@@ -35,9 +35,15 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Fail2ban integration: polls `fail2ban-client banned` output; enforces active bans via block skills; unified audit trail
 - GeoIP enrichment: enriches AI triage context with country, city, ISP, and ASN via ip-api.com; no API key; free tier 45 req/min
 - CrowdSec integration: polls CrowdSec Local API for crowd-sourced ban decisions; enforces them via block skills
+- Cloudflare integration: `CloudflareClient` pushes every `block_ip` decision to Cloudflare's edge via IP Access Rules API; attacking IPs are blocked at the CDN before reaching the host; configured via `[cloudflare]` in `agent.toml` or `CLOUDFLARE_API_TOKEN`; fail-silent; 5 tests
 
 **Response skills**
 - `block-ip-pf` — IP block via macOS Packet Filter (`pfctl -t innerwarden-blocked -T add`); Open tier
+
+**DDoS and AI overload protection**
+- `abuseipdb.auto_block_threshold` — if AbuseIPDB confidence score ≥ threshold, IP is blocked immediately without an AI API call; eliminates AI cost for known-malicious botnet IPs; `ai_provider: "abuseipdb"` in audit trail
+- `ai.max_ai_calls_per_tick` — caps AI calls per incident tick (default 5); excess incidents deferred to next tick; prevents API bill spikes during attacks with many unique IPs
+- `ai.circuit_breaker_threshold` — if new incidents per tick ≥ threshold, suspends AI analysis entirely for the tick and logs a warning; `ai.circuit_breaker_cooldown_secs` controls reset delay (default 60s); 0 = disabled (default)
 
 ### Control plane (`innerwarden` / `innerwarden-ctl`)
 
@@ -45,11 +51,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Module system
 
-New built-in modules: `wazuh-integration`, `nginx-error-monitor`, `falco-integration`, `suricata-integration`, `osquery-integration`, `slack-notify`, `fail2ban-integration`, `geoip-enrichment`, `abuseipdb-enrichment`, `crowdsec-integration`
+New built-in modules: `wazuh-integration`, `nginx-error-monitor`, `falco-integration`, `suricata-integration`, `osquery-integration`, `slack-notify`, `fail2ban-integration`, `geoip-enrichment`, `abuseipdb-enrichment`, `crowdsec-integration`, `cloudflare-integration`
 
 ### Test coverage
 
-480 tests across three crates (185 sensor + 172 agent + 123 ctl).
+486 tests across three crates (185 sensor + 178 agent + 123 ctl).
 
 ---
 

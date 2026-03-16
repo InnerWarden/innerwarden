@@ -1,5 +1,6 @@
 mod abuseipdb;
 mod ai;
+mod cloudflare;
 mod config;
 mod correlation;
 mod crowdsec;
@@ -130,6 +131,11 @@ struct AgentState {
     geoip_client: Option<geoip::GeoIpClient>,
     /// Slack client for incident notifications (None when disabled).
     slack_client: Option<slack::SlackClient>,
+    /// Cloudflare integration client (None when disabled).
+    cloudflare_client: Option<cloudflare::CloudflareClient>,
+    /// Circuit breaker: when tripped by a high-volume incident burst, AI analysis
+    /// is suspended until this timestamp. None = circuit breaker not tripped.
+    circuit_breaker_until: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 const DECISION_COOLDOWN_SECS: i64 = 3600;
@@ -626,6 +632,23 @@ async fn main() -> Result<()> {
             None
         },
         slack_client,
+        cloudflare_client: if cfg.cloudflare.enabled {
+            let token = cloudflare::resolve_api_token(&cfg.cloudflare.api_token);
+            if token.is_empty() || cfg.cloudflare.zone_id.is_empty() {
+                warn!("cloudflare.enabled=true but api_token or zone_id not configured — disabling");
+                None
+            } else {
+                info!(zone_id = %cfg.cloudflare.zone_id, "Cloudflare IP block push enabled");
+                Some(cloudflare::CloudflareClient::with_prefix(
+                    cfg.cloudflare.zone_id.clone(),
+                    token,
+                    cfg.cloudflare.block_notes_prefix.clone(),
+                ))
+            }
+        } else {
+            None
+        },
+        circuit_breaker_until: None,
     };
 
     let state_path = cli.data_dir.join("agent-state.json");
@@ -953,8 +976,43 @@ async fn process_incidents(
         .pending_confirmations
         .retain(|_, (pending, _, _)| pending.expires_at > now);
 
-    // Pre-compute AI context (only if AI is configured)
-    let ai_enabled = cfg.ai.enabled && state.ai_provider.is_some();
+    // Circuit breaker: if a previous tick tripped the breaker, check if cooldown expired
+    if let Some(until) = state.circuit_breaker_until {
+        if chrono::Utc::now() < until {
+            info!(
+                until = %until,
+                incident_count = new_incidents.entries.len(),
+                "AI circuit breaker open — skipping AI analysis for this tick"
+            );
+            // Still process webhooks/notifications below, just skip AI
+        } else {
+            info!("AI circuit breaker reset after cooldown");
+            state.circuit_breaker_until = None;
+        }
+    }
+
+    // Trip circuit breaker if incident volume exceeds threshold
+    let circuit_breaker_open = if cfg.ai.circuit_breaker_threshold > 0
+        && new_incidents.entries.len() >= cfg.ai.circuit_breaker_threshold
+        && state.circuit_breaker_until.is_none()
+    {
+        let until = chrono::Utc::now()
+            + chrono::Duration::seconds(cfg.ai.circuit_breaker_cooldown_secs as i64);
+        warn!(
+            incident_count = new_incidents.entries.len(),
+            threshold = cfg.ai.circuit_breaker_threshold,
+            cooldown_secs = cfg.ai.circuit_breaker_cooldown_secs,
+            until = %until,
+            "AI circuit breaker TRIPPED — high-volume incident burst detected, skipping AI"
+        );
+        state.circuit_breaker_until = Some(until);
+        true
+    } else {
+        state.circuit_breaker_until.is_some()
+    };
+
+    // Pre-compute AI context (only if AI is configured and circuit breaker is not open)
+    let ai_enabled = cfg.ai.enabled && state.ai_provider.is_some() && !circuit_breaker_open;
     let (all_events, skill_infos, ai_provider, provider_name, already_blocked, mut blocked_set) =
         if ai_enabled {
             let events_path = data_dir.join(format!("events-{today}.jsonl"));
@@ -976,6 +1034,7 @@ async fn process_incidents(
         };
 
     let mut handled = 0;
+    let mut ai_calls_this_tick: usize = 0;
 
     for incident in &new_incidents.entries {
         state.telemetry.observe_incident(incident);
@@ -1080,6 +1139,20 @@ async fn process_incidents(
             continue;
         }
 
+        // max_ai_calls_per_tick: enforce per-tick AI call budget to protect against
+        // API bill spikes during botnet attacks with many unique IPs.
+        let max_calls = cfg.ai.max_ai_calls_per_tick;
+        if max_calls > 0 && ai_calls_this_tick >= max_calls {
+            info!(
+                incident_id = %incident.incident_id,
+                ai_calls_this_tick,
+                max_calls,
+                "AI gate: skipping (max_ai_calls_per_tick reached — deferred to next tick)"
+            );
+            handled += 1;
+            continue;
+        }
+
         state.telemetry.observe_gate_pass();
 
         // ai_provider is Some when ai_enabled — safe to unwrap
@@ -1139,6 +1212,66 @@ async fn process_incidents(
             None
         };
 
+        // AbuseIPDB auto-block gate: if score >= threshold, block immediately without AI.
+        // This is the primary DDoS cost-reduction mechanism: known-malicious IPs from
+        // botnets typically have high AbuseIPDB scores and should not consume AI API calls.
+        if let Some(ref rep) = ip_reputation {
+            let threshold = cfg.abuseipdb.auto_block_threshold;
+            if threshold > 0 && rep.confidence_score >= threshold {
+                let primary_ip = incident
+                    .entities
+                    .iter()
+                    .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
+                    .map(|e| e.value.clone());
+                if let Some(ip) = primary_ip {
+                    info!(
+                        incident_id = %incident.incident_id,
+                        ip,
+                        score = rep.confidence_score,
+                        threshold,
+                        "AbuseIPDB auto-block: score exceeds threshold, skipping AI"
+                    );
+                    let skill_id = format!("block-ip-{}", cfg.responder.block_backend);
+                    let auto_decision = ai::AiDecision {
+                        action: ai::AiAction::BlockIp { ip: ip.clone(), skill_id },
+                        confidence: 1.0,
+                        auto_execute: true,
+                        reason: format!(
+                            "AbuseIPDB auto-block: score={}/100 (threshold={})",
+                            rep.confidence_score, threshold
+                        ),
+                        alternatives: vec![],
+                        estimated_threat: "high".into(),
+                    };
+                    blocked_set.insert(ip.clone());
+                    state.blocklist.insert(ip.clone());
+                    if let Some(key) = decision_cooldown_key_for_decision(incident, &auto_decision) {
+                        state.decision_cooldowns.insert(key, chrono::Utc::now());
+                    }
+                    let execution_result = if cfg.responder.enabled {
+                        execute_decision(&auto_decision, incident, data_dir, cfg, state).await
+                    } else {
+                        "skipped: responder disabled".to_string()
+                    };
+                    if let Some(writer) = &mut state.decision_writer {
+                        let entry = decisions::build_entry(
+                            &incident.incident_id,
+                            &incident.host,
+                            "abuseipdb",
+                            &auto_decision,
+                            cfg.responder.dry_run,
+                            &execution_result,
+                        );
+                        if let Err(e) = writer.write(&entry) {
+                            warn!("failed to write abuseipdb auto-block decision: {e:#}");
+                        }
+                    }
+                    handled += 1;
+                    continue;
+                }
+            }
+        }
+
         // Optionally enrich with IP geolocation data
         let ip_geo = if let Some(ref client) = state.geoip_client {
             let primary_ip = incident
@@ -1186,6 +1319,7 @@ async fn process_incidents(
         state
             .telemetry
             .observe_ai_decision(&decision.action, latency_ms);
+        ai_calls_this_tick += 1;
 
         // Update the in-memory blocked_set immediately after a BlockIp decision.
         // This prevents a second incident from the same IP (arriving in the same 2s tick)
@@ -1337,6 +1471,15 @@ async fn execute_decision(
                     // or after a restart within the same day.
                     if result.success {
                         state.blocklist.insert(ip.clone());
+                    }
+                    // Optionally push the block to Cloudflare edge
+                    if result.success && cfg.cloudflare.enabled && cfg.cloudflare.auto_push_blocks {
+                        if let Some(ref cf) = state.cloudflare_client {
+                            let reason = format!("{}: {}", incident.incident_id, decision.reason);
+                            if let Some(rule_id) = cf.push_block(ip, &reason).await {
+                                info!(ip, rule_id, "Cloudflare edge block pushed");
+                            }
+                        }
                     }
                     result.message
                 }
@@ -2051,6 +2194,8 @@ mod tests {
             fail2ban: None,
             geoip_client: None,
             slack_client: None,
+            cloudflare_client: None,
+            circuit_breaker_until: None,
         };
 
         // 4. Run the incident tick
@@ -2160,6 +2305,8 @@ mod tests {
             fail2ban: None,
             geoip_client: None,
             slack_client: None,
+            cloudflare_client: None,
+            circuit_breaker_until: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2244,6 +2391,8 @@ mod tests {
             fail2ban: None,
             geoip_client: None,
             slack_client: None,
+            cloudflare_client: None,
+            circuit_breaker_until: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2340,6 +2489,8 @@ mod tests {
             fail2ban: None,
             geoip_client: None,
             slack_client: None,
+            cloudflare_client: None,
+            circuit_breaker_until: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2413,6 +2564,8 @@ mod tests {
             fail2ban: None,
             geoip_client: None,
             slack_client: None,
+            cloudflare_client: None,
+            circuit_breaker_until: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2498,6 +2651,8 @@ mod tests {
             fail2ban: None,
             geoip_client: None,
             slack_client: None,
+            cloudflare_client: None,
+            circuit_breaker_until: None,
         };
 
         let mut cursor = reader::AgentCursor::default();

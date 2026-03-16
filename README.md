@@ -133,6 +133,7 @@ Detectors and skills are packaged into modules — enable what you need:
 | `wazuh-integration` | Wazuh HIDS alerts | Incident passthrough |
 | `nginx-error-monitor` | HTTP error floods and path traversal probes | Block IP |
 | `slack-notify` | Incident notifications to Slack | — (notification only) |
+| `cloudflare-integration` | L7 DDoS / botnet IPs reaching the host | Block at Cloudflare edge |
 
 ```bash
 innerwarden enable block-ip
@@ -274,7 +275,7 @@ Pre-built binaries: `x86_64` and `aarch64` for both platforms.
 ## Build and test
 
 ```bash
-make test    # 480 tests
+make test    # 486 tests
 make build   # debug build (sensor + agent + ctl)
 ```
 

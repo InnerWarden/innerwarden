@@ -38,6 +38,8 @@ pub struct AgentConfig {
     pub geoip: GeoIpConfig,
     #[serde(default)]
     pub slack: SlackConfig,
+    #[serde(default)]
+    pub cloudflare: CloudflareConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +163,24 @@ pub struct AiConfig {
     ///   Can also be set via OLLAMA_BASE_URL env var for Ollama.
     #[serde(default)]
     pub base_url: String,
+
+    /// Maximum number of AI calls per incident tick (default: 5).
+    /// When more incidents arrive in a single tick than this limit, the excess
+    /// are deferred to the next tick. Prevents API bill spikes during botnet attacks.
+    /// Set to 0 to disable the limit (not recommended).
+    #[serde(default = "default_max_ai_calls_per_tick")]
+    pub max_ai_calls_per_tick: usize,
+
+    /// Circuit breaker: if the number of new incidents in a single tick exceeds
+    /// this threshold, skip AI analysis entirely for that tick and rely on
+    /// deterministic blocklist/gate decisions only. 0 = disabled (default).
+    /// Recommended value for DDoS scenarios: 20.
+    #[serde(default)]
+    pub circuit_breaker_threshold: usize,
+
+    /// How long (seconds) to keep the circuit breaker open after it trips (default: 60).
+    #[serde(default = "default_circuit_breaker_cooldown_secs")]
+    pub circuit_breaker_cooldown_secs: u64,
 }
 
 impl Default for AiConfig {
@@ -174,6 +194,9 @@ impl Default for AiConfig {
             confidence_threshold: default_confidence_threshold(),
             incident_poll_secs: default_incident_poll_secs(),
             base_url: String::new(),
+            max_ai_calls_per_tick: default_max_ai_calls_per_tick(),
+            circuit_breaker_threshold: 0,
+            circuit_breaker_cooldown_secs: default_circuit_breaker_cooldown_secs(),
         }
     }
 }
@@ -774,6 +797,49 @@ impl Default for SlackConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Cloudflare
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct CloudflareConfig {
+    /// Enable Cloudflare IP block push (default: false)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Cloudflare Zone ID (from dashboard)
+    #[serde(default)]
+    pub zone_id: String,
+
+    /// Cloudflare API token (or CLOUDFLARE_API_TOKEN env var)
+    #[serde(default)]
+    pub api_token: String,
+
+    /// Push block decisions to Cloudflare edge (default: true when enabled)
+    #[serde(default = "default_true")]
+    pub auto_push_blocks: bool,
+
+    /// Prefix for Cloudflare rule notes (default: "innerwarden")
+    #[serde(default = "default_cloudflare_notes_prefix")]
+    pub block_notes_prefix: String,
+}
+
+impl Default for CloudflareConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            zone_id: String::new(),
+            api_token: String::new(),
+            auto_push_blocks: default_true(),
+            block_notes_prefix: default_cloudflare_notes_prefix(),
+        }
+    }
+}
+
+fn default_cloudflare_notes_prefix() -> String {
+    "innerwarden".to_string()
+}
+
+// ---------------------------------------------------------------------------
 // Loader
 // ---------------------------------------------------------------------------
 
@@ -827,6 +893,14 @@ fn default_confidence_threshold() -> f32 {
 
 fn default_incident_poll_secs() -> u64 {
     2
+}
+
+fn default_max_ai_calls_per_tick() -> usize {
+    5
+}
+
+fn default_circuit_breaker_cooldown_secs() -> u64 {
+    60
 }
 
 fn default_block_backend() -> String {
@@ -1089,6 +1163,14 @@ pub struct AbuseIpDbConfig {
     /// Maximum age of abuse reports to consider (default: 30 days).
     #[serde(default = "default_abuseipdb_max_age_days")]
     pub max_age_days: u32,
+
+    /// Auto-block threshold: if AbuseIPDB confidence score >= this value,
+    /// block the IP immediately without calling the AI provider.
+    /// 0 = disabled (default). Recommended: 75 for aggressive auto-blocking,
+    /// 90 for conservative auto-blocking. Reduces AI API costs during attacks
+    /// from known malicious IPs.
+    #[serde(default)]
+    pub auto_block_threshold: u8,
 }
 
 impl Default for AbuseIpDbConfig {
@@ -1097,6 +1179,7 @@ impl Default for AbuseIpDbConfig {
             enabled: false,
             api_key: String::new(),
             max_age_days: default_abuseipdb_max_age_days(),
+            auto_block_threshold: 0,
         }
     }
 }

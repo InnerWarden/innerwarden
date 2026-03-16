@@ -87,6 +87,9 @@ Agente de defesa autônomo para servidores Linux e macOS. Dois componentes Rust:
 - ✅ **Fail2ban integration** — `fail2ban::sync_tick` polls `fail2ban-client` CLI via `spawn_blocking`; bans não-privados não na blocklist são aplicados via block skills; `ai_provider: "fail2ban:<jail>"`; módulo `fail2ban-integration/`
 - ✅ **GeoIP enrichment** — ip-api.com free (45 req/min, sem API key); injetado no prompt como `IP GEOLOCATION:`; fail-silent; módulo `geoip-enrichment/`
 - ✅ **Slack notify** — `SlackClient` com Incoming Webhook POST; Block Kit com emoji + sidebar colorida + context row (host, entity, incident_id) + botão deep-link opcional para dashboard; `SlackConfig` com `webhook_url` / `SLACK_WEBHOOK_URL` / `min_severity` / `dashboard_url`; módulo `slack-notify/`; 5 testes
+- ✅ **Cloudflare integration** — `CloudflareClient` push de IP bloqueado para Cloudflare edge via IP Access Rules API (POST `/client/v4/zones/{zone_id}/firewall/access_rules/rules`); chamado após execução bem-sucedida de `block-ip-*` skill; `CloudflareConfig` com `zone_id`, `api_token` / `CLOUDFLARE_API_TOKEN`, `auto_push_blocks`, `block_notes_prefix`; fail-silent; módulo `cloudflare-integration/`; 6 testes
+- ✅ **AbuseIPDB auto-block gate** — `abuseipdb.auto_block_threshold` (0–100, default 0=desabilitado); quando `confidence_score >= threshold`, IP é bloqueado diretamente sem chamar AI; `ai_provider: "abuseipdb"` no audit trail; elimina custo de API para IPs conhecidos de botnet durante ataques DDoS
+- ✅ **AI rate limiting e circuit breaker** — `ai.max_ai_calls_per_tick` (default 5): limita chamadas AI por tick, excesso adiado para próximo tick; `ai.circuit_breaker_threshold` (default 0=desabilitado): quando `new_incidents >= threshold`, suspende AI para aquele tick inteiro e seta `circuit_breaker_until = now + cooldown_secs`; `AgentState.circuit_breaker_until` reseta automaticamente após cooldown
 
 ---
 
@@ -182,6 +185,7 @@ crates/
       fail2ban.rs            — Fail2BanClient: polls fail2ban-client CLI for active bans; sync_tick enforces via block skills; 5 testes
       geoip.rs               — GeoIpClient: ip-api.com lookup (free, no key); GeoInfo + as_context_line(); injected into AI prompt; 5 testes
       slack.rs               — SlackClient: Incoming Webhook POST with Block Kit; severity emoji + color sidebar; optional dashboard deep-link; 5 testes
+      cloudflare.rs          — CloudflareClient: IP Access Rules push para edge Cloudflare após block_ip; `push_block(ip, reason)`; fail-silent; `CloudflareConfig` com zone_id + api_token / CLOUDFLARE_API_TOKEN; 6 testes
       ai/
         mod.rs               — AiProvider trait, AiDecision, AiAction, algorithm gate, factory
         openai.rs            — implementação real OpenAI (gpt-4o-mini)
@@ -227,6 +231,7 @@ modules/                           — soluções verticais empacotadas (ver doc
   wazuh-integration/               — Wazuh HIDS alerts → incidents (built-in, incident passthrough High+, 12 testes)
   slack-notify/                    — Slack Incoming Webhook notifications (built-in)
   osquery-integration/             — osquery differential results → events (built-in, observability, sem passthrough)
+  cloudflare-integration/          — IP block push para Cloudflare edge via IP Access Rules API (built-in)
 docs/
   module-authoring.md              — guia completo para criar módulos + passo-a-passo Claude Code/Codex
   integration-recipes.md           — formato de recipe + guia de geração por AI + fluxo de contribuição
@@ -243,7 +248,7 @@ integrations/                      — integration recipes (declarative specs fo
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 480 testes (185 sensor + 172 agent + 123 ctl)
+make test             # 486 testes (185 sensor + 178 agent + 123 ctl)
 make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -433,6 +438,9 @@ model = "gpt-4o-mini"      # qualquer modelo do provider
 context_events = 20        # eventos recentes enviados como contexto
 confidence_threshold = 0.8 # abaixo disso → não auto-executa
 incident_poll_secs = 2     # intervalo do loop rápido
+max_ai_calls_per_tick = 5  # máx chamadas AI por tick (default 5); 0 = sem limite
+circuit_breaker_threshold = 0   # 0 = desabilitado; recomendado: 20 para DDoS defense
+circuit_breaker_cooldown_secs = 60  # tempo de reset do circuit breaker após trippar
 
 [correlation]
 enabled = true
@@ -541,6 +549,7 @@ modules/
   geoip-enrichment/     — ip-api.com geolocation → AI context enrichment (no API key)
   wazuh-integration/    — Wazuh HIDS alerts → incidents (passthrough High+)
   slack-notify/         — Slack Incoming Webhook notifications
+  cloudflare-integration/ — IP block push para Cloudflare edge via IP Access Rules API
 ```
 
 Cada módulo contém:
@@ -658,7 +667,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 480 testes (185 sensor + 172 agent + 123 ctl) — todos devem passar
+make test   # 486 testes (185 sensor + 178 agent + 123 ctl) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -779,6 +788,10 @@ Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8):
 - **doctor fail2ban:** ✅ seção em `innerwarden doctor`; verifica `fail2ban-client` binary + responsividade de `ping`; warning em macOS
 - **doctor AbuseIPDB:** ✅ seção condicional quando `abuseipdb.enabled = true`; resolve key de config / env var / agent.env; valida comprimento mínimo da chave
 - **doctor Slack:** ✅ seção condicional quando `slack.enabled = true`; resolve `SLACK_WEBHOOK_URL` de config / env var / agent.env; valida formato da URL
+- **Cloudflare integration:** ✅ `cloudflare.rs`; `push_block(ip, reason)`; `CloudflareConfig` com `zone_id`, `api_token` / `CLOUDFLARE_API_TOKEN`, `auto_push_blocks`, `block_notes_prefix`; módulo `cloudflare-integration/`; 6 testes
+- **AbuseIPDB auto-block gate:** ✅ `abuseipdb.auto_block_threshold` (u8, 0=disabled); quando score ≥ threshold, block sem chamar AI; `ai_provider: "abuseipdb"` no audit trail
+- **AI circuit breaker:** ✅ `ai.circuit_breaker_threshold` + `circuit_breaker_cooldown_secs`; `AgentState.circuit_breaker_until`; suspende AI analysis quando volume de incidentes explode
+- **AI call rate limit:** ✅ `ai.max_ai_calls_per_tick` (default 5); conta `ai_calls_this_tick` no loop de incidentes; excesso desviado para próximo tick
 
 Próximas direções:
 - **Q.2 — VM end-to-end:** subir Ubuntu 22.04 + Falco + Suricata + osquery + InnerWarden, gerar tráfego simulado, validar UC-1 a UC-4 (user-side)
