@@ -11,6 +11,21 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.6] — 2026-03-16
+
+### Control plane (`innerwarden` / `innerwarden-ctl`)
+
+**`doctor` improvements**
+- Missing sensor/agent config files are now `[warn]` (not `[fail]`) — both binaries run with built-in defaults; a config file is only needed to override defaults
+- Doctor summary suggests `sudo innerwarden setup` when config files are absent
+- Dashboard section now probes port 8787 via HTTP; shows `[warn]` if the agent is not reachable instead of falsely reporting the dashboard as open when the agent is not running
+
+### Test coverage
+
+511 tests across three crates (185 sensor + 178 agent + 148 ctl).
+
+---
+
 ## [0.1.5] — 2026-03-16
 
 ### Control plane (`innerwarden` / `innerwarden-ctl`)
