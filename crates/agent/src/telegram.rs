@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use innerwarden_core::incident::Incident;
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
 // Types
