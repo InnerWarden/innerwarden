@@ -116,11 +116,13 @@ pub struct CapabilityRegistry {
 impl CapabilityRegistry {
     pub fn default_all() -> Self {
         use crate::capabilities::{
-            block_ip::BlockIpCapability, search_protection::SearchProtectionCapability,
+            ai::AiCapability, block_ip::BlockIpCapability,
+            search_protection::SearchProtectionCapability,
             shell_audit::ShellAuditCapability, sudo_protection::SudoProtectionCapability,
         };
         Self {
             caps: vec![
+                Box::new(AiCapability),
                 Box::new(BlockIpCapability),
                 Box::new(SudoProtectionCapability),
                 Box::new(ShellAuditCapability),

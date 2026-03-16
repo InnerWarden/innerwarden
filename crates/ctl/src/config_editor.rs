@@ -246,6 +246,19 @@ pub fn read_bool(path: &Path, section: &str, key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Read a string key from `[section]`. Returns empty string if absent or on error.
+pub fn read_str(path: &Path, section: &str, key: &str) -> String {
+    let doc = match read_doc(path) {
+        Ok(d) => d,
+        Err(_) => return String::new(),
+    };
+    read_item(&doc, section, key)
+        .and_then(|v| v.as_value())
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
 /// Read a string array key from `[section]`. Returns empty vec if absent or on error.
 pub fn read_str_array(path: &Path, section: &str, key: &str) -> Vec<String> {
     let doc = match read_doc(path) {
