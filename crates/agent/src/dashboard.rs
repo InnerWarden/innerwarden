@@ -568,6 +568,7 @@ pub async fn serve(
         .route("/api/export", get(api_export))
         .route("/api/report", get(api_report))
         .route("/api/report/dates", get(api_report_dates))
+        .route("/api/quickwins", get(api_quickwins))
         // E6 — system status
         .route("/api/status", get(api_status))
         // D3 — operator-initiated actions (POST, require auth, respect dry_run)
@@ -1116,6 +1117,78 @@ async fn api_action_config(State(state): State<DashboardState>) -> Json<serde_js
         "dry_run": state.action_cfg.dry_run,
         "block_backend": state.action_cfg.block_backend,
         "allowed_skills": state.action_cfg.allowed_skills,
+    }))
+}
+
+/// GET /api/quickwins — return actionable suggestions based on recent unblocked threats.
+async fn api_quickwins(State(state): State<DashboardState>) -> Json<serde_json::Value> {
+    let data_dir = &state.data_dir;
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let yesterday = (chrono::Utc::now() - chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    // Collect blocked IPs from decisions (today + yesterday)
+    let mut blocked_ips: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for date in &[today.as_str(), yesterday.as_str()] {
+        let path = data_dir.join(format!("decisions-{date}.jsonl"));
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            for line in content.lines().filter(|l| !l.trim().is_empty()) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                    if v["action"].as_str() == Some("block_ip") {
+                        if let Some(ip) = v["target_ip"].as_str() {
+                            blocked_ips.insert(ip.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Collect unblocked High/Critical incidents from today + yesterday
+    let mut suggestions: Vec<serde_json::Value> = Vec::new();
+    let mut seen_ips: std::collections::HashSet<String> = blocked_ips.clone();
+    for date in &[today.as_str(), yesterday.as_str()] {
+        let path = data_dir.join(format!("incidents-{date}.jsonl"));
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            for line in content.lines().filter(|l| !l.trim().is_empty()) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                    let sev = v["severity"].as_str().unwrap_or("");
+                    if sev != "High" && sev != "Critical" {
+                        continue;
+                    }
+                    // Find IP entity
+                    let ip = v["entities"]
+                        .as_array()
+                        .and_then(|arr| {
+                            arr.iter()
+                                .find(|e| e["type"].as_str() == Some("Ip"))
+                                .and_then(|e| e["value"].as_str())
+                                .map(|s| s.to_string())
+                        });
+                    if let Some(ip_str) = ip {
+                        if seen_ips.contains(&ip_str) {
+                            continue; // already handled or deduped
+                        }
+                        seen_ips.insert(ip_str.clone());
+                        suggestions.push(serde_json::json!({
+                            "type": "unblocked_attacker",
+                            "severity": sev,
+                            "ip": ip_str,
+                            "title": v["title"].as_str().unwrap_or("Threat detected"),
+                            "date": date,
+                            "action": format!("Block {ip_str} at the firewall"),
+                            "command": "innerwarden enable block-ip"
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    Json(serde_json::json!({
+        "suggestions": suggestions,
+        "count": suggestions.len()
     }))
 }
 

@@ -676,6 +676,12 @@ pub struct TelegramConfig {
     /// Unanswered requests are discarded as "ignore" when they expire.
     #[serde(default = "default_telegram_approval_ttl_secs")]
     pub approval_ttl_secs: u64,
+
+    /// Send the daily Markdown summary via Telegram at this local hour (0–23).
+    /// Set e.g. `daily_summary_hour = 8` for an 8:00 AM digest.
+    /// Omit or comment out to disable.
+    #[serde(default)]
+    pub daily_summary_hour: Option<u8>,
 }
 
 impl TelegramConfig {
@@ -724,6 +730,7 @@ impl Default for TelegramConfig {
             min_severity: default_telegram_min_severity(),
             dashboard_url: String::new(),
             approval_ttl_secs: default_telegram_approval_ttl_secs(),
+            daily_summary_hour: None,
         }
     }
 }

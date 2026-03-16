@@ -224,6 +224,21 @@ impl TelegramClient {
     }
 
     // -----------------------------------------------------------------------
+    // T.3 — Daily digest
+    // -----------------------------------------------------------------------
+
+    /// Send a plain HTML text message (used for daily digest).
+    pub async fn send_text_message(&self, text: &str) -> Result<()> {
+        let body = serde_json::json!({
+            "chat_id": self.chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true,
+        });
+        self.post_json("sendMessage", &body).await
+    }
+
+    // -----------------------------------------------------------------------
     // Polling loop (background task)
     // -----------------------------------------------------------------------
 

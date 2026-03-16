@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use chrono::Timelike as _;
 use clap::Parser;
 use tracing::{debug, info, warn};
 
@@ -103,6 +104,8 @@ struct AgentState {
     /// Tracks when the daily narrative was last written so we can enforce a
     /// minimum interval and avoid rewriting on every 30-second tick.
     last_narrative_at: Option<std::time::Instant>,
+    /// Date for which we last sent the daily Telegram digest (avoids re-sending).
+    last_daily_summary_telegram: Option<chrono::NaiveDate>,
     /// Telegram client for T.1 notifications and T.2 approvals (None when disabled).
     telegram_client: Option<Arc<telegram::TelegramClient>>,
     /// Pending T.2 operator confirmations keyed by incident_id.
@@ -225,6 +228,10 @@ fn decision_cooldown_key_from_entry(entry: &decisions::DecisionEntry) -> Option<
             .map(|user| decision_cooldown_key("suspend_user_sudo", detector, "user", user)),
         _ => None,
     }
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
 fn recent_decision_dates() -> Vec<String> {
@@ -601,6 +608,7 @@ async fn main() -> Result<()> {
             None
         },
         last_narrative_at: load_last_narrative_instant(&cli.data_dir),
+        last_daily_summary_telegram: None,
         telegram_client,
         pending_confirmations: HashMap::new(),
         approval_rx: None, // set below in continuous mode
@@ -2031,6 +2039,31 @@ async fn process_narrative_tick(
             } else {
                 state.last_narrative_at = Some(std::time::Instant::now());
                 info!(date = today, "daily summary updated");
+
+                // Daily Telegram digest
+                if let Some(hour) = cfg.telegram.daily_summary_hour {
+                    let now_local = chrono::Local::now();
+                    let today_naive = now_local.date_naive();
+                    let already_sent = state
+                        .last_daily_summary_telegram
+                        .map_or(false, |d| d == today_naive);
+                    if !already_sent && now_local.hour() >= u32::from(hour) {
+                        if let Some(tg) = &state.telegram_client {
+                            let preview: String = md.chars().take(3800).collect();
+                            let text = format!(
+                                "📋 <b>Daily report — {today}</b>\n\n<pre>{}</pre>",
+                                html_escape(&preview)
+                            );
+                            match tg.send_text_message(&text).await {
+                                Ok(()) => {
+                                    state.last_daily_summary_telegram = Some(today_naive);
+                                    info!(date = today, "daily Telegram digest sent");
+                                }
+                                Err(e) => warn!("failed to send daily Telegram digest: {e:#}"),
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -2212,6 +2245,7 @@ mod tests {
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
             last_narrative_at: None,
+            last_daily_summary_telegram: None,
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
@@ -2323,6 +2357,7 @@ mod tests {
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
             last_narrative_at: None,
+            last_daily_summary_telegram: None,
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
@@ -2409,6 +2444,7 @@ mod tests {
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
             last_narrative_at: None,
+            last_daily_summary_telegram: None,
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
@@ -2507,6 +2543,7 @@ mod tests {
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
             last_narrative_at: None,
+            last_daily_summary_telegram: None,
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
@@ -2582,6 +2619,7 @@ mod tests {
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
             last_narrative_at: None,
+            last_daily_summary_telegram: None,
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
@@ -2669,6 +2707,7 @@ mod tests {
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
             last_narrative_at: None,
+            last_daily_summary_telegram: None,
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,

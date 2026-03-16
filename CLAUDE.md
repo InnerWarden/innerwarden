@@ -831,6 +831,14 @@ Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8):
 - **`innerwarden configure responder`:** ✅ melhorado com modo interativo (sem flags) — menu 3 opções: observe/dry-run/live com explicações claras; confirmação explícita `"yes"` ao ativar live; flags `--enable/--disable/--dry-run` preservadas para scripts
 - **doctor — seções adicionadas:** Webhook (verifica `webhook.url`), Dashboard (verifica credenciais em `agent.env`, warning se ausentes), GeoIP (testa conectividade ip-api.com quando `geoip.enabled`)
 - **`serde_json` adicionado como dep explícita em `innerwarden-ctl`** (antes vinha transitivamente via ureq)
+- **`innerwarden configure` (menu interativo):** ✅ sem subcomando mostra menu numerado com todas as integrações e status atual (✅ configured / ○ not set up); lê `agent.env` + `agent.toml` para determinar status; despacha para o wizard certo pelo número escolhido
+- **`innerwarden test-alert`:** ✅ envia alerta sintético a todos os canais configurados (Telegram MarkdownV2, Slack Incoming Webhook, HTTP webhook); reporta ok/FAILED/skipped por canal; flag `--channel` para testar canal específico; helper `load_env_file()` + `send_telegram_message_md()`
+- **`innerwarden status` mais rico:** ✅ mostra seção "Today" com contagem de eventos e incidentes do dia, título e hora do último incidente; seção "AI & Response" com provider, enabled/disabled e modo dry-run vs live; helpers `count_jsonl_lines()` + `read_last_incident_summary()`
+- **`innerwarden report`:** ✅ exibe o relatório diário Markdown no terminal; suporta `--date today|yesterday|YYYY-MM-DD`; converte headers Markdown em seções legíveis; lista datas disponíveis quando a solicitada não existe; lê `data_dir` do agent.toml automaticamente
+- **`innerwarden watchdog`:** ✅ verifica se o agent escreveu telemetria recentemente; compara mtime do arquivo vs `--threshold` (default 300s); `--notify` envia alerta via Telegram quando unhealthy; exit 1 se unhealthy (compatível com cron/alerting); helper `maybe_send_watchdog_alert()`
+- **doctor — Agent health:** ✅ nova seção verifica mtime do `telemetry-YYYY-MM-DD.jsonl` do dia; warn se > 5 min sem escrita; sugestão de `journalctl` para diagnóstico
+- **Telegram — resumo diário:** ✅ `TelegramConfig.daily_summary_hour: Option<u8>`; quando configurado, o agent envia o resumo Markdown via Telegram no horário local definido (máx 1x por dia); método `TelegramClient::send_text_message()` para mensagens HTML genéricas
+- **Dashboard `/api/quickwins`:** ✅ retorna sugestões acionáveis — lê incidentes High/Critical dos últimos 2 dias, cruza com decisões de bloqueio existentes, retorna IPs não tratados com ação sugerida e comando de ativação
 
 Próximas direções:
 - **Q.2 — VM end-to-end:** subir Ubuntu 22.04 + Falco + Suricata + osquery + InnerWarden, gerar tráfego simulado, validar UC-1 a UC-4 (user-side)
