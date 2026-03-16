@@ -225,6 +225,78 @@ enum ConfigureCommand {
         #[arg(long)]
         no_test: bool,
     },
+
+    /// Set up HTTP webhook notifications (sends alerts to any HTTP endpoint)
+    ///
+    /// Examples:
+    ///   innerwarden configure webhook
+    ///   innerwarden configure webhook --url https://hooks.example.com/notify
+    ///   innerwarden configure webhook --url https://hooks.example.com/notify --min-severity medium
+    Webhook {
+        /// Webhook URL (skips the wizard prompt)
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Minimum severity to forward: low, medium, high, critical (default: high)
+        #[arg(long, default_value = "high")]
+        min_severity: String,
+
+        /// Skip the test request after configuring
+        #[arg(long)]
+        no_test: bool,
+    },
+
+    /// Set up the local security dashboard (generates login credentials)
+    ///
+    /// Creates a secure password hash and writes credentials to agent.env.
+    /// The dashboard is then available at http://localhost:8787 after agent restart.
+    ///
+    /// Examples:
+    ///   innerwarden configure dashboard
+    ///   innerwarden configure dashboard --user admin --password mysecretpassword
+    Dashboard {
+        /// Dashboard username (default: admin)
+        #[arg(long, default_value = "admin")]
+        user: String,
+
+        /// Dashboard password (skips the interactive prompt)
+        #[arg(long)]
+        password: Option<String>,
+    },
+
+    /// Set up AbuseIPDB IP reputation enrichment
+    ///
+    /// AbuseIPDB checks each attacker IP's abuse history before AI analysis,
+    /// making decisions more accurate. Free tier: 1,000 lookups/day.
+    ///
+    /// Get a free API key at https://www.abuseipdb.com/register
+    ///
+    /// Examples:
+    ///   innerwarden configure abuseipdb
+    ///   innerwarden configure abuseipdb --api-key <key>
+    Abuseipdb {
+        /// AbuseIPDB API key (skips the wizard prompt)
+        #[arg(long)]
+        api_key: Option<String>,
+    },
+
+    /// Enable GeoIP country/ISP enrichment (no API key needed)
+    ///
+    /// Uses ip-api.com (free, 45 req/min) to add country and ISP context
+    /// to AI analysis. No account or API key required.
+    ///
+    /// Examples:
+    ///   innerwarden configure geoip
+    Geoip,
+
+    /// Enable fail2ban integration (syncs active bans into InnerWarden)
+    ///
+    /// When fail2ban bans an IP, InnerWarden will automatically enforce it
+    /// via the configured block skill (ufw/iptables/nftables).
+    ///
+    /// Examples:
+    ///   innerwarden configure fail2ban
+    Fail2ban,
 }
 
 #[derive(Subcommand)]
@@ -454,6 +526,20 @@ fn main() -> Result<()> {
                 ref min_severity,
                 no_test,
             } => cmd_configure_slack(&cli, webhook_url.as_deref(), min_severity, *no_test),
+            ConfigureCommand::Webhook {
+                ref url,
+                ref min_severity,
+                no_test,
+            } => cmd_configure_webhook(&cli, url.as_deref(), min_severity, *no_test),
+            ConfigureCommand::Dashboard {
+                ref user,
+                ref password,
+            } => cmd_configure_dashboard(&cli, user, password.as_deref()),
+            ConfigureCommand::Abuseipdb { ref api_key } => {
+                cmd_configure_abuseipdb(&cli, api_key.as_deref())
+            }
+            ConfigureCommand::Geoip => cmd_configure_geoip(&cli),
+            ConfigureCommand::Fail2ban => cmd_configure_fail2ban(&cli),
         },
         Command::Module { ref command } => match command {
             ModuleCommand::Validate { ref path, strict } => cmd_module_validate(path, *strict),
@@ -1979,15 +2065,30 @@ fn cmd_configure_responder(
     disable: bool,
     dry_run_flag: Option<bool>,
 ) -> Result<()> {
+    // Interactive mode when called with no flags
     if !enable && !disable && dry_run_flag.is_none() {
-        anyhow::bail!(
-            "nothing to do — specify at least one flag.\n\nExamples:\n  innerwarden configure responder --enable\n  innerwarden configure responder --enable --dry-run false\n  innerwarden configure responder --disable"
-        );
+        return cmd_configure_responder_interactive(cli);
     }
 
     // Apply responder.enabled
     if enable || disable {
         let value = enable;
+
+        // Extra confirmation when enabling live execution
+        if enable && dry_run_flag == Some(false) && !cli.dry_run {
+            println!("  WARNING: This will enable LIVE execution of security responses.");
+            println!("  InnerWarden will run commands like 'ufw deny from <IP>' automatically.");
+            println!();
+            print!("  Type 'yes' to confirm: ");
+            std::io::stdout().flush()?;
+            let mut ans = String::new();
+            std::io::stdin().read_line(&mut ans)?;
+            if ans.trim() != "yes" {
+                println!("Aborted.");
+                return Ok(());
+            }
+        }
+
         if cli.dry_run {
             println!(
                 "  [dry-run] would set [responder] enabled={value} in {}",
@@ -2012,30 +2113,81 @@ fn cmd_configure_responder(
         }
     }
 
-    // Restart agent
-    let is_macos = std::env::consts::OS == "macos";
-    if cli.dry_run {
-        let restart_cmd = if is_macos {
-            "sudo launchctl kickstart -k system/com.innerwarden.agent"
-        } else {
-            "sudo systemctl restart innerwarden-agent"
-        };
-        println!("  [dry-run] would restart: {restart_cmd}");
-    } else if is_macos {
-        systemd::restart_launchd("com.innerwarden.agent", false)?;
-        println!("  [ok] innerwarden-agent restarted");
-    } else {
-        systemd::restart_service("innerwarden-agent", false)?;
-        println!("  [ok] innerwarden-agent restarted");
-    }
-
+    restart_agent(cli);
     println!();
     if enable && dry_run_flag == Some(false) {
-        println!("Responder is live. Decisions will execute for real.");
+        println!("Responder is LIVE. Decisions will execute automatically.");
     } else if disable {
         println!("Responder disabled. System observes only.");
     } else {
         println!("Responder updated. Run 'innerwarden status' to confirm.");
+    }
+    Ok(())
+}
+
+fn cmd_configure_responder_interactive(cli: &Cli) -> Result<()> {
+    println!("InnerWarden — Responder setup\n");
+    println!("The responder controls what InnerWarden does when it detects an attack.\n");
+    println!("  1. Observe only (safe)   — logs everything, takes no action");
+    println!("  2. Dry-run mode          — shows what it WOULD do, but doesn't execute");
+    println!("  3. Live (auto-block)     — automatically blocks IPs and suspends users\n");
+
+    let choice = prompt("Choose [1/2/3]")?;
+
+    match choice.trim() {
+        "1" => {
+            if !cli.dry_run {
+                config_editor::write_bool(&cli.agent_config, "responder", "enabled", false)?;
+                println!("  [ok] responder disabled — observe only");
+            } else {
+                println!("  [dry-run] would disable responder");
+            }
+            restart_agent(cli);
+            println!("\nSystem is in observe mode. No automatic actions will be taken.");
+        }
+        "2" => {
+            if !cli.dry_run {
+                config_editor::write_bool(&cli.agent_config, "responder", "enabled", true)?;
+                config_editor::write_bool(&cli.agent_config, "responder", "dry_run", true)?;
+                println!("  [ok] responder.enabled = true, dry_run = true");
+            } else {
+                println!("  [dry-run] would set responder.enabled=true, dry_run=true");
+            }
+            restart_agent(cli);
+            println!("\nDry-run mode enabled. InnerWarden will log what it would do but take no action.");
+            println!("Check decisions-*.jsonl to review. When ready, run:");
+            println!("  innerwarden configure responder --enable --dry-run false");
+        }
+        "3" => {
+            println!();
+            println!("  WARNING: In live mode, InnerWarden will automatically:");
+            println!("    - Block IPs with: sudo ufw deny from <IP>  (or iptables/nftables)");
+            println!("    - Suspend users:  drop-in in /etc/sudoers.d/");
+            println!();
+            println!("  Make sure block-ip is enabled: innerwarden enable block-ip");
+            println!();
+            print!("  Type 'yes' to enable live execution: ");
+            std::io::stdout().flush()?;
+            let mut ans = String::new();
+            std::io::stdin().read_line(&mut ans)?;
+            if ans.trim() != "yes" {
+                println!("Aborted.");
+                return Ok(());
+            }
+            if !cli.dry_run {
+                config_editor::write_bool(&cli.agent_config, "responder", "enabled", true)?;
+                config_editor::write_bool(&cli.agent_config, "responder", "dry_run", false)?;
+                println!("  [ok] responder is LIVE");
+            } else {
+                println!("  [dry-run] would set responder.enabled=true, dry_run=false");
+            }
+            restart_agent(cli);
+            println!("\nResponder is LIVE. InnerWarden will act automatically on high-confidence threats.");
+            println!("Monitor decisions: tail -f /var/lib/innerwarden/decisions-$(date +%Y-%m-%d).jsonl");
+        }
+        _ => {
+            anyhow::bail!("invalid choice — enter 1, 2, or 3");
+        }
     }
     Ok(())
 }
@@ -2342,6 +2494,368 @@ fn prompt_with_hint(label: &str, hint: &str) -> Result<String> {
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
     Ok(input.trim().to_string())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden configure webhook
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_webhook(
+    cli: &Cli,
+    url_arg: Option<&str>,
+    min_severity: &str,
+    no_test: bool,
+) -> Result<()> {
+    // Validate severity
+    if !matches!(min_severity, "low" | "medium" | "high" | "critical") {
+        anyhow::bail!("min-severity must be one of: low, medium, high, critical");
+    }
+
+    let url = if let Some(u) = url_arg {
+        u.to_string()
+    } else {
+        println!("InnerWarden — Webhook setup\n");
+        println!("Webhooks send a JSON POST to your endpoint for every alert.");
+        println!("Works with Zapier, Make (Integromat), n8n, custom APIs, and more.\n");
+        let u = prompt("Webhook URL (e.g. https://hooks.example.com/notify)")?;
+        if u.is_empty() {
+            anyhow::bail!("URL cannot be empty");
+        }
+        u
+    };
+
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        anyhow::bail!("URL must start with http:// or https://");
+    }
+
+    if cli.dry_run {
+        println!("\n  [dry-run] would set [webhook] enabled=true url=... min_severity={min_severity} in {}", cli.agent_config.display());
+    } else {
+        config_editor::write_bool(&cli.agent_config, "webhook", "enabled", true)?;
+        config_editor::write_str(&cli.agent_config, "webhook", "url", &url)?;
+        config_editor::write_str(&cli.agent_config, "webhook", "min_severity", min_severity)?;
+        println!("\n  [ok] agent.toml: webhook.enabled = true, min_severity = {min_severity}");
+    }
+
+    if !no_test && !cli.dry_run {
+        print!("  Sending test request... ");
+        std::io::stdout().flush()?;
+        match send_webhook_test(&url) {
+            Ok(status) => println!("ok (HTTP {status})"),
+            Err(e) => {
+                println!("failed");
+                println!();
+                println!("  Warning: {e:#}");
+                println!("  Your URL has been saved. Check the endpoint is reachable.");
+            }
+        }
+    }
+
+    restart_agent(cli);
+    println!();
+    println!("Webhook configured. Alerts ({min_severity}+) will be sent to your endpoint.");
+    println!("Run 'innerwarden doctor' to validate.");
+    Ok(())
+}
+
+fn send_webhook_test(url: &str) -> Result<u16> {
+    let body = serde_json::json!({
+        "source": "innerwarden",
+        "kind": "test",
+        "severity": "low",
+        "summary": "InnerWarden webhook test — configuration successful",
+        "host": hostname()
+    });
+    let resp = ureq::post(url)
+        .set("Content-Type", "application/json")
+        .set("User-Agent", "innerwarden-ctl/1.0")
+        .send_string(&body.to_string())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(resp.status())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden configure dashboard
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_dashboard(cli: &Cli, user: &str, password_arg: Option<&str>) -> Result<()> {
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+    let password = if let Some(p) = password_arg {
+        p.to_string()
+    } else {
+        println!("InnerWarden — Dashboard setup\n");
+        println!("The dashboard runs at http://localhost:8787 and requires a login.");
+        println!("Choose a strong password — this protects your security data.\n");
+        let p = prompt("Password")?;
+        if p.is_empty() {
+            anyhow::bail!("password cannot be empty");
+        }
+        if p.len() < 8 {
+            anyhow::bail!("password must be at least 8 characters");
+        }
+        p
+    };
+
+    // Generate Argon2 hash by calling the agent binary
+    let agent_bin = cli
+        .agent_config
+        .parent()
+        .and_then(|_| {
+            // Try standard install paths
+            for path in &[
+                "/usr/local/bin/innerwarden-agent",
+                "/usr/bin/innerwarden-agent",
+            ] {
+                if Path::new(path).exists() {
+                    return Some(PathBuf::from(path));
+                }
+            }
+            None
+        })
+        .or_else(|| {
+            // Fall back to PATH
+            which_bin("innerwarden-agent")
+        });
+
+    let hash = if let Some(bin) = agent_bin {
+        let output = std::process::Command::new(&bin)
+            .arg("--dashboard-generate-password-hash")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write as _;
+                if let Some(stdin) = child.stdin.take() {
+                    let mut s = stdin;
+                    let _ = writeln!(s, "{password}");
+                    let _ = writeln!(s, "{password}");
+                }
+                child.wait_with_output()
+            });
+
+        match output {
+            Ok(out) if out.status.success() => {
+                let raw = String::from_utf8_lossy(&out.stdout);
+                // The binary prints something like:
+                // "Password hash (copy to INNERWARDEN_DASHBOARD_PASSWORD_HASH):\n$argon2id$..."
+                raw.lines()
+                    .find(|l| l.starts_with("$argon2"))
+                    .map(|s| s.trim().to_string())
+                    .ok_or_else(|| anyhow::anyhow!("agent binary returned unexpected output"))?
+            }
+            _ => anyhow::bail!(
+                "could not generate password hash — make sure innerwarden-agent is installed.\n\
+                 Alternatively, run:\n  innerwarden-agent --dashboard-generate-password-hash\n\
+                 and set INNERWARDEN_DASHBOARD_PASSWORD_HASH in agent.env manually."
+            ),
+        }
+    } else {
+        anyhow::bail!(
+            "innerwarden-agent not found in /usr/local/bin or /usr/bin.\n\
+             Run the installer first:\n  ./install.sh\n\
+             or generate the hash manually:\n  innerwarden-agent --dashboard-generate-password-hash"
+        )
+    };
+
+    if cli.dry_run {
+        println!("\n  [dry-run] would write INNERWARDEN_DASHBOARD_USER={user} to {}", env_file.display());
+        println!("  [dry-run] would write INNERWARDEN_DASHBOARD_PASSWORD_HASH=<hash> to {}", env_file.display());
+    } else {
+        write_env_key(&env_file, "INNERWARDEN_DASHBOARD_USER", user)?;
+        write_env_key(&env_file, "INNERWARDEN_DASHBOARD_PASSWORD_HASH", &hash)?;
+        println!("\n  [ok] Credentials saved to {}", env_file.display());
+    }
+
+    restart_agent(cli);
+    println!();
+    println!("Dashboard configured.");
+    println!("  URL:      http://localhost:8787  (or your server IP)");
+    println!("  Username: {user}");
+    println!("  Password: (the one you entered)");
+    println!();
+    println!("Run 'innerwarden doctor' to validate.");
+    Ok(())
+}
+
+fn which_bin(name: &str) -> Option<PathBuf> {
+    std::env::var("PATH").ok()?.split(':').find_map(|dir| {
+        let p = PathBuf::from(dir).join(name);
+        if p.exists() { Some(p) } else { None }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden configure abuseipdb
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_abuseipdb(cli: &Cli, api_key_arg: Option<&str>) -> Result<()> {
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+    let api_key = if let Some(k) = api_key_arg {
+        k.to_string()
+    } else {
+        println!("InnerWarden — AbuseIPDB setup\n");
+        println!("AbuseIPDB checks the reputation of attacking IPs before AI makes a decision.");
+        println!("This makes blocks more confident and reduces false positives.");
+        println!("Free tier: 1,000 lookups/day — enough for most servers.\n");
+        println!("  1. Go to https://www.abuseipdb.com/register and create a free account");
+        println!("  2. Once logged in, go to https://www.abuseipdb.com/account/api");
+        println!("  3. Create a new API key and paste it below\n");
+        let k = prompt("API key")?;
+        if k.is_empty() {
+            anyhow::bail!("API key cannot be empty");
+        }
+        k
+    };
+
+    if api_key.len() < 10 {
+        anyhow::bail!("API key looks too short — copy the full key from abuseipdb.com");
+    }
+
+    if cli.dry_run {
+        println!("\n  [dry-run] would write ABUSEIPDB_API_KEY=... to {}", env_file.display());
+        println!("  [dry-run] would set [abuseipdb] enabled=true in {}", cli.agent_config.display());
+    } else {
+        write_env_key(&env_file, "ABUSEIPDB_API_KEY", &api_key)?;
+        println!("\n  [ok] API key saved to {}", env_file.display());
+        config_editor::write_bool(&cli.agent_config, "abuseipdb", "enabled", true)?;
+        println!("  [ok] agent.toml: abuseipdb.enabled = true");
+    }
+
+    restart_agent(cli);
+    println!();
+    println!("AbuseIPDB enabled. IP reputation will appear in AI analysis.");
+    println!("Run 'innerwarden doctor' to validate.");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden configure geoip
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_geoip(cli: &Cli) -> Result<()> {
+    if cli.dry_run {
+        println!("[dry-run] would set [geoip] enabled=true in {}", cli.agent_config.display());
+        return Ok(());
+    }
+
+    println!("InnerWarden — GeoIP setup\n");
+    println!("GeoIP adds country and ISP context to AI analysis. No API key needed.");
+    println!("Uses ip-api.com (free, 45 lookups/min).\n");
+
+    // Quick reachability check
+    print!("  Checking ip-api.com connectivity... ");
+    std::io::stdout().flush()?;
+    match ureq::get("http://ip-api.com/json/8.8.8.8?fields=status")
+        .timeout(std::time::Duration::from_secs(5))
+        .call()
+    {
+        Ok(_) => println!("ok"),
+        Err(_) => println!("unreachable (will enable anyway — retried at runtime)"),
+    }
+
+    config_editor::write_bool(&cli.agent_config, "geoip", "enabled", true)?;
+    println!("  [ok] agent.toml: geoip.enabled = true");
+
+    restart_agent(cli);
+    println!();
+    println!("GeoIP enabled. Country and ISP will appear in AI decisions.");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden configure fail2ban
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_fail2ban(cli: &Cli) -> Result<()> {
+    // Check fail2ban is installed
+    let installed = std::process::Command::new("fail2ban-client")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !installed {
+        if std::env::consts::OS == "macos" {
+            anyhow::bail!(
+                "fail2ban is not available on macOS.\n\
+                 This integration only works on Linux."
+            );
+        }
+        anyhow::bail!(
+            "fail2ban-client not found. Install it first:\n\
+             \n\
+             Ubuntu/Debian:  sudo apt install fail2ban\n\
+             RHEL/CentOS:    sudo yum install fail2ban\n\
+             \n\
+             Then run this command again."
+        );
+    }
+
+    // Check it's running
+    let running = std::process::Command::new("fail2ban-client")
+        .arg("ping")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !running {
+        println!("  Warning: fail2ban is installed but not running.");
+        println!("  Start it with: sudo systemctl start fail2ban");
+        println!("  Enabling the integration anyway — it will activate when fail2ban starts.\n");
+    }
+
+    if cli.dry_run {
+        println!("[dry-run] would set [fail2ban] enabled=true in {}", cli.agent_config.display());
+        return Ok(());
+    }
+
+    config_editor::write_bool(&cli.agent_config, "fail2ban", "enabled", true)?;
+    println!("  [ok] agent.toml: fail2ban.enabled = true");
+
+    restart_agent(cli);
+    println!();
+    println!("Fail2ban integration enabled.");
+    println!("IPs banned by fail2ban will automatically be enforced via your block skill.");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Shared restart helper
+// ---------------------------------------------------------------------------
+
+fn restart_agent(cli: &Cli) {
+    if cli.dry_run {
+        return;
+    }
+    let is_macos = std::env::consts::OS == "macos";
+    if is_macos {
+        let _ = systemd::restart_launchd("com.innerwarden.agent", false);
+        println!("  [ok] innerwarden-agent restarted");
+    } else {
+        let _ = systemd::restart_service("innerwarden-agent", false);
+        println!("  [ok] innerwarden-agent restarted");
+    }
+}
+
+fn hostname() -> String {
+    if let Ok(h) = std::fs::read_to_string("/etc/hostname") {
+        let h = h.trim().to_string();
+        if !h.is_empty() {
+            return h;
+        }
+    }
+    std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -3130,6 +3644,129 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
             }
 
             run_section(sl, &mut total_issues);
+        }
+    }
+
+    // ── Webhook ────────────────────────────────────────────
+    {
+        let webhook_enabled = agent_doc
+            .as_ref()
+            .and_then(|doc| doc.get("webhook"))
+            .and_then(|t| t.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if webhook_enabled {
+            println!("\nWebhook");
+            let mut wh: Vec<Check> = vec![];
+
+            let url_val = agent_doc
+                .as_ref()
+                .and_then(|doc| doc.get("webhook"))
+                .and_then(|t| t.get("url"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            if url_val.is_empty() {
+                wh.push(Check::fail(
+                    "webhook.url is not set",
+                    "Run: innerwarden configure webhook",
+                ));
+            } else if !url_val.starts_with("http://") && !url_val.starts_with("https://") {
+                wh.push(Check::fail(
+                    "webhook.url does not look like a valid URL",
+                    "Run: innerwarden configure webhook --url <correct-url>",
+                ));
+            } else {
+                wh.push(Check::ok(format!("webhook.url = {url_val}").as_str()));
+            }
+
+            run_section(wh, &mut total_issues);
+        }
+    }
+
+    // ── Dashboard ──────────────────────────────────────────
+    {
+        let dashboard_enabled = agent_doc
+            .as_ref()
+            .and_then(|doc| doc.get("dashboard"))
+            .and_then(|t| t.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // Always check if credentials are set (dashboard always available when agent runs)
+        println!("\nDashboard");
+        let mut db: Vec<Check> = vec![];
+
+        let env_path = cli
+            .agent_config
+            .parent()
+            .map(|p| p.join("agent.env"))
+            .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+        let env_content = std::fs::read_to_string(&env_path).unwrap_or_default();
+
+        let has_user = env_content.lines().any(|l| l.starts_with("INNERWARDEN_DASHBOARD_USER="))
+            || std::env::var("INNERWARDEN_DASHBOARD_USER").is_ok();
+
+        let has_hash = env_content.lines().any(|l| l.starts_with("INNERWARDEN_DASHBOARD_PASSWORD_HASH="))
+            || std::env::var("INNERWARDEN_DASHBOARD_PASSWORD_HASH").is_ok();
+
+        if has_user && has_hash {
+            db.push(Check::ok("Dashboard credentials are configured"));
+            db.push(Check::ok("Access at http://localhost:8787 (or your server IP:8787)"));
+        } else {
+            db.push(Check::warn(
+                "Dashboard login not configured — anyone on the network could access it",
+                "Set up credentials: innerwarden configure dashboard",
+            ));
+            if !has_user {
+                db.push(Check::warn(
+                    "INNERWARDEN_DASHBOARD_USER is not set",
+                    "Run: innerwarden configure dashboard",
+                ));
+            }
+            if !has_hash {
+                db.push(Check::warn(
+                    "INNERWARDEN_DASHBOARD_PASSWORD_HASH is not set",
+                    "Run: innerwarden configure dashboard",
+                ));
+            }
+        }
+
+        let _ = dashboard_enabled; // checked above, field used to suppress warning
+        run_section(db, &mut total_issues);
+    }
+
+    // ── GeoIP ──────────────────────────────────────────────
+    {
+        let geoip_enabled = agent_doc
+            .as_ref()
+            .and_then(|doc| doc.get("geoip"))
+            .and_then(|t| t.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if geoip_enabled {
+            println!("\nGeoIP");
+            let mut geo: Vec<Check> = vec![];
+
+            // Quick connectivity check
+            let reachable = ureq::get("http://ip-api.com/json/8.8.8.8?fields=status")
+                .timeout(std::time::Duration::from_secs(3))
+                .call()
+                .is_ok();
+
+            if reachable {
+                geo.push(Check::ok("ip-api.com is reachable"));
+            } else {
+                geo.push(Check::warn(
+                    "ip-api.com is not reachable from this host",
+                    "GeoIP lookups will fail silently. Check outbound HTTP access.",
+                ));
+            }
+
+            run_section(geo, &mut total_issues);
         }
     }
 

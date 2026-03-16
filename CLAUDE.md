@@ -280,6 +280,18 @@ innerwarden configure telegram                           # wizard: cria bot, det
 innerwarden configure telegram --token T --chat-id C    # não-interativo (CI/scripts)
 innerwarden configure slack                              # wizard: URL do webhook, testa, reinicia agent
 innerwarden configure slack --webhook-url URL --min-severity medium
+innerwarden configure webhook                            # wizard: URL + severity, testa, reinicia agent
+innerwarden configure webhook --url https://... --min-severity high
+
+# Dashboard (configura login do dashboard local)
+innerwarden configure dashboard                          # wizard: usuário + senha (gera hash Argon2 via agent binary)
+innerwarden configure dashboard --user admin --password mypassword
+
+# Enriquecimento e integrações
+innerwarden configure abuseipdb                         # wizard: instrucoes de registro + API key → agent.env
+innerwarden configure abuseipdb --api-key <key>
+innerwarden configure geoip                              # um comando: habilita ip-api.com, sem API key
+innerwarden configure fail2ban                           # verifica instalação, habilita integração
 
 # AI provider setup
 innerwarden configure ai openai --key sk-...
@@ -287,8 +299,8 @@ innerwarden configure ai anthropic --key sk-ant-...
 innerwarden configure ai ollama --model llama3.2
 
 # Responder (auto-execute decisions)
-innerwarden configure responder --enable
-innerwarden configure responder --enable --dry-run false  # ativar execução real
+innerwarden configure responder                          # wizard interativo: observe / dry-run / live
+innerwarden configure responder --enable --dry-run false  # ativar execução real (pede confirmação "yes")
 innerwarden configure responder --disable
 
 # Module management
@@ -810,7 +822,13 @@ Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8):
 - **AI call rate limit:** ✅ `ai.max_ai_calls_per_tick` (default 5); conta `ai_calls_this_tick` no loop de incidentes; excesso desviado para próximo tick
 - **`innerwarden configure telegram`:** ✅ wizard interativo — instruções @BotFather, detecção automática de chat_id via `getUpdates`, prompt manual com fallback, validação de formato, envio de mensagem de teste, salva em `agent.env`, habilita `[telegram] enabled=true` no agent.toml, reinicia agent; flags `--token`/`--chat-id` para uso não-interativo; suporte a `--dry-run`
 - **`innerwarden configure slack`:** ✅ wizard interativo — instruções de criação de Incoming Webhook, validação do prefixo de URL, envio de mensagem de teste, salva em `agent.env`, habilita `[slack] enabled=true` + `min_severity` no agent.toml, reinicia agent; flag `--webhook-url` para uso não-interativo
-- **`innerwarden configure ai / responder`:** ✅ — subcomandos já existentes documentados em "Comandos essenciais"
+- **`innerwarden configure webhook`:** ✅ wizard interativo — URL + severity, envia POST de teste com JSON de exemplo, habilita `[webhook] enabled=true url=... min_severity=...` no agent.toml, reinicia agent; suporte a `--dry-run`
+- **`innerwarden configure dashboard`:** ✅ wizard interativo — usuário + senha (visível, min 8 chars), chama `innerwarden-agent --dashboard-generate-password-hash` como subprocesso para gerar hash Argon2, salva `INNERWARDEN_DASHBOARD_USER` + `INNERWARDEN_DASHBOARD_PASSWORD_HASH` em `agent.env`, reinicia agent, imprime URL + credenciais; flag `--password` para uso não-interativo
+- **`innerwarden configure abuseipdb`:** ✅ wizard interativo — instruções de registro em abuseipdb.com, validação de comprimento da chave, salva `ABUSEIPDB_API_KEY` em `agent.env`, habilita `[abuseipdb] enabled=true` no agent.toml, reinicia agent; flag `--api-key` para uso não-interativo
+- **`innerwarden configure geoip`:** ✅ comando simples — testa conectividade com ip-api.com, habilita `[geoip] enabled=true` no agent.toml, reinicia agent; sem API key, sem wizard
+- **`innerwarden configure fail2ban`:** ✅ comando simples — verifica `fail2ban-client` instalado + daemon rodando, habilita `[fail2ban] enabled=true` no agent.toml, reinicia agent; erro claro se não instalado ou se macOS
+- **`innerwarden configure responder`:** ✅ melhorado com modo interativo (sem flags) — menu 3 opções: observe/dry-run/live com explicações claras; confirmação explícita `"yes"` ao ativar live; flags `--enable/--disable/--dry-run` preservadas para scripts
+- **doctor — seções adicionadas:** Webhook (verifica `webhook.url`), Dashboard (verifica credenciais em `agent.env`, warning se ausentes), GeoIP (testa conectividade ip-api.com quando `geoip.enabled`)
 - **`serde_json` adicionado como dep explícita em `innerwarden-ctl`** (antes vinha transitivamente via ureq)
 
 Próximas direções:
