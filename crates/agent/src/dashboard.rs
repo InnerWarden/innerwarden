@@ -194,6 +194,14 @@ struct SuspendUserRequest {
     incident_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct HoneypotTestRequest {
+    /// Operator-supplied reason (mandatory).
+    reason: String,
+    /// Duration in seconds for the honeypot session (default: 120).
+    duration_secs: Option<u64>,
+}
+
 #[derive(Debug, Serialize)]
 struct ActionResponse {
     success: bool,
@@ -607,6 +615,7 @@ pub async fn serve(
         .route("/api/action/config", get(api_action_config))
         // Honeypot tab
         .route("/api/honeypot/sessions", get(api_honeypot_sessions))
+        .route("/api/action/honeypot", post(api_action_honeypot))
         // D6 — SSE live event stream
         .route("/api/events/stream", get(api_events_stream))
         .layer(auth_layer)
@@ -1568,6 +1577,107 @@ async fn api_action_suspend_user(
     }
 }
 
+/// POST /api/action/honeypot — operator-initiated honeypot test session.
+async fn api_action_honeypot(
+    State(state): State<DashboardState>,
+    Json(body): Json<HoneypotTestRequest>,
+) -> Json<ActionResponse> {
+    let skill_id = "honeypot".to_string();
+
+    if !state.action_cfg.enabled {
+        return Json(ActionResponse {
+            success: false,
+            dry_run: state.action_cfg.dry_run,
+            message: "dashboard actions are disabled — set responder.enabled = true in agent.toml"
+                .to_string(),
+            skill_id,
+        });
+    }
+
+    if body.reason.trim().is_empty() {
+        return Json(ActionResponse {
+            success: false,
+            dry_run: state.action_cfg.dry_run,
+            message: "reason is required".to_string(),
+            skill_id,
+        });
+    }
+
+    if !state
+        .action_cfg
+        .allowed_skills
+        .iter()
+        .any(|s| s == &skill_id)
+    {
+        return Json(ActionResponse {
+            success: false,
+            dry_run: state.action_cfg.dry_run,
+            message: format!(
+                "skill 'honeypot' is not in allowed_skills — add it to responder.allowed_skills in agent.toml"
+            ),
+            skill_id,
+        });
+    }
+
+    let duration_secs = body.duration_secs.unwrap_or(120);
+
+    // Write a synthetic incident to today's incidents file so the agent's main
+    // loop picks it up in the next 2-second tick and evaluates the honeypot skill.
+    let result = inject_honeypot_test_incident(&state.data_dir, &body.reason, duration_secs).await;
+
+    match result {
+        Ok(()) => {
+            let entry = DecisionEntry {
+                ts: chrono::Utc::now(),
+                incident_id: format!("honeypot_test:{}", chrono::Utc::now().timestamp()),
+                host: hostname(),
+                ai_provider: "dashboard:operator".to_string(),
+                action_type: "honeypot".to_string(),
+                target_ip: Some("0.0.0.0".to_string()),
+                target_user: None,
+                skill_id: Some(skill_id.clone()),
+                confidence: 1.0,
+                auto_executed: !state.action_cfg.dry_run,
+                dry_run: state.action_cfg.dry_run,
+                reason: body.reason.clone(),
+                estimated_threat: "manual_test".to_string(),
+                execution_result: if state.action_cfg.dry_run {
+                    "ok (dry_run)".to_string()
+                } else {
+                    "incident_injected".to_string()
+                },
+            };
+            if let Err(e) = append_decision_entry(&state.data_dir, &entry) {
+                warn!("failed to write honeypot test decision entry: {e}");
+            }
+            info!(
+                dry_run = state.action_cfg.dry_run,
+                duration_secs, "dashboard action: honeypot test"
+            );
+            let mode_prefix = if state.action_cfg.dry_run {
+                "[DRY RUN] "
+            } else {
+                ""
+            };
+            Json(ActionResponse {
+                success: true,
+                dry_run: state.action_cfg.dry_run,
+                message: format!(
+                    "{mode_prefix}Test honeypot incident injected — the agent will pick it up \
+                     in the next tick (≤2 s). Connect via: ssh -p 2222 -o StrictHostKeyChecking=no root@<host>"
+                ),
+                skill_id,
+            })
+        }
+        Err(e) => Json(ActionResponse {
+            success: false,
+            dry_run: state.action_cfg.dry_run,
+            message: format!("failed to inject test incident: {e}"),
+            skill_id,
+        }),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // D3 — execution helpers
 // ---------------------------------------------------------------------------
@@ -1768,6 +1878,50 @@ fn append_decision_entry(data_dir: &Path, entry: &DecisionEntry) -> anyhow::Resu
     let line = serde_json::to_string(entry).context("serialize decision")?;
     writeln!(f, "{line}").context("write decision")?;
     f.flush().context("flush decision")
+}
+
+/// Inject a synthetic high-severity SSH brute-force incident so the agent's main
+/// loop picks it up and evaluates the honeypot skill in the next tick.
+async fn inject_honeypot_test_incident(
+    data_dir: &Path,
+    reason: &str,
+    duration_secs: u64,
+) -> anyhow::Result<()> {
+    use std::fs::OpenOptions;
+    use std::io::Write as _;
+
+    let now = chrono::Utc::now();
+    let today = chrono::Local::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    let path = data_dir.join(format!("incidents-{today}.jsonl"));
+
+    // Build a minimal Incident that looks like an SSH brute-force event so the
+    // algorithm gate passes it through (severity=High, non-private IP).
+    let incident = serde_json::json!({
+        "ts": now.to_rfc3339(),
+        "host": hostname(),
+        "incident_id": format!("honeypot_test:{}", now.timestamp()),
+        "severity": "high",
+        "title": format!("Manual honeypot test — {} ({}s)", reason, duration_secs),
+        "summary": format!(
+            "50 failed SSH login attempts from 1.2.3.4 in the last 300 seconds (manual test via dashboard)"
+        ),
+        "evidence": [{"count": 50, "ip": "1.2.3.4", "kind": "ssh.login_failed", "window_seconds": 300}],
+        "recommended_checks": [],
+        "tags": ["auth", "ssh", "bruteforce", "test", "dashboard"],
+        "entities": [{"type": "ip", "value": "1.2.3.4"}]
+    });
+
+    let line = serde_json::to_string(&incident).context("serialize test incident")?;
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("cannot open {}", path.display()))?;
+    writeln!(f, "{line}").context("write test incident")?;
+    f.flush().context("flush test incident")
 }
 
 /// Returns the machine hostname (best-effort).
@@ -5007,13 +5161,54 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
   }
 
+  async function testHoneypot() {
+    const btn = document.getElementById('btnTestHoneypot');
+    if (!btn) return;
+    btn.disabled = true;
+    btn.textContent = '⏳ Iniciando...';
+    try {
+      const reason = 'Teste manual via dashboard';
+      const resp = await fetch('/api/action/honeypot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason, duration_secs: 120 })
+      });
+      const data = await resp.json();
+      if (data.success) {
+        showToast('🍯 ' + data.message, 'ok');
+      } else {
+        showToast('❌ ' + data.message, 'err');
+      }
+    } catch (e) {
+      showToast('❌ Request failed: ' + e.message, 'err');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '🧪 Iniciar sessão de teste';
+    }
+  }
+
   function renderHoneypot(data) {
     const sessions = data.sessions || [];
+
+    // Test button shown regardless of whether sessions exist
+    const testBtn = '<div style="padding:16px 16px 0;max-width:900px;margin:0 auto">' +
+      '<button id="btnTestHoneypot" onclick="testHoneypot()" ' +
+      'style="background:rgba(120,229,255,0.08);border:1px solid rgba(120,229,255,0.28);' +
+      'border-radius:8px;color:var(--accent);font-size:0.78rem;font-weight:600;' +
+      'padding:8px 18px;cursor:pointer;transition:background 0.15s,border-color 0.15s;' +
+      'font-family:inherit" ' +
+      'onmouseover="this.style.background=\'rgba(120,229,255,0.15)\'" ' +
+      'onmouseout="this.style.background=\'rgba(120,229,255,0.08)\'">' +
+      '🧪 Iniciar sessão de teste</button>' +
+      '<span style="font-size:0.68rem;color:var(--muted);margin-left:10px">' +
+      'Injeta um incidente de teste — o agente avalia e aciona o honeypot no próximo tick (≤2 s).' +
+      '</span></div>';
+
     if (sessions.length === 0) {
-      return '<div class="empty" style="padding:60px;text-align:center;opacity:0.5">🍯 No honeypot sessions yet.<br><span style="font-size:0.8rem">Sessions appear here when attackers interact with a honeypot listener.</span></div>';
+      return testBtn + '<div class="empty" style="padding:40px;text-align:center;opacity:0.5">🍯 No honeypot sessions yet.<br><span style="font-size:0.8rem">Sessions appear here when attackers interact with a honeypot listener.</span></div>';
     }
 
-    let html = '<div style="padding:16px;max-width:900px;margin:0 auto">';
+    let html = testBtn + '<div style="padding:16px;max-width:900px;margin:0 auto">';
     html += '<div style="font-size:1.1rem;font-weight:600;color:var(--accent);margin-bottom:16px">🍯 Honeypot Sessions (' + sessions.length + ')</div>';
 
     for (const s of sessions) {
