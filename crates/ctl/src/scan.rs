@@ -169,6 +169,43 @@ fn print_probes(p: &SystemProbes) {
 // Module recommendation
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum FindingSeverity {
+    High,
+    Medium,
+}
+
+impl FindingSeverity {
+    fn label(&self) -> &'static str {
+        match self {
+            FindingSeverity::High => "HIGH",
+            FindingSeverity::Medium => "MEDIUM",
+        }
+    }
+    fn order(&self) -> u8 {
+        match self {
+            FindingSeverity::High => 0,
+            FindingSeverity::Medium => 1,
+        }
+    }
+}
+
+/// A concrete security finding discovered during the audit phase.
+#[derive(Debug, Clone)]
+pub struct ScanFinding {
+    pub severity: FindingSeverity,
+    /// Name of the affected resource (container name, config key, etc.)
+    pub resource: String,
+    /// One-line title.
+    pub title: String,
+    /// Explanation of the risk.
+    pub detail: String,
+    /// True when InnerWarden will monitor/alert on this automatically.
+    pub iw_handles: bool,
+    /// What the server admin needs to do manually (None if IW fully handles it).
+    pub admin_action: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tier {
     Essential,
@@ -209,6 +246,7 @@ pub struct ModuleRec {
     /// Tool that must be present; if absent the module is NotAvailable.
     pub needs_tool: Option<&'static str>,
     pub docs_path: &'static str,
+    pub findings: Vec<ScanFinding>,
 }
 
 fn stars(n: u8) -> String {
@@ -217,15 +255,256 @@ fn stars(n: u8) -> String {
     format!("{filled}{empty}")
 }
 
+// ---------------------------------------------------------------------------
+// Security audit probes (fail-silent — never panic, never require root)
+// ---------------------------------------------------------------------------
+
+/// Inspect all running Docker containers for security misconfigurations.
+/// Requires `docker` CLI in PATH. Fail-silent on any error.
+fn audit_docker() -> Vec<ScanFinding> {
+    // Get running container IDs
+    let ids_out = Command::new("docker").args(["ps", "-q"]).output().ok();
+    let ids_out = match ids_out {
+        Some(o) if o.status.success() => o,
+        _ => return vec![],
+    };
+    let ids: Vec<String> = String::from_utf8_lossy(&ids_out.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if ids.is_empty() {
+        return vec![];
+    }
+
+    // docker inspect <id1> <id2> ...
+    let mut cmd = Command::new("docker");
+    cmd.arg("inspect");
+    for id in &ids {
+        cmd.arg(id);
+    }
+    let inspect_out = match cmd.output() {
+        Ok(o) if o.status.success() => o,
+        _ => return vec![],
+    };
+    let json_str = String::from_utf8_lossy(&inspect_out.stdout);
+    let containers: serde_json::Value = match serde_json::from_str(&json_str) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+
+    let arr = match containers.as_array() {
+        Some(a) => a,
+        None => return vec![],
+    };
+
+    let dangerous_caps = [
+        "SYS_ADMIN",
+        "NET_ADMIN",
+        "SYS_PTRACE",
+        "SYS_MODULE",
+        "SYS_RAWIO",
+    ];
+
+    let mut findings = vec![];
+
+    for container in arr {
+        let name = container["Name"]
+            .as_str()
+            .unwrap_or("unknown")
+            .trim_start_matches('/')
+            .to_string();
+        let host_cfg = &container["HostConfig"];
+
+        // Check --privileged
+        if host_cfg["Privileged"].as_bool().unwrap_or(false) {
+            findings.push(ScanFinding {
+                severity: FindingSeverity::High,
+                resource: name.clone(),
+                title: "container runs with --privileged".to_string(),
+                detail: "A privileged container has unrestricted access to the host kernel. \
+                         Any code running inside can mount the host filesystem and become root \
+                         on the machine."
+                    .to_string(),
+                iw_handles: true,
+                admin_action: Some(format!(
+                    "Remove --privileged from {}. Identify which specific capabilities \
+                     it needs and grant only those via --cap-add.",
+                    name
+                )),
+            });
+        }
+
+        // Check docker.sock mount
+        let binds = host_cfg["Binds"].as_array();
+        let mounts = container["Mounts"].as_array();
+        let has_sock = binds
+            .map(|b| {
+                b.iter()
+                    .any(|v| v.as_str().unwrap_or("").contains("docker.sock"))
+            })
+            .unwrap_or(false)
+            || mounts
+                .map(|m| {
+                    m.iter().any(|v| {
+                        v["Source"].as_str().unwrap_or("").contains("docker.sock")
+                            || v["Destination"]
+                                .as_str()
+                                .unwrap_or("")
+                                .contains("docker.sock")
+                    })
+                })
+                .unwrap_or(false);
+        if has_sock {
+            findings.push(ScanFinding {
+                severity: FindingSeverity::High,
+                resource: name.clone(),
+                title: "docker.sock mounted inside container".to_string(),
+                detail: "Mounting the Docker socket gives the container full control over the \
+                         Docker daemon — it can create new privileged containers, stop others, \
+                         and access any volume on the host. This is a common container escape \
+                         vector."
+                    .to_string(),
+                iw_handles: true,
+                admin_action: Some(format!(
+                    "{} needs docker.sock to function (e.g. Portainer, Watchtower). \
+                     Ensure it is not internet-exposed and requires strong authentication. \
+                     Consider scoping access with a Docker socket proxy \
+                     (github.com/Tecnativa/docker-socket-proxy).",
+                    name
+                )),
+            });
+        }
+
+        // Check dangerous caps
+        let cap_add = host_cfg["CapAdd"].as_array();
+        if let Some(caps) = cap_add {
+            for cap in caps {
+                let cap_str = cap.as_str().unwrap_or("");
+                if dangerous_caps.contains(&cap_str) {
+                    findings.push(ScanFinding {
+                        severity: FindingSeverity::Medium,
+                        resource: name.clone(),
+                        title: format!("dangerous capability: {cap_str}"),
+                        detail: format!(
+                            "{} has {cap_str} added. This capability can be abused to \
+                             interfere with the host kernel or other processes.",
+                            name
+                        ),
+                        iw_handles: true,
+                        admin_action: Some(format!(
+                            "Audit why {} needs {cap_str}. If not strictly required, \
+                             remove it from the container definition.",
+                            name
+                        )),
+                    });
+                }
+            }
+        }
+    }
+
+    findings
+}
+
+/// Audit SSH daemon configuration for common misconfigurations.
+/// Tries `sshd -T` first (requires sshd in PATH), falls back to reading
+/// /etc/ssh/sshd_config directly. Fail-silent.
+fn audit_ssh() -> Vec<ScanFinding> {
+    // Try sshd -T for effective config
+    let effective = Command::new("sshd")
+        .args(["-T"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase());
+
+    // Fallback: read sshd_config file
+    let from_file = if effective.is_none() {
+        std::fs::read_to_string("/etc/ssh/sshd_config")
+            .ok()
+            .map(|s| s.to_lowercase())
+    } else {
+        None
+    };
+
+    let config = match effective.or(from_file) {
+        Some(c) => c,
+        None => return vec![],
+    };
+
+    let mut findings = vec![];
+
+    // PasswordAuthentication
+    let password_auth_on = config
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .any(|l| {
+            let l = l.trim();
+            l.starts_with("passwordauthentication") && l.contains("yes")
+        });
+    if password_auth_on {
+        findings.push(ScanFinding {
+            severity: FindingSeverity::Medium,
+            resource: "sshd".to_string(),
+            title: "SSH password authentication is enabled".to_string(),
+            detail: "Your SSH server accepts password logins. InnerWarden already blocks \
+                     brute-force attempts, but disabling password auth eliminates the attack \
+                     surface entirely — only key-based logins work."
+                .to_string(),
+            iw_handles: false,
+            admin_action: Some(
+                "Edit /etc/ssh/sshd_config and set:\n  \
+                 PasswordAuthentication no\n\
+                 Then reload: sudo systemctl reload ssh"
+                    .to_string(),
+            ),
+        });
+    }
+
+    // PermitRootLogin
+    let root_login_on = config
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .any(|l| {
+            let l = l.trim();
+            l.starts_with("permitrootlogin") && (l.contains(" yes") || l.ends_with("yes"))
+        });
+    if root_login_on {
+        findings.push(ScanFinding {
+            severity: FindingSeverity::High,
+            resource: "sshd".to_string(),
+            title: "SSH root login permitted".to_string(),
+            detail: "Direct root SSH login is enabled. A successful brute-force against \
+                     the root account gives the attacker immediate full control with no \
+                     further escalation needed."
+                .to_string(),
+            iw_handles: false,
+            admin_action: Some(
+                "Edit /etc/ssh/sshd_config and set:\n  \
+                 PermitRootLogin no\n\
+                 Then reload: sudo systemctl reload ssh"
+                    .to_string(),
+            ),
+        });
+    }
+
+    findings
+}
+
 /// Score every module against the probes and return sorted recommendations.
 pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
     let mut recs: Vec<ModuleRec> = vec![
         // ssh-protection
         {
+            let ssh_findings = if p.has_sshd || p.has_auth_log {
+                audit_ssh()
+            } else {
+                vec![]
+            };
             let (tier, why, s) = if p.has_sshd || p.has_auth_log {
                 (
                     Tier::Essential,
-                    "sshd is running. Automatically detects and blocks brute-force attacks."
+                    "sshd running. Automatically detects and blocks brute-force attacks."
                         .to_string(),
                     5,
                 )
@@ -246,6 +525,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 tier,
                 needs_tool: None,
                 docs_path: "ssh-protection/docs/README.md",
+                findings: ssh_findings,
             }
         },
         // network-defense
@@ -276,6 +556,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 tier,
                 needs_tool: None,
                 docs_path: "network-defense/docs/README.md",
+                findings: vec![],
             }
         },
         // sudo-protection
@@ -304,6 +585,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 tier,
                 needs_tool: None,
                 docs_path: "sudo-protection/docs/README.md",
+                findings: vec![],
             }
         },
         // file-integrity
@@ -317,14 +599,24 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
             tier: Tier::Recommended,
             needs_tool: None,
             docs_path: "file-integrity/docs/README.md",
+            findings: vec![],
         },
         // container-security
         {
+            let docker_findings = if p.has_docker { audit_docker() } else { vec![] };
             let (tier, why, s, skip) = if p.has_docker {
+                let n = docker_findings.len();
+                let finding_summary = if n == 0 {
+                    "No privilege escalation issues found in running containers.".to_string()
+                } else {
+                    format!(
+                        "{n} security issue{} found — see findings below.",
+                        if n == 1 { "" } else { "s" }
+                    )
+                };
                 (
                     Tier::Essential,
-                    "Docker is installed. Track container events and privileged container alerts."
-                        .to_string(),
+                    format!("Docker detected. Monitors privileged containers, docker.sock mounts, dangerous caps. {finding_summary}"),
                     4,
                     false,
                 )
@@ -336,11 +628,12 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 name: "Docker Lifecycle Events",
                 description: "Tracks Docker container events; alerts on privileged/OOM containers.",
                 why,
-                enable_hint: "innerwarden module install container-security",
+                enable_hint: "innerwarden enable container-security",
                 stars: s,
                 tier,
                 needs_tool: if skip { Some("Docker") } else { None },
                 docs_path: "container-security/docs/README.md",
+                findings: docker_findings,
             }
         },
         // search-protection
@@ -373,6 +666,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                     Some("nginx")
                 },
                 docs_path: "search-protection/docs/README.md",
+                findings: vec![],
             }
         },
         // nginx-error-monitor
@@ -404,6 +698,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                     Some("nginx")
                 },
                 docs_path: "nginx-error-monitor/docs/README.md",
+                findings: vec![],
             }
         },
         // execution-guard
@@ -434,6 +729,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 tier,
                 needs_tool: None,
                 docs_path: "execution-guard/docs/README.md",
+                findings: vec![],
             }
         },
         // fail2ban-integration
@@ -472,6 +768,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 tier,
                 needs_tool: if missing { Some("fail2ban") } else { None },
                 docs_path: "fail2ban-integration/docs/README.md",
+                findings: vec![],
             }
         },
         // geoip-enrichment
@@ -486,6 +783,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
             tier: Tier::Optional,
             needs_tool: None,
             docs_path: "geoip-enrichment/docs/README.md",
+            findings: vec![],
         },
         // abuseipdb-enrichment
         ModuleRec {
@@ -501,6 +799,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
             tier: Tier::Optional,
             needs_tool: None,
             docs_path: "abuseipdb-enrichment/docs/README.md",
+            findings: vec![],
         },
         // falco-integration
         {
@@ -529,6 +828,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                     None
                 },
                 docs_path: "falco-integration/docs/README.md",
+                findings: vec![],
             }
         },
         // suricata-integration
@@ -563,6 +863,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                     None
                 },
                 docs_path: "suricata-integration/docs/README.md",
+                findings: vec![],
             }
         },
         // osquery-integration
@@ -597,6 +898,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                     None
                 },
                 docs_path: "osquery-integration/docs/README.md",
+                findings: vec![],
             }
         },
         // wazuh-integration
@@ -626,6 +928,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                     None
                 },
                 docs_path: "wazuh-integration/docs/README.md",
+                findings: vec![],
             }
         },
         // threat-capture
@@ -640,6 +943,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
             tier: Tier::Optional,
             needs_tool: None,
             docs_path: "threat-capture/docs/README.md",
+            findings: vec![],
         },
         // crowdsec-integration
         {
@@ -673,6 +977,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                     None
                 },
                 docs_path: "crowdsec-integration/docs/README.md",
+                findings: vec![],
             }
         },
         // slack-notify
@@ -687,6 +992,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
             tier: Tier::Optional,
             needs_tool: None,
             docs_path: "slack-notify/docs/README.md",
+            findings: vec![],
         },
     ];
 
@@ -712,7 +1018,6 @@ fn print_recommendations(recs: &[ModuleRec]) {
     let mut current_tier: Option<&Tier> = None;
     let mut idx = 1usize;
 
-    // First pass: print available modules grouped by tier.
     let available: Vec<_> = recs
         .iter()
         .filter(|r| r.tier != Tier::NotAvailable)
@@ -736,21 +1041,103 @@ fn print_recommendations(recs: &[ModuleRec]) {
         );
         println!("      {}", rec.why);
         println!("      \u{2192} {}", rec.enable_hint);
+
+        // Inline findings
+        if !rec.findings.is_empty() {
+            println!();
+            let mut sorted = rec.findings.clone();
+            sorted.sort_by_key(|f| f.severity.order());
+            for f in &sorted {
+                let icon = match f.severity {
+                    FindingSeverity::High => "  \u{26a0}  HIGH  ",
+                    FindingSeverity::Medium => "  \u{25b8}  MED   ",
+                };
+                println!("      {}{} \u{2014} {}", icon, f.resource, f.title);
+                if f.iw_handles {
+                    println!("             InnerWarden will alert automatically once enabled.");
+                }
+                if f.admin_action.is_some() {
+                    println!("             Admin action required \u{2193}  (see summary below)");
+                }
+            }
+            println!();
+        }
+
         println!();
         idx += 1;
     }
 
     if !not_available.is_empty() {
-        println!("\n  NOT AVAILABLE (install the tool first, then re-run innerwarden scan)\n");
+        println!("\n  NOT AVAILABLE (install the tool first)\n");
         for rec in &not_available {
             let tool = rec.needs_tool.unwrap_or(rec.id);
             println!("  \u{2500} {:<28}  Requires: {tool}", rec.id);
         }
     }
 
-    println!();
+    // ── Admin actions section ──────────────────────────────────────────────
+    let admin_findings: Vec<&ScanFinding> = recs
+        .iter()
+        .flat_map(|r| r.findings.iter())
+        .filter(|f| f.admin_action.is_some())
+        .collect();
+
+    if !admin_findings.is_empty() {
+        println!();
+        println!("{}", "\u{2501}".repeat(64));
+        println!("Admin actions required");
+        println!("These issues need manual intervention \u{2014} InnerWarden cannot fix them.");
+        println!("{}", "\u{2501}".repeat(64));
+        println!();
+
+        let mut sorted_admin = admin_findings.clone();
+        sorted_admin.sort_by_key(|f| f.severity.order());
+
+        for f in sorted_admin {
+            let badge = match f.severity {
+                FindingSeverity::High => "[\u{001b}[31mHIGH\u{001b}[0m]  ",
+                FindingSeverity::Medium => "[\u{001b}[33mMED\u{001b}[0m]   ",
+            };
+            println!("  {}{} \u{2014} {}", badge, f.resource, f.title);
+            println!();
+            // Word-wrap detail at 68 chars
+            for line in wrap_text(&f.detail, 68) {
+                println!("  {}", line);
+            }
+            println!();
+            if let Some(action) = &f.admin_action {
+                println!("  How to fix:");
+                for line in action.lines() {
+                    println!("    {}", line);
+                }
+            }
+            println!();
+        }
+    }
+
     println!("{}", "\u{2500}".repeat(72));
     println!("Type a module name or number to learn more, or press Enter / 'q' to exit:");
+}
+
+/// Simple word-wrapper: split text into lines of at most `width` chars.
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    let mut lines = vec![];
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if current.is_empty() {
+            current.push_str(word);
+        } else if current.len() + 1 + word.len() <= width {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            lines.push(current.clone());
+            current = word.to_string();
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 // ---------------------------------------------------------------------------

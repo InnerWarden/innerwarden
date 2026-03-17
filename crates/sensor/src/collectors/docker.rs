@@ -50,6 +50,17 @@ impl DockerCollector {
 
         info!(since = ?self.since, "docker collector starting");
 
+        // Startup audit: inspect all currently running containers for privilege
+        // escalation risks. Runs once at startup; fail-silent.
+        {
+            let startup_events = audit_running_containers(&self.host).await;
+            for ev in startup_events {
+                if tx.send(ev).await.is_err() {
+                    return Ok(());
+                }
+            }
+        }
+
         let mut current_since = self.since.clone();
         loop {
             let mut cmd = Command::new("docker");
@@ -213,6 +224,109 @@ fn parse_docker_event(line: &str, host: &str) -> Option<(String, Event)> {
     };
 
     Some((next_since, event))
+}
+
+// ---------------------------------------------------------------------------
+// Startup audit of running containers
+// ---------------------------------------------------------------------------
+
+/// Inspect all currently running containers at startup and emit risk events.
+/// Fail-silent on any error (docker not available, empty output, parse failure).
+async fn audit_running_containers(host: &str) -> Vec<Event> {
+    // Get running container IDs
+    let ids_out = match Command::new("docker").args(["ps", "-q"]).output().await {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            warn!(
+                "docker ps -q returned non-zero at startup: {}",
+                String::from_utf8_lossy(&o.stderr)
+                    .chars()
+                    .take(200)
+                    .collect::<String>()
+            );
+            return vec![];
+        }
+        Err(e) => {
+            warn!("docker ps -q failed at startup: {e}");
+            return vec![];
+        }
+    };
+
+    let ids: Vec<String> = String::from_utf8_lossy(&ids_out.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    if ids.is_empty() {
+        return vec![];
+    }
+
+    info!(
+        count = ids.len(),
+        "docker startup audit: inspecting running containers"
+    );
+
+    let mut cmd = Command::new("docker");
+    cmd.arg("inspect");
+    for id in &ids {
+        cmd.arg(id);
+    }
+
+    let inspect_out = match cmd.output().await {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            warn!(
+                "docker inspect failed at startup: {}",
+                String::from_utf8_lossy(&o.stderr)
+                    .chars()
+                    .take(200)
+                    .collect::<String>()
+            );
+            return vec![];
+        }
+        Err(e) => {
+            warn!("docker inspect error at startup: {e}");
+            return vec![];
+        }
+    };
+
+    let parsed: serde_json::Value = match serde_json::from_slice(&inspect_out.stdout) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("docker inspect parse error at startup: {e}");
+            return vec![];
+        }
+    };
+
+    let containers = match parsed.as_array() {
+        Some(arr) => arr,
+        None => return vec![],
+    };
+
+    let mut all_events = vec![];
+
+    for container in containers {
+        let container_id = container["Id"].as_str().unwrap_or("unknown");
+        let short_id = &container_id[..container_id.len().min(12)];
+        let name = container["Name"]
+            .as_str()
+            .unwrap_or(short_id)
+            .trim_start_matches('/');
+        let image = container["Config"]["Image"].as_str().unwrap_or("unknown");
+
+        let risk_events = parse_inspect_risks(container, short_id, name, image, host);
+        if !risk_events.is_empty() {
+            info!(
+                container = name,
+                count = risk_events.len(),
+                "docker startup audit: risk events emitted"
+            );
+        }
+        all_events.extend(risk_events);
+    }
+
+    all_events
 }
 
 // ---------------------------------------------------------------------------
