@@ -273,6 +273,10 @@ pub struct HoneypotConfig {
     /// Honeypot mode:
     /// - `demo`: synthetic marker only (safe default)
     /// - `listener`: starts bounded real decoys (ssh/http) with optional redirect
+    /// - `always_on`: permanent SSH listener from agent startup with smart per-connection
+    ///   filter (blocklist check → AbuseIPDB gate → accept into LLM shell). Runs
+    ///   indefinitely until SIGTERM; each session triggers post-session AI verdict,
+    ///   IOC extraction, auto-block (when responder.enabled), and Telegram T.5 report.
     #[serde(default = "default_honeypot_mode")]
     pub mode: String,
 
@@ -612,7 +616,7 @@ impl Default for HoneypotConfig {
 // Responder
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct ResponderConfig {
     /// Enable skill execution on AI decisions
     #[serde(default)]

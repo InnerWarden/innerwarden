@@ -53,6 +53,7 @@ Agente de defesa autônomo para servidores Linux e macOS. Dois componentes Rust:
 - ✅ Skill premium real: `monitor-ip` (captura de tráfego limitada em `.pcap` + metadata)
 - ✅ Skill premium `honeypot` com hardening 8.7: perfis de jail (`standard|strict`) + handoff externo attested (receiver challenge/HMAC + pin opcional de `receiver_id`)
 - ✅ Honeypot fase 8.8: interação média (`interaction = "medium"`) — SSH real via `russh` (key exchange + captura de credenciais, sem shell) + HTTP com parser manual (captura de formulário de login fake)
+- ✅ **Honeypot `always_on` mode**: listener SSH permanente iniciado no startup do agent; filtro por conexão (blocklist → AbuseIPDB gate → aceitar); pós-sessão: extração de IOCs, veredicto AI em pt-BR, auto-block (`responder.enabled`), relatório Telegram T.5; evidências gravadas em `honeypot/listener-session-always-on-*.jsonl`; desligamento gracioso via watch channel no SIGTERM; `interaction = "llm_shell"` para shell AI interativo, qualquer outro valor = `RejectAll`; 2 testes unitários (`test_always_on_filter_blocks_known_ip`, `test_always_on_mode_recognized`)
 - ✅ Skill open real: `suspend-user-sudo` (negação temporária de sudo via drop-in em `/etc/sudoers.d` + cleanup automático de expiração)
 - ✅ Dry-run por padrão (seguro para produção até o usuário habilitar)
 - ✅ Blocklist em memória persistida entre ticks: inserção sempre feita (inclusive dry_run) + pré-carregamento de `decisions-*.jsonl` do dia na inicialização (evita bloquear o mesmo IP mesmo após restart em dry_run)
@@ -477,7 +478,9 @@ max_related_incidents = 8  # contexto correlacionado enviado para AI
 enabled = true             # escreve telemetry-YYYY-MM-DD.jsonl (default: true)
 
 [honeypot]
-mode = "demo"              # demo | listener (default: demo)
+mode = "demo"              # demo | listener | always_on (default: demo)
+                           # always_on: SSH listener permanente desde o startup; sem duração limitada;
+                           # filtro por conexão: blocklist → AbuseIPDB gate → aceitar na interação configurada
 bind_addr = "127.0.0.1"    # listener mode
 port = 2222                # ssh decoy port (listener mode)
 http_port = 8080           # http decoy port (listener mode)
@@ -493,7 +496,7 @@ forensics_keep_days = 7
 forensics_max_total_mb = 128
 transcript_preview_bytes = 96
 lock_stale_secs = 1800
-interaction = "banner"         # banner (default) | medium (Cowrie-style: SSH key exchange + HTTP login page)
+interaction = "banner"         # banner (default) | medium (Cowrie-style: SSH key exchange + HTTP login page) | llm_shell (AI-backed interactive shell, always_on mode only)
 ssh_max_auth_attempts = 6      # SSH auth rounds before disconnect (medium interaction only)
 http_max_requests = 10         # max HTTP requests per connection (medium interaction only)
 
@@ -859,6 +862,7 @@ Próximas direções:
 - **L.5 — Repositório público:** confirmar sem credenciais, adicionar tópicos GitHub, habilitar Discussions
 - **`innerwarden module search`:** ✅ registry central em `registry.toml`; `search <termo>` filtra por nome/descrição/tags; `install <name>` resolve short names via registry
 - **`innerwarden scan`:** ✅ probe automático (sshd, docker, nginx, fail2ban, falco, suricata, osquery, wazuh, crowdsec, firewall, auditd, log files, OS); score por módulo (Essential/Recommended/Optional/NotAvailable); output formatado com estrelas + razão contextual + comando de ativação; Q&A interativo (número ou nome → exibe README do módulo); fail-silent em todos os probes (sem root); **full security audit** inline por módulo: `ScanFinding { severity, resource, title, detail, iw_handles, admin_action }`, `FindingSeverity::High/Medium/Low`; `audit_docker()` (--privileged, docker.sock, CapAdd), `parse_ssh_config()` (PasswordAuthentication, PermitRootLogin, X11Forwarding, MaxAuthTries, AllowTcpForwarding), `audit_nginx()` (server_tokens, no HTTPS, no rate limiting), `audit_fail2ban()` (sshd jail, bantime), `audit_ufw()` (not active, all outbound), `audit_system()` (unattended-upgrades, dangerous ports); seção consolidada "Admin actions required" com `wrap_text()` e fix commands em plain English; 17 testes
+- **Honeypot `always_on` mode:** ✅ listener permanente desde o startup; filtro por conexão (blocklist → AbuseIPDB gate); pós-sessão: IOC, veredicto AI, auto-block, Telegram T.5; `interaction = "llm_shell"` para shell AI; shutdown gracioso via watch channel; `ResponderConfig` derivado `Clone`; 2 testes unitários
 - **Fase D11** — notificações por browser (Web Notifications API) quando o dashboard está em background
 - **Email notifications (planned):** SMTP direto (sendmail / relay externo) para alertas e digest diário; `innerwarden configure email` com wizard; alcança usuários sem Telegram/Slack
 - **Windows (v0.3.0 planned):** `sysmon_evtx` collector + `windows_event_log` collector + `block-ip-netsh` skill + `chocolatey`/`winget` install recipe. Tracked via platform-support issues.

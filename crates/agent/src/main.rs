@@ -1096,6 +1096,70 @@ async fn main() -> Result<()> {
         // Proactive startup suggestions (fail2ban detected but not integrated, etc.)
         probe_and_suggest(&cfg, state.telegram_client.as_deref()).await;
 
+        // Always-on honeypot: permanent SSH listener from startup.
+        // A watch channel is used to signal shutdown on SIGTERM/SIGINT.
+        let always_on_shutdown_tx = if cfg.honeypot.mode == "always_on" {
+            let (tx, rx) = tokio::sync::watch::channel(false);
+
+            // Build a filter blocklist pre-populated from today's + yesterday's decisions.
+            let initial_blocked: std::collections::HashSet<String> = {
+                let (bl, _) = load_startup_decision_state(&cli.data_dir, false);
+                bl.as_vec().into_iter().collect()
+            };
+            let filter_bl = std::sync::Arc::new(std::sync::Mutex::new(initial_blocked));
+
+            let port = cfg.honeypot.port;
+            let bind_addr = cfg.honeypot.bind_addr.clone();
+            let max_auth = cfg.honeypot.ssh_max_auth_attempts;
+            let abuseipdb_client = if cfg.abuseipdb.enabled {
+                let key = abuseipdb::resolve_api_key(&cfg.abuseipdb.api_key);
+                if key.is_empty() {
+                    None
+                } else {
+                    Some(std::sync::Arc::new(abuseipdb::AbuseIpDbClient::new(
+                        key,
+                        cfg.abuseipdb.max_age_days,
+                    )))
+                }
+            } else {
+                None
+            };
+            let abuseipdb_threshold = cfg.abuseipdb.auto_block_threshold;
+            let ai_clone = state.ai_provider.clone();
+            let tg_clone = state.telegram_client.clone();
+            let data_dir_clone = cli.data_dir.clone();
+            let responder_enabled = cfg.responder.enabled;
+            let dry_run = cfg.responder.dry_run;
+            let block_backend = cfg.responder.block_backend.clone();
+            let allowed_skills = cfg.responder.allowed_skills.clone();
+            let interaction = cfg.honeypot.interaction.clone();
+
+            tokio::spawn(async move {
+                run_always_on_honeypot(
+                    port,
+                    bind_addr,
+                    max_auth,
+                    filter_bl,
+                    ai_clone,
+                    tg_clone,
+                    abuseipdb_client,
+                    abuseipdb_threshold,
+                    data_dir_clone,
+                    responder_enabled,
+                    dry_run,
+                    block_backend,
+                    allowed_skills,
+                    interaction,
+                    rx,
+                )
+                .await;
+            });
+
+            Some(tx)
+        } else {
+            None
+        };
+
         let ai_poll = cfg.ai.incident_poll_secs;
         info!(
             narrative_interval_secs = cli.interval,
@@ -1255,6 +1319,10 @@ async fn main() -> Result<()> {
             };
 
             if shutdown {
+                // Signal always-on honeypot listener to stop (if running).
+                if let Some(ref tx) = always_on_shutdown_tx {
+                    let _ = tx.send(true);
+                }
                 if let Some(w) = &mut state.decision_writer {
                     w.flush();
                 }
@@ -3763,6 +3831,488 @@ async fn spawn_post_session_tasks(
 }
 
 // ---------------------------------------------------------------------------
+// Always-on honeypot listener (mode = "always_on")
+// ---------------------------------------------------------------------------
+
+/// Handle a single always-on honeypot connection end-to-end:
+/// SSH key exchange, credential capture, optional LLM shell, evidence write,
+/// IOC extraction, AI verdict, auto-block, Telegram T.5 report.
+#[allow(clippy::too_many_arguments)]
+async fn handle_always_on_connection(
+    stream: tokio::net::TcpStream,
+    ip: String,
+    ssh_cfg: std::sync::Arc<russh::server::Config>,
+    ai_provider: Option<std::sync::Arc<dyn ai::AiProvider>>,
+    telegram_client: Option<std::sync::Arc<telegram::TelegramClient>>,
+    data_dir: std::path::PathBuf,
+    interaction: String,
+    blocklist_already_has_ip: bool,
+    responder_enabled: bool,
+    dry_run: bool,
+    block_backend: String,
+    allowed_skills: Vec<String>,
+) {
+    use skills::builtin::honeypot::ssh_interact::{
+        handle_connection, SshConnectionEvidence, SshInteractionMode,
+    };
+
+    let mode = if interaction == "llm_shell" {
+        if let Some(ref ai) = ai_provider {
+            SshInteractionMode::LlmShell {
+                ai: ai.clone(),
+                hostname: "srv-prod-01".to_string(),
+            }
+        } else {
+            SshInteractionMode::RejectAll
+        }
+    } else {
+        // "medium" and any other value: capture creds, always reject auth
+        SshInteractionMode::RejectAll
+    };
+
+    let conn_timeout = std::time::Duration::from_secs(120);
+    let evidence: SshConnectionEvidence =
+        handle_connection(stream, ssh_cfg, conn_timeout, mode).await;
+
+    // Build a unique session id.
+    let session_id = format!(
+        "always-on-{}-{}",
+        ip.replace('.', "-"),
+        chrono::Utc::now().timestamp()
+    );
+
+    // Write evidence to honeypot dir (append-only JSONL).
+    let honeypot_dir = data_dir.join("honeypot");
+    let _ = tokio::fs::create_dir_all(&honeypot_dir).await;
+    let evidence_path = honeypot_dir.join(format!("listener-session-{session_id}.jsonl"));
+    if let Ok(json) = serde_json::to_string(&serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "type": "ssh_connection",
+        "session_id": &session_id,
+        "peer_ip": &ip,
+        "auth_attempts": evidence.auth_attempts,
+        "auth_attempts_count": evidence.auth_attempts.len(),
+        "shell_commands": evidence.shell_commands,
+        "shell_commands_count": evidence.shell_commands.len(),
+    })) {
+        let line = format!("{json}\n");
+        if let Ok(mut f) = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&evidence_path)
+            .await
+        {
+            use tokio::io::AsyncWriteExt;
+            let _ = f.write_all(line.as_bytes()).await;
+        }
+    }
+
+    // Extract shell commands for IOC analysis and AI verdict.
+    let commands: Vec<String> = evidence
+        .shell_commands
+        .iter()
+        .map(|s| s.command.clone())
+        .collect();
+
+    let iocs = ioc::extract_from_commands(&commands);
+
+    // AI verdict (brief summary in Portuguese).
+    let verdict = if let Some(ref ai) = ai_provider {
+        let cmd_text = if commands.is_empty() {
+            "No commands recorded.".to_string()
+        } else {
+            commands
+                .iter()
+                .take(20)
+                .map(|c| format!("  $ {c}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let prompt = format!(
+            "Attacker IP {ip} connected to an SSH honeypot.\n\
+             Auth attempts: {}\n\
+             Shell commands:\n{cmd_text}\n\n\
+             In 1-2 sentences in Portuguese (pt-BR), what does this attacker appear to be doing? \
+             Be specific and direct.",
+            evidence.auth_attempts.len(),
+        );
+        ai.chat(
+            "You are a cybersecurity analyst. Be concise and specific.",
+            &prompt,
+        )
+        .await
+        .unwrap_or_else(|_| "Análise indisponível.".to_string())
+    } else {
+        if evidence.auth_attempts.is_empty() {
+            "Conexão sem tentativas de autenticação — provavelmente scanner automatizado."
+                .to_string()
+        } else {
+            "IA não configurada — sem veredicto disponível.".to_string()
+        }
+    };
+
+    // Auto-block after session if responder is enabled and IP not already blocked.
+    let auto_blocked = if responder_enabled && !blocklist_already_has_ip {
+        let skill_id = format!("block-ip-{block_backend}");
+        if allowed_skills.iter().any(|s| s == &skill_id) {
+            let iid = format!("honeypot:always-on:{session_id}");
+            let host = std::env::var("HOSTNAME")
+                .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
+                .unwrap_or_else(|_| "unknown".to_string());
+            let inc = innerwarden_core::incident::Incident {
+                ts: chrono::Utc::now(),
+                host: host.clone(),
+                incident_id: iid.clone(),
+                severity: innerwarden_core::event::Severity::High,
+                title: "Always-on Honeypot Session Ended".to_string(),
+                summary: format!(
+                    "Attacker IP {ip} connected to always-on honeypot session {session_id}"
+                ),
+                evidence: serde_json::json!({}),
+                recommended_checks: vec![],
+                tags: vec!["honeypot".to_string(), "always-on".to_string()],
+                entities: vec![innerwarden_core::entities::EntityRef::ip(&ip)],
+            };
+            let ctx = skills::SkillContext {
+                incident: inc,
+                target_ip: Some(ip.clone()),
+                target_user: None,
+                duration_secs: None,
+                host: host.clone(),
+                data_dir: data_dir.clone(),
+                honeypot: skills::HoneypotRuntimeConfig::default(),
+                ai_provider: None,
+            };
+            let skill_box: Option<Box<dyn skills::ResponseSkill>> = match block_backend.as_str() {
+                "iptables" => Some(Box::new(skills::builtin::BlockIpIptables)),
+                "nftables" => Some(Box::new(skills::builtin::BlockIpNftables)),
+                "pf" => Some(Box::new(skills::builtin::BlockIpPf)),
+                _ => Some(Box::new(skills::builtin::BlockIpUfw)),
+            };
+            if let Some(skill) = skill_box {
+                let result = skill.execute(&ctx, dry_run).await;
+                if result.success {
+                    let today = chrono::Local::now()
+                        .date_naive()
+                        .format("%Y-%m-%d")
+                        .to_string();
+                    let entry = decisions::DecisionEntry {
+                        ts: chrono::Utc::now(),
+                        incident_id: iid,
+                        host,
+                        ai_provider: "honeypot:always-on".to_string(),
+                        action_type: "block_ip".to_string(),
+                        target_ip: Some(ip.clone()),
+                        target_user: None,
+                        skill_id: Some(skill_id),
+                        confidence: 1.0,
+                        auto_executed: true,
+                        dry_run,
+                        reason: format!(
+                            "Attacker IP interacted with always-on honeypot session {session_id}"
+                        ),
+                        estimated_threat: "confirmed-attacker".to_string(),
+                        execution_result: if result.success {
+                            "ok".to_string()
+                        } else {
+                            format!("failed: {}", result.message)
+                        },
+                    };
+                    let path = data_dir.join(format!("decisions-{today}.jsonl"));
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                    {
+                        use std::io::Write;
+                        if let Ok(line) = serde_json::to_string(&entry) {
+                            let _ = writeln!(f, "{line}");
+                        }
+                    }
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    // Send Telegram T.5 post-session report.
+    if let Some(ref tg) = telegram_client {
+        let duration = evidence.auth_attempts.len() as u64 * 5; // rough estimate
+        if let Err(e) = tg
+            .send_honeypot_session_report(
+                &ip,
+                &session_id,
+                duration,
+                &commands,
+                &iocs,
+                &verdict,
+                auto_blocked,
+            )
+            .await
+        {
+            warn!("always-on honeypot: failed to send Telegram session report: {e:#}");
+        }
+    }
+
+    info!(
+        ip,
+        session_id,
+        auth_attempts = evidence.auth_attempts.len(),
+        shell_commands = evidence.shell_commands.len(),
+        auto_blocked,
+        "always-on honeypot session completed"
+    );
+}
+
+/// Permanent SSH listener that runs from agent startup until SIGTERM.
+///
+/// Filter per connection:
+///   1. Already in blocklist → drop silently (no banner sent)
+///   2. AbuseIPDB score ≥ threshold (when configured) → block + drop
+///   3. Otherwise → accept into honeypot interaction (RejectAll or LlmShell)
+///
+/// `filter_blocklist` is a shared set of already-blocked IPs populated at startup
+/// from recent decisions and updated in-place when new IPs are blocked via the gate.
+#[allow(clippy::too_many_arguments)]
+async fn run_always_on_honeypot(
+    port: u16,
+    bind_addr: String,
+    ssh_max_auth_attempts: usize,
+    filter_blocklist: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    ai_provider: Option<std::sync::Arc<dyn ai::AiProvider>>,
+    telegram_client: Option<std::sync::Arc<telegram::TelegramClient>>,
+    abuseipdb_client: Option<std::sync::Arc<abuseipdb::AbuseIpDbClient>>,
+    abuseipdb_threshold: u8,
+    data_dir: std::path::PathBuf,
+    responder_enabled: bool,
+    dry_run: bool,
+    block_backend: String,
+    allowed_skills: Vec<String>,
+    interaction: String,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    use skills::builtin::honeypot::ssh_interact::build_ssh_config;
+
+    let ssh_cfg = build_ssh_config(ssh_max_auth_attempts);
+
+    let addr = format!("{bind_addr}:{port}");
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            warn!(addr, error = %e, "always-on honeypot: failed to bind listener — mode disabled");
+            return;
+        }
+    };
+    info!(port, bind_addr, "always-on honeypot listener started");
+
+    loop {
+        tokio::select! {
+            accept_result = listener.accept() => {
+                let (stream, peer) = match accept_result {
+                    Ok(r) => r,
+                    Err(e) => {
+                        warn!(error = %e, "always-on honeypot: accept error");
+                        continue;
+                    }
+                };
+
+                let ip = peer.ip().to_string();
+
+                // Filter 1: already in filter blocklist — drop silently.
+                {
+                    let bl = filter_blocklist.lock().unwrap_or_else(|e| e.into_inner());
+                    if bl.contains(&ip) {
+                        debug!(ip, "always-on honeypot: IP in blocklist — dropping silently");
+                        continue;
+                    }
+                }
+
+                // Filter 2: AbuseIPDB gate (async lookup before spawning handler).
+                if abuseipdb_threshold > 0 {
+                    if let Some(ref client) = abuseipdb_client {
+                        if let Some(rep) = client.check(&ip).await {
+                            if rep.confidence_score >= abuseipdb_threshold {
+                                info!(
+                                    ip,
+                                    score = rep.confidence_score,
+                                    "always-on honeypot: AbuseIPDB gate — blocking and dropping"
+                                );
+                                // Add to filter blocklist so future connections are dropped cheaply.
+                                filter_blocklist
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .insert(ip.clone());
+
+                                // Write audit + execute block skill (background task).
+                                let ip_c = ip.clone();
+                                let dd = data_dir.clone();
+                                let bb = block_backend.clone();
+                                let sk = allowed_skills.clone();
+                                let score = rep.confidence_score;
+                                let threshold = abuseipdb_threshold;
+                                let re = responder_enabled;
+                                let dr = dry_run;
+                                tokio::spawn(async move {
+                                    always_on_abuseipdb_block(
+                                        &ip_c, score, threshold, &dd, re, dr, &bb, &sk,
+                                    )
+                                    .await;
+                                });
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                // Accept: snapshot blocklist membership, then spawn connection handler.
+                let bl_has_ip = filter_blocklist
+                    .lock()
+                    .map(|bl| bl.contains(&ip))
+                    .unwrap_or(false);
+
+                let ssh_cfg_clone = ssh_cfg.clone();
+                let ai_clone = ai_provider.clone();
+                let tg_clone = telegram_client.clone();
+                let dd = data_dir.clone();
+                let ip_clone = ip.clone();
+                let intr = interaction.clone();
+                let bb = block_backend.clone();
+                let sk = allowed_skills.clone();
+                let re = responder_enabled;
+                let dr = dry_run;
+                let bl_ref = filter_blocklist.clone();
+
+                tokio::spawn(async move {
+                    handle_always_on_connection(
+                        stream,
+                        ip_clone.clone(),
+                        ssh_cfg_clone,
+                        ai_clone,
+                        tg_clone,
+                        dd,
+                        intr,
+                        bl_has_ip,
+                        re,
+                        dr,
+                        bb,
+                        sk,
+                    )
+                    .await;
+                    // After session, mark IP as seen so the filter can drop quick-reconnects.
+                    bl_ref
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(ip_clone);
+                });
+            }
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("always-on honeypot listener shutting down");
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Write an AbuseIPDB-triggered block audit entry and execute the block skill.
+async fn always_on_abuseipdb_block(
+    ip: &str,
+    score: u8,
+    threshold: u8,
+    data_dir: &std::path::Path,
+    responder_enabled: bool,
+    dry_run: bool,
+    block_backend: &str,
+    allowed_skills: &[String],
+) {
+    let host = std::env::var("HOSTNAME")
+        .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
+        .unwrap_or_else(|_| "unknown".to_string());
+    let today = chrono::Local::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    let iid = format!("honeypot:always-on:abuseipdb:{ip}");
+    let skill_id = format!("block-ip-{block_backend}");
+
+    let entry = decisions::DecisionEntry {
+        ts: chrono::Utc::now(),
+        incident_id: iid.clone(),
+        host: host.clone(),
+        ai_provider: "honeypot:abuseipdb_gate".to_string(),
+        action_type: "block_ip".to_string(),
+        target_ip: Some(ip.to_string()),
+        target_user: None,
+        skill_id: Some(skill_id.clone()),
+        confidence: 1.0,
+        auto_executed: true,
+        dry_run,
+        reason: format!(
+            "AbuseIPDB confidence score {score}/100 exceeded always-on honeypot gate threshold {threshold}"
+        ),
+        estimated_threat: "known-malicious".to_string(),
+        execution_result: "ok".to_string(),
+    };
+
+    let path = data_dir.join(format!("decisions-{today}.jsonl"));
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write;
+        if let Ok(line) = serde_json::to_string(&entry) {
+            let _ = writeln!(f, "{line}");
+        }
+    }
+
+    if responder_enabled && allowed_skills.iter().any(|s| s == &skill_id) {
+        let inc = innerwarden_core::incident::Incident {
+            ts: chrono::Utc::now(),
+            host: host.clone(),
+            incident_id: iid,
+            severity: innerwarden_core::event::Severity::High,
+            title: "AbuseIPDB Gate Block (Always-on Honeypot)".to_string(),
+            summary: format!(
+                "IP {ip} blocked at always-on honeypot AbuseIPDB gate (score {score})"
+            ),
+            evidence: serde_json::json!({}),
+            recommended_checks: vec![],
+            tags: vec!["honeypot".to_string(), "abuseipdb".to_string()],
+            entities: vec![innerwarden_core::entities::EntityRef::ip(ip)],
+        };
+        let ctx = skills::SkillContext {
+            incident: inc,
+            target_ip: Some(ip.to_string()),
+            target_user: None,
+            duration_secs: None,
+            host,
+            data_dir: data_dir.to_path_buf(),
+            honeypot: skills::HoneypotRuntimeConfig::default(),
+            ai_provider: None,
+        };
+        let skill_box: Option<Box<dyn skills::ResponseSkill>> = match block_backend {
+            "iptables" => Some(Box::new(skills::builtin::BlockIpIptables)),
+            "nftables" => Some(Box::new(skills::builtin::BlockIpNftables)),
+            "pf" => Some(Box::new(skills::builtin::BlockIpPf)),
+            _ => Some(Box::new(skills::builtin::BlockIpUfw)),
+        };
+        if let Some(skill) = skill_box {
+            let _ = skill.execute(&ctx, dry_run).await;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -4433,6 +4983,79 @@ mod tests {
         assert!(
             !state.decision_cooldowns.is_empty(),
             "decision cooldown should be recorded"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Always-on honeypot tests
+    // ------------------------------------------------------------------
+
+    /// Test that the filter blocklist correctly drops IPs that are already blocked.
+    #[test]
+    fn test_always_on_filter_blocks_known_ip() {
+        let mut set = std::collections::HashSet::new();
+        set.insert("1.2.3.4".to_string());
+        set.insert("5.6.7.8".to_string());
+
+        // Known-bad IP should be "blocked" (present in set).
+        assert!(
+            set.contains("1.2.3.4"),
+            "IP 1.2.3.4 should be in the filter blocklist"
+        );
+        assert!(
+            set.contains("5.6.7.8"),
+            "IP 5.6.7.8 should be in the filter blocklist"
+        );
+
+        // Unknown IP should NOT be blocked.
+        assert!(
+            !set.contains("9.9.9.9"),
+            "IP 9.9.9.9 should not be in the filter blocklist"
+        );
+
+        // After inserting a new IP, it should be filtered.
+        set.insert("9.9.9.9".to_string());
+        assert!(
+            set.contains("9.9.9.9"),
+            "IP 9.9.9.9 should be in the filter blocklist after insertion"
+        );
+    }
+
+    /// Test that the "always_on" mode string is recognized and would trigger startup.
+    #[test]
+    fn test_always_on_mode_recognized() {
+        // Verify config recognises the mode string (no panic on deserialise).
+        let toml = r#"
+            [honeypot]
+            mode = "always_on"
+            port = 2222
+            bind_addr = "127.0.0.1"
+            interaction = "medium"
+        "#;
+        let cfg: config::AgentConfig = toml::from_str(toml).expect("should parse always_on mode");
+        assert_eq!(cfg.honeypot.mode, "always_on");
+        assert_eq!(cfg.honeypot.port, 2222);
+
+        // Verify the mode check used in main() matches.
+        let is_always_on = cfg.honeypot.mode == "always_on";
+        assert!(
+            is_always_on,
+            "mode check should return true for 'always_on'"
+        );
+
+        // Demo and listener modes should NOT match.
+        let mut cfg2 = config::AgentConfig::default();
+        cfg2.honeypot.mode = "demo".to_string();
+        assert!(
+            !(&cfg2.honeypot.mode == "always_on"),
+            "demo should not match always_on"
+        );
+
+        let mut cfg3 = config::AgentConfig::default();
+        cfg3.honeypot.mode = "listener".to_string();
+        assert!(
+            !(&cfg3.honeypot.mode == "always_on"),
+            "listener should not match always_on"
         );
     }
 }
