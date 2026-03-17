@@ -117,8 +117,8 @@ impl CapabilityRegistry {
     pub fn default_all() -> Self {
         use crate::capabilities::{
             ai::AiCapability, block_ip::BlockIpCapability,
-            search_protection::SearchProtectionCapability,
-            shell_audit::ShellAuditCapability, sudo_protection::SudoProtectionCapability,
+            search_protection::SearchProtectionCapability, shell_audit::ShellAuditCapability,
+            sudo_protection::SudoProtectionCapability,
         };
         Self {
             caps: vec![

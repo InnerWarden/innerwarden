@@ -40,6 +40,10 @@ struct Cli {
     #[arg(long, default_value = "/etc/innerwarden/agent.toml")]
     agent_config: PathBuf,
 
+    /// Directory where InnerWarden data files are stored
+    #[arg(long, default_value = "/var/lib/innerwarden", global = true)]
+    data_dir: PathBuf,
+
     /// Show what would happen without applying any changes
     #[arg(long, global = true)]
     dry_run: bool,
@@ -77,15 +81,28 @@ enum Command {
     /// List all capabilities with their current status
     List,
 
-    /// Show system status (services, capabilities, modules).
-    /// Optionally narrow to a specific capability.
+    /// Show system status or the full activity history for an IP or user.
+    ///
+    /// With no arguments: global overview of services, capabilities, and modules.
+    /// With an IP or username: chronological timeline of events, incidents, and
+    /// decisions for that entity (terminal equivalent of the dashboard journey panel).
+    ///
+    /// Examples:
+    ///   innerwarden status
+    ///   innerwarden status block-ip
+    ///   innerwarden status 203.0.113.10
+    ///   innerwarden status root --days 7
     Status {
-        /// Capability ID to inspect (omit for global overview)
-        capability: Option<String>,
+        /// Capability ID, IP address, or username to inspect (omit for global overview)
+        target: Option<String>,
 
-        /// Directory to scan for installed modules
+        /// Directory to scan for installed modules (used in global overview)
         #[arg(long, default_value = "/etc/innerwarden/modules")]
         modules_dir: PathBuf,
+
+        /// How many days back to search when looking up an entity (default: 3)
+        #[arg(long, default_value = "3")]
+        days: u64,
     },
 
     /// Run system diagnostics and print fix hints for any issues found
@@ -127,38 +144,36 @@ enum Command {
         install_dir: PathBuf,
     },
 
-    /// Configure integrations interactively.
+    /// Configure notification channels (Telegram, Slack, webhook, dashboard).
     ///
-    /// Run without arguments to see an interactive menu of all integrations.
-    Configure {
+    /// Run without arguments to see an interactive menu.
+    ///
+    /// Examples:
+    ///   innerwarden notify telegram
+    ///   innerwarden notify slack --webhook-url https://hooks.slack.com/...
+    ///   innerwarden notify test
+    Notify {
         #[command(subcommand)]
-        command: Option<ConfigureCommand>,
+        command: Option<NotifyCommand>,
+    },
+
+    /// Configure external integrations (GeoIP, AbuseIPDB, fail2ban, watchdog).
+    ///
+    /// Run without arguments to see an interactive menu.
+    ///
+    /// Examples:
+    ///   innerwarden integrate geoip
+    ///   innerwarden integrate abuseipdb --api-key <key>
+    ///   innerwarden integrate fail2ban
+    Integrate {
+        #[command(subcommand)]
+        command: Option<IntegrateCommand>,
     },
 
     /// Module management commands
     Module {
         #[command(subcommand)]
         command: ModuleCommand,
-    },
-
-    /// Local AI management
-    Ai {
-        #[command(subcommand)]
-        command: AiCommand,
-    },
-
-    /// Send a test alert to all configured notification channels.
-    ///
-    /// Verifies that Telegram, Slack, and webhook notifications are working
-    /// end-to-end. Useful after first setup or after changing credentials.
-    ///
-    /// Examples:
-    ///   innerwarden test-alert
-    ///   innerwarden test-alert --channel telegram
-    TestAlert {
-        /// Only test a specific channel: telegram, slack, or webhook
-        #[arg(long)]
-        channel: Option<String>,
     },
 
     /// Print the daily security report in the terminal.
@@ -174,10 +189,6 @@ enum Command {
         /// Date to show: today, yesterday, or YYYY-MM-DD (default: today)
         #[arg(long, default_value = "today")]
         date: String,
-
-        /// Directory where InnerWarden data files are stored
-        #[arg(long, default_value = "/var/lib/innerwarden")]
-        data_dir: PathBuf,
     },
 
     /// Check if the agent is healthy and alert via Telegram if it appears stuck.
@@ -208,10 +219,6 @@ enum Command {
         /// Show watchdog cron schedule and last-run info instead of running a check
         #[arg(long)]
         status: bool,
-
-        /// Directory where InnerWarden data files are stored
-        #[arg(long, default_value = "/var/lib/innerwarden")]
-        data_dir: PathBuf,
     },
 
     /// Interactively tune detector thresholds based on recent noise and signal.
@@ -232,10 +239,6 @@ enum Command {
         /// Apply suggested changes without interactive prompts
         #[arg(long)]
         yes: bool,
-
-        /// Directory where InnerWarden data files are stored
-        #[arg(long, default_value = "/var/lib/innerwarden")]
-        data_dir: PathBuf,
     },
 
     /// Show which collectors are active and their event counts today.
@@ -246,11 +249,7 @@ enum Command {
     /// Examples:
     ///   innerwarden sensor-status
     #[clap(name = "sensor-status")]
-    SensorStatus {
-        /// Directory where InnerWarden data files are stored
-        #[arg(long, default_value = "/var/lib/innerwarden")]
-        data_dir: PathBuf,
-    },
+    SensorStatus,
 
     /// Export events, incidents, or decisions to CSV or JSON.
     ///
@@ -278,10 +277,6 @@ enum Command {
         /// Output file (default: stdout)
         #[arg(long)]
         output: Option<PathBuf>,
-
-        /// Directory where InnerWarden data files are stored
-        #[arg(long, default_value = "/var/lib/innerwarden")]
-        data_dir: PathBuf,
     },
 
     /// Stream new incidents and events in real time (like tail -f).
@@ -301,10 +296,6 @@ enum Command {
         /// Poll interval in seconds (default: 2)
         #[arg(long, default_value = "2")]
         interval: u64,
-
-        /// Directory where InnerWarden data files are stored
-        #[arg(long, default_value = "/var/lib/innerwarden")]
-        data_dir: PathBuf,
     },
 
     /// List recent security incidents detected on this host.
@@ -324,10 +315,6 @@ enum Command {
         /// Filter by minimum severity: low, medium, high, critical (default: low = all)
         #[arg(long, default_value = "low")]
         severity: String,
-
-        /// Directory where InnerWarden data files are stored
-        #[arg(long, default_value = "/var/lib/innerwarden")]
-        data_dir: PathBuf,
     },
 
     /// Block an IP address at the firewall and record it in the audit trail.
@@ -344,10 +331,6 @@ enum Command {
         /// Reason for the block (required — kept in audit trail)
         #[arg(long)]
         reason: String,
-
-        /// Directory where InnerWarden data files are stored
-        #[arg(long, default_value = "/var/lib/innerwarden")]
-        data_dir: PathBuf,
     },
 
     /// Remove a previously blocked IP from the firewall.
@@ -364,10 +347,6 @@ enum Command {
         /// Reason for removing the block (required — kept in audit trail)
         #[arg(long)]
         reason: String,
-
-        /// Directory where InnerWarden data files are stored
-        #[arg(long, default_value = "/var/lib/innerwarden")]
-        data_dir: PathBuf,
     },
 
     /// Show recent decisions made by InnerWarden (blocks, suspensions, ignores).
@@ -387,22 +366,15 @@ enum Command {
         /// Filter by action: block_ip, suspend_user_sudo, ignore, monitor, honeypot
         #[arg(long)]
         action: Option<String>,
-
-        /// Directory where InnerWarden data files are stored
-        #[arg(long, default_value = "/var/lib/innerwarden")]
-        data_dir: PathBuf,
     },
 
-    /// Show the full activity history for an IP or user.
-    ///
-    /// Scans events, incidents, and decisions linked to one entity and prints
-    /// a chronological timeline — the terminal equivalent of the dashboard
-    /// journey panel.
+    /// Show the full activity history for an IP or user (hidden alias for 'status <entity>').
     ///
     /// Examples:
     ///   innerwarden entity 203.0.113.10
     ///   innerwarden entity root
     ///   innerwarden entity 203.0.113.10 --days 7
+    #[clap(hide = true)]
     Entity {
         /// IP address or username to look up
         target: String,
@@ -410,10 +382,6 @@ enum Command {
         /// How many days back to search (default: 3)
         #[arg(long, default_value = "3")]
         days: u64,
-
-        /// Directory where InnerWarden data files are stored
-        #[arg(long, default_value = "/var/lib/innerwarden")]
-        data_dir: PathBuf,
     },
 
     /// Generate shell completions for bash, zsh, or fish.
@@ -431,59 +399,17 @@ enum Command {
     },
 }
 
+/// Notification channel setup sub-commands.
 #[derive(Subcommand)]
-enum ConfigureCommand {
-    /// Set AI provider: openai, anthropic, or ollama
-    ///
-    /// Examples:
-    ///   innerwarden configure ai openai --key sk-...
-    ///   innerwarden configure ai anthropic --key sk-ant-...
-    ///   innerwarden configure ai ollama --model llama3.2
-    Ai {
-        /// Provider to use: openai, anthropic, or ollama
-        provider: String,
-
-        /// API key (required for openai and anthropic)
-        #[arg(long)]
-        key: Option<String>,
-
-        /// Model to use (defaults: openai→gpt-4o-mini, anthropic→claude-haiku-4-5-20251001, ollama→llama3.2)
-        #[arg(long)]
-        model: Option<String>,
-
-        /// Ollama base URL (default: http://localhost:11434)
-        #[arg(long)]
-        base_url: Option<String>,
-    },
-
-    /// Enable or disable the responder and control dry-run mode
-    ///
-    /// Examples:
-    ///   innerwarden configure responder --enable
-    ///   innerwarden configure responder --enable --dry-run false
-    ///   innerwarden configure responder --disable
-    Responder {
-        /// Enable the responder (responder.enabled = true)
-        #[arg(long, conflicts_with = "disable")]
-        enable: bool,
-
-        /// Disable the responder (responder.enabled = false)
-        #[arg(long, conflicts_with = "enable")]
-        disable: bool,
-
-        /// Set dry-run mode: true (observe only) or false (execute for real)
-        #[arg(long, value_name = "BOOL")]
-        dry_run: Option<bool>,
-    },
-
-    /// Set up Telegram notifications (interactive wizard)
+enum NotifyCommand {
+    /// Set up Telegram notifications (interactive wizard).
     ///
     /// Walks you through creating a bot and getting your chat ID.
     /// Credentials are saved to agent.env (never in plain TOML).
     ///
     /// Examples:
-    ///   innerwarden configure telegram
-    ///   innerwarden configure telegram --token 123:ABC --chat-id 456789
+    ///   innerwarden notify telegram
+    ///   innerwarden notify telegram --token 123:ABC --chat-id 456789
     Telegram {
         /// Bot token from @BotFather (skips the wizard prompt)
         #[arg(long)]
@@ -498,14 +424,14 @@ enum ConfigureCommand {
         no_test: bool,
     },
 
-    /// Set up Slack notifications (interactive wizard)
+    /// Set up Slack notifications (interactive wizard).
     ///
     /// Walks you through creating an Incoming Webhook in your Slack workspace.
     /// The webhook URL is saved to agent.env.
     ///
     /// Examples:
-    ///   innerwarden configure slack
-    ///   innerwarden configure slack --webhook-url https://hooks.slack.com/services/...
+    ///   innerwarden notify slack
+    ///   innerwarden notify slack --webhook-url https://hooks.slack.com/services/...
     Slack {
         /// Slack Incoming Webhook URL (skips the wizard prompt)
         #[arg(long)]
@@ -520,12 +446,12 @@ enum ConfigureCommand {
         no_test: bool,
     },
 
-    /// Set up HTTP webhook notifications (sends alerts to any HTTP endpoint)
+    /// Set up HTTP webhook notifications (sends alerts to any HTTP endpoint).
     ///
     /// Examples:
-    ///   innerwarden configure webhook
-    ///   innerwarden configure webhook --url https://hooks.example.com/notify
-    ///   innerwarden configure webhook --url https://hooks.example.com/notify --min-severity medium
+    ///   innerwarden notify webhook
+    ///   innerwarden notify webhook --url https://hooks.example.com/notify
+    ///   innerwarden notify webhook --url https://hooks.example.com/notify --min-severity medium
     Webhook {
         /// Webhook URL (skips the wizard prompt)
         #[arg(long)]
@@ -540,14 +466,14 @@ enum ConfigureCommand {
         no_test: bool,
     },
 
-    /// Set up the local security dashboard (generates login credentials)
+    /// Set up the local security dashboard (generates login credentials).
     ///
     /// Creates a secure password hash and writes credentials to agent.env.
     /// The dashboard is then available at http://localhost:8787 after agent restart.
     ///
     /// Examples:
-    ///   innerwarden configure dashboard
-    ///   innerwarden configure dashboard --user admin --password mysecretpassword
+    ///   innerwarden notify dashboard
+    ///   innerwarden notify dashboard --user admin --password mysecretpassword
     Dashboard {
         /// Dashboard username (default: admin)
         #[arg(long, default_value = "admin")]
@@ -558,7 +484,34 @@ enum ConfigureCommand {
         password: Option<String>,
     },
 
-    /// Set up AbuseIPDB IP reputation enrichment
+    /// Send a test alert to all configured notification channels.
+    ///
+    /// Verifies that Telegram, Slack, and webhook notifications are working
+    /// end-to-end. Useful after first setup or after changing credentials.
+    ///
+    /// Examples:
+    ///   innerwarden notify test
+    ///   innerwarden notify test --channel telegram
+    Test {
+        /// Only test a specific channel: telegram, slack, or webhook
+        #[arg(long)]
+        channel: Option<String>,
+    },
+}
+
+/// External integration setup sub-commands.
+#[derive(Subcommand)]
+enum IntegrateCommand {
+    /// Enable GeoIP country/ISP enrichment (no API key needed).
+    ///
+    /// Uses ip-api.com (free, 45 req/min) to add country and ISP context
+    /// to AI analysis. No account or API key required.
+    ///
+    /// Examples:
+    ///   innerwarden integrate geoip
+    Geoip,
+
+    /// Set up AbuseIPDB IP reputation enrichment.
     ///
     /// AbuseIPDB checks each attacker IP's abuse history before AI analysis,
     /// making decisions more accurate. Free tier: 1,000 lookups/day.
@@ -566,30 +519,21 @@ enum ConfigureCommand {
     /// Get a free API key at https://www.abuseipdb.com/register
     ///
     /// Examples:
-    ///   innerwarden configure abuseipdb
-    ///   innerwarden configure abuseipdb --api-key <key>
+    ///   innerwarden integrate abuseipdb
+    ///   innerwarden integrate abuseipdb --api-key <key>
     Abuseipdb {
         /// AbuseIPDB API key (skips the wizard prompt)
         #[arg(long)]
         api_key: Option<String>,
     },
 
-    /// Enable GeoIP country/ISP enrichment (no API key needed)
-    ///
-    /// Uses ip-api.com (free, 45 req/min) to add country and ISP context
-    /// to AI analysis. No account or API key required.
-    ///
-    /// Examples:
-    ///   innerwarden configure geoip
-    Geoip,
-
-    /// Enable fail2ban integration (syncs active bans into InnerWarden)
+    /// Enable fail2ban integration (syncs active bans into InnerWarden).
     ///
     /// When fail2ban bans an IP, InnerWarden will automatically enforce it
     /// via the configured block skill (ufw/iptables/nftables).
     ///
     /// Examples:
-    ///   innerwarden configure fail2ban
+    ///   innerwarden integrate fail2ban
     Fail2ban,
 
     /// Set up automatic health monitoring via cron (watchdog).
@@ -598,43 +542,12 @@ enum ConfigureCommand {
     /// Sends a Telegram alert if the agent stops writing telemetry.
     ///
     /// Examples:
-    ///   innerwarden configure watchdog
-    ///   innerwarden configure watchdog --interval 5
+    ///   innerwarden integrate watchdog
+    ///   innerwarden integrate watchdog --interval 5
     Watchdog {
         /// How often to check (minutes, default: 10)
         #[arg(long, default_value = "10")]
         interval: u64,
-    },
-}
-
-#[derive(Subcommand)]
-enum AiCommand {
-    /// Configure Ollama cloud as the AI provider (free tier, no GPU needed)
-    ///
-    /// Sets up InnerWarden to use the Ollama cloud API with qwen3-coder:480b —
-    /// the model that scored 100% accuracy in InnerWarden's security benchmark.
-    ///
-    /// You need a free Ollama account and an API key:
-    ///   1. Sign up at https://ollama.com
-    ///   2. Go to https://ollama.com/settings/api-keys
-    ///   3. Create a key and paste it when prompted (or set OLLAMA_API_KEY env var)
-    ///
-    /// Examples:
-    ///   innerwarden ai install
-    ///   innerwarden ai install --model qwen3-coder:480b
-    ///   innerwarden ai install --api-key ollama_...
-    Install {
-        /// Model to use on Ollama cloud (default: qwen3-coder:480b — 100% benchmark accuracy)
-        #[arg(long, default_value = "qwen3-coder:480b")]
-        model: String,
-
-        /// Ollama API key (skip prompt). Can also be set via OLLAMA_API_KEY env var.
-        #[arg(long, value_name = "KEY")]
-        api_key: Option<String>,
-
-        /// Skip interactive confirmation prompt
-        #[arg(long)]
-        yes: bool,
     },
 }
 
@@ -789,11 +702,19 @@ fn main() -> Result<()> {
         } => cmd_upgrade(&cli, check, yes, install_dir),
         Command::List => cmd_list(&cli, &registry),
         Command::Status {
-            ref capability,
+            ref target,
             ref modules_dir,
-        } => match capability {
-            Some(ref id) => cmd_status(&cli, &registry, id),
+            days,
+        } => match target {
             None => cmd_status_global(&cli, &registry, modules_dir),
+            Some(ref t) => {
+                // Check if it looks like a capability ID first; fall back to entity lookup
+                if registry.get(t).is_some() {
+                    cmd_status(&cli, &registry, t)
+                } else {
+                    cmd_entity(&cli, t, days, &cli.data_dir.clone())
+                }
+            }
         },
         Command::Enable {
             ref capability,
@@ -807,50 +728,37 @@ fn main() -> Result<()> {
             ref capability,
             yes,
         } => cmd_disable(&cli, &registry, capability, yes),
-        Command::Configure { ref command } => match command {
+        Command::Notify { ref command } => match command {
             None => cmd_configure_menu(&cli),
-            Some(ConfigureCommand::Ai {
-                ref provider,
-                ref key,
-                ref model,
-                ref base_url,
-            }) => cmd_configure_ai(
-                &cli,
-                provider,
-                key.as_deref(),
-                model.as_deref(),
-                base_url.as_deref(),
-            ),
-            Some(ConfigureCommand::Responder {
-                enable,
-                disable,
-                dry_run,
-            }) => cmd_configure_responder(&cli, *enable, *disable, *dry_run),
-            Some(ConfigureCommand::Telegram {
+            Some(NotifyCommand::Telegram {
                 ref token,
                 ref chat_id,
                 no_test,
             }) => cmd_configure_telegram(&cli, token.as_deref(), chat_id.as_deref(), *no_test),
-            Some(ConfigureCommand::Slack {
+            Some(NotifyCommand::Slack {
                 ref webhook_url,
                 ref min_severity,
                 no_test,
             }) => cmd_configure_slack(&cli, webhook_url.as_deref(), min_severity, *no_test),
-            Some(ConfigureCommand::Webhook {
+            Some(NotifyCommand::Webhook {
                 ref url,
                 ref min_severity,
                 no_test,
             }) => cmd_configure_webhook(&cli, url.as_deref(), min_severity, *no_test),
-            Some(ConfigureCommand::Dashboard {
+            Some(NotifyCommand::Dashboard {
                 ref user,
                 ref password,
             }) => cmd_configure_dashboard(&cli, user, password.as_deref()),
-            Some(ConfigureCommand::Abuseipdb { ref api_key }) => {
+            Some(NotifyCommand::Test { ref channel }) => cmd_test_alert(&cli, channel.as_deref()),
+        },
+        Command::Integrate { ref command } => match command {
+            None => cmd_configure_menu(&cli),
+            Some(IntegrateCommand::Geoip) => cmd_configure_geoip(&cli),
+            Some(IntegrateCommand::Abuseipdb { ref api_key }) => {
                 cmd_configure_abuseipdb(&cli, api_key.as_deref())
             }
-            Some(ConfigureCommand::Geoip) => cmd_configure_geoip(&cli),
-            Some(ConfigureCommand::Fail2ban) => cmd_configure_fail2ban(&cli),
-            Some(ConfigureCommand::Watchdog { interval }) => {
+            Some(IntegrateCommand::Fail2ban) => cmd_configure_fail2ban(&cli),
+            Some(IntegrateCommand::Watchdog { interval }) => {
                 cmd_configure_watchdog(&cli, *interval)
             }
         },
@@ -886,58 +794,33 @@ fn main() -> Result<()> {
                 yes,
             } => cmd_module_update_all(&cli, modules_dir, *check, *yes),
         },
-        Command::Ai { ref command } => match command {
-            AiCommand::Install {
-                ref model,
-                ref api_key,
-                yes,
-            } => cmd_ai_install(&cli, model, api_key.as_deref(), *yes),
-        },
-        Command::TestAlert { ref channel } => cmd_test_alert(&cli, channel.as_deref()),
-        Command::Incidents {
-            days,
-            ref severity,
-            ref data_dir,
-        } => cmd_incidents(&cli, days, severity, data_dir),
-        Command::Block {
-            ref ip,
-            ref reason,
-            ref data_dir,
-        } => cmd_block(&cli, ip, reason, data_dir),
-        Command::Unblock {
-            ref ip,
-            ref reason,
-            ref data_dir,
-        } => cmd_unblock(&cli, ip, reason, data_dir),
-        Command::Report {
-            ref date,
-            ref data_dir,
-        } => cmd_report(&cli, date, data_dir),
+        Command::Incidents { days, ref severity } => {
+            cmd_incidents(&cli, days, severity, &cli.data_dir.clone())
+        }
+        Command::Block { ref ip, ref reason } => cmd_block(&cli, ip, reason, &cli.data_dir.clone()),
+        Command::Unblock { ref ip, ref reason } => {
+            cmd_unblock(&cli, ip, reason, &cli.data_dir.clone())
+        }
+        Command::Report { ref date } => cmd_report(&cli, date, &cli.data_dir.clone()),
         Command::Watchdog {
             threshold,
             notify,
             status,
-            ref data_dir,
         } => {
             if status {
-                cmd_watchdog_status(&cli, data_dir)
+                cmd_watchdog_status(&cli, &cli.data_dir.clone())
             } else {
-                cmd_watchdog(&cli, threshold, notify, data_dir)
+                cmd_watchdog(&cli, threshold, notify, &cli.data_dir.clone())
             }
         }
-        Command::Tune {
-            days,
-            yes,
-            ref data_dir,
-        } => cmd_tune(&cli, days, yes, data_dir),
-        Command::SensorStatus { ref data_dir } => cmd_sensor_status(&cli, data_dir),
+        Command::Tune { days, yes } => cmd_tune(&cli, days, yes, &cli.data_dir.clone()),
+        Command::SensorStatus => cmd_sensor_status(&cli, &cli.data_dir.clone()),
         Command::Export {
             ref kind,
             ref from,
             ref to,
             ref format,
             ref output,
-            ref data_dir,
         } => cmd_export(
             &cli,
             kind,
@@ -945,23 +828,18 @@ fn main() -> Result<()> {
             to.as_deref(),
             format,
             output.as_deref(),
-            data_dir,
+            &cli.data_dir.clone(),
         ),
         Command::Tail {
             ref r#type,
             interval,
-            ref data_dir,
-        } => cmd_tail(&cli, r#type, interval, data_dir),
-        Command::Decisions {
-            days,
-            ref action,
-            ref data_dir,
-        } => cmd_decisions(&cli, days, action.as_deref(), data_dir),
-        Command::Entity {
-            ref target,
-            days,
-            ref data_dir,
-        } => cmd_entity(&cli, target, days, data_dir),
+        } => cmd_tail(&cli, r#type, interval, &cli.data_dir.clone()),
+        Command::Decisions { days, ref action } => {
+            cmd_decisions(&cli, days, action.as_deref(), &cli.data_dir.clone())
+        }
+        Command::Entity { ref target, days } => {
+            cmd_entity(&cli, target, days, &cli.data_dir.clone())
+        }
         Command::Completions { ref shell } => cmd_completions(shell),
     }
 }
@@ -7423,11 +7301,11 @@ mod tests {
         Cli {
             sensor_config: data_dir.join("config.toml"),
             agent_config: data_dir.join("agent.toml"),
+            data_dir: data_dir.to_path_buf(),
             dry_run: false,
             command: Command::Decisions {
                 days: 1,
                 action: None,
-                data_dir: data_dir.to_path_buf(),
             },
         }
     }

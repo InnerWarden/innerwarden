@@ -249,7 +249,7 @@ integrations/                      — integration recipes (declarative specs fo
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 511 testes (185 sensor + 178 agent + 148 ctl)
+make test             # 512 testes (185 sensor + 180 agent + 147 ctl)
 make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -281,33 +281,23 @@ innerwarden doctor                  # diagnóstico completo com fix hints; exit 
 innerwarden upgrade                 # busca novo release no GitHub e instala atomicamente
 innerwarden upgrade --check         # só verifica se há update disponível, não instala
 
-# Notification setup (interactive wizards)
-innerwarden configure telegram                           # wizard: cria bot, detecta chat_id, testa, reinicia agent
-innerwarden configure telegram --token T --chat-id C    # não-interativo (CI/scripts)
-innerwarden configure slack                              # wizard: URL do webhook, testa, reinicia agent
-innerwarden configure slack --webhook-url URL --min-severity medium
-innerwarden configure webhook                            # wizard: URL + severity, testa, reinicia agent
-innerwarden configure webhook --url https://... --min-severity high
+# Notifications (wizards interativos)
+innerwarden notify telegram                              # wizard: cria bot, detecta chat_id, testa, reinicia agent
+innerwarden notify telegram --token T --chat-id C       # não-interativo (CI/scripts)
+innerwarden notify slack                                 # wizard: URL do webhook, testa, reinicia agent
+innerwarden notify slack --webhook-url URL --min-severity medium
+innerwarden notify webhook --url https://... --min-severity high
+innerwarden notify dashboard                             # wizard: usuário + senha (gera hash Argon2 via agent binary)
+innerwarden notify dashboard --user admin --password mypassword
+innerwarden notify test                                  # envia alerta de teste a todos os canais configurados
+innerwarden notify test --channel telegram               # testa apenas um canal
 
-# Dashboard (configura login do dashboard local)
-innerwarden configure dashboard                          # wizard: usuário + senha (gera hash Argon2 via agent binary)
-innerwarden configure dashboard --user admin --password mypassword
-
-# Enriquecimento e integrações
-innerwarden configure abuseipdb                         # wizard: instrucoes de registro + API key → agent.env
-innerwarden configure abuseipdb --api-key <key>
-innerwarden configure geoip                              # um comando: habilita ip-api.com, sem API key
-innerwarden configure fail2ban                           # verifica instalação, habilita integração
-
-# AI provider setup
-innerwarden configure ai openai --key sk-...
-innerwarden configure ai anthropic --key sk-ant-...
-innerwarden configure ai ollama --model llama3.2
-
-# Responder (auto-execute decisions)
-innerwarden configure responder                          # wizard interativo: observe / dry-run / live
-innerwarden configure responder --enable --dry-run false  # ativar execução real (pede confirmação "yes")
-innerwarden configure responder --disable
+# Integrações de enriquecimento
+innerwarden integrate abuseipdb                         # wizard: instrucoes de registro + API key → agent.env
+innerwarden integrate abuseipdb --api-key <key>
+innerwarden integrate geoip                              # habilita ip-api.com, sem API key
+innerwarden integrate fail2ban                           # verifica instalação, habilita integração
+innerwarden integrate watchdog                           # configura cron de health monitoring
 
 # Module management
 innerwarden module validate ./modules/ssh-protection   # valida manifest, segurança, testes, docs
