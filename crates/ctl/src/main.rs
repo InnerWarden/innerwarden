@@ -3586,45 +3586,33 @@ fn cmd_configure_dashboard(cli: &Cli, user: &str, password_arg: Option<&str>) ->
         .map(|p| p.join("agent.env"))
         .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
 
-    let password = if let Some(p) = password_arg {
-        p.to_string()
-    } else {
-        println!("InnerWarden — Dashboard setup\n");
-        println!("The dashboard runs at http://localhost:8787 and requires a login.");
-        println!("Choose a strong password — this protects your security data.\n");
-        let p = prompt("Password")?;
-        if p.is_empty() {
-            anyhow::bail!("password cannot be empty");
-        }
-        if p.len() < 8 {
-            anyhow::bail!("password must be at least 8 characters");
-        }
-        p
-    };
-
-    // Generate Argon2 hash by calling the agent binary
-    let agent_bin = cli
-        .agent_config
-        .parent()
-        .and_then(|_| {
-            // Try standard install paths
-            for path in &[
-                "/usr/local/bin/innerwarden-agent",
-                "/usr/bin/innerwarden-agent",
-            ] {
-                if Path::new(path).exists() {
-                    return Some(PathBuf::from(path));
+    // When password is provided via --password flag, use it directly.
+    // Otherwise let the agent binary handle prompting (hidden input + confirm = 2 prompts total).
+    let hash = if let Some(password) = password_arg {
+        // Non-interactive path: pipe password to agent subprocess.
+        let agent_bin = cli
+            .agent_config
+            .parent()
+            .and_then(|_| {
+                for path in &[
+                    "/usr/local/bin/innerwarden-agent",
+                    "/usr/bin/innerwarden-agent",
+                ] {
+                    if Path::new(path).exists() {
+                        return Some(PathBuf::from(path));
+                    }
                 }
-            }
-            None
-        })
-        .or_else(|| {
-            // Fall back to PATH
-            which_bin("innerwarden-agent")
-        });
+                None
+            })
+            .or_else(|| which_bin("innerwarden-agent"))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "innerwarden-agent not found — run ./install.sh first or generate hash manually:\
+                    \n  innerwarden-agent --dashboard-generate-password-hash"
+                )
+            })?;
 
-    let hash = if let Some(bin) = agent_bin {
-        let output = std::process::Command::new(&bin)
+        let output = std::process::Command::new(&agent_bin)
             .arg("--dashboard-generate-password-hash")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -3632,36 +3620,68 @@ fn cmd_configure_dashboard(cli: &Cli, user: &str, password_arg: Option<&str>) ->
             .spawn()
             .and_then(|mut child| {
                 use std::io::Write as _;
-                if let Some(stdin) = child.stdin.take() {
-                    let mut s = stdin;
-                    let _ = writeln!(s, "{password}");
-                    let _ = writeln!(s, "{password}");
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = writeln!(stdin, "{password}");
+                    let _ = writeln!(stdin, "{password}");
                 }
                 child.wait_with_output()
-            });
+            })
+            .map_err(|e| anyhow::anyhow!("failed to run agent binary: {e}"))?;
 
-        match output {
-            Ok(out) if out.status.success() => {
-                let raw = String::from_utf8_lossy(&out.stdout);
-                // The binary prints something like:
-                // "Password hash (copy to INNERWARDEN_DASHBOARD_PASSWORD_HASH):\n$argon2id$..."
-                raw.lines()
-                    .find(|l| l.starts_with("$argon2"))
-                    .map(|s| s.trim().to_string())
-                    .ok_or_else(|| anyhow::anyhow!("agent binary returned unexpected output"))?
-            }
-            _ => anyhow::bail!(
-                "could not generate password hash — make sure innerwarden-agent is installed.\n\
-                 Alternatively, run:\n  innerwarden-agent --dashboard-generate-password-hash\n\
-                 and set INNERWARDEN_DASHBOARD_PASSWORD_HASH in agent.env manually."
-            ),
+        if !output.status.success() {
+            anyhow::bail!("agent binary failed to generate hash");
         }
+        let raw = String::from_utf8_lossy(&output.stdout);
+        raw.lines()
+            .find(|l| l.starts_with("$argon2"))
+            .map(|s| s.trim().to_string())
+            .ok_or_else(|| anyhow::anyhow!("agent binary returned unexpected output"))?
     } else {
-        anyhow::bail!(
-            "innerwarden-agent not found in /usr/local/bin or /usr/bin.\n\
-             Run the installer first:\n  ./install.sh\n\
-             or generate the hash manually:\n  innerwarden-agent --dashboard-generate-password-hash"
-        )
+        // Interactive path: let the agent binary prompt for password (hidden, with confirm).
+        // This avoids the duplicate-prompt issue — only 2 prompts instead of 3.
+        println!("InnerWarden — Dashboard setup\n");
+        println!("The dashboard requires a login to protect your security data.");
+        println!("Choose a strong password (min 8 chars).\n");
+
+        let agent_bin = cli
+            .agent_config
+            .parent()
+            .and_then(|_| {
+                for path in &[
+                    "/usr/local/bin/innerwarden-agent",
+                    "/usr/bin/innerwarden-agent",
+                ] {
+                    if Path::new(path).exists() {
+                        return Some(PathBuf::from(path));
+                    }
+                }
+                None
+            })
+            .or_else(|| which_bin("innerwarden-agent"))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "innerwarden-agent not found — run ./install.sh first or generate hash manually:\
+                    \n  innerwarden-agent --dashboard-generate-password-hash"
+                )
+            })?;
+
+        // Inherit stdin/stderr so rpassword can read from the terminal directly.
+        let output = std::process::Command::new(&agent_bin)
+            .arg("--dashboard-generate-password-hash")
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .output()
+            .map_err(|e| anyhow::anyhow!("failed to run agent binary: {e}"))?;
+
+        if !output.status.success() {
+            anyhow::bail!("password setup failed");
+        }
+        let raw = String::from_utf8_lossy(&output.stdout);
+        raw.lines()
+            .find(|l| l.starts_with("$argon2"))
+            .map(|s| s.trim().to_string())
+            .ok_or_else(|| anyhow::anyhow!("agent binary returned unexpected output"))?
     };
 
     if cli.dry_run {
