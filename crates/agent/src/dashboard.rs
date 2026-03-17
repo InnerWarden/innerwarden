@@ -1274,29 +1274,93 @@ async fn api_honeypot_sessions(State(state): State<DashboardState>) -> Json<serd
         return Json(serde_json::json!({ "sessions": [] }));
     };
 
+    // Collect all file names first so we can detect .jsonl-only sessions
+    let mut json_sessions: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut jsonl_sessions: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     while let Ok(Some(entry)) = dir.next_entry().await {
         let fname = entry.file_name().to_string_lossy().to_string();
-        // Session metadata files: listener-session-{id}.json
-        if !fname.starts_with("listener-session-") || !fname.ends_with(".json") {
+        if !fname.starts_with("listener-session-") {
             continue;
         }
-        // Skip the .jsonl files here (we want the .json metadata)
-        if fname.ends_with(".jsonl") {
-            continue;
+        if fname.ends_with(".json") && !fname.ends_with(".jsonl") {
+            let id = fname
+                .trim_start_matches("listener-session-")
+                .trim_end_matches(".json")
+                .to_string();
+            json_sessions.insert(id);
+        } else if fname.ends_with(".jsonl") {
+            let id = fname
+                .trim_start_matches("listener-session-")
+                .trim_end_matches(".jsonl")
+                .to_string();
+            jsonl_sessions.insert(id);
         }
+    }
 
-        let Ok(content) = tokio::fs::read_to_string(entry.path()).await else {
+    // Helper: extract commands + auth_attempts from a .jsonl evidence file
+    async fn read_evidence(
+        path: &std::path::Path,
+    ) -> (
+        Vec<String>,
+        usize,
+        String,
+        String,
+    ) {
+        let mut commands: Vec<String> = Vec::new();
+        let mut auth_count = 0usize;
+        let mut ts = String::new();
+        let mut peer_ip = String::new();
+        if let Ok(content) = tokio::fs::read_to_string(path).await {
+            for line in content.lines() {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                    if val.get("type").and_then(|t| t.as_str()) == Some("ssh_connection") {
+                        if ts.is_empty() {
+                            ts = val
+                                .get("ts")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                        }
+                        if peer_ip.is_empty() {
+                            peer_ip = val
+                                .get("peer_ip")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                        }
+                        auth_count += val
+                            .get("auth_attempts_count")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize;
+                        if let Some(cmds) =
+                            val.get("shell_commands").and_then(|a| a.as_array())
+                        {
+                            for c in cmds {
+                                if let Some(cmd) = c.get("command").and_then(|v| v.as_str()) {
+                                    if !cmd.is_empty() {
+                                        commands.push(cmd.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (commands, auth_count, ts, peer_ip)
+    }
+
+    // Process .json metadata sessions (listener mode)
+    for session_id in &json_sessions {
+        let meta_path = honeypot_dir.join(format!("listener-session-{session_id}.json"));
+        let Ok(content) = tokio::fs::read_to_string(&meta_path).await else {
             continue;
         };
         let Ok(meta) = serde_json::from_str::<serde_json::Value>(&content) else {
             continue;
         };
 
-        let session_id = meta
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
         let target_ip = meta
             .get("target_ip")
             .and_then(|v| v.as_str())
@@ -1312,43 +1376,47 @@ async fn api_honeypot_sessions(State(state): State<DashboardState>) -> Json<serd
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
 
-        // Read commands from evidence JSONL
         let evidence_path = honeypot_dir.join(format!("listener-session-{session_id}.jsonl"));
-        let mut commands: Vec<String> = Vec::new();
-        if let Ok(ev_content) = tokio::fs::read_to_string(&evidence_path).await {
-            for line in ev_content.lines() {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-                    if val.get("type").and_then(|t| t.as_str()) == Some("ssh_connection") {
-                        if let Some(attempts) = val.get("shell_commands").and_then(|a| a.as_array())
-                        {
-                            for a in attempts {
-                                if let Some(cmd) = a.get("command").and_then(|c| c.as_str()) {
-                                    if !cmd.is_empty() {
-                                        commands.push(cmd.to_string());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Extract IOCs
+        let (commands, auth_count, _, _) = read_evidence(&evidence_path).await;
         let iocs = crate::ioc::extract_from_commands(&commands);
-        let ioc_list = iocs.format_list();
-
-        let is_blocked = blocked_ips.contains(&target_ip);
 
         sessions.push(serde_json::json!({
             "session_id": session_id,
             "target_ip": target_ip,
             "started_at": started_at,
             "duration_secs": duration_secs,
+            "auth_attempts": auth_count,
             "commands_count": commands.len(),
             "commands": commands,
-            "iocs": ioc_list,
-            "blocked": is_blocked,
+            "iocs": iocs.format_list(),
+            "blocked": blocked_ips.contains(&target_ip),
+            "mode": "listener",
+        }));
+    }
+
+    // Process .jsonl-only sessions (always_on mode — no .json metadata file)
+    for session_id in &jsonl_sessions {
+        if json_sessions.contains(session_id) {
+            continue; // already processed above
+        }
+        let evidence_path = honeypot_dir.join(format!("listener-session-{session_id}.jsonl"));
+        let (commands, auth_count, ts, peer_ip) = read_evidence(&evidence_path).await;
+        if peer_ip.is_empty() {
+            continue;
+        }
+        let iocs = crate::ioc::extract_from_commands(&commands);
+
+        sessions.push(serde_json::json!({
+            "session_id": session_id,
+            "target_ip": peer_ip,
+            "started_at": ts,
+            "duration_secs": 0,
+            "auth_attempts": auth_count,
+            "commands_count": commands.len(),
+            "commands": commands,
+            "iocs": iocs.format_list(),
+            "blocked": blocked_ips.contains(&peer_ip),
+            "mode": "always_on",
         }));
     }
 
@@ -5217,9 +5285,11 @@ const INDEX_HTML: &str = r##"<!doctype html>
       const startedAt = s.started_at ? new Date(s.started_at).toLocaleString() : '—';
       const duration = s.duration_secs ? s.duration_secs + 's' : '—';
       const cmdCount = s.commands_count || 0;
+      const authCount = s.auth_attempts || 0;
       const commands = s.commands || [];
       const iocs = s.iocs || [];
       const blocked = !!s.blocked;
+      const mode = s.mode || 'listener';
 
       html += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;margin-bottom:12px">';
 
@@ -5229,8 +5299,12 @@ const INDEX_HTML: &str = r##"<!doctype html>
       if (blocked) {
         html += '<span style="background:rgba(58,194,126,0.15);color:#3ac27e;border:1px solid rgba(58,194,126,0.3);border-radius:4px;padding:2px 8px;font-size:0.7rem;font-weight:600">BLOCKED</span>';
       }
+      if (mode === 'always_on') {
+        html += '<span style="background:rgba(120,229,255,0.08);color:var(--accent);border:1px solid rgba(120,229,255,0.2);border-radius:4px;padding:2px 8px;font-size:0.7rem">ALWAYS-ON</span>';
+      }
       html += '<span style="font-size:0.75rem;opacity:0.6">' + esc(startedAt) + '</span>';
-      html += '<span style="font-size:0.75rem;opacity:0.6">Duration: ' + esc(duration) + '</span>';
+      if (s.duration_secs) html += '<span style="font-size:0.75rem;opacity:0.6">Duration: ' + esc(duration) + '</span>';
+      html += '<span style="font-size:0.75rem;opacity:0.6">Auth attempts: ' + authCount + '</span>';
       html += '<span style="font-size:0.75rem;opacity:0.6">Commands: ' + cmdCount + '</span>';
       html += '</div>';
 
