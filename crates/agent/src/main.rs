@@ -447,14 +447,15 @@ async fn main() -> Result<()> {
             block_backend: cfg.responder.block_backend.clone(),
             allowed_skills: cfg.responder.allowed_skills.clone(),
         };
-        dashboard::serve(
-            cli.data_dir.clone(),
-            cli.dashboard_bind.clone(),
-            auth,
-            action_cfg,
-        )
-        .await?;
-        return Ok(());
+        let dashboard_data_dir = cli.data_dir.clone();
+        let dashboard_bind = cli.dashboard_bind.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                dashboard::serve(dashboard_data_dir, dashboard_bind, auth, action_cfg).await
+            {
+                warn!(error = %e, "dashboard exited with error");
+            }
+        });
     }
 
     info!(
