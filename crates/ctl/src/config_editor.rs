@@ -147,6 +147,13 @@ pub fn write_bool(path: &Path, section: &str, key: &str, val: bool) -> Result<()
     atomic_write(path, &doc.to_string())
 }
 
+/// Set an integer key in `[section]`.
+pub fn write_int(path: &Path, section: &str, key: &str, val: i64) -> Result<()> {
+    let mut doc = read_doc(path)?;
+    set_item(&mut doc, section, key, toml_edit::value(val));
+    atomic_write(path, &doc.to_string())
+}
+
 /// Set a string key in `[section]`.
 pub fn write_str(path: &Path, section: &str, key: &str, val: &str) -> Result<()> {
     let mut doc = read_doc(path)?;

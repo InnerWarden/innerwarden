@@ -525,6 +525,9 @@ enum IntegrateCommand {
         /// AbuseIPDB API key (skips the wizard prompt)
         #[arg(long)]
         api_key: Option<String>,
+        /// Auto-block IPs with abuse confidence score >= this threshold without calling AI (0 = disabled)
+        #[arg(long)]
+        auto_block_threshold: Option<u8>,
     },
 
     /// Enable fail2ban integration (syncs active bans into InnerWarden).
@@ -754,9 +757,10 @@ fn main() -> Result<()> {
         Command::Integrate { ref command } => match command {
             None => cmd_configure_menu(&cli),
             Some(IntegrateCommand::Geoip) => cmd_configure_geoip(&cli),
-            Some(IntegrateCommand::Abuseipdb { ref api_key }) => {
-                cmd_configure_abuseipdb(&cli, api_key.as_deref())
-            }
+            Some(IntegrateCommand::Abuseipdb {
+                ref api_key,
+                auto_block_threshold,
+            }) => cmd_configure_abuseipdb(&cli, api_key.as_deref(), *auto_block_threshold),
             Some(IntegrateCommand::Fail2ban) => cmd_configure_fail2ban(&cli),
             Some(IntegrateCommand::Watchdog { interval }) => {
                 cmd_configure_watchdog(&cli, *interval)
@@ -2854,7 +2858,7 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
         "3" => cmd_configure_slack(cli, None, "high", false),
         "4" => cmd_configure_webhook(cli, None, "high", false),
         "5" => cmd_configure_dashboard(cli, "admin", None),
-        "6" => cmd_configure_abuseipdb(cli, None),
+        "6" => cmd_configure_abuseipdb(cli, None, None),
         "7" => cmd_configure_geoip(cli),
         "8" => cmd_configure_fail2ban(cli),
         "9" => cmd_configure_responder(cli, false, false, None),
@@ -3786,7 +3790,11 @@ fn which_bin(name: &str) -> Option<PathBuf> {
 // innerwarden configure abuseipdb
 // ---------------------------------------------------------------------------
 
-fn cmd_configure_abuseipdb(cli: &Cli, api_key_arg: Option<&str>) -> Result<()> {
+fn cmd_configure_abuseipdb(
+    cli: &Cli,
+    api_key_arg: Option<&str>,
+    auto_block_arg: Option<u8>,
+) -> Result<()> {
     if !cli.dry_run {
         require_sudo(cli);
     }
@@ -3800,8 +3808,10 @@ fn cmd_configure_abuseipdb(cli: &Cli, api_key_arg: Option<&str>) -> Result<()> {
         k.to_string()
     } else {
         println!("InnerWarden — AbuseIPDB setup\n");
-        println!("AbuseIPDB checks the reputation of attacking IPs before AI makes a decision.");
-        println!("This makes blocks more confident and reduces false positives.");
+        println!("AbuseIPDB checks the reputation of every attacking IP before AI analysis.");
+        println!("The reputation score (0–100) is injected into the AI prompt so decisions");
+        println!("are more confident. IPs with known bad reputation can be blocked instantly");
+        println!("without spending an AI token.\n");
         println!("Free tier: 1,000 lookups/day — enough for most servers.\n");
         println!("  1. Go to https://www.abuseipdb.com/register and create a free account");
         println!("  2. Once logged in, go to https://www.abuseipdb.com/account/api");
@@ -3817,26 +3827,73 @@ fn cmd_configure_abuseipdb(cli: &Cli, api_key_arg: Option<&str>) -> Result<()> {
         anyhow::bail!("API key looks too short — copy the full key from abuseipdb.com");
     }
 
+    // Determine auto-block threshold — wizard or flag
+    let threshold: u8 = if let Some(t) = auto_block_arg {
+        t
+    } else if api_key_arg.is_none() {
+        // Interactive wizard: ask about auto-block
+        println!("\nAuto-block threshold (0–100, 0 = disabled)");
+        println!("  IPs with AbuseIPDB confidence score >= threshold are blocked immediately,");
+        println!("  without calling AI. Useful during botnets and DDoS.\n");
+        println!("  Recommended: 80  (blocks known botnet IPs, rarely a false positive)");
+        println!("  Conservative: 0  (AbuseIPDB enriches AI context only, no auto-block)\n");
+        let raw = prompt("Auto-block threshold [80]")?;
+        if raw.is_empty() {
+            80
+        } else {
+            raw.parse::<u8>().unwrap_or_else(|_| {
+                println!("  Invalid value — using 80");
+                80
+            })
+        }
+    } else {
+        // --api-key provided without --auto-block-threshold: default 80
+        80
+    };
+
     if cli.dry_run {
         println!(
             "\n  [dry-run] would write ABUSEIPDB_API_KEY=... to {}",
             env_file.display()
         );
         println!(
-            "  [dry-run] would set [abuseipdb] enabled=true in {}",
+            "  [dry-run] would set [abuseipdb] enabled=true, auto_block_threshold={threshold} in {}",
             cli.agent_config.display()
         );
+        return Ok(());
+    }
+
+    write_env_key(&env_file, "ABUSEIPDB_API_KEY", &api_key)?;
+    println!("\n  [ok] API key saved to {}", env_file.display());
+
+    config_editor::write_bool(&cli.agent_config, "abuseipdb", "enabled", true)?;
+    config_editor::write_int(
+        &cli.agent_config,
+        "abuseipdb",
+        "auto_block_threshold",
+        threshold as i64,
+    )?;
+    if threshold > 0 {
+        println!(
+            "  [ok] agent.toml: abuseipdb.enabled = true, auto_block_threshold = {threshold}"
+        );
     } else {
-        write_env_key(&env_file, "ABUSEIPDB_API_KEY", &api_key)?;
-        println!("\n  [ok] API key saved to {}", env_file.display());
-        config_editor::write_bool(&cli.agent_config, "abuseipdb", "enabled", true)?;
-        println!("  [ok] agent.toml: abuseipdb.enabled = true");
+        println!("  [ok] agent.toml: abuseipdb.enabled = true (auto-block disabled)");
     }
 
     restart_agent(cli);
     println!();
-    println!("AbuseIPDB enabled. IP reputation will appear in AI analysis.");
-    println!("Run 'innerwarden doctor' to validate.");
+    if threshold > 0 {
+        println!("AbuseIPDB enabled.");
+        println!(
+            "  → IPs with score >= {threshold} are blocked instantly (no AI call needed)."
+        );
+        println!("  → All other IPs get reputation context injected into AI analysis.");
+    } else {
+        println!("AbuseIPDB enabled. IP reputation will appear in AI analysis.");
+        println!("  Tip: set auto_block_threshold = 80 to auto-block known botnet IPs.");
+    }
+    println!("\nRun 'innerwarden doctor' to validate.");
     Ok(())
 }
 
