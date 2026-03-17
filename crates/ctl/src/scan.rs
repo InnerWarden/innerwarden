@@ -1065,7 +1065,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 findings: docker_findings,
             }
         },
-        // search-protection
+        // search-protection (owns the nginx audit findings — nginx-error-monitor skips to avoid dups)
         {
             let nginx_findings_search = if p.has_nginx { audit_nginx() } else { vec![] };
             let (tier, why, s) = if p.has_nginx_access_log {
@@ -1099,9 +1099,9 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 findings: nginx_findings_search,
             }
         },
-        // nginx-error-monitor
+        // nginx-error-monitor (no nginx audit here — findings already shown under search-protection)
         {
-            let nginx_findings_error = if p.has_nginx { audit_nginx() } else { vec![] };
+            let nginx_findings_error: Vec<ScanFinding> = vec![];
             let (tier, why, s) = if p.has_nginx_error_log {
                 (
                     Tier::Recommended,
