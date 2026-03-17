@@ -1300,14 +1300,7 @@ async fn api_honeypot_sessions(State(state): State<DashboardState>) -> Json<serd
     }
 
     // Helper: extract commands + auth_attempts from a .jsonl evidence file
-    async fn read_evidence(
-        path: &std::path::Path,
-    ) -> (
-        Vec<String>,
-        usize,
-        String,
-        String,
-    ) {
+    async fn read_evidence(path: &std::path::Path) -> (Vec<String>, usize, String, String) {
         let mut commands: Vec<String> = Vec::new();
         let mut auth_count = 0usize;
         let mut ts = String::new();
@@ -1334,9 +1327,7 @@ async fn api_honeypot_sessions(State(state): State<DashboardState>) -> Json<serd
                             .get("auth_attempts_count")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(0) as usize;
-                        if let Some(cmds) =
-                            val.get("shell_commands").and_then(|a| a.as_array())
-                        {
+                        if let Some(cmds) = val.get("shell_commands").and_then(|a| a.as_array()) {
                             for c in cmds {
                                 if let Some(cmd) = c.get("command").and_then(|v| v.as_str()) {
                                     if !cmd.is_empty() {
@@ -1535,24 +1526,27 @@ async fn api_collectors(State(state): State<DashboardState>) -> Json<serde_json:
         };
         let needle = format!("\"source\":\"{source}\"");
         let needle2 = format!("\"source\": \"{source}\"");
-        BufReader::new(f)
-            .lines()
-            .filter_map(|l| l.ok())
-            .filter(|l| l.contains(&needle) || l.contains(&needle2))
-            .count() as u64
+        let mut count = 0u64;
+        for line in BufReader::new(f).lines() {
+            let Ok(l) = line else { break };
+            if l.contains(&needle) || l.contains(&needle2) {
+                count += 1;
+            }
+        }
+        count
     };
 
     // Recency threshold: active if file modified within last 2 hours
     let recent = |age: Option<u64>| age.map(|s| s < 7200).unwrap_or(false);
 
-    let auth_log   = "/var/log/auth.log";
-    let falco_log  = "/var/log/falco/falco.log";
-    let suricata   = "/var/log/suricata/eve.json";
-    let wazuh      = "/var/ossec/logs/alerts/alerts.json";
-    let osquery    = "/var/log/osquery/osqueryd.results.log";
-    let audit_log  = "/var/log/audit/audit.log";
-    let nginx_acc  = "/var/log/nginx/access.log";
-    let nginx_err  = "/var/log/nginx/error.log";
+    let auth_log = "/var/log/auth.log";
+    let falco_log = "/var/log/falco/falco.log";
+    let suricata = "/var/log/suricata/eve.json";
+    let wazuh = "/var/ossec/logs/alerts/alerts.json";
+    let osquery = "/var/log/osquery/osqueryd.results.log";
+    let audit_log = "/var/log/audit/audit.log";
+    let nginx_acc = "/var/log/nginx/access.log";
+    let nginx_err = "/var/log/nginx/error.log";
     let docker_sock = "/var/run/docker.sock";
 
     let collectors = serde_json::json!([
@@ -1844,9 +1838,7 @@ async fn api_action_honeypot(
         return Json(ActionResponse {
             success: false,
             dry_run: state.action_cfg.dry_run,
-            message: format!(
-                "skill 'honeypot' is not in allowed_skills — add it to responder.allowed_skills in agent.toml"
-            ),
+            message: "skill 'honeypot' is not in allowed_skills — add it to responder.allowed_skills in agent.toml".to_string(),
             skill_id,
         });
     }

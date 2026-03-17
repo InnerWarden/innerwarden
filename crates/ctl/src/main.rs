@@ -3902,9 +3902,7 @@ fn cmd_configure_abuseipdb(
         threshold as i64,
     )?;
     if threshold > 0 {
-        println!(
-            "  [ok] agent.toml: abuseipdb.enabled = true, auto_block_threshold = {threshold}"
-        );
+        println!("  [ok] agent.toml: abuseipdb.enabled = true, auto_block_threshold = {threshold}");
     } else {
         println!("  [ok] agent.toml: abuseipdb.enabled = true (auto-block disabled)");
     }
@@ -3913,9 +3911,7 @@ fn cmd_configure_abuseipdb(
     println!();
     if threshold > 0 {
         println!("AbuseIPDB enabled.");
-        println!(
-            "  → IPs with score >= {threshold} are blocked instantly (no AI call needed)."
-        );
+        println!("  → IPs with score >= {threshold} are blocked instantly (no AI call needed).");
         println!("  → All other IPs get reputation context injected into AI analysis.");
     } else {
         println!("AbuseIPDB enabled. IP reputation will appear in AI analysis.");
@@ -3985,41 +3981,41 @@ fn cmd_configure_cloudflare(
         .map(|p| p.join("agent.env"))
         .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
 
-    let (zone_id, api_token) = if zone_id_arg.is_some() && api_token_arg.is_some() {
-        (
-            zone_id_arg.unwrap().to_string(),
-            api_token_arg.unwrap().to_string(),
-        )
-    } else {
-        println!("InnerWarden — Cloudflare integration setup\n");
-        println!("When InnerWarden blocks an IP, it will also push that block to Cloudflare's");
-        println!("edge via IP Access Rules — stopping the attacker before they reach your server.\n");
-        println!("You need:");
-        println!("  1. Zone ID   — right panel of your domain at dash.cloudflare.com");
-        println!("  2. API token — dash.cloudflare.com/profile/api-tokens");
-        println!("     Use template 'Edit zone DNS' or custom with Zone > Firewall Services > Edit\n");
+    let (zone_id, api_token) = match (zone_id_arg, api_token_arg) {
+        (Some(z), Some(t)) => (z.to_string(), t.to_string()),
+        (zone_id_arg, api_token_arg) => {
+            println!("InnerWarden — Cloudflare integration setup\n");
+            println!("When InnerWarden blocks an IP, it will also push that block to Cloudflare's");
+            println!(
+                "edge via IP Access Rules — stopping the attacker before they reach your server.\n"
+            );
+            println!("You need:");
+            println!("  1. Zone ID   — right panel of your domain at dash.cloudflare.com");
+            println!("  2. API token — dash.cloudflare.com/profile/api-tokens");
+            println!("     Use template 'Edit zone DNS' or custom with Zone > Firewall Services > Edit\n");
 
-        let zid = if let Some(z) = zone_id_arg {
-            z.to_string()
-        } else {
-            let z = prompt("Zone ID")?;
-            if z.is_empty() {
-                anyhow::bail!("Zone ID cannot be empty");
-            }
-            z
-        };
+            let zid = if let Some(z) = zone_id_arg {
+                z.to_string()
+            } else {
+                let z = prompt("Zone ID")?;
+                if z.is_empty() {
+                    anyhow::bail!("Zone ID cannot be empty");
+                }
+                z
+            };
 
-        let tok = if let Some(t) = api_token_arg {
-            t.to_string()
-        } else {
-            let t = prompt("API token")?;
-            if t.is_empty() {
-                anyhow::bail!("API token cannot be empty");
-            }
-            t
-        };
+            let tok = if let Some(t) = api_token_arg {
+                t.to_string()
+            } else {
+                let t = prompt("API token")?;
+                if t.is_empty() {
+                    anyhow::bail!("API token cannot be empty");
+                }
+                t
+            };
 
-        (zid, tok)
+            (zid, tok)
+        }
     };
 
     if zone_id.len() < 10 {

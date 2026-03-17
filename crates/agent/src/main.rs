@@ -1980,7 +1980,10 @@ async fn process_incidents(
         } else if !cfg.responder.enabled {
             ("skipped: responder disabled".to_string(), false)
         } else if !decision.auto_execute && !trusted {
-            ("skipped: AI did not recommend auto-execution (no trust rule)".to_string(), false)
+            (
+                "skipped: AI did not recommend auto-execution (no trust rule)".to_string(),
+                false,
+            )
         } else {
             (
                 format!(
@@ -2092,7 +2095,10 @@ async fn execute_decision(
                 if cfg.responder.allowed_skills.contains(&fallback) {
                     fallback
                 } else {
-                    return (format!("skipped: skill '{skill_id}' not in allowed_skills"), false);
+                    return (
+                        format!("skipped: skill '{skill_id}' not in allowed_skills"),
+                        false,
+                    );
                 }
             };
 
@@ -2149,7 +2155,10 @@ async fn execute_decision(
                     honeypot: honeypot_runtime(cfg),
                     ai_provider: state.ai_provider.clone(),
                 };
-                (skill.execute(&ctx, cfg.responder.dry_run).await.message, false)
+                (
+                    skill.execute(&ctx, cfg.responder.dry_run).await.message,
+                    false,
+                )
             } else {
                 ("skipped: monitor-ip skill not available".to_string(), false)
             }
@@ -2246,7 +2255,10 @@ async fn execute_decision(
         } => {
             let skill_id = "suspend-user-sudo";
             if !cfg.responder.allowed_skills.iter().any(|id| id == skill_id) {
-                return (format!("skipped: skill '{skill_id}' not in allowed_skills"), false);
+                return (
+                    format!("skipped: skill '{skill_id}' not in allowed_skills"),
+                    false,
+                );
             }
             if let Some(skill) = state.skill_registry.get(skill_id) {
                 let ctx = skills::SkillContext {
@@ -2259,9 +2271,15 @@ async fn execute_decision(
                     honeypot: honeypot_runtime(cfg),
                     ai_provider: state.ai_provider.clone(),
                 };
-                (skill.execute(&ctx, cfg.responder.dry_run).await.message, false)
+                (
+                    skill.execute(&ctx, cfg.responder.dry_run).await.message,
+                    false,
+                )
             } else {
-                ("skipped: suspend-user-sudo skill not available".to_string(), false)
+                (
+                    "skipped: suspend-user-sudo skill not available".to_string(),
+                    false,
+                )
             }
         }
         AiAction::RequestConfirmation { summary } => {
@@ -2296,7 +2314,10 @@ async fn execute_decision(
                             incident.incident_id.clone(),
                             (pending, decision.clone(), incident.clone()),
                         );
-                        return ("pending: operator confirmation requested via Telegram".to_string(), false);
+                        return (
+                            "pending: operator confirmation requested via Telegram".to_string(),
+                            false,
+                        );
                     }
                     Err(e) => {
                         warn!("Telegram confirmation request failed: {e:#}");
@@ -2317,12 +2338,13 @@ async fn execute_decision(
                     Err(e) => (format!("confirmation webhook failed: {e}"), false),
                 }
             } else {
-                ("confirmation requested (no Telegram or webhook configured)".to_string(), false)
+                (
+                    "confirmation requested (no Telegram or webhook configured)".to_string(),
+                    false,
+                )
             }
         }
-        AiAction::Ignore { reason } => {
-            (format!("ignored: {reason}"), false)
-        }
+        AiAction::Ignore { reason } => (format!("ignored: {reason}"), false),
     }
 }
 
@@ -3344,7 +3366,10 @@ async fn process_telegram_approval(
             operator = %result.operator_name,
             "operator rejected action via Telegram"
         );
-        (format!("rejected by operator {}", result.operator_name), false)
+        (
+            format!("rejected by operator {}", result.operator_name),
+            false,
+        )
     };
 
     // Audit trail with ai_provider = "telegram:<operator>"
@@ -3665,7 +3690,7 @@ fn extract_session_id_from_message(msg: &str) -> Option<String> {
     let marker = "session ";
     let start = msg.find(marker)? + marker.len();
     let rest = &msg[start..];
-    let end = rest.find(|c| c == ',' || c == ')').unwrap_or(rest.len());
+    let end = rest.find([',', ')']).unwrap_or(rest.len());
     let id = rest[..end].trim().to_string();
     if id.is_empty() {
         None
@@ -4282,6 +4307,7 @@ async fn run_always_on_honeypot(
 }
 
 /// Write an AbuseIPDB-triggered block audit entry and execute the block skill.
+#[allow(clippy::too_many_arguments)]
 async fn always_on_abuseipdb_block(
     ip: &str,
     score: u8,

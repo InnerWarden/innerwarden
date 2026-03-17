@@ -194,6 +194,7 @@ impl TelegramClient {
 
     /// Send a post-execution report when the agent autonomously acted on a threat.
     /// Called in GUARD mode after execute_decision succeeds.
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_action_report(
         &self,
         action_label: &str,
@@ -517,6 +518,7 @@ impl TelegramClient {
 
     /// T.5 — Post-session report sent after a honeypot session ends.
     /// Summarizes commands, extracted IOCs, AI verdict, and offers a Block action.
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_honeypot_session_report(
         &self,
         ip: &str,
@@ -609,6 +611,7 @@ impl TelegramClient {
 
     /// Notify operator when an IP is auto-blocked via AbuseIPDB threshold
     /// (no AI call was made — pure reputation gate).
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_abuseipdb_autoblock(
         &self,
         ip: &str,
@@ -635,12 +638,18 @@ impl TelegramClient {
 
         let (action_line, header) = if dry_run {
             (
-                format!("Would've blocked <code>{}</code> — dry-run mode, no real action.", escape_html(ip)),
+                format!(
+                    "Would've blocked <code>{}</code> — dry-run mode, no real action.",
+                    escape_html(ip)
+                ),
                 "🧪 <b>Simulation</b> — AbuseIPDB auto-block",
             )
         } else {
             (
-                format!("Blocked <code>{}</code> instantly — no AI token wasted.", escape_html(ip)),
+                format!(
+                    "Blocked <code>{}</code> instantly — no AI token wasted.",
+                    escape_html(ip)
+                ),
                 "🛡 <b>Auto-blocked</b> — AbuseIPDB gate",
             )
         };

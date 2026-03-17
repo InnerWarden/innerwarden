@@ -177,13 +177,6 @@ pub enum FindingSeverity {
 }
 
 impl FindingSeverity {
-    fn label(&self) -> &'static str {
-        match self {
-            FindingSeverity::High => "HIGH",
-            FindingSeverity::Medium => "MEDIUM",
-            FindingSeverity::Low => "LOW",
-        }
-    }
     pub fn order(&self) -> u8 {
         match self {
             FindingSeverity::High => 0,
@@ -1725,11 +1718,7 @@ fn find_module_readme(module_id: &str, modules_dir: &Path) -> Option<PathBuf> {
 fn show_module_info(rec: &ModuleRec, modules_dir: &Path) {
     println!();
     println!("{}", "\u{2501}".repeat(64));
-    println!(
-        "  {}   [{}]",
-        rec.name,
-        rec.kind.badge()
-    );
+    println!("  {}   [{}]", rec.name, rec.kind.badge());
     println!("{}", "\u{2501}".repeat(64));
     println!();
     println!("  {}", rec.description);
@@ -1754,7 +1743,10 @@ fn show_module_info(rec: &ModuleRec, modules_dir: &Path) {
             }
         },
         None => {
-            println!("(No detailed README found for '{}' on this machine)", rec.id);
+            println!(
+                "(No detailed README found for '{}' on this machine)",
+                rec.id
+            );
         }
     }
 }
