@@ -1,129 +1,8 @@
-# Inner Warden — CLAUDE.md
+# Inner Warden — Developer Handbook
 
-> Nota pública: este arquivo é um handbook detalhado de manutenção e operação.
-> Para visão geral, instalação e uso inicial, comece por `README.md`.
-> O conteúdo abaixo existe para preservar contexto operacional aprofundado do projeto.
+Self-defending security agent for Linux and macOS. Two Rust daemons (**sensor** + **agent**) plus a CLI (`innerwarden`).
 
-Agente de defesa autônomo para servidores Linux e macOS. Dois componentes Rust:
-**sensor** (detecção determinística, zero AI) e **agent** (triagem inteligente + skills de resposta).
-
----
-
-## O que o sistema faz hoje
-
-### Sensor (`innerwarden-sensor`)
-- ✅ Tail de `/var/log/auth.log` com parser SSH completo (falhas, logins, usuários inválidos)
-- ✅ Integração com `journald` (sshd, sudo, kernel/qualquer systemd unit)
-- ✅ Trilha opcional de shell via `auditd` (`type=EXECVE`) com parser de comando executado
-- ✅ Ingestão opcional de `auditd type=TTY` (alto impacto de privacidade, gated por config)
-- ✅ Monitoramento de Docker events (start / stop / die / OOM) + **privilege escalation detection**: `docker inspect` no `container.start`; detecta `--privileged`, docker.sock mount (`HostConfig.Binds` + `Mounts`), `CapAdd` perigoso (`SYS_ADMIN`, `NET_ADMIN`, `SYS_PTRACE`, `SYS_MODULE`); emite `container.privileged` (High), `container.sock_mount` (High), `container.dangerous_cap` (Medium); 10 testes
-- ✅ Integridade de arquivos via SHA-256 polling configurável + **SSH key tampering detection**: quando o arquivo alterado é `authorized_keys`, emite `ssh.authorized_keys_changed` (High) em vez de `file.changed`; extrai username do path (`/home/<user>/.ssh/` → user); inclui entidade User + tags `persistence`, `T1098.004` (MITRE ATT&CK); detalhes com `mitre.technique`; 8 testes + **Cron tampering detection**: quando `/etc/crontab`, `/etc/cron.d/*`, `/etc/cron.{hourly,daily,weekly,monthly}/*` ou `/var/spool/cron/crontabs/<user>` são alterados, emite `cron.tampering` (High) em vez de `file.changed`; extrai username de user crontabs; tags `persistence`, `T1053.003` (MITRE ATT&CK Scheduled Task/Job: Cron); 7 testes
-- ✅ Detector de SSH brute-force (sliding window por IP, threshold configurável)
-- ✅ Detector de SSH credential stuffing por IP (spray de múltiplos usuários em janela)
-- ✅ Detector de port scan por IP (sliding window por portas de destino únicas em logs de firewall)
-- ✅ Detector de abuso de `sudo` por usuário (`sudo_abuse`: burst de comandos privilegiados suspeitos por janela)
-- ✅ **Detector `execution_guard`** — análise estrutural de comandos via AST (`tree-sitter-bash`) + scoring de risco por evento + correlação de sequência por usuário (download→chmod→execute em janela deslizante); emite incidentes `suspicious_execution` com score, sinais e evidência; modo `observe` (apenas detecta, sem bloqueio); extensões planejadas: `contain` e `strict`
-- ✅ Output JSONL append-only com rotação diária automática
-- ✅ Fail-open: erros de I/O em collectors são logados, nunca derrubam o agente
-- ✅ Flush duplo: por contagem (50 eventos) + por tempo (intervalo de 5s)
-- ✅ Graceful shutdown (SIGINT/SIGTERM) com persistência de cursors
-- ✅ **Collector `falco_log`** — tail de `/var/log/falco/falco.log` (JSONL); mapeia priority → Severity; extrai entidades de `output_fields` (IP, user, container, pod); incident passthrough automático para High/Critical (Falco já fez a detecção, InnerWarden só tria e responde); 12 testes
-- ✅ **Collector `suricata_eve`** — tail de `/var/log/suricata/eve.json` (JSONL); suporta event_types configurável (alert, dns, http, tls, anomaly por default); mapeia severity Suricata inverso (1→Critical, 2→High, 3→Medium); incident passthrough para alert severity 1+2; builders por tipo (alert, dns, http, tls, anomaly); extrai IP, service (hostname HTTP); 10 testes
-- ✅ **Collector `osquery_log`** — tail de `/var/log/osquery/osqueryd.results.log` (JSONL); lê differential results (action=added/snapshot, skipa removed); severity por prefixo de query name (sudoers→High, listening_ports/crontab→Medium, processes/users→Low); filtra IPs privados; extrai IP remoto, path, user (preferência decorations); summaries contextuais por query slug; 9 testes
-- ✅ **Collector `wazuh_alerts`** — tail de `/var/ossec/logs/alerts/alerts.json` (JSONL); severity por `rule.level` (0-2→Debug, 3-6→Low, 7-9→Medium, 10-11→High, 12-15→Critical); kind de `rule.groups[0]` com prefixo `wazuh.`; extrai `data.srcip` (IP), `data.dstuser` (user), `agent.name` (service); incident passthrough para High/Critical; módulo `wazuh-integration/`; 12 testes
-- ✅ **Detector `user_agent_scanner`** — detecção imediata de scanners de segurança por User-Agent em eventos `http.request` do nginx_access; 20 assinaturas conhecidas (Nikto, sqlmap, Nuclei, Masscan, Zgrab, wfuzz, DirBuster, Gobuster, ffuf, Acunetix, w3af, AppScan, OpenVAS, Nessus, Burp Suite, Metasploit, Nmap, python-requests, go-http-client); emite `http.scanner_ua` (High) na primeira ocorrência; dedup por `(ip, scanner)` em janela de 10min; tags MITRE `T1595`, `T1595.002` (Active Scanning: Vulnerability Scanning); 11 testes
-- ✅ **Collector `syslog_firewall`** — tail de `/var/log/syslog` (ou `/var/log/kern.log`); parse de linhas iptables/nftables/UFW DROP (`SRC=`, `DPT=`, `PROTO=`, `IN=`); emite `network.connection_blocked` (Low) que alimenta o detector `port_scan` existente; suporta UFW `[UFW BLOCK]`, iptables LOG e nftables; ignora ICMP (sem DPT=); cursor byte-offset com resume-on-restart; 10 testes
-
-### Agent (`innerwarden-agent`)
-- ✅ Leitura incremental de JSONL via byte-offset cursors (sem re-leitura)
-- ✅ Cursor fail-open: `agent-state.json` corrompido faz fallback para cursor vazio (sem crash)
-- ✅ Config TOML com defaults sensatos — `--config` é opcional
-- ✅ **Algorithm gate** — pré-filtra incidentes sem custo de API (severity, IP privado, já bloqueado)
-- ✅ Deduplicação intra-tick por IP: evita chamadas AI duplicadas no mesmo tick de 2s
-- ✅ **Decision cooldown** (1h) — suprime chamadas AI repetidas para o mesmo scope `action:detector:entity` dentro de uma janela de 1h; pré-carregado de `decisions-*.jsonl` (hoje + ontem) na inicialização; suporta `suspend_user_sudo` (campo `target_user` em `DecisionEntry`)
-- ✅ **Blocklist atualizada imediatamente** após qualquer decisão `block_ip`, mesmo quando `responder.enabled = false` — evita re-avaliação AI do mesmo IP em ticks seguintes
-- ✅ **Multi-provider AI** — OpenAI real, Anthropic real (claude-haiku-4-5-20251001 default), Ollama real (local LLM — llama3.2, mistral, gemma2, qwen2.5, etc.)
-- ✅ Análise AI em tempo real de incidentes High/Critical
-- ✅ AI seleciona a melhor ação com confidence score (0.0–1.0)
-- ✅ Sanitização de decisão AI: `block_ip` sem `target_ip` é rebaixado para `ignore`
-- ✅ Nova ação AI: `suspend_user_sudo` (suspende sudo de usuário por janela limitada com TTL)
-- ✅ Auto-execução condicional: só age se `auto_execute=true` AND `confidence ≥ threshold`
-- ✅ **Sistema de skills plugável** (open-core: tiers Open e Premium)
-- ✅ Skills built-in: `block-ip-ufw`, `block-ip-iptables`, `block-ip-nftables`
-- ✅ Skill premium real: `monitor-ip` (captura de tráfego limitada em `.pcap` + metadata)
-- ✅ Skill premium `honeypot` com hardening 8.7: perfis de jail (`standard|strict`) + handoff externo attested (receiver challenge/HMAC + pin opcional de `receiver_id`)
-- ✅ Honeypot fase 8.8: interação média (`interaction = "medium"`) — SSH real via `russh` (key exchange + captura de credenciais, sem shell) + HTTP com parser manual (captura de formulário de login fake)
-- ✅ **Honeypot fase 8.9 — LLM shell** (`interaction = "llm_shell"`) — attacker digita comandos em shell Ubuntu 22.04 falso; AI responde como sistema real (ls, ps, id, cat /etc/passwd, etc.); histórico rolante de 10 comandos mantém coerência; comandos+respostas gravados na evidence JSONL
-- ✅ **Honeypot always-on mode** (`mode = "always_on"`) — listener TCP permanente desde o startup; filtro por conexão (blocklist → AbuseIPDB → aceita); elimina janela de timing entre notificação e decisão do operador
-- ✅ **Post-session loop** — após cada sessão: leitura de evidence, extração de IOCs, veredicto AI, auto-block, relatório T.5 Telegram
-- ✅ **IOC extraction** (`ioc.rs`) — regex de IPs/URLs/domínios de comandos shell; categorias (download, persistence, enumeration, network, execution, obfuscation); 5 testes
-- ✅ **Honeypot `always_on` mode**: listener SSH permanente iniciado no startup do agent; filtro por conexão (blocklist → AbuseIPDB gate → aceitar); pós-sessão: extração de IOCs, veredicto AI em pt-BR, auto-block (`responder.enabled`), relatório Telegram T.5; evidências gravadas em `honeypot/listener-session-always-on-*.jsonl`; desligamento gracioso via watch channel no SIGTERM; `interaction = "llm_shell"` para shell AI interativo, qualquer outro valor = `RejectAll`; 2 testes unitários (`test_always_on_filter_blocks_known_ip`, `test_always_on_mode_recognized`)
-- ✅ Skill open real: `suspend-user-sudo` (negação temporária de sudo via drop-in em `/etc/sudoers.d` + cleanup automático de expiração)
-- ✅ Dry-run por padrão (seguro para produção até o usuário habilitar)
-- ✅ Blocklist em memória persistida entre ticks: inserção sempre feita (inclusive dry_run) + pré-carregamento de `decisions-*.jsonl` do dia na inicialização (evita bloquear o mesmo IP mesmo após restart em dry_run)
-- ✅ **Audit trail** append-only: `decisions-YYYY-MM-DD.jsonl`
-- ✅ Webhook HTTP POST com filtragem por severidade mínima (dispara no tick rápido — em tempo real)
-- ✅ Narrativa diária em Markdown: `summary-YYYY-MM-DD.md` com throttle mínimo de 5min entre escritas (evita reescrita em cada tick); instante da última escrita recuperado via mtime do arquivo ao reiniciar
-- ✅ Dois loops independentes no mesmo `tokio::select!`: rápido (incidentes + webhook + AI, 2s) + lento (narrativa, 30s)
-- ✅ Cursor persistido após cada tick — fail-open em ambos os loops (crash nunca derruba o agent)
-- ✅ `reqwest::Client` reutilizado entre chamadas AI (connection pool real, sem overhead de TLS por chamada)
-- ✅ Audit trail com flush imediato por decisão — sobrevive a crash entre execução e shutdown
-- ✅ Modo `--once` para processamento batch
-- ✅ Modo `--report` v2: gera relatório operacional do trial com deltas dia-a-dia + anomaly hints + seção de telemetria (`trial-report-YYYY-MM-DD.{md,json}`) sem alterar estado; inclui seção `recent_window` com janela deslizante real de 6h (abrange ontem+hoje, usa campo `ts` e `action_type` corretos)
-- ✅ Carregamento automático de `.env` na inicialização (dotenvy, fail-silent)
-- ✅ Replay QA harness end-to-end (`make replay-qa`) com fixtures multi-source (auth_log + falco_log + suricata_eve + osquery_log) e assertions de source por collector
-- ✅ Playbook de rollout hardening + smoke checks remotos (`make rollout-precheck/postcheck`)
-- ✅ Correlação temporal leve de incidentes por janela + pivôs (`ip`, `user`, `detector`) com contexto para AI e clusters narráveis
-- ✅ Telemetria operacional leve (JSONL) com métricas de ingestão, detectores, gate, AI, latência, erros e dry-run vs execução real
-- ✅ Dashboard local autenticado (`--dashboard`) com visão operacional de eventos/incidentes/decisões/telemetria + autenticação HTTP Basic obrigatória
-- ✅ Dashboard D2 — UX de investigação estilo Clarity: split-pane com investigação read-only em múltiplas etapas: D2.1 (jornada por IP com `/api/entities` + `/api/journey`), D2.2 (filtros + pivôs `ip|user|detector` com `/api/pivots`), D2.3 (cluster-first com `/api/clusters` + export de snapshot JSON/Markdown via `/api/export`) e D2.4 (investigação guiada com hints narrativos, atalhos de pivô, comparação temporal por data/janela e deep-link inicial por query string)
-- ✅ Dashboard header com logo SVG de alto contraste (mesmo logo, melhor legibilidade visual no topo)
-- ✅ Dashboard D4 — redesign visual site-matched (paleta navy `#040814`, acento `#78e5ff`, danger `#f43f5e`, radial gradients ambient, border-radius moderno, inputs/cards mais escuros) + mobile UX completo (collapsar/expandir painel via toggle button, touch targets, toast e modal full-width, layout responsivo melhorado)
-- ✅ **Dashboard D3** — ações operacionais guardadas: operador pode bloquear IPs (`block-ip-*`) e suspender usuários (`suspend-user-sudo`) diretamente da timeline da investigação, com campo de razão obrigatório, modal de confirmação com badge de modo (DRY RUN / LIVE), toast de feedback e auditoria completa em `decisions-YYYY-MM-DD.jsonl` (ai_provider: `dashboard:operator`). Ações desabilitadas por padrão; requerem `responder.enabled = true` no agent.toml. Suporte a dry-run transparente (simula a ação sem executar comandos do sistema). Endpoints: `POST /api/action/block-ip`, `POST /api/action/suspend-user`, `GET /api/action/config`.
-- ✅ **Dashboard D5** — attacker path viewer: `JourneyResponse` agora inclui `verdict` (attack assessment com entry_vector, access_status, privilege_status, containment_status, honeypot_status, confidence) e `chapters` (fases lógicas derivadas automaticamente: reconnaissance, initial_access_attempt, access_success, privilege_abuse, response, containment, honeypot_interaction). UI exibe verdict card antes da timeline, chapter rail navegável clicável e evidence cards com metadados humanos + Raw JSON secundário (toggle). `window._journeyData` armazena dados da jornada para scroll-to-chapter.
-- ✅ **Dashboard D6** — notificações push em tempo real via Server-Sent Events (SSE): `GET /api/events/stream` com autenticação Basic. File watcher interno (2 s) detecta crescimento de `incidents-*.jsonl` e `decisions-*.jsonl` e faz push de evento `refresh` via broadcast channel (`tokio::sync::broadcast`, capacity 64). Heartbeat de 30 s mantém a conexão viva. Frontend usa `fetch()` + `ReadableStream` (compatível com Basic auth, diferente do `EventSource` nativo) com reconexão automática a cada 3 s. Indicador `● LIVE` / `● reconnecting` em `#refreshStatus` no header. Fallback para poll de 30 s se SSE não conectar em 35 s.
-- ✅ **Dashboard D7** — timeline ao vivo: SSE aciona `refreshLeftLive()` em vez de reload completo. Novos cards de entidade aparecem com animação CSS `cardSlideIn` (slide + borda cyan). KPIs piscam em cyan (`kpiFlash`) quando o valor muda. Cards existentes têm contagens atualizadas silenciosamente. Scroll e seleção preservados. `state.knownItemValues` (Set) rastreia entidades renderizadas para diff incremental.
-- ✅ **Dashboard D8** — alertas push de incidentes: file watcher lê novas linhas de `incidents-*.jsonl` por byte offset a cada 2 s; para severidade High/Critical emite evento SSE `alert` com payload `{ severity, title, entity_type, entity_value }`. Frontend exibe `showAlertToast()` — badge colorido (vermelho/laranja), título e link clicável `→ IP/entidade` que abre diretamente o journey panel. Toast persiste 8 s.
-- ✅ **Dashboard D9** — busca inline de entidades: campo `<input type="search">` acima da lista filtra cards em tempo real por qualquer texto visível (IP, detector, severidade, contagens) — sem round-trip ao servidor, sem reload, scroll preservado. Mensagem "No matches for X" quando nenhum card passa no filtro. Filtro re-aplicado automaticamente após `refreshLeft()` e `refreshLeftLive()`.
-- ✅ **Dashboard D11** — status bar + home quick-actions: header permanente mostra badge de modo (🛡 GUARD / 👁 WATCH / READ-ONLY) e badge de AI (provider/modelo ou "AI: off"); status view inclui seção System com mode, AI brain e agent liveness (segundos desde última telemetria); home state ganha row de quick-action buttons (Investigate Top Threat / Daily Report / System Status); `/api/action/config` expõe `ai_enabled`, `ai_provider`, `ai_model`, `mode`; `/api/status` expõe `last_telemetry_secs`; `DashboardActionConfig` ganha campos `ai_enabled`, `ai_provider`, `ai_model`.
-- ✅ **Telegram T.4** — `/capabilities` com inline keyboard: botões `[Enable →]` para cada capability desabilitada (AI, Block-IP, Sudo Guard, AbuseIPDB, GeoIP); `enable:<id>` callback roteado via `parse_callback` → handler em main.rs que roda `innerwarden enable <id>` como subprocess; quando todas ativas mostra botão de status; `TelegramClient::send_text_with_keyboard()` adicionado.
-- ✅ **Dashboard D10** — tab Report: navegação principal "Investigate / Report" no header. `GET /api/report[?date=YYYY-MM-DD]` computa `TrialReport` on-demand via `report::compute_for_date`. `GET /api/report/dates` lista datas disponíveis. Tab renderiza KPIs, tendências dia-a-dia, anomaly hints com badges de severidade, tabela de saúde operacional, top IPs, incidents by type e sugestões. Seletor de data para navegar histórico. `data_retention.rs`: limpeza automática de arquivos antigos por tipo (`events_keep_days`, `incidents_keep_days`, `decisions_keep_days`, `telemetry_keep_days`, `reports_keep_days`), configurável em `[data]` no agent.toml, rodada no startup e no loop lento (30s).
-- ✅ **Telegram T.1** — notificações push: `send_incident_alert()` enviado para todo incidente High/Critical no tick rápido, com badge de severidade, ícone de fonte (🔬 falco, 🌐 suricata, 🔍 osquery, 🔐 ssh), resumo de entidades e botão deep-link opcional para o dashboard. Configurado via `[telegram]` no agent.toml ou vars de ambiente `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`.
-- ✅ **Telegram T.2** — aprovações bidirecionais: quando AI retorna `RequestConfirmation`, o agent envia inline keyboard (✅ Aprovar / ❌ Rejeitar) via Telegram. Polling task long-poll (25 s) detecta resposta do operador; ao aprovar, executa a ação e registra em `decisions-*.jsonl` com `ai_provider: "telegram:<operador>"`. TTL configurável (default 10 min); expirado → descartado. Suporta comando `/status` no bot.
-- ✅ **Telegram honeypot suggestion** — quando AI recomenda `honeypot` e Telegram está configurado, agent envia mensagem de personalidade com 4-botões inline: `[🍯 Honeypot] [🚫 Bloquear] [👁 Monitorar] [❌ Ignorar]`; ação sugerida pela AI ganha checkmark `✓`; callback `hpot:{action}:{ip}`; execução diferida via `PendingHoneypotChoice`; relatório pós-sessão com IOCs extraídos, veredicto AI e status de auto-block
-- ✅ **AbuseIPDB enrichment** — lookup antes do call AI; injetado no prompt como `IP REPUTATION (AbuseIPDB):`; fail-silent (rate limit, timeout, parse error → None); módulo `abuseipdb-enrichment/`
-- ✅ **Fail2ban integration** — `fail2ban::sync_tick` polls `fail2ban-client` CLI via `spawn_blocking`; bans não-privados não na blocklist são aplicados via block skills; `ai_provider: "fail2ban:<jail>"`; módulo `fail2ban-integration/`
-- ✅ **GeoIP enrichment** — ip-api.com free (45 req/min, sem API key); injetado no prompt como `IP GEOLOCATION:`; fail-silent; módulo `geoip-enrichment/`
-- ✅ **Slack notify** — `SlackClient` com Incoming Webhook POST; Block Kit com emoji + sidebar colorida + context row (host, entity, incident_id) + botão deep-link opcional para dashboard; `SlackConfig` com `webhook_url` / `SLACK_WEBHOOK_URL` / `min_severity` / `dashboard_url`; módulo `slack-notify/`; 5 testes
-- ✅ **Cloudflare integration** — `CloudflareClient` push de IP bloqueado para Cloudflare edge via IP Access Rules API (POST `/client/v4/zones/{zone_id}/firewall/access_rules/rules`); chamado após execução bem-sucedida de `block-ip-*` skill; `CloudflareConfig` com `zone_id`, `api_token` / `CLOUDFLARE_API_TOKEN`, `auto_push_blocks`, `block_notes_prefix`; fail-silent; módulo `cloudflare-integration/`; 6 testes
-- ✅ **AbuseIPDB auto-block gate** — `abuseipdb.auto_block_threshold` (0–100, default 0=desabilitado); quando `confidence_score >= threshold`, IP é bloqueado diretamente sem chamar AI; `ai_provider: "abuseipdb"` no audit trail; elimina custo de API para IPs conhecidos de botnet durante ataques DDoS
-- ✅ **AI rate limiting e circuit breaker** — `ai.max_ai_calls_per_tick` (default 5): limita chamadas AI por tick, excesso adiado para próximo tick; `ai.circuit_breaker_threshold` (default 0=desabilitado): quando `new_incidents >= threshold`, suspende AI para aquele tick inteiro e seta `circuit_breaker_until = now + cooldown_secs`; `AgentState.circuit_breaker_until` reseta automaticamente após cooldown
-
----
-
-## Fluxo resumido
-
-**sensor** coleta host activity (auth_log, journald, docker, integrity, exec_audit opcional) via `mpsc::channel(1024)`, passa por detectors stateful (ssh_bruteforce, credential_stuffing, port_scan, sudo_abuse) e escreve `events-*.jsonl` + `incidents-*.jsonl` no `data_dir` compartilhado.
-
-**agent** lê incrementalmente via byte-offset cursors. Loop rápido (2s): webhook + Telegram T.1 → algorithm gate (severity < High / IP privado / já bloqueado → skip) → AI provider → executor (confidence ≥ threshold AND auto_execute) → skill (block_ip / monitor_ip / honeypot / suspend_user_sudo) → `decisions-*.jsonl`; Telegram T.2 polling task em background envia confirmações pendentes ao operador e executa ação aprovada. Loop lento (30s): regenera `summary-*.md` com throttle de 5min.
-
-### Saídas geradas por dia
-
-| Arquivo | Quem escreve | Conteúdo |
-|---------|-------------|---------|
-| `events-YYYY-MM-DD.jsonl` | sensor | Um evento por linha (SSH, Docker, integrity, journald, auditd opcional) |
-| `incidents-YYYY-MM-DD.jsonl` | sensor | Incidentes detectados (brute-force, etc.) |
-| `decisions-YYYY-MM-DD.jsonl` | agent | Decisões da AI com confidence, ação (`block_ip`/`monitor`/`honeypot`/`suspend_user_sudo`/`ignore`), `target_ip`, `target_user` e resultado |
-| `telemetry-YYYY-MM-DD.jsonl` | agent | Snapshots operacionais (coletores, detectores, gate, AI, latência, erros, dry-run/real) |
-| `honeypot/listener-session-*.json` | agent | Metadados de sessão do honeypot listener (serviços, redirecionamento, stats) |
-| `honeypot/listener-session-*.jsonl` | agent | Evidências por conexão/sessão no honeypot listener |
-| `honeypot/listener-session-*.pcap` | agent | Captura limitada opcional de handoff forense (`[honeypot.pcap_handoff]`) |
-| `honeypot/listener-session-*.external-handoff.json` | agent | Resultado da integração externa de forense (`[honeypot.external_handoff]`) |
-| `honeypot/listener-session-*.external-handoff.sig` | agent | Assinatura HMAC-SHA256 do handoff externo (`[honeypot.external_handoff]`) |
-| `honeypot/listener-active.lock` | agent | Lock de sessão ativa (controle de concorrência + stale recovery) |
-| `summary-YYYY-MM-DD.md` | agent | Narrativa Markdown diária (eventos, incidentes, IPs top) |
-| `state.json` | sensor | Cursors dos collectors (offsets, hashes, timestamps) |
-| `agent-state.json` | agent | Byte offsets de leitura JSONL por data |
+For user-facing overview, install instructions, and feature summary: see `README.md`.
 
 ---
 
@@ -131,779 +10,129 @@ Agente de defesa autônomo para servidores Linux e macOS. Dois componentes Rust:
 
 ```
 crates/
-  core/     — tipos compartilhados: Event, Incident, EntityRef, Severity, EntityType
-  ctl/      — binário innerwarden-ctl, instalado como `innerwarden` (plano de controle)
-    src/
-      main.rs              — CLI: enable, disable, list, status, doctor, upgrade, module *
-      capability.rs        — Capability trait + ActivationOptions + CapabilityRegistry
-      config_editor.rs     — patch TOML atômico via toml_edit (preserva comentários)
-      preflight.rs         — BinaryExists, DirectoryExists, UserExists, VisudoAvailable
-      sudoers.rs           — SudoersDropIn: write + visudo validation + install
-      systemd.rs           — restart_service / is_service_active
-      capabilities/
-        ai.rs                 — enable/disable AI analysis (provider=openai|anthropic|ollama + model + base_url)
-        block_ip.rs           — enable/disable block-ip (ufw|iptables|nftables)
-        sudo_protection.rs    — enable/disable sudo-protection (detector + skill)
-        shell_audit.rs        — enable/disable shell-audit (privacy gate obrigatório)
-        search_protection.rs  — enable/disable search-protection (nginx collector + search_abuse + rate-limit-nginx)
-      module_manifest.rs     — ModuleManifest parser + collector/detector ID → config section lookup + sudoers rule generator
-      module_validator.rs    — validação estática de pacotes de módulo
-      scan.rs                — SystemProbes + score_modules + cmd_scan; Q&A interativo; 7 testes
-  sensor/   — binário innerwarden-sensor
-    src/
-      main.rs
-      config.rs
-      collectors/
-        auth_log.rs          — tail /var/log/auth.log, parser SSH
-        integrity.rs         — SHA-256 polling de arquivos
-        journald.rs          — subprocess journalctl --follow --output=json
-        exec_audit.rs        — tail /var/log/audit/audit.log (EXECVE + TTY opcional)
-        docker.rs            — subprocess docker events; privilege escalation detection via docker inspect on container.start (--privileged, docker.sock, CapAdd); 10 testes
-        nginx_access.rs      — tail nginx access log (Combined Log Format), emite http.request
-        nginx_error.rs       — tail nginx error.log; emite http.error (warn/error/crit com client IP); 8 testes
-        macos_log.rs         — subprocess `log stream` (macOS); reusa parser SSH; emite sudo.command
-        wazuh_alerts.rs      — tail /var/ossec/logs/alerts/alerts.json; severity por rule.level; incident passthrough High/Critical; 12 testes
-        syslog_firewall.rs   — tail /var/log/syslog; parse iptables/nftables/UFW DROP (SRC=, DPT=); emite network.connection_blocked → port_scan; 10 testes
-      detectors/
-        ssh_bruteforce.rs    — sliding window por IP
-        credential_stuffing.rs — spray de usuários distintos por IP
-        port_scan.rs         — portas de destino únicas por IP (firewall logs)
-        sudo_abuse.rs        — burst de comandos sudo suspeitos por usuário (janela + threshold)
-        search_abuse.rs      — sliding window por IP+path (nginx http.request events)
-        web_scan.rs          — sliding window por IP (nginx http.error events); detecta scanners/probes; 6 testes
-        execution_guard.rs   — AST (tree-sitter-bash) + argv analysis + timeline correlation por usuário
-        user_agent_scanner.rs — UA-based scanner detection (http.request); 20 signatures; dedup 10min; MITRE T1595/T1595.002; 11 testes
-      sinks/
-        jsonl.rs             — DatedWriter com rotação diária
-        state.rs             — load/save atômico de cursors
-  agent/    — binário innerwarden-agent
-    src/
-      main.rs                — CLI + dois loops (AI 2s + narrative 30s) + SIGTERM
-      config.rs              — AgentConfig: narrative, webhook, ai, correlation, telemetry, honeypot, responder
-      reader.rs              — JSONL incremental reader + AgentCursor persistence
-      correlation.rs         — correlação temporal leve + clusterização de incidentes
-      telemetry.rs           — telemetria operacional leve (snapshot JSONL por tick)
-      dashboard.rs           — servidor HTTP local autenticado + UI operacional/investigação
-      report.rs              — relatório operacional v2 (`--report`) com tendências, anomaly hints e telemetria; `compute_for_date` + `list_available_dates` para API
-      data_retention.rs      — limpeza automática de arquivos antigos por tipo (events/incidents/decisions/telemetry/reports)
-      narrative.rs           — geração de Markdown diário (generate/write/cleanup)
-      webhook.rs             — HTTP POST de notificações de incidente
-      decisions.rs           — DecisionWriter + DecisionEntry (audit trail JSONL)
-      telegram.rs            — TelegramClient: T.1 notifications + T.2 inline-keyboard approvals + polling loop
-      abuseipdb.rs           — AbuseIpDbClient: IP reputation enrichment via AbuseIPDB API v2; IpReputation + as_context_line(); 6 testes
-      fail2ban.rs            — Fail2BanClient: polls fail2ban-client CLI for active bans; sync_tick enforces via block skills; 5 testes
-      geoip.rs               — GeoIpClient: ip-api.com lookup (free, no key); GeoInfo + as_context_line(); injected into AI prompt; 5 testes
-      slack.rs               — SlackClient: Incoming Webhook POST with Block Kit; severity emoji + color sidebar; optional dashboard deep-link; 5 testes
-      cloudflare.rs          — CloudflareClient: IP Access Rules push para edge Cloudflare após block_ip; `push_block(ip, reason)`; fail-silent; `CloudflareConfig` com zone_id + api_token / CLOUDFLARE_API_TOKEN; 6 testes
-      ioc.rs                 — ExtractedIocs: regex de IPs/URLs/domínios a partir de comandos shell do honeypot; categorias (download, persistence, enumeration, network, execution, obfuscation); format_telegram() + format_list(); 5 testes
-      ai/
-        mod.rs               — AiProvider trait, AiDecision, AiAction, algorithm gate, factory
-        openai.rs            — implementação real OpenAI (gpt-4o-mini)
-        anthropic.rs         — implementação real Anthropic (claude-haiku-4-5-20251001 default; troca modelo OpenAI automaticamente)
-        ollama.rs            — stub "coming soon / contribute"
-      skills/
-        mod.rs               — ResponseSkill trait, SkillRegistry, Blocklist, SkillTier
-        builtin/
-          mod.rs
-          block_ip_ufw.rs    — Open ✅
-          block_ip_iptables.rs — Open ✅
-          block_ip_nftables.rs — Open ✅
-          block_ip_pf.rs     — Open ✅ (macOS Packet Filter: pfctl -t innerwarden-blocked -T add <IP>)
-          suspend_user_sudo.rs — Open ✅ (suspensão temporária de sudo com TTL + cleanup)
-          monitor_ip.rs      — Premium ✅ (captura limitada via tcpdump + sidecar metadata)
-          honeypot/
-            mod.rs         — Premium ✅ (hardening 8.7: jail profile presets + receiver attestation no handoff externo)
-            ssh_interact.rs  — interação SSH via russh (fase 8.8: key exchange + captura de credenciais)
-            http_interact.rs — interação HTTP com login page fake (fase 8.8: captura de formulário)
-examples/
-  systemd/innerwarden-sensor.service
-scripts/
-  replay_qa.sh — harness de replay fim-a-fim (fixture log → sensor → agent --once → --report + telemetry assertions)
-  rollout_smoke.sh — pre/post smoke checks + plano de rollback rápido para produção
-modules/                           — soluções verticais empacotadas (ver docs/module-authoring.md)
-  ssh-protection/                  — SSH brute-force + credential stuffing → block-ip (built-in)
-    module.toml                    — manifest: id, version, provides, rules, security constraints
-    config/                        — sensor.example.toml + agent.example.toml
-    docs/README.md
-  network-defense/                 — port scan → block-ip (built-in)
-  sudo-protection/                 — sudo abuse → suspend-user-sudo (built-in)
-  file-integrity/                  — SHA-256 file monitoring → webhook (built-in)
-  container-security/              — Docker lifecycle events (built-in, observability only)
-  threat-capture/                  — monitor-ip + honeypot (built-in, Premium)
-  search-protection/               — nginx access log → search_abuse → block-ip (built-in, M.3)
-  execution-guard/                 — shell.command_exec + sudo.command → execution_guard AST detector (built-in, observe mode)
-  falco-integration/               — Falco eBPF/syscall alerts → incidents (built-in, incident passthrough High+)
-  suricata-integration/            — Suricata network IDS alerts → incidents (built-in, incident passthrough sev 1-2)
-  nginx-error-monitor/             — nginx error.log → web_scan → block-ip (built-in)
-  abuseipdb-enrichment/            — AbuseIPDB IP reputation → AI context enrichment (built-in)
-  fail2ban-integration/            — fail2ban active bans → block skills enforcement (built-in)
-  geoip-enrichment/                — ip-api.com geolocation → AI context enrichment (built-in, no API key)
-  wazuh-integration/               — Wazuh HIDS alerts → incidents (built-in, incident passthrough High+, 12 testes)
-  slack-notify/                    — Slack Incoming Webhook notifications (built-in)
-  osquery-integration/             — osquery differential results → events (built-in, observability, sem passthrough)
-  cloudflare-integration/          — IP block push para Cloudflare edge via IP Access Rules API (built-in)
+  core/     — shared types: Event, Incident, EntityRef, Severity, EntityType
+  sensor/   — innerwarden-sensor binary (deterministic collection, zero AI/HTTP)
+  agent/    — innerwarden-agent binary (AI triage, skill execution, dashboard, notifications)
+  ctl/      — innerwarden / innerwarden-ctl binary (control plane CLI)
+modules/    — vertical security modules (manifest + config + docs + tests)
+integrations/ — declarative integration recipes for external tools
 docs/
-  module-authoring.md              — guia completo para criar módulos + passo-a-passo Claude Code/Codex
-  integration-recipes.md           — formato de recipe + guia de geração por AI + fluxo de contribuição
-integrations/                      — integration recipes (declarative specs for external tool collectors)
-  README.md                        — índice de recipes disponíveis
-  falco/recipe.toml                — Falco eBPF/syscall runtime security (file_tail, incident_passthrough)
-  wazuh/recipe.toml                — Wazuh HIDS / FIM / compliance (file_tail, incident_passthrough)
-  osquery/recipe.toml              — osquery host observability (file_tail, no passthrough)
+  internal/ — detailed capability and operations references (this file's companions)
+  *.md      — public documentation
+examples/   — systemd service files
+scripts/    — replay QA, rollout smoke checks
+testdata/   — fixture files for tests
+```
+
+### Sensor source layout (`crates/sensor/src/`)
+
+```
+collectors/
+  auth_log.rs          nginx_access.rs      falco_log.rs
+  journald.rs          nginx_error.rs       suricata_eve.rs
+  exec_audit.rs        syslog_firewall.rs   wazuh_alerts.rs
+  docker.rs            macos_log.rs         osquery_log.rs
+  integrity.rs
+detectors/
+  ssh_bruteforce.rs    search_abuse.rs      execution_guard.rs
+  credential_stuffing.rs  web_scan.rs       user_agent_scanner.rs
+  port_scan.rs         sudo_abuse.rs
+sinks/
+  jsonl.rs             state.rs
+```
+
+### Agent source layout (`crates/agent/src/`)
+
+```
+ai/
+  mod.rs (AiProvider trait, gate, factory)
+  openai.rs   anthropic.rs   ollama.rs
+skills/builtin/
+  block_ip_ufw.rs   block_ip_iptables.rs   block_ip_nftables.rs   block_ip_pf.rs
+  suspend_user_sudo.rs   monitor_ip.rs
+  honeypot/ (mod.rs, ssh_interact.rs, http_interact.rs)
+dashboard.rs   report.rs        data_retention.rs
+correlation.rs telemetry.rs     narrative.rs
+webhook.rs     decisions.rs     reader.rs
+telegram.rs    slack.rs         cloudflare.rs
+abuseipdb.rs   geoip.rs         fail2ban.rs
+```
+
+### CTL source layout (`crates/ctl/src/`)
+
+```
+main.rs              capability.rs        config_editor.rs
+preflight.rs         sudoers.rs           systemd.rs
+scan.rs              module_manifest.rs   module_validator.rs
+capabilities/
+  ai.rs   block_ip.rs   sudo_protection.rs   shell_audit.rs   search_protection.rs
 ```
 
 ---
 
-## Comandos essenciais
+## Essential Commands
 
 ```bash
-# Build e teste (cargo não está no PATH padrão)
-make test             # 512 testes (185 sensor + 180 agent + 147 ctl)
-make build            # debug build de todos (sensor + agent + ctl)
-make build-sensor     # só o sensor
-make build-agent      # só o agent
-make build-ctl        # só o ctl (innerwarden binary)
-
-# Capability management (após instalar)
-innerwarden list                    # lista capabilities com status atual
-innerwarden status                  # overview global: serviços + capabilities + módulos
-innerwarden status block-ip         # status de uma capability específica
-innerwarden enable ai                # ativa AI analysis (openai por default)
-innerwarden enable ai --param provider=ollama --param model=llama3.2  # Ollama local
-innerwarden enable ai --param provider=anthropic  # Anthropic (requer ANTHROPIC_API_KEY)
-innerwarden enable ai --param provider=ollama --param base_url=http://remote:11434
-innerwarden disable ai              # desativa AI (preserva provider/model no config)
-innerwarden enable block-ip         # ativa block-ip (ufw por default)
-innerwarden enable block-ip --param backend=iptables  # backend alternativo
-innerwarden enable sudo-protection  # ativa detector sudo_abuse + skill
-innerwarden enable shell-audit      # ativa exec_audit (com privacy gate)
-innerwarden enable shell-audit --yes  # pula confirmação interativa
-innerwarden disable block-ip        # desativa capability (reverte config + sudoers + restart)
-innerwarden --dry-run enable block-ip  # mostra o que seria feito
-innerwarden scan                    # detecta serviços/ferramentas instalados, pontua módulos e recomenda
-                                    # os melhores para este servidor (ESSENTIAL/RECOMMENDED/OPTIONAL);
-                                    # prompt interativo: digitar nome ou número de módulo exibe README
-innerwarden doctor                  # diagnóstico completo com fix hints; exit 1 se houver issues
-                                    # inclui seção Telegram quando enabled=true: valida bot_token
-                                    # (formato <id>:<secret>) e chat_id (numérico), resolve via
-                                    # config / env var / agent.env, hints passo-a-passo para @BotFather e @userinfobot
-innerwarden upgrade                 # busca novo release no GitHub e instala atomicamente
-innerwarden upgrade --check         # só verifica se há update disponível, não instala
-
-# Notifications (wizards interativos)
-innerwarden notify telegram                              # wizard: cria bot, detecta chat_id, testa, reinicia agent
-innerwarden notify telegram --token T --chat-id C       # não-interativo (CI/scripts)
-innerwarden notify slack                                 # wizard: URL do webhook, testa, reinicia agent
-innerwarden notify slack --webhook-url URL --min-severity medium
-innerwarden notify webhook --url https://... --min-severity high
-innerwarden notify dashboard                             # wizard: usuário + senha (gera hash Argon2 via agent binary)
-innerwarden notify dashboard --user admin --password mypassword
-innerwarden notify test                                  # envia alerta de teste a todos os canais configurados
-innerwarden notify test --channel telegram               # testa apenas um canal
-
-# Integrações de enriquecimento
-innerwarden integrate abuseipdb                         # wizard: instrucoes de registro + API key → agent.env
-innerwarden integrate abuseipdb --api-key <key>
-innerwarden integrate geoip                              # habilita ip-api.com, sem API key
-innerwarden integrate fail2ban                           # verifica instalação, habilita integração
-innerwarden integrate watchdog                           # configura cron de health monitoring
-
-# Module management
-innerwarden module validate ./modules/ssh-protection   # valida manifest, segurança, testes, docs
-innerwarden module install https://example.com/mod.tar.gz  # baixa, valida SHA-256, instala
-innerwarden module install ./local-mod.tar.gz --enable  # instala + habilita imediatamente
-innerwarden module uninstall <id>                       # desativa e remove
-innerwarden module publish ./modules/my-module          # empacota em .tar.gz + gera .sha256
-innerwarden module update-all                           # atualiza todos os módulos com update_url
-innerwarden module update-all --check                   # só verifica atualizações, não instala
-innerwarden module list                                 # lista módulos instalados com status
-innerwarden module status <id>                          # detalhe de um módulo específico
-
-# Instalação trial em servidor Linux (systemd)
-./install.sh          # pede OPENAI_API_KEY, instala binários em /usr/local/bin,
-                      # pede consentimento explícito para trilha de shell audit (opcional),
-                      # cria /etc/innerwarden/{config.toml,agent.toml,agent.env},
-                      # cria/ativa innerwarden-sensor + innerwarden-agent,
-                      # sobe em modo seguro (responder.enabled=false, dry_run=true)
-
-# Rodar localmente
-make run-sensor       # sensor com config.test.toml
-make run-agent        # agent lendo ./data/
-make run-dashboard    # dashboard read-only em http://127.0.0.1:8787 (requer auth env vars)
-innerwarden-agent --dashboard-generate-password-hash  # gera hash Argon2 para auth do dashboard
-innerwarden-agent --report --data-dir ./data  # gera trial-report-YYYY-MM-DD.{md,json}
-make replay-qa        # replay end-to-end multi-source (auth_log + falco_log + suricata_eve + osquery_log)
-make ops-check DATA_DIR=./data  # quick ops-check da janela de 6h do último trial-report-*.json
-
-# Cross-compile para Linux arm64 (requer cargo-zigbuild + zig)
-make build-linux      # → target/aarch64-unknown-linux-gnu/release/innerwarden-{sensor,agent}
-
-# Deploy (ajustar HOST=user@servidor)
-make deploy HOST=ubuntu@1.2.3.4
-make deploy-config HOST=ubuntu@1.2.3.4
-make deploy-service HOST=ubuntu@1.2.3.4
-
-# Rollout hardening (pré/pós deploy + rollback)
-make rollout-precheck HOST=ubuntu@1.2.3.4
-make rollout-postcheck HOST=ubuntu@1.2.3.4
-make rollout-rollback HOST=ubuntu@1.2.3.4
-make rollout-stop-agent HOST=ubuntu@1.2.3.4
-
-# Logs remotos
-make logs HOST=ubuntu@1.2.3.4
-make status HOST=ubuntu@1.2.3.4
+make test             # run all tests (must pass before committing)
+make build            # debug build — sensor + agent + ctl
+make run-sensor       # sensor with config.test.toml, writes to ./data/
+make run-agent        # agent reading ./data/
+make replay-qa        # end-to-end multi-source replay validation
 ```
 
-`cargo` fica em `~/.cargo/bin/cargo` — o Makefile resolve via `CARGO` variable.
+See [docs/internal/operations.md](docs/internal/operations.md) for full command reference, deployment, and permissions.
 
 ---
 
-## Configuração
+## Architecture Summary
 
-### Sensor (`config.toml`)
+**Sensor** — collects host activity (auth_log, journald, docker, integrity, exec_audit, nginx, firewall logs) via `mpsc::channel(1024)`, passes through stateful detectors (ssh_bruteforce, credential_stuffing, port_scan, sudo_abuse, etc.), writes `events-*.jsonl` + `incidents-*.jsonl`.
 
-```toml
-[agent]
-host_id = "meu-servidor"
+**Agent** — reads incrementally via byte-offset cursors. Fast loop (2s): webhook + Telegram → algorithm gate → enrichment (AbuseIPDB, GeoIP) → AI provider → skill executor → audit trail → notifications. Slow loop (30s): narrative, telemetry, data retention.
 
-[output]
-data_dir = "/var/lib/innerwarden"
-write_events = true
-
-[collectors.auth_log]
-enabled = true
-path = "/var/log/auth.log"
-
-[collectors.macos_log]
-enabled = false   # macOS only; usa `log stream`; substitui auth_log + journald no Darwin
-
-[collectors.journald]
-enabled = true
-units = ["sshd", "sudo", "kernel"]   # "sshd" não "ssh"; "kernel" habilita sinais de firewall/port scan
-
-[collectors.exec_audit]
-enabled = false
-path = "/var/log/audit/audit.log"
-include_tty = false   # alto impacto de privacidade; habilite só com autorização explícita
-
-[collectors.docker]
-enabled = true
-
-[collectors.integrity]
-enabled = true
-poll_seconds = 60
-paths = ["/etc/ssh/sshd_config", "/etc/sudoers"]
-
-[collectors.syslog_firewall]
-enabled = false        # alternativa ao journald.kernel para servidores sem journald
-path = "/var/log/syslog"  # ou /var/log/kern.log; feeds port_scan detector
-
-[detectors.ssh_bruteforce]
-enabled = true
-threshold = 8
-window_seconds = 300
-
-[detectors.credential_stuffing]
-enabled = false       # recomendado habilitar após baseline de ruído no host
-threshold = 6         # usuários distintos por IP na janela
-window_seconds = 300
-
-[detectors.port_scan]
-enabled = false       # recomendado habilitar após validar volume de logs de firewall
-threshold = 12        # portas de destino únicas por IP na janela
-window_seconds = 60
-
-[detectors.sudo_abuse]
-enabled = false       # recomendado habilitar com política clara de resposta e governança
-threshold = 3         # comandos sudo suspeitos por usuário na janela
-window_seconds = 300
-
-[detectors.user_agent_scanner]
-enabled = false       # recomendado habilitar se nginx_access.enabled = true
-# Sem parâmetros de threshold — qualquer UA de scanner conhecido é incidente imediato
-```
-
-### Variáveis de ambiente (`.env`)
-
-```bash
-# Copie o template e preencha sua chave:
-cp .env.example .env
-
-# .env (nunca commitar — está no .gitignore)
-OPENAI_API_KEY=sk-...
-# ANTHROPIC_API_KEY=sk-ant-...  # provider Anthropic real; use com provider = "anthropic" no agent.toml
-# RUST_LOG=innerwarden_agent=debug
-```
-
-O agent carrega `.env` automaticamente ao iniciar. Em produção, use variáveis de ambiente reais — o `.env` é silenciosamente ignorado se não existir.
-
-Variáveis para dashboard (read-only + auth obrigatória):
-
-```bash
-# Usuário de login do dashboard
-INNERWARDEN_DASHBOARD_USER=admin
-
-# Hash Argon2 PHC gerado por:
-# innerwarden-agent --dashboard-generate-password-hash
-INNERWARDEN_DASHBOARD_PASSWORD_HASH=$argon2id$...
-```
-
-### Agent (`agent.toml`) — todos os campos têm defaults; arquivo é opcional
-
-```toml
-[narrative]
-enabled = true       # gera summary-YYYY-MM-DD.md (default: true)
-keep_days = 7        # quantos summaries manter (default: 7)
-
-[webhook]
-enabled = false
-url = "https://hooks.example.com/notify"
-min_severity = "medium"   # debug | info | low | medium | high | critical
-timeout_secs = 10
-
-[ai]
-enabled = true
-provider = "openai"        # openai | anthropic | ollama
-# api_key = ""             # ou env var OPENAI_API_KEY / ANTHROPIC_API_KEY
-model = "gpt-4o-mini"      # qualquer modelo do provider
-# base_url = ""            # ollama: override endpoint (default http://localhost:11434)
-                           # ou env var OLLAMA_BASE_URL
-context_events = 20        # eventos recentes enviados como contexto
-confidence_threshold = 0.8 # abaixo disso → não auto-executa
-incident_poll_secs = 2     # intervalo do loop rápido
-max_ai_calls_per_tick = 5  # máx chamadas AI por tick (default 5); 0 = sem limite
-circuit_breaker_threshold = 0   # 0 = desabilitado; recomendado: 20 para DDoS defense
-circuit_breaker_cooldown_secs = 60  # tempo de reset do circuit breaker após trippar
-
-[correlation]
-enabled = true
-window_seconds = 300       # janela temporal para correlacionar incidentes
-max_related_incidents = 8  # contexto correlacionado enviado para AI
-
-[telemetry]
-enabled = true             # escreve telemetry-YYYY-MM-DD.jsonl (default: true)
-
-[honeypot]
-mode = "demo"              # demo | listener | always_on (default: demo)
-                           # always_on: SSH listener permanente desde o startup; sem duração limitada;
-                           # filtro por conexão: blocklist → AbuseIPDB gate → aceitar na interação configurada
-bind_addr = "127.0.0.1"    # listener mode
-port = 2222                # ssh decoy port (listener mode)
-http_port = 8080           # http decoy port (listener mode)
-duration_secs = 300        # janela limitada da sessão
-services = ["ssh"]         # ["ssh", "http"] para multi-serviço
-strict_target_only = true
-allow_public_listener = false
-max_connections = 64
-max_payload_bytes = 512
-isolation_profile = "strict_local" # strict_local | standard
-require_high_ports = true
-forensics_keep_days = 7
-forensics_max_total_mb = 128
-transcript_preview_bytes = 96
-lock_stale_secs = 1800
-interaction = "banner"         # banner (default) | medium (Cowrie-style: SSH key exchange + HTTP login page) | llm_shell (AI-backed interactive shell, always_on mode only)
-ssh_max_auth_attempts = 6      # SSH auth rounds before disconnect (medium interaction only)
-http_max_requests = 10         # max HTTP requests per connection (medium interaction only)
-
-[honeypot.sandbox]
-enabled = false
-runner_path = ""            # vazio = usa o próprio binary do innerwarden-agent
-clear_env = true
-
-[honeypot.pcap_handoff]
-enabled = false
-timeout_secs = 15
-max_packets = 120
-
-[honeypot.containment]
-mode = "process"             # process | namespace | jail
-require_success = false
-namespace_runner = "unshare"
-namespace_args = ["--fork", "--pid", "--mount-proc"]
-jail_runner = "bwrap"
-jail_args = []
-jail_profile = "standard"    # standard | strict
-allow_namespace_fallback = true
-
-[honeypot.external_handoff]
-enabled = false
-command = "/usr/local/bin/iw-handoff"
-args = ["--session-id", "{session_id}", "--target", "{target_ip}", "--metadata", "{metadata_path}", "--evidence", "{evidence_path}", "--pcap", "{pcap_path}"]
-timeout_secs = 20
-require_success = false
-clear_env = true
-allowed_commands = ["/usr/local/bin/iw-handoff"]
-enforce_allowlist = false
-signature_enabled = false
-signature_key_env = "INNERWARDEN_HANDOFF_SIGNING_KEY"
-attestation_enabled = false
-attestation_key_env = "INNERWARDEN_HANDOFF_ATTESTATION_KEY"
-attestation_prefix = "IW_ATTEST"
-attestation_expected_receiver = ""
-
-[honeypot.redirect]
-enabled = false
-backend = "iptables"
-
-[responder]
-enabled = true
-dry_run = true             # SEGURANÇA: começa sempre em dry_run
-block_backend = "ufw"      # ufw | iptables | nftables
-allowed_skills = ["block-ip-ufw", "monitor-ip"]  # adicione "honeypot" e/ou "suspend-user-sudo" para permitir execução dessas skills
-
-[data]
-events_keep_days = 7       # arquivos events-*.jsonl: janela curta (alto volume)
-incidents_keep_days = 30   # arquivos incidents-*.jsonl
-decisions_keep_days = 90   # arquivos decisions-*.jsonl — audit trail, manter mais
-telemetry_keep_days = 14   # arquivos telemetry-*.jsonl
-reports_keep_days = 30     # arquivos trial-report-*.{json,md}
-```
-
-Config de teste local: `config.test.toml` (aponta para `./testdata/`).
-O agent usa `--data-dir` para apontar ao mesmo `data_dir` do sensor.
+**CTL** — control plane CLI: capability enable/disable, module management, diagnostics, upgrade, notifications setup, IP management, reporting, tuning.
 
 ---
 
-## Sistema de Módulos
+## Conventions
 
-Um **module** é uma solução vertical completa para um problema de segurança. Empacota collectors, detectors, skills e rules numa unidade coesa com manifest, config examples, testes e documentação.
-
-```
-modules/
-  ssh-protection/       — SSH brute-force + credential stuffing → block-ip
-  network-defense/      — port scan → block-ip
-  sudo-protection/      — sudo abuse → suspend-user-sudo
-  file-integrity/       — file hash monitoring → webhook alert
-  container-security/   — docker lifecycle events (observability)
-  threat-capture/       — monitor-ip + honeypot (Premium)
-  search-protection/    — nginx access log → search_abuse → block-ip (M.3)
-  nginx-error-monitor/  — nginx error.log → web_scan → block-ip
-  abuseipdb-enrichment/ — AbuseIPDB IP reputation → AI context enrichment
-  fail2ban-integration/ — fail2ban active bans → block skills enforcement
-  geoip-enrichment/     — ip-api.com geolocation → AI context enrichment (no API key)
-  wazuh-integration/    — Wazuh HIDS alerts → incidents (passthrough High+)
-  slack-notify/         — Slack Incoming Webhook notifications
-  cloudflare-integration/ — IP block push para Cloudflare edge via IP Access Rules API
-```
-
-Cada módulo contém:
-- `module.toml` — manifest com id, version, provides, rules, security constraints
-- `config/sensor.example.toml` + `config/agent.example.toml` — snippets prontos para copiar
-- `docs/README.md` — o que faz, quando usar, como configurar
-- `tests/` — pelo menos um teste por componente
-- `src/` — código Rust (apenas se o módulo adiciona novos collectors/detectors/skills)
-
-**Módulos built-in** (`builtin = true` no module.toml): código vive em `crates/`, módulo serve como manifest + config examples + docs.
-
-**Módulos externos** (novos): código começa em `modules/<id>/src/`, é registrado manualmente nos crates ao ser mergeado.
-
-Comandos de validação:
-```bash
-innerwarden module validate ./modules/my-module   # valida estrutura, manifest, segurança, testes
-```
-
-Guia completo de criação de módulos (incluindo passo-a-passo para Claude Code/Codex):
-→ `docs/module-authoring.md`
+- **Commits in English** — no other language in messages.
+- **CLAUDE.md always updated** — required part of the development process.
+- **Sensor**: deterministic, no HTTP/LLM/AI. Collectors are fail-open.
+- **Agent**: interpretive layer. May call external APIs.
+- Each collector: `run(tx, shared_state)` — async, never crashes the process.
+- I/O errors in sinks: log with `warn!`, do not propagate with `?`.
+- New event types: `source` describes origin, `kind` describes the event.
+- `Event.details`: keep small (< 16KB). No arbitrary payloads.
+- `spawn_blocking` for any synchronous file I/O inside Tokio tasks.
+- AI provider in `AgentState` uses `Arc<dyn AiProvider>` (not `Box`) — avoids borrow conflicts in async loops.
 
 ---
 
-## Sistema de Skills (open-core)
+## Development Process
+
+For each feature or fix, in this order:
 
 ```
-Tier   │ ID                  │ Módulo            │ Status
-───────┼─────────────────────┼───────────────────┼────────────────────────────────
-Open   │ block-ip-ufw        │ ssh-protection    │ ✅ executável
-Open   │ block-ip-iptables   │ ssh-protection    │ ✅ executável
-Open   │ block-ip-nftables   │ ssh-protection    │ ✅ executável
-Open   │ block-ip-pf         │ ssh-protection    │ ✅ executável — bloqueia IP via pfctl (macOS Packet Filter)
-Open   │ suspend-user-sudo   │ sudo-protection   │ ✅ executável — nega sudo por TTL com cleanup automático
-Open   │ rate-limit-nginx    │ search-protection │ ✅ executável — deny nginx layer (HTTP 403) com TTL + cleanup automático
-Premium│ monitor-ip          │ threat-capture    │ ✅ executável — captura limitada (`tcpdump`) + metadata
-Premium│ honeypot            │ threat-capture    │ ✅ hardening 8.7 (containment `process|namespace|jail` + jail_profile + handoff externo attested)
-```
-
-Para adicionar uma skill da comunidade:
-1. Criar um module em `modules/<id>/` seguindo `docs/module-authoring.md`
-2. Criar struct que implemente `ResponseSkill` trait em `skills/builtin/`
-3. Registrar em `SkillRegistry::default_builtin()`
-4. Abrir PR em https://github.com/maiconburn/innerwarden
-
-O trait `ResponseSkill` exige: `id()`, `name()`, `description()`, `tier()`, `applicable_to()`, `execute()`.
-
----
-
-## Multi-provider AI
-
-Para adicionar um novo provider de AI:
-1. Criar `crates/agent/src/ai/<nome>.rs` implementando `AiProvider` trait
-2. Registrar em `build_provider()` em `ai/mod.rs`
-3. Abrir PR
-
-O trait requer apenas: `fn name() -> &'static str` e `async fn decide(ctx) -> Result<AiDecision>`.
-Ver `openai.rs` como referência completa.
-
----
-
-## Permissões em produção (Ubuntu 22.04)
-
-```bash
-# Criar usuário dedicado
-sudo useradd -r -s /sbin/nologin innerwarden
-
-# Acesso ao journal sem root
-sudo usermod -aG systemd-journal innerwarden
-
-# Acesso ao socket Docker
-sudo usermod -aG docker innerwarden
-
-# Diretório de dados
-sudo mkdir -p /var/lib/innerwarden
-sudo chown innerwarden:innerwarden /var/lib/innerwarden
-
-# Permissões para skills de bloqueio (escolha o backend)
-# ufw:
-echo "innerwarden ALL=(ALL) NOPASSWD: /usr/sbin/ufw deny from *" \
-  | sudo tee /etc/sudoers.d/innerwarden
-
-# iptables (alternativa):
-echo "innerwarden ALL=(ALL) NOPASSWD: /sbin/iptables -A INPUT *" \
-  | sudo tee /etc/sudoers.d/innerwarden
-
-# nftables (alternativa):
-echo "innerwarden ALL=(ALL) NOPASSWD: /usr/sbin/nft add element *" \
-  | sudo tee /etc/sudoers.d/innerwarden
-
-# monitor-ip (premium, opcional):
-# requer permissão sudo para timeout+tcpdump; ajuste paths conforme distro.
-# Exemplo mínimo (revise com cuidado antes de usar em produção):
-# innerwarden ALL=(ALL) NOPASSWD: /usr/bin/timeout *, /usr/sbin/tcpdump *
-
-# suspend-user-sudo (open, opcional):
-# requer gerenciamento de drop-ins do sudoers e validação visudo.
-# Exemplo mínimo (revise com cuidado antes de usar em produção):
-# innerwarden ALL=(ALL) NOPASSWD: /usr/bin/install *, /usr/sbin/visudo -cf *, /bin/rm -f /etc/sudoers.d/zz-innerwarden-deny-*
-
-# Shell audit trail (opcional, alto impacto de privacidade):
-# - habilite apenas com autorização explícita do dono do host
-# - o install.sh pode criar automaticamente:
-#   /etc/audit/rules.d/innerwarden-shell-audit.rules
-# - se necessário, garanta acesso ao audit.log:
-#   sudo usermod -aG adm innerwarden
-#   sudo usermod -aG audit innerwarden   # quando o grupo existir
-```
-
-O `data_dir` no config.toml **deve** bater com `ReadWritePaths` no service file.
-
-Ver `docs/format.md` para schema completo de Event e Incident.
-
----
-
-## Testes
-
-```bash
-make test   # 511 testes (185 sensor + 178 agent + 148 ctl) — todos devem passar
-```
-
-Fixtures em `testdata/`:
-- `sample-auth.log` — 20 linhas SSH (9 falhas de 203.0.113.10, 8 de 198.51.100.5)
-- `sample-audit.log` — exemplos de `auditd` (`EXECVE` + `TTY`) para testes locais de shell trail
-- `watched/sshd_config`, `watched/sudoers` — fixtures para integrity watcher
-
-Testes de integração local:
-```bash
-make run-sensor                              # grava em ./data/
-make run-agent                              # lê de ./data/
-innerwarden-agent --data-dir ./data --once  # roda uma vez e sai
-innerwarden-agent --report --data-dir ./data # gera relatório operacional do trial
-make replay-qa                               # valida fluxo fixture → sensor → agent → report
-
-# Smoke test com AI em dry_run (seguro):
-# 1. Coloque OPENAI_API_KEY no .env
-# 2. Rode o sensor para gerar dados: make run-sensor
-# 3. Rode o agent com a config de teste:
-innerwarden-agent --data-dir ./data --config agent-test.toml
-# Deve logar: "DRY RUN: would execute: sudo ufw deny from X"
-# Decisões ficam em: ./data/decisions-YYYY-MM-DD.jsonl
-# Telemetria fica em: ./data/telemetry-YYYY-MM-DD.jsonl
-```
-
----
-
-## Processo de desenvolvimento
-
-**A cada feature ou correção, nesta ordem:**
-
-```
-1. implementar
-2. make test         ← todos os testes devem passar antes de commitar
-3. atualizar CLAUDE.md ← obrigatório: capabilities, workspace, config, próximos passos
-4. git commit (inglês)
+1. implement
+2. make test         ← all tests must pass before committing
+3. update CLAUDE.md  ← required: capabilities, workspace, config, next steps
+4. git commit (English)
 5. git push
 ```
 
-> **Regra de manutenção**: para mantenedores, o CLAUDE.md continua sendo a
-> referência operacional mais detalhada do projeto. Mudanças relevantes de
-> comportamento, artefatos, configuração ou dependências devem ser refletidas
-> aqui no mesmo commit para preservar contexto de continuidade.
-
-Documentação pública do repositório:
-- `README.md`
-- `CONTRIBUTING.md`
-- `SECURITY.md`
-- `CODE_OF_CONDUCT.md`
-- `docs/index.md`
-
-**Durante o production trial (execução paralela):**
-
-- Desenvolvimento contínuo em branch local dedicada de feature
-- Host de trial permanece estável sem upgrade automático
-- Promoção para produção só acontece por fase, com validação explícita
-- Plano ativo versionado em `ROADMAP.md`
-
 ---
 
-## Convenções
+## Detailed References
 
-- **Commits em inglês** — sem mensagens em português.
-- **CLAUDE.md sempre atualizado** — parte obrigatória do processo, não opcional.
-- **Sensor**: determinístico, sem HTTP/LLM/AI. Collectors são fail-open.
-- **Agent**: camada interpretativa. Pode chamar APIs externas.
-- Cada collector: `run(tx, shared_state)` — async, nunca derruba o processo.
-- Erros de I/O nos sinks: logar com `warn!`, não propagar com `?`.
-- Novos tipos de evento: `source` descreve a origem, `kind` descreve o evento.
-- `Event.details`: manter pequeno (< 16KB). Não incluir payloads arbitrários.
-- `spawn_blocking` para qualquer I/O de arquivo síncrono dentro de tasks Tokio.
-- AI provider em `AgentState` usa `Arc<dyn AiProvider>` (não `Box`) para evitar
-  conflitos de borrow checker em async loops com `&mut state`.
-
----
-
-## Próximos passos
-
-Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8): ver histórico de commits.
-
-- **Fase M.1–M.8:** ✅ sistema de módulos completo — manifest, validação, enable/disable, install/uninstall/publish/update-all, `module_package.rs` (download+SHA-256+tarball), `upgrade.rs` (GitHub API + semver)
-- **Fase C.2–C.5:** ✅ `innerwarden disable`, `status` global, `doctor` (diagnóstico + fix hints + exit 1), `upgrade` (GitHub API + SHA-256 + install atômico + restart)
-- **Release CI/CD:** ✅ `.github/workflows/release.yml` — x86_64 + aarch64 via cargo-zigbuild+zig 0.13; 6 binários + 6 `.sha256` + `install.sh`; pre-release automático para tags com `-`
-- **install.sh reescrito:** ✅ baixa binários pré-compilados por padrão (~10 s vs 5-10 min); `INNERWARDEN_BUILD_FROM_SOURCE=1` faz fallback para build local
-- **Fase D6:** ✅ SSE live push — `GET /api/events/stream`, file watcher 2 s, broadcast channel, `fetch()+ReadableStream` JS, `● LIVE` indicator, reconexão automática, fallback poll 30 s
-- **Fase D7:** ✅ timeline ao vivo — `refreshLeftLive()` via SSE: novos cards com animação `cardSlideIn`, KPIs piscam em cyan (`kpiFlash`), diff incremental por `state.knownItemValues`, scroll preservado
-- **Fase D8:** ✅ alertas push de incidentes — watcher lê novas linhas de `incidents-*.jsonl` por byte offset; emite evento SSE `alert` para High/Critical; `showAlertToast()` com badge, título e link clicável
-- **Fase D9:** ✅ busca inline — `<input type="search">` filtra cards client-side por qualquer texto visível; sem round-trip; re-aplicado após refreshLeft/refreshLeftLive
-- **Anthropic provider real:** ✅ POST `/v1/messages`, modelo padrão `claude-haiku-4-5-20251001`, troca automática do default OpenAI, `extract_json()` tolerante a prose, reutiliza `parse_decision` do openai.rs; 5 testes
-
-- **Telegram T.1 + T.2:** ✅ notificações High/Critical + aprovação inline keyboard; `telegram.rs` + config `[telegram]`; polling task em modo contínuo
-- **Telegram T.3 — bot conversacional + menu:** ✅ `/status`, `/help`, `/incidents`, `/decisions`, `/ask <question>`, free-text→AI; `/menu` envia inline keyboard com botões Status/Incidents/Decisions/Help; fix crítico: HTTP client timeout 15s→35s (bug onde long-poll de 25s expirava antes do retorno, bot nunca respondia); `menu:` callbacks roteados para sentinels `__xxx__`; 10 testes
-- **Ollama provider real:** ✅ POST `/api/chat`, `format: "json"`, `message.content`, `extract_json()` para prose, 120s timeout; 5 testes
-- **doctor provider-aware:** ✅ lê `[ai] provider` do agent.toml; valida OPENAI_API_KEY / ANTHROPIC_API_KEY / Ollama por provider; hints de rotação de chave + journalctl
-- **doctor Telegram:** ✅ section só quando `telegram.enabled = true`; valida formato bot token + chat_id; hints @BotFather / @userinfobot para iniciantes
-- **doctor integrations:** ✅ Falco (binary, service, log, json_output), Suricata (binary, service, eve.json, ET rules), osquery (binary, service, results log, schedule config)
-- **Q.1 replay-qa multi-source:** ✅ fixtures `sample-falco.jsonl` + `sample-suricata-eve.jsonl` + `sample-osquery.jsonl`; assertions de source por collector em `events-*.jsonl`
-- **L.1 install.sh --with-integrations:** ✅ detecta + oferece instalar Falco/Suricata/osquery; patches idempotentes no sensor.toml; reinicia sensor
-- **L.2 README Telemetry Stack:** ✅ seção 4-layer detection table + Ollama + link integrated-setup.md
-- **L.3 CI verde:** ✅ 365 testes passando (139 agent + 116 ctl + 110 sensor)
-- **L.4 CHANGELOG v0.1.0:** ✅ `CHANGELOG.md` com entrada completa — sensor, agent, skills, dashboard, ctl, módulos, infra
-- **Q.3 docs/integrated-setup.md:** ✅ guia Ubuntu 22.04: Falco + Suricata + osquery + InnerWarden + Telegram
-- **Q.4 doctor integrations:** ✅ (ver doctor integrations acima)
-- **Integration recipes:** ✅ sistema de recipes declarativo (`integrations/`) com specs para Falco, Wazuh, osquery; geração de collectors via AI a partir de recipe + module-authoring.md
-- **FalcoLogCollector:** ✅ implementado; `crates/sensor/src/collectors/falco_log.rs`; incident passthrough para High/Critical; módulo `falco-integration/`; 12 testes
-- **SuricataEveCollector:** ✅ implementado; `crates/sensor/src/collectors/suricata_eve.rs`; alert/dns/http/tls/anomaly; incident passthrough sev 1-2; módulo `suricata-integration/`; 10 testes
-- **OsqueryLogCollector:** ✅ implementado; `crates/sensor/src/collectors/osquery_log.rs`; severity por prefixo de query name (4 tiers); `removed` actions filtradas; IP privado filtrado; extrai IP (remote), path, user (decorations); summarys contextuais por query slug; módulo `osquery-integration/`; 9 testes
-- **block-ip-pf skill:** ✅ implementado; `crates/agent/src/skills/builtin/block_ip_pf.rs`; `pfctl -t innerwarden-blocked -T add <IP>`; Open tier; 3 testes
-- **macos_log collector:** ✅ implementado; `crates/sensor/src/collectors/macos_log.rs`; `log stream` subprocess; reusa parser SSH (`parse_sshd_message`); emite `sudo.command`; restart loop; 3 testes
-- **CI macOS builds:** ✅ job `build-release-macos` em `macos-latest`; `x86_64-apple-darwin` + `aarch64-apple-darwin`; assets `innerwarden-*-macos-{x86_64,aarch64}`; `needs: build-release`
-- **install.sh macOS:** ✅ detecta `Darwin`; paths `/usr/local/etc/innerwarden` + `/usr/local/var/lib/innerwarden`; launchd plists em `/Library/LaunchDaemons`; `macos_log` collector; asset naming `macos-{arch}`; unsupported arch imprime URL de issue pré-preenchida
-- **NginxErrorCollector:** ✅ implementado; `crates/sensor/src/collectors/nginx_error.rs`; emite `http.error` com client IP, level, request; skipa debug/notice; crit/alert emitidos mesmo sem client; 8 testes
-- **WebScanDetector:** ✅ implementado; `crates/sensor/src/detectors/web_scan.rs`; sliding window por IP em `http.error` events; módulo `nginx-error-monitor/`; 6 testes
-- **AbuseIPDB enrichment:** ✅ implementado; `crates/agent/src/abuseipdb.rs`; lookup antes do call AI para IPs de incidentes High/Critical; injetado no prompt como `IP REPUTATION (AbuseIPDB):`; fail-silent (rate limit, timeout, parse error não bloqueiam o agent); módulo `abuseipdb-enrichment/`; 6 testes
-- **Fail2ban integration:** ✅ implementado; `crates/agent/src/fail2ban.rs`; `Fail2BanClient` polls `fail2ban-client status` + `fail2ban-client status <jail>` via `spawn_blocking`; `sync_tick` emite `block_ip` para IPs banidos não-privados ainda não na blocklist; `ai_provider: "fail2ban:<jail>"`; módulo `fail2ban-integration/`; 5 testes
-- **GeoIP enrichment:** ✅ implementado; `crates/agent/src/geoip.rs`; lookup em `ip-api.com` (free, 45 req/min, sem API key); injetado no prompt como `IP GEOLOCATION:`; `GeoInfo { country, country_code, city, isp, asn }`; fail-silent; módulo `geoip-enrichment/`; 5 testes
-- **Wazuh integration:** ✅ implementado; `crates/sensor/src/collectors/wazuh_alerts.rs`; tail de `/var/ossec/logs/alerts/alerts.json` (JSONL); severity por `rule.level` (0-15 → Debug/Low/Medium/High/Critical); kind de `rule.groups[0]` com prefixo `wazuh.`; extrai `data.srcip` (IP), `data.dstuser` (user), `agent.name` (service); incident passthrough para High/Critical; módulo `wazuh-integration/`; 12 testes
-- **Slack notify:** ✅ implementado; `crates/agent/src/slack.rs`; Incoming Webhook POST com Block Kit; emoji + sidebar colorida + context row + botão deep-link; `SlackConfig` com key resolution config/env/agent.env; módulo `slack-notify/`; 5 testes
-- **doctor fail2ban:** ✅ seção em `innerwarden doctor`; verifica `fail2ban-client` binary + responsividade de `ping`; warning em macOS
-- **doctor AbuseIPDB:** ✅ seção condicional quando `abuseipdb.enabled = true`; resolve key de config / env var / agent.env; valida comprimento mínimo da chave
-- **doctor Slack:** ✅ seção condicional quando `slack.enabled = true`; resolve `SLACK_WEBHOOK_URL` de config / env var / agent.env; valida formato da URL
-- **Plain-language alerts:** ✅ Telegram, Slack, e narrativa diária usam linguagem natural; `plain_action()` converte comandos técnicos de firewall em frases legíveis; `human_event_kind()` (20+ traduções); `human_detector_name()`; TL;DR block no topo da narrativa; context row do Slack usa timestamp no lugar de incident_id técnico
-- **Cloudflare integration:** ✅ `cloudflare.rs`; `push_block(ip, reason)`; `CloudflareConfig` com `zone_id`, `api_token` / `CLOUDFLARE_API_TOKEN`, `auto_push_blocks`, `block_notes_prefix`; módulo `cloudflare-integration/`; 6 testes
-- **AbuseIPDB auto-block gate:** ✅ `abuseipdb.auto_block_threshold` (u8, 0=disabled); quando score ≥ threshold, block sem chamar AI; `ai_provider: "abuseipdb"` no audit trail
-- **AI circuit breaker:** ✅ `ai.circuit_breaker_threshold` + `circuit_breaker_cooldown_secs`; `AgentState.circuit_breaker_until`; suspende AI analysis quando volume de incidentes explode
-- **AI call rate limit:** ✅ `ai.max_ai_calls_per_tick` (default 5); conta `ai_calls_this_tick` no loop de incidentes; excesso desviado para próximo tick
-- **`innerwarden configure telegram`:** ✅ wizard interativo — instruções @BotFather, detecção automática de chat_id via `getUpdates`, prompt manual com fallback, validação de formato, envio de mensagem de teste, salva em `agent.env`, habilita `[telegram] enabled=true` no agent.toml, reinicia agent; flags `--token`/`--chat-id` para uso não-interativo; suporte a `--dry-run`
-- **`innerwarden configure slack`:** ✅ wizard interativo — instruções de criação de Incoming Webhook, validação do prefixo de URL, envio de mensagem de teste, salva em `agent.env`, habilita `[slack] enabled=true` + `min_severity` no agent.toml, reinicia agent; flag `--webhook-url` para uso não-interativo
-- **`innerwarden configure webhook`:** ✅ wizard interativo — URL + severity, envia POST de teste com JSON de exemplo, habilita `[webhook] enabled=true url=... min_severity=...` no agent.toml, reinicia agent; suporte a `--dry-run`
-- **`innerwarden configure dashboard`:** ✅ wizard interativo — usuário + senha (visível, min 8 chars), chama `innerwarden-agent --dashboard-generate-password-hash` como subprocesso para gerar hash Argon2, salva `INNERWARDEN_DASHBOARD_USER` + `INNERWARDEN_DASHBOARD_PASSWORD_HASH` em `agent.env`, reinicia agent, imprime URL + credenciais; flag `--password` para uso não-interativo
-- **`innerwarden configure abuseipdb`:** ✅ wizard interativo — instruções de registro em abuseipdb.com, validação de comprimento da chave, salva `ABUSEIPDB_API_KEY` em `agent.env`, habilita `[abuseipdb] enabled=true` no agent.toml, reinicia agent; flag `--api-key` para uso não-interativo
-- **`innerwarden configure geoip`:** ✅ comando simples — testa conectividade com ip-api.com, habilita `[geoip] enabled=true` no agent.toml, reinicia agent; sem API key, sem wizard
-- **`innerwarden configure fail2ban`:** ✅ comando simples — verifica `fail2ban-client` instalado + daemon rodando, habilita `[fail2ban] enabled=true` no agent.toml, reinicia agent; erro claro se não instalado ou se macOS
-- **`innerwarden configure responder`:** ✅ melhorado com modo interativo (sem flags) — menu 3 opções: observe/dry-run/live com explicações claras; confirmação explícita `"yes"` ao ativar live; flags `--enable/--disable/--dry-run` preservadas para scripts
-- **doctor — seções adicionadas:** Webhook (verifica `webhook.url`), Dashboard (verifica credenciais em `agent.env`, warning se ausentes), GeoIP (testa conectividade ip-api.com quando `geoip.enabled`)
-- **`serde_json` adicionado como dep explícita em `innerwarden-ctl`** (antes vinha transitivamente via ureq)
-- **`innerwarden configure` (menu interativo):** ✅ sem subcomando mostra menu numerado com todas as integrações e status atual (✅ configured / ○ not set up); lê `agent.env` + `agent.toml` para determinar status; despacha para o wizard certo pelo número escolhido
-- **`innerwarden test-alert`:** ✅ envia alerta sintético a todos os canais configurados (Telegram MarkdownV2, Slack Incoming Webhook, HTTP webhook); reporta ok/FAILED/skipped por canal; flag `--channel` para testar canal específico; helper `load_env_file()` + `send_telegram_message_md()`
-- **`innerwarden status` mais rico:** ✅ mostra seção "Today" com contagem de eventos e incidentes do dia, título e hora do último incidente; seção "AI & Response" com provider, enabled/disabled e modo dry-run vs live; helpers `count_jsonl_lines()` + `read_last_incident_summary()`
-- **`innerwarden report`:** ✅ exibe o relatório diário Markdown no terminal; suporta `--date today|yesterday|YYYY-MM-DD`; converte headers Markdown em seções legíveis; lista datas disponíveis quando a solicitada não existe; lê `data_dir` do agent.toml automaticamente
-- **`innerwarden watchdog`:** ✅ verifica se o agent escreveu telemetria recentemente; compara mtime do arquivo vs `--threshold` (default 300s); `--notify` envia alerta via Telegram quando unhealthy; exit 1 se unhealthy (compatível com cron/alerting); helper `maybe_send_watchdog_alert()`
-- **doctor — Agent health:** ✅ nova seção verifica mtime do `telemetry-YYYY-MM-DD.jsonl` do dia; warn se > 5 min sem escrita; sugestão de `journalctl` para diagnóstico
-- **Telegram — resumo diário:** ✅ `TelegramConfig.daily_summary_hour: Option<u8>`; quando configurado, o agent envia o resumo Markdown via Telegram no horário local definido (máx 1x por dia); método `TelegramClient::send_text_message()` para mensagens HTML genéricas
-- **Dashboard `/api/quickwins`:** ✅ retorna sugestões acionáveis — lê incidentes High/Critical dos últimos 2 dias, cruza com decisões de bloqueio existentes, retorna IPs não tratados com ação sugerida e comando de ativação
-- **`innerwarden incidents`:** ✅ lista incidentes recentes no terminal com severidade, IP, título e hora; `--days N` para histórico; `--severity high` para filtrar; helpers `severity_rank()` + `epoch_secs_to_date()` (puro stdlib, sem chrono)
-- **`innerwarden block <ip> --reason`:** ✅ bloqueia IP manualmente via backend configurado (ufw/iptables/nftables/pf); registra em `decisions-*.jsonl` com `ai_provider: "operator:cli"`; `--dry-run` simulado
-- **`innerwarden unblock <ip> --reason`:** ✅ remove bloqueio manual; registra unblock no audit trail; avisa se regra não existia
-- **`innerwarden configure watchdog`:** ✅ adiciona entrada cron `*/N * * * * innerwarden watchdog --notify` automaticamente via `crontab -`; detecta se já instalado; instrução alternativa para macOS launchd; disponível no menu interativo do `innerwarden configure`
-- **helpers compartilhados em ctl:** `looks_like_ip()`, `resolve_data_dir()`, `write_manual_decision()`, `epoch_secs_to_date()`
-- **`innerwarden decisions`:** ✅ lista decisões do agent (block_ip, suspend_user_sudo, ignore, monitor, honeypot, dry-run) com ação, alvo, confidence, provider e status; `--days N`, `--action block_ip` para filtrar; 3 testes
-- **`innerwarden entity <ip|user>`:** ✅ timeline completa de uma entidade (IP ou usuário) atravessando events + incidents + decisions; detecta IP vs username por heurística; exibe tipo de entrada, severidade e resumo cronológico; 3 testes
-- **`innerwarden completions <bash|zsh|fish>`:** ✅ gera scripts de autocompletion via `clap_complete`; redirecionamento direto para `~/.bashrc`, `~/.zshrc` ou fish completions dir; 2 testes
-- **`innerwarden watchdog --status`:** ✅ mostra se o cron do watchdog está instalado (lê `crontab -l`), schedule configurado, intervalo em minutos e age da última telemetria; tip para configurar se ausente; 1 teste
-- **`innerwarden tune`:** ✅ analisa eventos + incidentes dos últimos N dias; calcula noise/signal ratio por detector; sugere ajuste de threshold em sensor.toml; `--yes` aplica sem prompt; `--dry-run` simula; patch via `toml_edit`; reinicia sensor ao finalizar; 3 testes
-- **Dashboard UX redesign (v0.1.19):** ✅ home state reformulado para usuário não-técnico — status hero card (✅/⚠️/🚨) dá veredito imediato; activity feed com emoji-coded rows (🚫 Blocked / ⚠️ Suspicious / 🚨 Attack) substitui listas técnicas de incidentes/decisões; left panel simplificado (4-col: Activity/Threats/Actions/Date), advanced filters colapsados, seções de clusters e top-detectors removidas, "Attackers (IP)" → "Threats Today"; navegação: Investigate → Threats, Status → Health; novos helpers JS: `toggleAdvFilters()`, `updateStatusHero()`, `buildActivityFeed()`.
-- **Dashboard Health tab — integrations panel (v0.1.19):** ✅ `DashboardActionConfig` ganhou 7 novos campos: `fail2ban_enabled`, `geoip_enabled`, `abuseipdb_enabled`, `honeypot_mode`, `telegram_enabled`, `slack_enabled`, `cloudflare_enabled`; `/api/status` retorna `integrations` object; tab Health renderiza 3 seções: Guard Mode card + Active Integrations grid (9 cards: AI, IP Blocker, Honeypot, Fail2ban, AbuseIPDB, GeoIP, Telegram, Slack, Cloudflare) cada um com badge ON/OFF/DEMO e hint de ativação + Data Files table.
-- **Telegram T.5 — sugestões proativas de integração (v0.1.19):** ✅ `probe_and_suggest()` roda uma vez no startup — detecta fail2ban rodando mas não configurado e envia mensagem no Telegram com inline keyboard [✅ Enable Fail2ban sync] / [❌ Not now]; `/capabilities` agora inclui botões para Fail2ban e Honeypot; callback `enable:fail2ban` chama `innerwarden integrate fail2ban`; callback `enable:honeypot` chama `innerwarden enable honeypot`.
-- **Fail2ban integration — `use_sudo` + socket group access (v0.1.19):** ✅ `Fail2BanConfig.use_sudo: bool` permite prefixar calls com `sudo` quando necessário; socket group approach via systemd `ExecStartPost` + `SupplementaryGroups=fail2ban` no service unit resolve `NoNewPrivileges=yes` sem comprometer segurança.
-- **Honeypot listener mode em produção (v0.1.19):** ✅ honeypot configurado em `mode = "listener"` + `allow_public_listener = true` + `bind_addr = "0.0.0.0"` no servidor; skill adicionada a `allowed_skills`; porta 2222 aberta via UFW; listener ativa sob demanda quando AI decide honeypot contra atacante específico.
-
-Próximas direções:
-- **Q.2 — VM end-to-end:** subir Ubuntu 22.04 + Falco + Suricata + osquery + InnerWarden, gerar tráfego simulado, validar UC-1 a UC-4 (user-side)
-- **L.5 — Repositório público:** confirmar sem credenciais, adicionar tópicos GitHub, habilitar Discussions
-- **`innerwarden module search`:** ✅ registry central em `registry.toml`; `search <termo>` filtra por nome/descrição/tags; `install <name>` resolve short names via registry
-- **`innerwarden scan`:** ✅ probe automático (sshd, docker, nginx, fail2ban, falco, suricata, osquery, wazuh, crowdsec, firewall, auditd, log files, OS); score por módulo (Essential/Recommended/Optional/NotAvailable); output formatado com estrelas + razão contextual + comando de ativação; Q&A interativo (número ou nome → exibe README do módulo); fail-silent em todos os probes (sem root); **full security audit** inline por módulo: `ScanFinding { severity, resource, title, detail, iw_handles, admin_action }`, `FindingSeverity::High/Medium/Low`; `audit_docker()` (--privileged, docker.sock, CapAdd), `parse_ssh_config()` (PasswordAuthentication, PermitRootLogin, X11Forwarding, MaxAuthTries, AllowTcpForwarding), `audit_nginx()` (server_tokens, no HTTPS, no rate limiting), `audit_fail2ban()` (sshd jail, bantime), `audit_ufw()` (not active, all outbound), `audit_system()` (unattended-upgrades, dangerous ports); seção consolidada "Admin actions required" com `wrap_text()` e fix commands em plain English; 17 testes; **Integration advisor** (v2): `IntegrationKind::Native/External` badge em cada módulo; `cost_note` por módulo (trade-offs, RAM, custo, limitações de rate); `detect_conflicts()` detecta pares que se sobrepõem (falco+execution-guard, wazuh+ssh-protection, suricata+network-defense, abuseipdb auto-block+fail2ban, slack+telegram); `activation_sequence()` gera ordem segura de ativação (um por vez); `print_advisor()` exibe legenda, conflitos e sequência; `show_module_info()` expandido com badge, cost_note e enable_hint antes do README
-- **Honeypot `always_on` mode:** ✅ listener permanente desde o startup; filtro por conexão (blocklist → AbuseIPDB gate); pós-sessão: IOC, veredicto AI, auto-block, Telegram T.5; `interaction = "llm_shell"` para shell AI; shutdown gracioso via watch channel; `ResponderConfig` derivado `Clone`; 2 testes unitários
-- **Fase D11** — notificações por browser (Web Notifications API) quando o dashboard está em background
-- **Email notifications (planned):** SMTP direto (sendmail / relay externo) para alertas e digest diário; `innerwarden configure email` com wizard; alcança usuários sem Telegram/Slack
-- **Windows (v0.3.0 planned):** `sysmon_evtx` collector + `windows_event_log` collector + `block-ip-netsh` skill + `chocolatey`/`winget` install recipe. Tracked via platform-support issues.
-
-Referência do roadmap: `ROADMAP.md`
-
----
-
-## Future Track — Edge / Web Abuse Defense
-
-Status: future exploration, not part of current MVP.
-
-After the host-security core is stable, InnerWarden may evolve to cover high-cost web route protection as an additional product capability.
-
-This future track is not about blocking all AI crawlers or all automation.
-Its purpose would be to protect expensive or abuse-prone routes, such as:
-
-- search endpoints
-- repository queries
-- advanced filters
-- export/download routes
-- other dynamic high-cost paths
-
-Possible future direction:
-
-- access log collectors for Nginx / Apache
-- detectors for automated high-cost access
-- route classification by cost/sensitivity
-- optional response skills such as temporary deny or rate limiting
-- reuse of the existing AI-assisted decision layer
-
-This is currently out of scope for the active roadmap.
-The current priority remains:
-
-1. production rollout hardening
-2. temporal correlation
-3. operational telemetry
-4. core host-security quality
+| Document | Content |
+|----------|---------|
+| [docs/internal/sensor-capabilities.md](docs/internal/sensor-capabilities.md) | All sensor collectors, detectors, output format |
+| [docs/internal/agent-capabilities.md](docs/internal/agent-capabilities.md) | Agent pipeline, AI providers, skills, dashboard, notifications |
+| [docs/internal/configuration.md](docs/internal/configuration.md) | Full TOML config reference + environment variables |
+| [docs/internal/operations.md](docs/internal/operations.md) | CLI reference, build, deploy, permissions, service management |
+| [docs/module-authoring.md](docs/module-authoring.md) | Guide for creating new modules |
+| [docs/integration-recipes.md](docs/integration-recipes.md) | Declarative integration recipe format |
+| [docs/integrated-setup.md](docs/integrated-setup.md) | Ubuntu 22.04 setup: Falco + Suricata + osquery + Telegram |
+| [ROADMAP.md](ROADMAP.md) | Active roadmap and planned phases |
+| [CHANGELOG.md](CHANGELOG.md) | Version history |

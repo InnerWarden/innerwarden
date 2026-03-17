@@ -92,7 +92,7 @@ Not everything should be automatic. Inner Warden supports human approval when yo
 - **Telegram alerts** — every High/Critical incident pushed to your phone in real time
 - **Approve or deny** — inline keyboard in Telegram, decision logged to audit trail
 - **Webhook** — HTTP POST to any endpoint with severity filter
-- **Dashboard** — local authenticated UI for investigation, entity search, and operator actions
+- **Dashboard** — local authenticated UI for investigation, entity search, operator actions, live SSE push, and attacker path viewer
 
 AI is advisory unless you explicitly enable auto-execution. You control the threshold.
 
@@ -149,6 +149,32 @@ innerwarden enable shell-audit    # prompts for privacy consent
 innerwarden module install <url>       # community modules (SHA-256 verified)
 innerwarden module enable /path/to/module
 ```
+
+---
+
+## Scan advisor
+
+`innerwarden scan` probes your server and recommends the right modules:
+
+```
+$ innerwarden scan
+
+● sshd          running    → ssh-protection        ESSENTIAL  [NATIVE]
+● docker        running    → container-security     RECOMMENDED [NATIVE]
+● nginx         running    → search-protection      RECOMMENDED [NATIVE]
+  falco         not found  → falco-integration      OPTIONAL   [EXTERNAL] requires: falco install
+  fail2ban      running    → fail2ban-integration   RECOMMENDED [NATIVE]
+
+⚠ Conflicts detected:
+  fail2ban-integration + abuseipdb-enrichment — both auto-block IPs; enable one
+
+Activation sequence:
+  1. innerwarden enable block-ip
+  2. innerwarden enable ssh-protection
+  3. innerwarden enable fail2ban-integration
+```
+
+Modules are labeled **NATIVE** (built into InnerWarden, reads existing logs) or **EXTERNAL** (requires a separate tool installation). The advisor detects conflicts between overlapping integrations and suggests the optimal activation order.
 
 ---
 
@@ -279,7 +305,7 @@ Pre-built binaries: `x86_64` and `aarch64` for both platforms.
 ## Build and test
 
 ```bash
-make test    # 511 tests
+make test    # 537 tests
 make build   # debug build (sensor + agent + ctl)
 ```
 

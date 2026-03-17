@@ -11,6 +11,34 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.21] — 2026-03-17
+
+### Dashboard
+
+- **Sensor Collectors section** — Status tab now shows all 10 sensor collectors (auth_log, journald, docker, nginx_access, nginx_error, exec_audit, falco_log, suricata_eve, wazuh_alerts, osquery_log) with ACTIVE/DETECTED/NOT FOUND badges, event count from today's JSONL, and NATIVE/EXTERNAL kind label. Makes external tool integration status immediately visible.
+- **Integration Advisor section** — conflict detection for overlapping integrations (abuseipdb+fail2ban, telegram+slack); recommended next step card; powered by new `GET /api/collectors` endpoint
+- **Protection Status UX** — renamed "Guard Mode" to "Protection Status"; color semantics fixed: PROTECTED→green (was incorrectly red), WATCHING→yellow, MONITOR ONLY→gray. Green means protected, not danger.
+- **Mobile navigation** — nav buttons move to a full-width tab bar below the header on small screens (`flex-wrap: wrap` + `order: 10`); no more horizontal overflow on mobile
+
+### `innerwarden scan` advisor
+
+- **NATIVE vs EXTERNAL badges** — every module recommendation now labeled with `[NATIVE]` (reads existing logs, zero external deps) or `[EXTERNAL]` (requires separate tool installation)
+- **Conflict detection** — detects overlapping integrations that could cause duplicate blocks or alert storms (fail2ban+abuseipdb, wazuh+ssh-protection, suricata+network-defense, etc.)
+- **Activation sequence** — prints ordered install steps for recommended modules, respecting dependencies and avoiding conflicts
+- **Cost notes** — each module shows a brief note on what enabling it requires (e.g., "requires: falco install")
+- **Security audit** — full scan of SSH config, nginx config, fail2ban, UFW, and system settings; `ScanFinding` with severity levels (Info/Low/Medium/High); "Admin actions required" section for manual steps; `iw_handles` marks findings InnerWarden can remediate automatically
+
+### Repository
+
+- **CLAUDE.md reorganized** — split from 900-line Portuguese monolith into compact English index + four linked reference documents under `docs/internal/`: `sensor-capabilities.md`, `agent-capabilities.md`, `configuration.md`, `operations.md`
+- All in-repo documentation now in English
+
+### Version
+
+- Bumped to `0.1.21`
+
+---
+
 ## [0.1.20] — 2026-03-17
 
 ### Honeypot
