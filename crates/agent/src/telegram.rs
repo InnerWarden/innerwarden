@@ -94,20 +94,41 @@ impl TelegramClient {
             "disable_web_page_preview": true,
         });
 
-        // Add a deep-link button if dashboard URL is configured
-        if let Some(ref base_url) = self.dashboard_url {
-            if let Some(ip) = first_ip_entity(incident) {
+        // Add Block/Ignore quick-action buttons when there's an IP entity
+        if let Some(ip) = first_ip_entity(incident) {
+            let mut keyboard: Vec<Vec<serde_json::Value>> = vec![vec![
+                serde_json::json!({
+                    "text": format!("🛡 Block {ip}"),
+                    "callback_data": format!("quick:block:{ip}")
+                }),
+                serde_json::json!({
+                    "text": "🙈 Ignore",
+                    "callback_data": "quick:ignore"
+                }),
+            ]];
+
+            // Add investigate deep-link row if dashboard URL is configured
+            if let Some(ref base_url) = self.dashboard_url {
                 let link = format!(
                     "{base_url}/?subject_type=ip&subject={ip}&date={}",
                     incident.ts.format("%Y-%m-%d")
                 );
-                body["reply_markup"] = serde_json::json!({
-                    "inline_keyboard": [[{
-                        "text": "🔍 Investigate in dashboard",
-                        "url": link
-                    }]]
-                });
+                keyboard.push(vec![serde_json::json!({
+                    "text": "🔍 Investigate in dashboard",
+                    "url": link
+                })]);
             }
+
+            body["reply_markup"] = serde_json::json!({ "inline_keyboard": keyboard });
+        } else if let Some(ref base_url) = self.dashboard_url {
+            // No IP entity but dashboard URL configured — keep the investigate button
+            let link = format!("{base_url}/?date={}", incident.ts.format("%Y-%m-%d"));
+            body["reply_markup"] = serde_json::json!({
+                "inline_keyboard": [[{
+                    "text": "🔍 Investigate in dashboard",
+                    "url": link
+                }]]
+            });
         }
 
         self.post_json("sendMessage", &body).await
@@ -333,11 +354,38 @@ impl TelegramClient {
                                 .unwrap_or_else(|| "unknown".to_string());
 
                             if let Some(data) = &callback.data {
-                                // Answer the callback immediately to remove the spinner
-                                let _ = self.answer_callback(&callback.id).await;
-                                if let Some(result) = parse_callback(data, &operator) {
+                                if data == "quick:ignore" {
+                                    // Just ack with toast — no further action needed
+                                    let _ = self
+                                        .answer_callback_toast(
+                                            &callback.id,
+                                            "👍 Noted — monitoring continues",
+                                        )
+                                        .await;
+                                } else if let Some(ip) = data.strip_prefix("quick:block:") {
+                                    let ip = ip.to_string();
+                                    let _ = self
+                                        .answer_callback_toast(
+                                            &callback.id,
+                                            &format!("🛡 Queuing block for {ip}..."),
+                                        )
+                                        .await;
+                                    let result = ApprovalResult {
+                                        incident_id: format!("__quick_block__:{ip}"),
+                                        approved: true,
+                                        always: false,
+                                        operator_name: operator.clone(),
+                                    };
                                     if approval_tx.send(result).await.is_err() {
                                         return;
+                                    }
+                                } else {
+                                    // Answer the callback immediately to remove the spinner
+                                    let _ = self.answer_callback(&callback.id).await;
+                                    if let Some(result) = parse_callback(data, &operator) {
+                                        if approval_tx.send(result).await.is_err() {
+                                            return;
+                                        }
                                     }
                                 }
                             }
@@ -453,6 +501,15 @@ impl TelegramClient {
 
     async fn answer_callback(&self, callback_query_id: &str) -> Result<()> {
         let body = serde_json::json!({ "callback_query_id": callback_query_id });
+        self.post_json("answerCallbackQuery", &body).await
+    }
+
+    async fn answer_callback_toast(&self, callback_query_id: &str, text: &str) -> Result<()> {
+        let body = serde_json::json!({
+            "callback_query_id": callback_query_id,
+            "text": text,
+            "show_alert": false
+        });
         self.post_json("answerCallbackQuery", &body).await
     }
 
@@ -885,6 +942,34 @@ mod tests {
         assert_eq!(strip_bot_suffix("/status"), "/status");
         assert_eq!(strip_bot_suffix("hello"), "hello");
         assert_eq!(strip_bot_suffix("text with @mention"), "text with @mention");
+    }
+
+    #[test]
+    fn quick_block_callback_routes_to_sentinel() {
+        // Simulate the run_polling logic for "quick:block:<ip>" callbacks.
+        // The callback data must produce the correct ApprovalResult sentinel.
+        let data = "quick:block:1.2.3.4";
+        let operator = "Alice";
+
+        let ip = data.strip_prefix("quick:block:").unwrap();
+        assert_eq!(ip, "1.2.3.4");
+
+        let result = ApprovalResult {
+            incident_id: format!("__quick_block__:{ip}"),
+            approved: true,
+            always: false,
+            operator_name: operator.to_string(),
+        };
+
+        assert_eq!(result.incident_id, "__quick_block__:1.2.3.4");
+        assert!(result.approved);
+        assert!(!result.always);
+        assert_eq!(result.operator_name, "Alice");
+
+        // quick:ignore must not produce a routing result (handled inline)
+        assert!(parse_callback("quick:ignore", operator).is_none());
+        // quick:block: prefix must not be caught by parse_callback
+        assert!(parse_callback("quick:block:1.2.3.4", operator).is_none());
     }
 
     #[test]

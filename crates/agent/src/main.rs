@@ -2033,6 +2033,113 @@ async fn process_telegram_approval(
         return;
     }
 
+    // Quick-block sentinel: "quick:block:<ip>" — initiated from the inline keyboard on T.1 alerts
+    if let Some(ip) = result.incident_id.strip_prefix("__quick_block__:") {
+        let ip = ip.to_string();
+        let operator = result.operator_name.clone();
+        info!(ip = %ip, operator = %operator, "Telegram quick-block received");
+
+        if !cfg.responder.enabled {
+            tg_reply!(format!(
+                "⚠️ Responder is disabled. Enable it in agent.toml to allow blocking.\n\
+                 Run: <code>innerwarden configure responder</code>"
+            ));
+            return;
+        }
+
+        let skill_id = format!("block-ip-{}", cfg.responder.block_backend);
+        if !cfg.responder.allowed_skills.contains(&skill_id) {
+            tg_reply!(format!(
+                "⚠️ Skill <code>{skill_id}</code> is not in allowed_skills. \
+                 Add it to agent.toml under [responder] allowed_skills."
+            ));
+            return;
+        }
+
+        let skill = state.skill_registry.get(&skill_id).or_else(|| {
+            state
+                .skill_registry
+                .block_skill_for_backend(&cfg.responder.block_backend)
+        });
+
+        let Some(skill) = skill else {
+            tg_reply!(format!(
+                "⚠️ Skill <code>{skill_id}</code> not found in registry."
+            ));
+            return;
+        };
+
+        // Build a minimal incident for the skill context
+        let host = std::env::var("HOSTNAME")
+            .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
+            .unwrap_or_else(|_| "unknown".to_string());
+        let inc = {
+            use innerwarden_core::event::Severity;
+            innerwarden_core::incident::Incident {
+                ts: chrono::Utc::now(),
+                host: host.clone(),
+                incident_id: format!("telegram:quick_block:{ip}"),
+                severity: Severity::High,
+                title: format!("Quick block of {ip} via Telegram"),
+                summary: format!("Operator {operator} requested immediate block of {ip}"),
+                evidence: serde_json::json!({}),
+                recommended_checks: vec![],
+                tags: vec!["telegram".to_string(), "manual".to_string()],
+                entities: vec![innerwarden_core::entities::EntityRef::ip(ip.clone())],
+            }
+        };
+
+        let ctx = skills::SkillContext {
+            incident: inc.clone(),
+            target_ip: Some(ip.clone()),
+            target_user: None,
+            duration_secs: None,
+            host: inc.host.clone(),
+            data_dir: data_dir.to_path_buf(),
+            honeypot: honeypot_runtime(cfg),
+        };
+
+        let exec_result = skill.execute(&ctx, cfg.responder.dry_run).await;
+
+        if exec_result.success {
+            state.blocklist.insert(ip.clone());
+        }
+
+        // Audit trail
+        if let Some(writer) = &mut state.decision_writer {
+            let provider = format!("telegram:{operator}");
+            let entry = decisions::DecisionEntry {
+                ts: chrono::Utc::now(),
+                incident_id: inc.incident_id.clone(),
+                host: inc.host.clone(),
+                ai_provider: provider,
+                action_type: "block_ip".to_string(),
+                target_ip: Some(ip.clone()),
+                target_user: None,
+                skill_id: Some(skill_id.clone()),
+                confidence: 1.0,
+                auto_executed: true,
+                dry_run: cfg.responder.dry_run,
+                reason: format!("Quick block requested by operator {operator} via Telegram"),
+                estimated_threat: "manual".to_string(),
+                execution_result: exec_result.message.clone(),
+            };
+            if let Err(e) = writer.write(&entry) {
+                warn!("failed to write quick-block decision entry: {e:#}");
+            }
+        }
+
+        let reply = if cfg.responder.dry_run {
+            format!("🧪 DRY RUN — would block {ip} at the firewall (no real action taken)")
+        } else if exec_result.success {
+            format!("🛡 Blocked {ip} at the firewall")
+        } else {
+            format!("❌ Block failed for {ip}: {}", exec_result.message)
+        };
+        tg_reply!(reply);
+        return;
+    }
+
     let Some((pending, decision, incident)) =
         state.pending_confirmations.remove(&result.incident_id)
     else {
