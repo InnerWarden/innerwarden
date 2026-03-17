@@ -173,6 +173,7 @@ fn print_probes(p: &SystemProbes) {
 pub enum FindingSeverity {
     High,
     Medium,
+    Low,
 }
 
 impl FindingSeverity {
@@ -180,12 +181,14 @@ impl FindingSeverity {
         match self {
             FindingSeverity::High => "HIGH",
             FindingSeverity::Medium => "MEDIUM",
+            FindingSeverity::Low => "LOW",
         }
     }
-    fn order(&self) -> u8 {
+    pub fn order(&self) -> u8 {
         match self {
             FindingSeverity::High => 0,
             FindingSeverity::Medium => 1,
+            FindingSeverity::Low => 2,
         }
     }
 }
@@ -406,42 +409,22 @@ fn audit_docker() -> Vec<ScanFinding> {
     findings
 }
 
-/// Audit SSH daemon configuration for common misconfigurations.
-/// Tries `sshd -T` first (requires sshd in PATH), falls back to reading
-/// /etc/ssh/sshd_config directly. Fail-silent.
-fn audit_ssh() -> Vec<ScanFinding> {
-    // Try sshd -T for effective config
-    let effective = Command::new("sshd")
-        .args(["-T"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase());
-
-    // Fallback: read sshd_config file
-    let from_file = if effective.is_none() {
-        std::fs::read_to_string("/etc/ssh/sshd_config")
-            .ok()
-            .map(|s| s.to_lowercase())
-    } else {
-        None
-    };
-
-    let config = match effective.or(from_file) {
-        Some(c) => c,
-        None => return vec![],
-    };
+/// Parse SSH config text (from `sshd -T` output or sshd_config file) and return findings.
+/// Extracted as a separate function so tests can call it directly.
+pub(crate) fn parse_ssh_config(config: &str) -> Vec<ScanFinding> {
+    let lower = config.to_lowercase();
+    let active_lines: Vec<&str> = lower
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect();
 
     let mut findings = vec![];
 
     // PasswordAuthentication
-    let password_auth_on = config
-        .lines()
-        .filter(|l| !l.trim_start().starts_with('#'))
-        .any(|l| {
-            let l = l.trim();
-            l.starts_with("passwordauthentication") && l.contains("yes")
-        });
+    let password_auth_on = active_lines.iter().any(|l| {
+        let l = l.trim();
+        l.starts_with("passwordauthentication") && l.contains("yes")
+    });
     if password_auth_on {
         findings.push(ScanFinding {
             severity: FindingSeverity::Medium,
@@ -462,13 +445,10 @@ fn audit_ssh() -> Vec<ScanFinding> {
     }
 
     // PermitRootLogin
-    let root_login_on = config
-        .lines()
-        .filter(|l| !l.trim_start().starts_with('#'))
-        .any(|l| {
-            let l = l.trim();
-            l.starts_with("permitrootlogin") && (l.contains(" yes") || l.ends_with("yes"))
-        });
+    let root_login_on = active_lines.iter().any(|l| {
+        let l = l.trim();
+        l.starts_with("permitrootlogin") && (l.contains(" yes") || l.ends_with("yes"))
+    });
     if root_login_on {
         findings.push(ScanFinding {
             severity: FindingSeverity::High,
@@ -486,6 +466,454 @@ fn audit_ssh() -> Vec<ScanFinding> {
                     .to_string(),
             ),
         });
+    }
+
+    // X11Forwarding yes
+    let x11_on = active_lines.iter().any(|l| {
+        let l = l.trim();
+        l.starts_with("x11forwarding") && l.contains("yes")
+    });
+    if x11_on {
+        findings.push(ScanFinding {
+            severity: FindingSeverity::Low,
+            resource: "sshd".to_string(),
+            title: "X11 forwarding enabled".to_string(),
+            detail: "X11 forwarding tunnels graphical display sessions over SSH. Unless you \
+                     actively use remote GUI applications, this is unnecessary attack surface."
+                .to_string(),
+            iw_handles: false,
+            admin_action: Some(
+                "In /etc/ssh/sshd_config set: X11Forwarding no\nThen: sudo systemctl reload ssh"
+                    .to_string(),
+            ),
+        });
+    }
+
+    // MaxAuthTries — default 6 if not set; emit if > 4
+    let max_auth_tries: u32 = active_lines
+        .iter()
+        .find_map(|l| {
+            let l = l.trim();
+            if l.starts_with("maxauthtries") {
+                l.split_whitespace().nth(1).and_then(|v| v.parse().ok())
+            } else {
+                None
+            }
+        })
+        .unwrap_or(6);
+    if max_auth_tries > 4 {
+        findings.push(ScanFinding {
+            severity: FindingSeverity::Low,
+            resource: "sshd".to_string(),
+            title: "SSH allows many authentication attempts per connection".to_string(),
+            detail: format!(
+                "MaxAuthTries is currently {} (default is 6). This means an attacker gets \
+                 {} tries per TCP connection before being disconnected. InnerWarden already \
+                 detects and blocks brute-force, but lowering this adds another layer.",
+                max_auth_tries, max_auth_tries
+            ),
+            iw_handles: true,
+            admin_action: Some(
+                "In /etc/ssh/sshd_config set: MaxAuthTries 3\nThen: sudo systemctl reload ssh"
+                    .to_string(),
+            ),
+        });
+    }
+
+    // AllowTcpForwarding — emit unless explicitly set to "no"
+    let tcp_fwd_disabled = active_lines.iter().any(|l| {
+        let l = l.trim();
+        l.starts_with("allowtcpforwarding") && l.contains("no")
+    });
+    if !tcp_fwd_disabled {
+        findings.push(ScanFinding {
+            severity: FindingSeverity::Low,
+            resource: "sshd".to_string(),
+            title: "TCP forwarding not explicitly disabled".to_string(),
+            detail: "SSH TCP forwarding lets users tunnel arbitrary connections through your SSH \
+                     server. If your users don't need to forward ports, disabling it reduces \
+                     your exposure."
+                .to_string(),
+            iw_handles: false,
+            admin_action: Some(
+                "In /etc/ssh/sshd_config add: AllowTcpForwarding no\n\
+                 Then: sudo systemctl reload ssh"
+                    .to_string(),
+            ),
+        });
+    }
+
+    findings
+}
+
+/// Audit SSH daemon configuration for common misconfigurations.
+/// Tries `sshd -T` first (requires sshd in PATH), falls back to reading
+/// /etc/ssh/sshd_config directly. Fail-silent.
+fn audit_ssh() -> Vec<ScanFinding> {
+    // Try sshd -T for effective config
+    let effective = Command::new("sshd")
+        .args(["-T"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+
+    // Fallback: read sshd_config file
+    let from_file = if effective.is_none() {
+        std::fs::read_to_string("/etc/ssh/sshd_config").ok()
+    } else {
+        None
+    };
+
+    let config = match effective.or(from_file) {
+        Some(c) => c,
+        None => return vec![],
+    };
+
+    parse_ssh_config(&config)
+}
+
+/// Read all nginx config files under /etc/nginx/ and return their concatenated content.
+/// Fail-silent on any I/O error.
+fn read_nginx_configs() -> String {
+    let mut content = String::new();
+
+    // Main config
+    if let Ok(s) = std::fs::read_to_string("/etc/nginx/nginx.conf") {
+        content.push_str(&s);
+    }
+
+    // conf.d/*.conf
+    if let Ok(entries) = std::fs::read_dir("/etc/nginx/conf.d") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("conf") {
+                if let Ok(s) = std::fs::read_to_string(&path) {
+                    content.push_str(&s);
+                }
+            }
+        }
+    }
+
+    // sites-enabled/*
+    if let Ok(entries) = std::fs::read_dir("/etc/nginx/sites-enabled") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Ok(s) = std::fs::read_to_string(&path) {
+                    content.push_str(&s);
+                }
+            }
+        }
+    }
+
+    content
+}
+
+/// Audit nginx configuration for common security misconfigurations. Fail-silent.
+fn audit_nginx() -> Vec<ScanFinding> {
+    let config = read_nginx_configs();
+    if config.is_empty() {
+        return vec![];
+    }
+
+    let mut findings = vec![];
+
+    // server_tokens — emit if "server_tokens off" is NOT found anywhere
+    if !config.contains("server_tokens off") {
+        findings.push(ScanFinding {
+            severity: FindingSeverity::Low,
+            resource: "nginx".to_string(),
+            title: "nginx version number exposed in HTTP headers".to_string(),
+            detail: "By default nginx includes its version number in Server: response headers and \
+                     error pages. This helps attackers identify which nginx CVEs might apply to \
+                     your server."
+                .to_string(),
+            iw_handles: false,
+            admin_action: Some(
+                "In /etc/nginx/nginx.conf inside the http { } block, add:\n  server_tokens off;\n\
+                 Then: sudo nginx -t && sudo systemctl reload nginx"
+                    .to_string(),
+            ),
+        });
+    }
+
+    // No SSL/HTTPS — emit if ssl_certificate directive is NOT found anywhere
+    if !config.contains("ssl_certificate") {
+        findings.push(ScanFinding {
+            severity: FindingSeverity::Medium,
+            resource: "nginx".to_string(),
+            title: "No HTTPS/SSL configured in nginx".to_string(),
+            detail: "Your nginx server is serving traffic over HTTP without encryption. \
+                     Credentials, session cookies, and data transmitted between your users and \
+                     the server are visible to anyone on the network path."
+                .to_string(),
+            iw_handles: false,
+            admin_action: Some(
+                "Use Let's Encrypt for free SSL:\n\
+                 \x20 sudo apt install certbot python3-certbot-nginx\n\
+                 \x20 sudo certbot --nginx\n\
+                 Certbot will automatically configure HTTPS and set up renewal."
+                    .to_string(),
+            ),
+        });
+    }
+
+    // No rate limiting — emit if limit_req_zone is NOT found anywhere
+    if !config.contains("limit_req_zone") {
+        findings.push(ScanFinding {
+            severity: FindingSeverity::Low,
+            resource: "nginx".to_string(),
+            title: "nginx has no rate limiting configured".to_string(),
+            detail: "Without rate limiting, a single IP can send unlimited requests to any \
+                     endpoint. InnerWarden detects and blocks abusive patterns, but native nginx \
+                     rate limiting stops them before they reach your application."
+                .to_string(),
+            iw_handles: true,
+            admin_action: Some(
+                "In /etc/nginx/nginx.conf inside http { }, add:\n\
+                 \x20 limit_req_zone $binary_remote_addr zone=general:10m rate=30r/m;\n\
+                 Then in your server blocks, add to sensitive locations:\n\
+                 \x20 limit_req zone=general burst=10 nodelay;"
+                    .to_string(),
+            ),
+        });
+    }
+
+    findings
+}
+
+/// Audit fail2ban configuration for common security gaps. Fail-silent.
+fn audit_fail2ban() -> Vec<ScanFinding> {
+    let mut findings = vec![];
+
+    // Check if sshd jail is active
+    let status_out = Command::new("fail2ban-client")
+        .arg("status")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+
+    let sshd_jail_active = status_out
+        .lines()
+        .any(|l| l.contains("sshd") || l.contains("ssh"));
+
+    if !sshd_jail_active {
+        findings.push(ScanFinding {
+            severity: FindingSeverity::Medium,
+            resource: "fail2ban".to_string(),
+            title: "fail2ban SSH jail not enabled".to_string(),
+            detail: "fail2ban is running but the SSH jail is not active. The sshd jail \
+                     automatically bans IPs after repeated failed SSH logins using fail2ban's \
+                     own rules, complementing InnerWarden's detection."
+                .to_string(),
+            iw_handles: true,
+            admin_action: Some(
+                "Enable the sshd jail:\n\
+                 \x20 sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local\n\
+                 \x20 Edit /etc/fail2ban/jail.local and set [sshd] enabled = true\n\
+                 \x20 sudo systemctl restart fail2ban"
+                    .to_string(),
+            ),
+        });
+    } else {
+        // sshd jail exists — check bantime
+        let bantime_out = Command::new("fail2ban-client")
+            .args(["get", "sshd", "bantime"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+
+        // Parse bantime value — may be a plain number or have extra text
+        let bantime_secs: i64 = bantime_out
+            .split_whitespace()
+            .find_map(|tok| tok.parse().ok())
+            .unwrap_or(0);
+
+        if bantime_secs > 0 && bantime_secs < 3600 {
+            findings.push(ScanFinding {
+                severity: FindingSeverity::Low,
+                resource: "fail2ban".to_string(),
+                title: "fail2ban ban duration is less than 1 hour".to_string(),
+                detail: format!(
+                    "The current ban duration is {} seconds ({} minutes). Attackers often retry \
+                     from the same IP after a short wait. A longer ban makes your server less \
+                     worth targeting.",
+                    bantime_secs,
+                    bantime_secs / 60
+                ),
+                iw_handles: false,
+                admin_action: Some(
+                    "In /etc/fail2ban/jail.local under [sshd], set:\n\
+                     \x20 bantime = 86400\n\
+                     (24 hours). Or use bantime.increment = true for progressive bans.\n\
+                     Then: sudo systemctl restart fail2ban"
+                        .to_string(),
+                ),
+            });
+        }
+    }
+
+    findings
+}
+
+/// Audit UFW firewall configuration for common misconfigurations. Fail-silent.
+fn audit_ufw() -> Vec<ScanFinding> {
+    let mut findings = vec![];
+
+    let status_out = Command::new("ufw")
+        .arg("status")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+
+    if status_out.is_empty() {
+        return vec![];
+    }
+
+    let ufw_active = status_out.contains("Status: active");
+
+    if !ufw_active {
+        findings.push(ScanFinding {
+            severity: FindingSeverity::High,
+            resource: "ufw".to_string(),
+            title: "UFW firewall is installed but not active".to_string(),
+            detail: "UFW is installed but not running. Your server has no active firewall, \
+                     meaning all ports are accessible from the internet unless blocked at the \
+                     network level."
+                .to_string(),
+            iw_handles: false,
+            admin_action: Some(
+                "Enable UFW:\n\
+                 \x20 sudo ufw default deny incoming\n\
+                 \x20 sudo ufw default allow outgoing\n\
+                 \x20 sudo ufw allow ssh\n\
+                 \x20 sudo ufw allow 80/tcp\n\
+                 \x20 sudo ufw allow 443/tcp\n\
+                 \x20 sudo ufw enable"
+                    .to_string(),
+            ),
+        });
+    } else {
+        // UFW is active — check if outgoing is all-allowed (default allow outgoing)
+        let all_outgoing_allowed = status_out.contains("Default: allow (outgoing)");
+        if all_outgoing_allowed {
+            findings.push(ScanFinding {
+                severity: FindingSeverity::Low,
+                resource: "ufw".to_string(),
+                title: "All outbound connections are allowed".to_string(),
+                detail: "Your firewall allows all outbound traffic. If malware or a compromised \
+                         process runs on this server, it can freely connect to command-and-control \
+                         servers, exfiltrate data, or scan other hosts. Restricting outbound \
+                         traffic to only what your applications need is a strong defense-in-depth \
+                         measure."
+                    .to_string(),
+                iw_handles: false,
+                admin_action: Some(
+                    "Audit which outbound connections your services actually need.\n\
+                     For a web server, typical allowlist:\n\
+                     \x20 sudo ufw default deny outgoing\n\
+                     \x20 sudo ufw allow out 80/tcp\n\
+                     \x20 sudo ufw allow out 443/tcp\n\
+                     \x20 sudo ufw allow out 53/udp\n\
+                     \x20 sudo ufw allow out 25/tcp  # if sending email\n\
+                     This is advanced — only apply if you understand your app's network needs."
+                        .to_string(),
+                ),
+            });
+        }
+    }
+
+    findings
+}
+
+/// Audit general system-level security posture. Always runs. Fail-silent.
+pub(crate) fn audit_system() -> Vec<ScanFinding> {
+    let mut findings = vec![];
+
+    // Automatic security updates
+    let auto_upgrade_configured = {
+        let f1 = std::fs::read_to_string("/etc/apt/apt.conf.d/20auto-upgrades")
+            .unwrap_or_default()
+            .contains("APT::Periodic::Unattended-Upgrade \"1\"");
+        let f2 = std::fs::metadata("/etc/apt/apt.conf.d/50unattended-upgrades").is_ok();
+        f1 && f2
+    };
+    if !auto_upgrade_configured {
+        findings.push(ScanFinding {
+            severity: FindingSeverity::Medium,
+            resource: "system".to_string(),
+            title: "Automatic security updates are not configured".to_string(),
+            detail: "Without automatic updates, security patches must be applied manually. Most \
+                     server compromises exploit known vulnerabilities that have patches available \
+                     — often for weeks or months before the attack."
+                .to_string(),
+            iw_handles: false,
+            admin_action: Some(
+                "Enable automatic security updates:\n\
+                 \x20 sudo apt install unattended-upgrades\n\
+                 \x20 sudo dpkg-reconfigure --priority=low unattended-upgrades\n\
+                 This installs security patches automatically without reboots."
+                    .to_string(),
+            ),
+        });
+    }
+
+    // Services listening on 0.0.0.0 for dangerous ports
+    let ss_out = Command::new("ss")
+        .args(["-tlnp"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+
+    if !ss_out.is_empty() {
+        let dangerous_ports: &[(u16, &str)] = &[
+            (3306, "MySQL"),
+            (5432, "PostgreSQL"),
+            (6379, "Redis"),
+            (27017, "MongoDB"),
+            (9200, "Elasticsearch"),
+            (9300, "Elasticsearch cluster"),
+            (5984, "CouchDB"),
+            (11211, "Memcached"),
+            (8080, "HTTP alternate"),
+        ];
+
+        for (port, service_name) in dangerous_ports {
+            let needle = format!("0.0.0.0:{}", port);
+            if ss_out.lines().any(|l| l.contains(&needle)) {
+                findings.push(ScanFinding {
+                    severity: FindingSeverity::Medium,
+                    resource: format!("0.0.0.0:{}", port),
+                    title: format!(
+                        "Port {} ({}) listening on all interfaces (0.0.0.0)",
+                        port, service_name
+                    ),
+                    detail: format!(
+                        "A service on port {} ({}) is accessible from any IP address. If this is \
+                         a database or internal service, it should only listen on localhost \
+                         (127.0.0.1) or a private network interface.",
+                        port, service_name
+                    ),
+                    iw_handles: false,
+                    admin_action: Some(format!(
+                        "Configure the service on port {} to bind to 127.0.0.1 instead of \
+                         0.0.0.0.\nFor most services, look for a 'bind' or 'listen' directive in \
+                         the service config.\nAlternatively, block it at the firewall:\n\
+                         \x20 sudo ufw deny {}/tcp",
+                        port, port
+                    )),
+                });
+            }
+        }
     }
 
     findings
@@ -531,6 +959,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
         // network-defense
         {
             let has_fw = p.has_ufw || p.has_iptables || p.has_nftables;
+            let ufw_findings = if p.has_ufw { audit_ufw() } else { vec![] };
             let (tier, why, s) = if has_fw && p.is_linux {
                 (
                     Tier::Essential,
@@ -556,7 +985,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 tier,
                 needs_tool: None,
                 docs_path: "network-defense/docs/README.md",
-                findings: vec![],
+                findings: ufw_findings,
             }
         },
         // sudo-protection
@@ -638,6 +1067,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
         },
         // search-protection
         {
+            let nginx_findings_search = if p.has_nginx { audit_nginx() } else { vec![] };
             let (tier, why, s) = if p.has_nginx_access_log {
                 (
                     Tier::Recommended,
@@ -666,11 +1096,12 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                     Some("nginx")
                 },
                 docs_path: "search-protection/docs/README.md",
-                findings: vec![],
+                findings: nginx_findings_search,
             }
         },
         // nginx-error-monitor
         {
+            let nginx_findings_error = if p.has_nginx { audit_nginx() } else { vec![] };
             let (tier, why, s) = if p.has_nginx_error_log {
                 (
                     Tier::Recommended,
@@ -698,7 +1129,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                     Some("nginx")
                 },
                 docs_path: "nginx-error-monitor/docs/README.md",
-                findings: vec![],
+                findings: nginx_findings_error,
             }
         },
         // execution-guard
@@ -734,6 +1165,11 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
         },
         // fail2ban-integration
         {
+            let fb_findings = if p.has_fail2ban && p.has_fail2ban_client {
+                audit_fail2ban()
+            } else {
+                vec![]
+            };
             let (tier, why, s, missing) = if p.has_fail2ban_client && p.has_fail2ban {
                 (
                     Tier::Essential,
@@ -768,7 +1204,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 tier,
                 needs_tool: if missing { Some("fail2ban") } else { None },
                 docs_path: "fail2ban-integration/docs/README.md",
-                findings: vec![],
+                findings: fb_findings,
             }
         },
         // geoip-enrichment
@@ -1011,7 +1447,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
 // Output rendering
 // ---------------------------------------------------------------------------
 
-fn print_recommendations(recs: &[ModuleRec]) {
+fn print_recommendations(recs: &[ModuleRec], system_findings: &[ScanFinding]) {
     println!("Recommended modules for this machine:");
     println!("{}", "\u{2501}".repeat(64));
 
@@ -1051,6 +1487,7 @@ fn print_recommendations(recs: &[ModuleRec]) {
                 let icon = match f.severity {
                     FindingSeverity::High => "  \u{26a0}  HIGH  ",
                     FindingSeverity::Medium => "  \u{25b8}  MED   ",
+                    FindingSeverity::Low => "  \u{25b8}  LOW   ",
                 };
                 println!("      {}{} \u{2014} {}", icon, f.resource, f.title);
                 if f.iw_handles {
@@ -1075,14 +1512,44 @@ fn print_recommendations(recs: &[ModuleRec]) {
         }
     }
 
+    // ── System-level findings section ─────────────────────────────────────
+    if !system_findings.is_empty() {
+        println!();
+        println!("{}", "\u{2501}".repeat(64));
+        println!("System-level security findings");
+        println!("{}", "\u{2501}".repeat(64));
+        println!();
+        let mut sorted_sys = system_findings.to_vec();
+        sorted_sys.sort_by_key(|f| f.severity.order());
+        for f in &sorted_sys {
+            let icon = match f.severity {
+                FindingSeverity::High => "\u{26a0}  HIGH",
+                FindingSeverity::Medium => "\u{25b8}  MED ",
+                FindingSeverity::Low => "\u{25b8}  LOW ",
+            };
+            println!("  \u{25b8} {}   {} \u{2014} {}", icon, f.resource, f.title);
+            if f.admin_action.is_some() {
+                println!("          Admin action required \u{2193} (see summary below)");
+            }
+        }
+        println!();
+    }
+
     // ── Admin actions section ──────────────────────────────────────────────
-    let admin_findings: Vec<&ScanFinding> = recs
+    let module_admin_findings: Vec<&ScanFinding> = recs
         .iter()
         .flat_map(|r| r.findings.iter())
         .filter(|f| f.admin_action.is_some())
         .collect();
+    let system_admin_findings: Vec<&ScanFinding> = system_findings
+        .iter()
+        .filter(|f| f.admin_action.is_some())
+        .collect();
 
-    if !admin_findings.is_empty() {
+    let mut all_admin: Vec<&ScanFinding> = module_admin_findings;
+    all_admin.extend(system_admin_findings);
+
+    if !all_admin.is_empty() {
         println!();
         println!("{}", "\u{2501}".repeat(64));
         println!("Admin actions required");
@@ -1090,13 +1557,13 @@ fn print_recommendations(recs: &[ModuleRec]) {
         println!("{}", "\u{2501}".repeat(64));
         println!();
 
-        let mut sorted_admin = admin_findings.clone();
-        sorted_admin.sort_by_key(|f| f.severity.order());
+        all_admin.sort_by_key(|f| f.severity.order());
 
-        for f in sorted_admin {
+        for f in all_admin {
             let badge = match f.severity {
                 FindingSeverity::High => "[\u{001b}[31mHIGH\u{001b}[0m]  ",
                 FindingSeverity::Medium => "[\u{001b}[33mMED\u{001b}[0m]   ",
+                FindingSeverity::Low => "[\u{001b}[36mLOW\u{001b}[0m]   ",
             };
             println!("  {}{} \u{2014} {}", badge, f.resource, f.title);
             println!();
@@ -1252,7 +1719,8 @@ pub fn cmd_scan(modules_dir_override: &str) -> Result<()> {
     print_probes(&probes);
 
     let recs = score_modules(&probes);
-    print_recommendations(&recs);
+    let system_findings = audit_system();
+    print_recommendations(&recs, &system_findings);
 
     interactive_loop(&recs, &modules_dir);
 
@@ -1382,5 +1850,98 @@ mod tests {
             .find(|r| r.id == "crowdsec-integration")
             .unwrap();
         assert_eq!(cs.tier, Tier::Essential);
+    }
+
+    #[test]
+    fn audit_ssh_detects_password_auth() {
+        let config = "passwordauthentication yes\nusedns no\n";
+        let findings = parse_ssh_config(config);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.title.to_lowercase().contains("password authentication")),
+            "Should detect password authentication finding"
+        );
+    }
+
+    #[test]
+    fn audit_ssh_no_high_medium_on_hardened_config() {
+        // A hardened config: key-only, no root login, no x11, tcp fwd disabled, low maxtries
+        let config = "passwordauthentication no\npermitroot login no\nx11forwarding no\nallowt cpforwarding no\nmaxauthtries 3\n";
+        let findings = parse_ssh_config(config);
+        let has_high_or_medium = findings
+            .iter()
+            .any(|f| f.severity == FindingSeverity::High || f.severity == FindingSeverity::Medium);
+        assert!(
+            !has_high_or_medium,
+            "Hardened SSH config should have no High or Medium findings, got: {:?}",
+            findings
+                .iter()
+                .map(|f| format!("{:?}: {}", f.severity, f.title))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn scan_finding_severity_order() {
+        assert!(
+            FindingSeverity::High.order() < FindingSeverity::Medium.order(),
+            "High should sort before Medium"
+        );
+        assert!(
+            FindingSeverity::Medium.order() < FindingSeverity::Low.order(),
+            "Medium should sort before Low"
+        );
+    }
+
+    #[test]
+    fn audit_ssh_detects_root_login() {
+        let config = "permitrootlogin yes\n";
+        let findings = parse_ssh_config(config);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == FindingSeverity::High && f.title.contains("root login")),
+            "Should detect root login as High severity"
+        );
+    }
+
+    #[test]
+    fn audit_ssh_detects_x11_forwarding() {
+        let config = "x11forwarding yes\npasswordauthentication no\npermitroot login no\nallowt cpforwarding no\nmaxauthtries 3\n";
+        let findings = parse_ssh_config(config);
+        assert!(
+            findings.iter().any(|f| f.title.contains("X11 forwarding")),
+            "Should detect X11 forwarding finding"
+        );
+    }
+
+    #[test]
+    fn audit_ssh_emits_tcp_forwarding_when_not_disabled() {
+        // Config that doesn't explicitly disable AllowTcpForwarding
+        let config = "passwordauthentication no\n";
+        let findings = parse_ssh_config(config);
+        assert!(
+            findings.iter().any(|f| f.title.contains("TCP forwarding")),
+            "Should emit TCP forwarding finding when not explicitly disabled"
+        );
+    }
+
+    #[test]
+    fn audit_ssh_no_tcp_forwarding_finding_when_disabled() {
+        let config = "allowtcpforwarding no\npasswordauthentication no\npermitroot login no\nmaxauthtries 3\n";
+        let findings = parse_ssh_config(config);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("TCP forwarding")),
+            "Should NOT emit TCP forwarding finding when explicitly disabled"
+        );
+    }
+
+    #[test]
+    fn audit_system_returns_vec() {
+        // Just verify it doesn't panic and returns a Vec (content depends on host)
+        let findings = audit_system();
+        // It's a Vec, even if empty on a well-configured system
+        let _ = findings.len();
     }
 }
