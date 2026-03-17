@@ -11,6 +11,33 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.19] — 2026-03-17
+
+### Dashboard
+
+- **UX redesign for non-technical users** — home state replaced with a status hero card (✅ Protected / ⚠️ Watch / 🚨 Under Attack) that gives an immediate plain-English verdict. Activity feed with emoji-coded rows (🚫 Blocked / ⚠️ Suspicious / 🚨 Attack) replaces raw incident/decision lists
+- **Health tab — Active Integrations panel** — 9 integration cards (AI Analysis, IP Blocker, Honeypot, Fail2ban, AbuseIPDB, GeoIP, Telegram, Slack, Cloudflare) each showing ON/OFF/DEMO badge, one-line description, and CLI hint when inactive. Guard Mode card at top shows current GUARD/WATCH/READ-ONLY status
+- Left panel simplified: 4-col summary strip, advanced filters hidden behind toggle, correlation clusters and top detectors removed, "Threats Today" replacing "Attackers (IP)". Navigation: Investigate → Threats, Status → Health
+
+### Agent
+
+- **Telegram T.5 — proactive integration suggestions** — `probe_and_suggest()` runs once at startup; if fail2ban is running but not yet configured, sends a Telegram message with inline [✅ Enable Fail2ban sync] / [❌ Not now] buttons
+- **`/capabilities` keyboard** — now includes buttons for Fail2ban and Honeypot in addition to existing capabilities; `enable:fail2ban` callback runs `innerwarden integrate fail2ban`; `enable:honeypot` callback runs `innerwarden enable honeypot`
+- **Fail2ban `use_sudo`** — new `[fail2ban] use_sudo = true` config field; when the agent runs under `NoNewPrivileges=yes` (systemd), use socket group access instead: create `fail2ban` group, add `innerwarden` user, set `SupplementaryGroups=fail2ban` in the service unit
+- **`DashboardActionConfig`** extended with 7 new fields (`fail2ban_enabled`, `geoip_enabled`, `abuseipdb_enabled`, `honeypot_mode`, `telegram_enabled`, `slack_enabled`, `cloudflare_enabled`) — all exposed via `/api/status` under `integrations`
+- **Honeypot listener mode** — `mode = "listener"` + `allow_public_listener = true` now validated; honeypot SSH decoy activates on demand when AI decides to deploy it against a specific attacker
+
+### Bug fixes
+
+- Dashboard default bind address changed from `127.0.0.1` to `0.0.0.0` — previously the dashboard was unreachable from Docker/NPM reverse proxies
+- `configure dashboard` no longer shows a triple password prompt — removed duplicate `prompt()` call; subprocess now inherits the terminal so `rpassword` can read directly from `/dev/tty`
+
+### Test coverage
+
+515 tests across three crates (185 sensor + 183 agent + 147 ctl).
+
+---
+
 ## [0.1.10] — 2026-03-16
 
 ### Control plane (`innerwarden` / `innerwarden-ctl`)
