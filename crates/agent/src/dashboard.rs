@@ -3543,7 +3543,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       font-size: 0.65rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
       border-radius: 999px; padding: 3px 10px; border: 1px solid;
     }
-    .status-badge-guard { color: var(--danger); border-color: rgba(244,63,94,0.4); background: rgba(244,63,94,0.08); }
+    .status-badge-guard { color: var(--ok);     border-color: rgba(58,194,126,0.5);  background: rgba(58,194,126,0.09); }
     .status-badge-watch { color: var(--warn);   border-color: rgba(255,184,77,0.4);  background: rgba(255,184,77,0.06); }
     .status-badge-read  { color: var(--muted);  border-color: var(--line);            background: transparent; }
     .status-badge-ai-on { color: var(--ok);     border-color: rgba(58,194,126,0.4);  background: rgba(58,194,126,0.06); }
@@ -4115,6 +4115,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       border: 1px solid rgba(120,229,255,0.18);
       background: transparent; color: var(--muted);
       transition: background 0.15s, color 0.15s, border-color 0.15s;
+      white-space: nowrap;
     }
     .main-nav-btn.active {
       background: rgba(120,229,255,0.12); color: var(--accent);
@@ -4233,6 +4234,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
         text-transform: uppercase;
         cursor: pointer;
         min-height: 30px;
+        flex-shrink: 0;
       }
       .panel-toggle-btn:hover { background: rgba(120,229,255,0.14); }
     }
@@ -4243,12 +4245,52 @@ const INDEX_HTML: &str = r##"<!doctype html>
       .app { height: auto; min-height: 100vh; overflow-y: auto; }
       .app-body { flex-direction: column; overflow: visible; }
 
-      .app-header { padding: 10px 14px; }
-      .app-title { font-size: 0.95rem; }
+      /* Header: first row = logo+title+toggle, second row = nav tabs */
+      .app-header {
+        padding: 10px 14px 0;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .app-title { font-size: 0.95rem; flex: 1; }
       .logo { width: 28px; height: 28px; }
       .app-badge { display: none; }
       .status-strip { display: none; }
       #refreshStatus { display: none; }
+
+      /* Nav moves to its own full-width row */
+      .main-nav {
+        order: 10;
+        width: calc(100% + 28px);
+        margin: 6px -14px 0;
+        gap: 0;
+        border-top: 1px solid var(--line);
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+      }
+      .main-nav::-webkit-scrollbar { display: none; }
+      .main-nav-btn {
+        flex: 1;
+        min-width: 70px;
+        border-radius: 0;
+        border: none;
+        border-bottom: 2px solid transparent;
+        border-top: none;
+        border-left: none;
+        border-right: none;
+        padding: 9px 12px;
+        font-size: 0.7rem;
+        background: transparent;
+        color: var(--muted);
+      }
+      .main-nav-btn.active {
+        background: rgba(120,229,255,0.06);
+        color: var(--accent);
+        border-bottom-color: var(--accent);
+      }
+
+      /* Toggle button stays in first row, right-aligned */
+      .panel-toggle-btn { order: 5; margin-left: 0; }
 
       .left-panel {
         width: 100%;
@@ -4325,9 +4367,10 @@ const INDEX_HTML: &str = r##"<!doctype html>
       .kpi-grid { gap: 5px; }
       .pivot-tab { font-size: 0.65rem; }
       .left-panel { max-height: 60vh; }
-      .app-header { padding: 9px 12px; }
+      .app-header { padding: 8px 10px 0; }
       .right-panel { padding: 14px 10px; }
       .tl-header { padding: 9px 10px; }
+      .main-nav-btn { padding: 8px 8px; font-size: 0.66rem; min-width: 56px; }
     }
 
     /* ── D3 — action buttons ─────────────────────────────────────── */
@@ -5285,22 +5328,38 @@ const INDEX_HTML: &str = r##"<!doctype html>
     const isHealthy = tSecs != null && tSecs < 300;
 
     // ── Section 1: Guard Mode card ─────────────────────────────────────────
-    let guardLabel, guardDesc, guardCls;
+    // GUARD = green (good, server protected), WATCH = yellow (caution, not acting), READ-ONLY = gray (passive)
+    let guardIcon, guardLabel, guardDesc, guardColor, guardBorderColor, guardBg;
     if (s.mode === 'guard') {
-      guardLabel = '🛡 GUARD'; guardDesc = 'Actively blocking threats — live mode with real firewall rules'; guardCls = 'bad';
+      guardIcon = '🛡';
+      guardLabel = 'PROTECTED';
+      guardDesc = 'Active protection — AI is blocking threats with live firewall rules';
+      guardColor = 'var(--ok)';
+      guardBorderColor = 'rgba(58,194,126,0.5)';
+      guardBg = 'rgba(58,194,126,0.06)';
     } else if (s.mode === 'watch') {
-      guardLabel = '👁 WATCH'; guardDesc = 'Dry-run mode — AI analyses threats but does not execute actions'; guardCls = 'warn';
+      guardIcon = '👁';
+      guardLabel = 'WATCHING';
+      guardDesc = 'Dry-run — AI is analysing threats but actions need manual approval or config change';
+      guardColor = 'var(--warn)';
+      guardBorderColor = 'rgba(255,184,77,0.4)';
+      guardBg = 'rgba(255,184,77,0.04)';
     } else {
-      guardLabel = '📖 READ-ONLY'; guardDesc = 'Responder disabled — monitoring and reporting only, no automated actions'; guardCls = '';
+      guardIcon = '📖';
+      guardLabel = 'MONITOR ONLY';
+      guardDesc = 'Responder disabled — events are logged and reported, no automated response';
+      guardColor = 'var(--muted)';
+      guardBorderColor = 'var(--line)';
+      guardBg = 'transparent';
     }
     const aiLabel = s.ai_enabled ? '🤖 ' + esc(s.ai_provider || '') + ' / ' + esc(s.ai_model || '') : '— off';
 
     let html = '<div class="report-section">' +
-      '<div class="report-section-title">Guard Mode</div>' +
-      '<div style="background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 20px;display:flex;align-items:center;gap:16px;margin-bottom:4px">' +
-      '<div style="font-size:2rem;flex-shrink:0">' + (s.mode === 'guard' ? '🛡' : s.mode === 'watch' ? '👁' : '📖') + '</div>' +
+      '<div class="report-section-title">Protection Status</div>' +
+      '<div style="background:' + guardBg + ';border:1px solid ' + guardBorderColor + ';border-radius:12px;padding:16px 20px;display:flex;align-items:center;gap:16px;margin-bottom:4px">' +
+      '<div style="font-size:2rem;flex-shrink:0">' + guardIcon + '</div>' +
       '<div>' +
-      '<div style="font-size:1.1rem;font-weight:800;color:var(--' + (s.mode === 'guard' ? 'danger' : s.mode === 'watch' ? 'warn' : 'muted') + ')">' + esc(guardLabel) + '</div>' +
+      '<div style="font-size:1.1rem;font-weight:800;color:' + guardColor + '">' + esc(guardLabel) + '</div>' +
       '<div style="font-size:0.75rem;color:var(--muted);margin-top:3px">' + esc(guardDesc) + '</div>' +
       '<div style="margin-top:8px;font-size:0.72rem;color:var(--muted)">AI: <span style="color:var(--' + (s.ai_enabled ? 'ok' : 'muted') + ')">' + aiLabel + '</span> &nbsp;·&nbsp; Agent: <span style="color:var(--' + (isHealthy ? 'ok' : 'warn') + ')">' + liveStr + '</span></div>' +
       '</div></div></div>';
@@ -5928,14 +5987,14 @@ const INDEX_HTML: &str = r##"<!doctype html>
       if (badge) {
         if (actionCfg.enabled) {
           if (actionCfg.dry_run) {
-            badge.textContent = '👁 WATCH';
+            badge.textContent = '👁 WATCHING';
             badge.className = 'status-badge status-badge-watch';
           } else {
-            badge.textContent = '🛡 GUARD';
+            badge.textContent = '🛡 PROTECTED';
             badge.className = 'status-badge status-badge-guard';
           }
         } else {
-          badge.textContent = 'READ-ONLY';
+          badge.textContent = '📖 MONITOR';
           badge.className = 'status-badge status-badge-read';
         }
       }
