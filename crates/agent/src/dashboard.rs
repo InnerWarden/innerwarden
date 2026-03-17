@@ -61,6 +61,12 @@ pub struct DashboardActionConfig {
     pub block_backend: String,
     /// Skills the operator is allowed to invoke from the dashboard.
     pub allowed_skills: Vec<String>,
+    /// Whether the AI analysis is enabled.
+    pub ai_enabled: bool,
+    /// AI provider name (openai | anthropic | ollama).
+    pub ai_provider: String,
+    /// AI model in use.
+    pub ai_model: String,
 }
 
 impl Default for DashboardActionConfig {
@@ -70,6 +76,9 @@ impl Default for DashboardActionConfig {
             dry_run: true,
             block_backend: "ufw".to_string(),
             allowed_skills: vec!["block-ip-ufw".to_string()],
+            ai_enabled: false,
+            ai_provider: "openai".to_string(),
+            ai_model: "gpt-4o-mini".to_string(),
         }
     }
 }
@@ -1112,11 +1121,25 @@ async fn api_report_dates(State(state): State<DashboardState>) -> Json<Vec<Strin
 
 /// GET /api/action/config — exposes the current action mode to the UI (read-only).
 async fn api_action_config(State(state): State<DashboardState>) -> Json<serde_json::Value> {
+    let cfg = &state.action_cfg;
+    let mode = if cfg.enabled {
+        if cfg.dry_run {
+            "watch"
+        } else {
+            "guard"
+        }
+    } else {
+        "read_only"
+    };
     Json(serde_json::json!({
-        "enabled": state.action_cfg.enabled,
-        "dry_run": state.action_cfg.dry_run,
-        "block_backend": state.action_cfg.block_backend,
-        "allowed_skills": state.action_cfg.allowed_skills,
+        "enabled": cfg.enabled,
+        "dry_run": cfg.dry_run,
+        "block_backend": cfg.block_backend,
+        "allowed_skills": cfg.allowed_skills,
+        "ai_enabled": cfg.ai_enabled,
+        "ai_provider": cfg.ai_provider,
+        "ai_model": cfg.ai_model,
+        "mode": mode,
     }))
 }
 
@@ -1209,9 +1232,30 @@ async fn api_status(State(state): State<DashboardState>) -> Json<serde_json::Val
 
     let action_cfg = &state.action_cfg;
 
+    // Compute seconds since last telemetry write (agent liveness check).
+    let last_telemetry_secs = std::fs::metadata(data_dir.join(&telemetry_file))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|mtime| mtime.elapsed().ok().map(|d| d.as_secs()));
+
+    let mode = if action_cfg.enabled {
+        if action_cfg.dry_run {
+            "watch"
+        } else {
+            "guard"
+        }
+    } else {
+        "read_only"
+    };
+
     Json(serde_json::json!({
         "date": today,
         "data_dir": data_dir.display().to_string(),
+        "mode": mode,
+        "last_telemetry_secs": last_telemetry_secs,
+        "ai_enabled": action_cfg.ai_enabled,
+        "ai_provider": action_cfg.ai_provider,
+        "ai_model": action_cfg.ai_model,
         "files": {
             "events": { "exists": file_exists(&events_file), "size_bytes": file_size(&events_file) },
             "incidents": { "exists": file_exists(&incidents_file), "size_bytes": file_size(&incidents_file) },
@@ -2956,6 +3000,27 @@ const INDEX_HTML: &str = r##"<!doctype html>
       padding: 10px 16px; border-bottom: 1px solid var(--line);
       flex-shrink: 0;
     }
+    /* Status strip badges */
+    .status-strip { display: flex; align-items: center; gap: 6px; margin-left: 4px; }
+    .status-badge {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+      border-radius: 999px; padding: 3px 10px; border: 1px solid;
+    }
+    .status-badge-guard { color: var(--danger); border-color: rgba(244,63,94,0.4); background: rgba(244,63,94,0.08); }
+    .status-badge-watch { color: var(--warn);   border-color: rgba(255,184,77,0.4);  background: rgba(255,184,77,0.06); }
+    .status-badge-read  { color: var(--muted);  border-color: var(--line);            background: transparent; }
+    .status-badge-ai-on { color: var(--ok);     border-color: rgba(58,194,126,0.4);  background: rgba(58,194,126,0.06); }
+    .status-badge-ai-off{ color: var(--muted);  border-color: var(--line);            background: transparent; }
+    /* Quick-action buttons in home state */
+    .home-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; padding: 0 2px; }
+    .home-action-btn {
+      flex: 1; min-width: 120px; padding: 8px 14px;
+      background: rgba(120,229,255,0.05); border: 1px solid rgba(120,229,255,0.18);
+      border-radius: 9px; color: var(--accent); font-size: 0.72rem; font-weight: 600;
+      cursor: pointer; transition: background 0.15s, border-color 0.15s;
+      font-family: inherit; text-align: center;
+    }
+    .home-action-btn:hover { background: rgba(120,229,255,0.12); border-color: rgba(120,229,255,0.35); }
     .app-title {
       font-weight: 800;
       font-size: 1.03rem;
@@ -3645,6 +3710,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       .app-title { font-size: 0.95rem; }
       .logo { width: 28px; height: 28px; }
       .app-badge { display: none; }
+      .status-strip { display: none; }
       #refreshStatus { display: none; }
 
       .left-panel {
@@ -4028,7 +4094,10 @@ const INDEX_HTML: &str = r##"<!doctype html>
       </span>
       Inner Warden
     </div>
-    <div class="app-badge" id="modeBadge">read-only</div>
+    <div class="status-strip">
+      <span class="status-badge status-badge-read" id="modeBadge">READ-ONLY</span>
+      <span class="status-badge status-badge-ai-off" id="aiBadge">AI: off</span>
+    </div>
     <span id="refreshStatus"></span>
     <div class="main-nav">
       <button type="button" class="main-nav-btn active" id="navInvestigate" onclick="showView('investigate')">Investigate</button>
@@ -4134,8 +4203,13 @@ const INDEX_HTML: &str = r##"<!doctype html>
           <div id="homeDetectors"><div class="empty">Loading…</div></div>
         </div>
 
-        <div class="home-footer">
-          <span style="color:var(--muted);font-size:0.7rem">Select an entity on the left to investigate its full attack timeline →</span>
+        <div class="home-actions">
+          <button class="home-action-btn" type="button" onclick="investigateTopThreat()">🔍 Investigate Top Threat</button>
+          <button class="home-action-btn" type="button" onclick="showView('report')">📊 Daily Report</button>
+          <button class="home-action-btn" type="button" onclick="showView('status')">🩺 System Status</button>
+        </div>
+        <div class="home-footer" style="margin-top:8px">
+          <span style="color:var(--muted);font-size:0.7rem">← Select an entity from the list to investigate its full attack timeline</span>
         </div>
       </div>
 
@@ -4341,6 +4415,14 @@ const INDEX_HTML: &str = r##"<!doctype html>
     // Deselect active card
     document.querySelectorAll('.attacker-card.active').forEach(c => c.classList.remove('active'));
     state.currentSubject = null;
+  }
+
+  function investigateTopThreat() {
+    // Click the first attacker card if one exists, else no-op
+    const first = document.querySelector('.attacker-card');
+    if (first) { first.click(); return; }
+    // Show investigate tab in case we're in a different view
+    showView('investigate');
   }
 
   // ── D10 — Report tab ────────────────────────────────────────────────────
@@ -4566,7 +4648,27 @@ const INDEX_HTML: &str = r##"<!doctype html>
     const resp = s.responder || {};
     const fmt = (bytes) => bytes > 1048576 ? (bytes/1048576).toFixed(1)+'MB' : bytes > 1024 ? (bytes/1024).toFixed(1)+'KB' : bytes+'B';
 
-    let html = '<div class="report-section"><div class="report-section-title">Data Files — ' + esc(s.date || '—') + '</div>' +
+    // Agent liveness
+    const tSecs = s.last_telemetry_secs;
+    let liveStr = '—';
+    if (tSecs != null) {
+      if (tSecs < 60)        liveStr = tSecs + 's ago';
+      else if (tSecs < 3600) liveStr = Math.floor(tSecs/60) + 'm ago';
+      else                   liveStr = Math.floor(tSecs/3600) + 'h ago';
+    }
+    const isHealthy = tSecs != null && tSecs < 300;
+
+    const modeLabel = s.mode === 'guard' ? '🛡 GUARD' : s.mode === 'watch' ? '👁 WATCH' : '📖 READ-ONLY';
+    const aiLabel = s.ai_enabled ? '🤖 ' + esc(s.ai_provider || '') + ' / ' + esc(s.ai_model || '') : '— off';
+
+    let html = '<div class="report-section"><div class="report-section-title">System</div>' +
+      '<div class="report-kpi-row">' +
+      '<div class="report-kpi"><div class="report-kpi-label">Mode</div><div class="report-kpi-value ' + (s.mode === 'guard' ? 'bad' : s.mode === 'watch' ? 'warn' : '') + '">' + modeLabel + '</div></div>' +
+      '<div class="report-kpi"><div class="report-kpi-label">AI Brain</div><div class="report-kpi-value ' + (s.ai_enabled ? 'good' : '') + '">' + aiLabel + '</div></div>' +
+      '<div class="report-kpi"><div class="report-kpi-label">Agent Activity</div><div class="report-kpi-value ' + (isHealthy ? 'good' : 'warn') + '">' + liveStr + '</div></div>' +
+      '</div></div>';
+
+    html += '<div class="report-section"><div class="report-section-title">Data Files — ' + esc(s.date || '—') + '</div>' +
       '<table class="report-table"><thead><tr><th>File</th><th>Status</th><th>Size</th></tr></thead><tbody>';
     Object.entries(files).forEach(([k, v]) => {
       const exists = v.exists;
@@ -4881,11 +4983,33 @@ const INDEX_HTML: &str = r##"<!doctype html>
     try {
       actionCfg = await loadJson('/api/action/config');
       const badge = document.getElementById('modeBadge');
-      if (actionCfg.enabled) {
-        badge.textContent = actionCfg.dry_run ? 'actions: dry-run' : 'actions: LIVE';
-        badge.style.color = actionCfg.dry_run ? 'var(--warn)' : 'var(--danger)';
-        badge.style.borderColor = actionCfg.dry_run
-          ? 'rgba(255,184,77,0.4)' : 'rgba(244,63,94,0.4)';
+      const aiBadge = document.getElementById('aiBadge');
+      // Mode badge
+      if (badge) {
+        if (actionCfg.enabled) {
+          if (actionCfg.dry_run) {
+            badge.textContent = '👁 WATCH';
+            badge.className = 'status-badge status-badge-watch';
+          } else {
+            badge.textContent = '🛡 GUARD';
+            badge.className = 'status-badge status-badge-guard';
+          }
+        } else {
+          badge.textContent = 'READ-ONLY';
+          badge.className = 'status-badge status-badge-read';
+        }
+      }
+      // AI badge
+      if (aiBadge) {
+        if (actionCfg.ai_enabled) {
+          const label = actionCfg.ai_provider === 'anthropic' ? 'claude' :
+                        actionCfg.ai_provider === 'ollama'    ? 'ollama' : 'openai';
+          aiBadge.textContent = '🤖 ' + label;
+          aiBadge.className = 'status-badge status-badge-ai-on';
+        } else {
+          aiBadge.textContent = 'AI: off';
+          aiBadge.className = 'status-badge status-badge-ai-off';
+        }
       }
     } catch (_) {
       actionCfg = null;
@@ -6441,6 +6565,9 @@ mod tests {
                 dry_run: true,
                 block_backend: backend.to_string(),
                 allowed_skills: vec![expected_id.to_string()],
+                ai_enabled: false,
+                ai_provider: "openai".to_string(),
+                ai_model: "gpt-4o-mini".to_string(),
             };
             let skill_id = format!("block-ip-{}", cfg.block_backend);
             assert_eq!(skill_id, expected_id);

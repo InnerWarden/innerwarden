@@ -419,6 +419,22 @@ impl TelegramClient {
         self.post_json("sendMessage", &body).await
     }
 
+    /// Send an HTML message with an inline keyboard.
+    pub async fn send_text_with_keyboard(
+        &self,
+        text: &str,
+        keyboard: serde_json::Value,
+    ) -> Result<()> {
+        let body = serde_json::json!({
+            "chat_id": self.chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true,
+            "reply_markup": { "inline_keyboard": keyboard },
+        });
+        self.post_json("sendMessage", &body).await
+    }
+
     /// Send the interactive menu with inline keyboard buttons.
     pub async fn send_menu(&self) -> Result<()> {
         let body = serde_json::json!({
@@ -1017,6 +1033,15 @@ fn parse_callback(data: &str, operator: &str) -> Option<ApprovalResult> {
         };
         return Some(ApprovalResult {
             incident_id: incident_id.to_string(),
+            approved: true,
+            always: false,
+            operator_name: operator.to_string(),
+        });
+    }
+    // Capabilities inline keyboard: "enable:<id>" → routed to __enable__:<id> handler
+    if let Some(cap_id) = data.strip_prefix("enable:") {
+        return Some(ApprovalResult {
+            incident_id: format!("enable:{cap_id}"),
             approved: true,
             always: false,
             operator_name: operator.to_string(),

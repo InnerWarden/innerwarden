@@ -392,6 +392,63 @@ fn format_capabilities(cfg: &config::AgentConfig) -> String {
     )
 }
 
+/// Build an inline keyboard with [Enable →] buttons for each disabled capability.
+/// Returns a JSON array of rows (each row is an array of buttons).
+fn capabilities_keyboard(cfg: &config::AgentConfig) -> serde_json::Value {
+    let mut buttons: Vec<serde_json::Value> = Vec::new();
+
+    // Core capabilities
+    if !cfg.ai.enabled {
+        buttons.push(serde_json::json!({
+            "text": "⚡ Enable AI",
+            "callback_data": "enable:ai"
+        }));
+    }
+    if !cfg.responder.enabled {
+        buttons.push(serde_json::json!({
+            "text": "🛡 Enable Block-IP",
+            "callback_data": "enable:block-ip"
+        }));
+    }
+    let has_sudo = cfg
+        .responder
+        .allowed_skills
+        .iter()
+        .any(|s| s.contains("suspend-user"));
+    if !has_sudo {
+        buttons.push(serde_json::json!({
+            "text": "🔒 Enable Sudo Guard",
+            "callback_data": "enable:sudo-protection"
+        }));
+    }
+
+    // Integrations (only show a few to avoid keyboard overload)
+    if !cfg.abuseipdb.enabled {
+        buttons.push(serde_json::json!({
+            "text": "🔍 Enable AbuseIPDB",
+            "callback_data": "enable:abuseipdb"
+        }));
+    }
+    if !cfg.geoip.enabled {
+        buttons.push(serde_json::json!({
+            "text": "🌍 Enable GeoIP",
+            "callback_data": "enable:geoip"
+        }));
+    }
+
+    if buttons.is_empty() {
+        // All enabled — show a status button only
+        return serde_json::json!([[{
+            "text": "✅ All capabilities active",
+            "callback_data": "menu:status"
+        }]]);
+    }
+
+    // Group buttons into rows of 2
+    let rows: Vec<Vec<serde_json::Value>> = buttons.chunks(2).map(|chunk| chunk.to_vec()).collect();
+    serde_json::json!(rows)
+}
+
 /// Strip ANSI escape codes from a string (for clean Telegram display).
 fn strip_ansi(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
@@ -713,6 +770,9 @@ async fn main() -> Result<()> {
             dry_run: cfg.responder.dry_run,
             block_backend: cfg.responder.block_backend.clone(),
             allowed_skills: cfg.responder.allowed_skills.clone(),
+            ai_enabled: cfg.ai.enabled,
+            ai_provider: cfg.ai.provider.clone(),
+            ai_model: cfg.ai.model.clone(),
         };
         let dashboard_data_dir = cli.data_dir.clone();
         let dashboard_bind = cli.dashboard_bind.clone();
@@ -2568,12 +2628,41 @@ async fn process_telegram_approval(
         return;
     }
 
-    // /capabilities — list capabilities and integrations from live config
+    // /capabilities — list capabilities and integrations with inline enable buttons
     if result.incident_id == "__capabilities__" {
         info!(operator = %result.operator_name, "Telegram /capabilities command received");
         if cfg.telegram.bot.enabled {
             let text = format_capabilities(cfg);
-            tg_reply!(text);
+            let keyboard = capabilities_keyboard(cfg);
+            if let Some(ref tg) = state.telegram_client {
+                let tg = tg.clone();
+                tokio::spawn(async move {
+                    let _ = tg.send_text_with_keyboard(&text, keyboard).await;
+                });
+            }
+        }
+        return;
+    }
+
+    // enable:<id> callback — from capabilities inline keyboard buttons
+    if let Some(cap_id) = result.incident_id.strip_prefix("enable:") {
+        let cap_id = cap_id.trim().to_string();
+        info!(operator = %result.operator_name, cap = %cap_id, "Telegram enable callback received");
+        if cfg.telegram.bot.enabled {
+            let tg = state.telegram_client.clone();
+            tokio::spawn(async move {
+                if let Some(ref tg) = tg {
+                    tg.send_typing().await;
+                }
+                let output = run_innerwarden_cli(&["enable", &cap_id]).await;
+                let text = format!(
+                    "🔧 <b>innerwarden enable {cap_id}</b>\n\n<pre>{output}</pre>",
+                    output = output.chars().take(2000).collect::<String>()
+                );
+                if let Some(ref tg) = tg {
+                    let _ = tg.send_text_message(&text).await;
+                }
+            });
         }
         return;
     }
