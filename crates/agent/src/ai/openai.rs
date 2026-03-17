@@ -154,6 +154,7 @@ Be conservative — a false block harms legitimate users. A missed attack harms 
 
 Rules:
 - Prefer block_ip for clear, external brute-force attacks with high confidence.
+- Prefer honeypot when "honeypot" is in available_skills AND the attacker is persistent (multiple incidents or high attempt count) — honeypot collects attacker TTPs and tools instead of just blocking.
 - Prefer monitor for ambiguous cases where more data is needed.
 - Prefer ignore for private IPs, already-handled incidents, or low-confidence signals.
 - Never recommend blocking internal/private IPs (10.x, 192.168.x, 172.16-31.x, 127.x).
