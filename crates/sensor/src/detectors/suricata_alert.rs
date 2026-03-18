@@ -41,6 +41,9 @@ impl SuricataAlertDetector {
         }
 
         let ip = event.details.get("src_ip")?.as_str()?.to_string();
+        if super::is_internal_ip(&ip) {
+            return None;
+        }
         let now = event.ts;
         let cutoff = now - self.window;
 

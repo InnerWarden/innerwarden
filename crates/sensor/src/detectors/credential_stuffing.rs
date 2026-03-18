@@ -32,6 +32,9 @@ impl CredentialStuffingDetector {
         }
 
         let ip = event.details["ip"].as_str()?.to_string();
+        if super::is_internal_ip(&ip) {
+            return None;
+        }
         let user = event.details["user"].as_str()?.trim();
         if user.is_empty() {
             return None;

@@ -73,6 +73,9 @@ impl UserAgentScannerDetector {
         }
 
         let ip = event.details["ip"].as_str()?.to_string();
+        if super::is_internal_ip(&ip) {
+            return None;
+        }
         let now = event.ts;
 
         // Find matching scanner signature
