@@ -15,10 +15,21 @@ InnerWarden ingests these differential results and:
 - Extracts IP and path entities for correlation in the attacker journey view
 - Provides rich context to the AI triage layer alongside Falco/Suricata events
 
+## Current Limitations
+
 osquery events are **not** incidents by themselves — they are observability
-signals. A new listening port on `/usr/bin/nc` becomes significant *in context*
-of an active Falco alert or suspicious SSH session. The dashboard correlates
-these automatically.
+signals that enrich the AI context and appear in the dashboard. A new
+listening port or sudoers change becomes significant *in context* of an
+active SSH attack or Falco alert. The dashboard correlates these
+automatically.
+
+**No dedicated detector triggers automated response actions** from osquery
+results alone. osquery data improves AI decisions on other incidents but
+does not directly block IPs or kill processes.
+
+**Planned:** An osquery anomaly detector that promotes high-severity
+differential results (new SUID binaries, unauthorized SSH keys, unexpected
+listening ports) into incidents with automated response.
 
 ## Severity Classification
 
