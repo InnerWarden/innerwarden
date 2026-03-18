@@ -1283,6 +1283,7 @@ async fn main() -> Result<()> {
                             &state.skill_registry,
                             &cfg,
                             &mut state.decision_writer,
+                            &mut state.decision_cooldowns,
                             &host,
                         ).await;
                     }
@@ -1297,6 +1298,7 @@ async fn main() -> Result<()> {
                             &state.skill_registry,
                             &cfg,
                             &mut state.decision_writer,
+                            &mut state.decision_cooldowns,
                             &host,
                         ).await;
                     }
@@ -1347,6 +1349,7 @@ async fn main() -> Result<()> {
                             &state.skill_registry,
                             &cfg,
                             &mut state.decision_writer,
+                            &mut state.decision_cooldowns,
                             &host,
                         ).await;
                     }
@@ -1361,6 +1364,7 @@ async fn main() -> Result<()> {
                             &state.skill_registry,
                             &cfg,
                             &mut state.decision_writer,
+                            &mut state.decision_cooldowns,
                             &host,
                         ).await;
                     }

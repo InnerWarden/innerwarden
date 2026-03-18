@@ -156,6 +156,7 @@ pub async fn sync_tick(
     skill_registry: &SkillRegistry,
     cfg: &AgentConfig,
     decision_writer: &mut Option<DecisionWriter>,
+    decision_cooldowns: &mut std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
     host: &str,
 ) -> usize {
     if !cs.client.is_configured() {
@@ -190,6 +191,17 @@ pub async fn sync_tick(
                 cs.known_ips.insert(ip.clone());
                 continue;
             }
+        }
+
+        // Decision cooldown — skip if we already blocked this IP recently
+        let cooldown_key = format!("block_ip:crowdsec:ip:{ip}");
+        let cooldown_cutoff = chrono::Utc::now() - chrono::Duration::seconds(3600);
+        if decision_cooldowns
+            .get(&cooldown_key)
+            .is_some_and(|ts| *ts > cooldown_cutoff)
+        {
+            cs.known_ips.insert(ip.clone());
+            continue;
         }
 
         info!(
@@ -252,6 +264,7 @@ pub async fn sync_tick(
         };
 
         cs.known_ips.insert(ip.clone());
+        decision_cooldowns.insert(cooldown_key, chrono::Utc::now());
 
         // Write audit trail
         if let Some(writer) = decision_writer {
