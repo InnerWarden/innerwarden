@@ -10,8 +10,8 @@ builtin     = true
 min_innerwarden = "0.1.0"
 
 [provides]
-collectors = ["nginx_error"]
-detectors  = ["web_scan"]
+collectors = ["nginx-error-log"]
+detectors  = ["web-scan"]
 skills     = []
 
 [requires]

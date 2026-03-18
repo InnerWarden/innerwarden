@@ -2,6 +2,7 @@
 //!
 //! Also provides helpers used by `innerwarden module enable`:
 //! - `collector_section` / `detector_section` — map module-provided IDs to sensor config keys
+//! - `notifier_section` — map module-provided notifier IDs to agent config section names
 //! - `generate_module_sudoers_rule` — build a sudoers drop-in from `[security].allowed_commands`
 //! - `module_planned_effects` — human-readable list of what `enable` will do
 //! - `is_module_enabled` — check whether all components are already active
@@ -29,6 +30,8 @@ pub struct ModuleManifest {
     pub detectors: Vec<String>,
     /// Unique skill IDs harvested from all `[[rules]].skill` entries
     pub skills: Vec<String>,
+    /// Notifier IDs from `[provides].notifiers` (e.g. "slack", "cloudflare_push")
+    pub notifiers: Vec<String>,
     /// Binary paths from `[security].allowed_commands` (used to build sudoers rule)
     pub allowed_commands: Vec<String>,
     /// Preflight specs from `[[preflights]]`
@@ -95,6 +98,7 @@ impl ModuleManifest {
         let provides = doc.get("provides").and_then(|v| v.as_table());
         let collectors = str_array(provides.as_ref().and_then(|t| t.get("collectors")));
         let detectors = str_array(provides.as_ref().and_then(|t| t.get("detectors")));
+        let notifiers = str_array(provides.as_ref().and_then(|t| t.get("notifiers")));
 
         // [[rules]] — collect unique skills in declaration order
         let mut skills: Vec<String> = Vec::new();
@@ -142,6 +146,7 @@ impl ModuleManifest {
             collectors,
             detectors,
             skills,
+            notifiers,
             allowed_commands,
             preflights,
         })
@@ -159,18 +164,27 @@ fn str_array(item: Option<&toml_edit::Item>) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Collector / detector → sensor config section mapping
+// Collector / detector / notifier → config section mapping
 // ---------------------------------------------------------------------------
 
 /// Maps a module `[provides].collectors` ID to its `[section]` name in the sensor config.
 pub fn collector_section(id: &str) -> Option<&'static str> {
     match id {
-        "nginx-access-log" => Some("collectors.nginx_access"),
+        // Native collectors
         "auth-log" => Some("collectors.auth_log"),
         "journald" => Some("collectors.journald"),
         "exec-audit" => Some("collectors.exec_audit"),
         "docker" => Some("collectors.docker"),
         "integrity" => Some("collectors.integrity"),
+        "nginx-access-log" => Some("collectors.nginx_access"),
+        "nginx-error-log" => Some("collectors.nginx_error"),
+        "syslog-firewall" => Some("collectors.syslog_firewall"),
+        "macos-log" => Some("collectors.macos_log"),
+        // External collectors
+        "falco-log" => Some("collectors.falco_log"),
+        "suricata-eve" => Some("collectors.suricata_eve"),
+        "wazuh-alerts" => Some("collectors.wazuh_alerts"),
+        "osquery-log" => Some("collectors.osquery_log"),
         _ => None,
     }
 }
@@ -183,6 +197,25 @@ pub fn detector_section(id: &str) -> Option<&'static str> {
         "port-scan" => Some("detectors.port_scan"),
         "sudo-abuse" => Some("detectors.sudo_abuse"),
         "search-abuse" => Some("detectors.search_abuse"),
+        "web-scan" => Some("detectors.web_scan"),
+        "execution-guard" => Some("detectors.execution_guard"),
+        "user-agent-scanner" => Some("detectors.user_agent_scanner"),
+        _ => None,
+    }
+}
+
+/// Maps a module `[provides].notifiers` ID to its `[section]` name in the agent config.
+///
+/// These sections have an `enabled` boolean that the enable/disable flow sets.
+pub fn notifier_section(id: &str) -> Option<&'static str> {
+    match id {
+        "slack" => Some("slack"),
+        "cloudflare_push" | "cloudflare" => Some("cloudflare"),
+        "telegram" => Some("telegram"),
+        "webhook" => Some("webhook"),
+        "abuseipdb" => Some("abuseipdb"),
+        "geoip" => Some("geoip"),
+        "fail2ban" => Some("fail2ban"),
         _ => None,
     }
 }
@@ -250,6 +283,13 @@ pub fn module_planned_effects(
             ));
         }
     }
+    for id in &manifest.notifiers {
+        if let Some(section) = notifier_section(id) {
+            effects.push(format!("Patch {agent}: [{section}] enabled = true"));
+        } else {
+            effects.push(format!("(skip) unknown notifier '{id}'"));
+        }
+    }
     if !manifest.allowed_commands.is_empty() {
         effects.push(format!(
             "Write /etc/sudoers.d/innerwarden-module-{} (validated with visudo)",
@@ -257,7 +297,7 @@ pub fn module_planned_effects(
         ));
     }
     let needs_sensor = !manifest.collectors.is_empty() || !manifest.detectors.is_empty();
-    let needs_agent = !manifest.skills.is_empty();
+    let needs_agent = !manifest.skills.is_empty() || !manifest.notifiers.is_empty();
     if needs_sensor {
         effects.push("Restart innerwarden-sensor".to_string());
     }
@@ -292,6 +332,11 @@ pub fn module_disable_effects(
             "Remove \"{skill}\" from [responder] allowed_skills in {agent}"
         ));
     }
+    for id in &manifest.notifiers {
+        if let Some(section) = notifier_section(id) {
+            effects.push(format!("Patch {agent}: [{section}] enabled = false"));
+        }
+    }
     if !manifest.allowed_commands.is_empty() {
         effects.push(format!(
             "Remove /etc/sudoers.d/innerwarden-module-{}",
@@ -299,7 +344,7 @@ pub fn module_disable_effects(
         ));
     }
     let needs_sensor = !manifest.collectors.is_empty() || !manifest.detectors.is_empty();
-    let needs_agent = !manifest.skills.is_empty();
+    let needs_agent = !manifest.skills.is_empty() || !manifest.notifiers.is_empty();
     if needs_sensor {
         effects.push("Restart innerwarden-sensor".to_string());
     }
@@ -324,9 +369,17 @@ pub fn scan_modules_dir(dir: &Path) -> Vec<ModuleManifest> {
     modules
 }
 
-/// Returns `true` if all collectors and detectors declared by the module are
-/// already enabled in the sensor config.
-pub fn is_module_enabled(sensor_config: &Path, manifest: &ModuleManifest) -> bool {
+/// Returns `true` if all collectors, detectors, skills, and notifiers declared
+/// by the module are already active in their respective config files.
+///
+/// For skills: checks `[responder].allowed_skills` in the agent config.
+/// For notifiers: checks `[<section>].enabled` in the agent config.
+/// For modules with no checkable provides (all arrays empty), returns `true`.
+pub fn is_module_enabled(
+    sensor_config: &Path,
+    agent_config: &Path,
+    manifest: &ModuleManifest,
+) -> bool {
     use crate::config_editor;
 
     for id in &manifest.collectors {
@@ -339,6 +392,21 @@ pub fn is_module_enabled(sensor_config: &Path, manifest: &ModuleManifest) -> boo
     for id in &manifest.detectors {
         if let Some(section) = detector_section(id) {
             if !config_editor::read_bool(sensor_config, section, "enabled") {
+                return false;
+            }
+        }
+    }
+    if !manifest.skills.is_empty() {
+        let active = config_editor::read_str_array(agent_config, "responder", "allowed_skills");
+        for skill in &manifest.skills {
+            if !active.iter().any(|s| s == skill) {
+                return false;
+            }
+        }
+    }
+    for id in &manifest.notifiers {
+        if let Some(section) = notifier_section(id) {
+            if !config_editor::read_bool(agent_config, section, "enabled") {
                 return false;
             }
         }
@@ -395,6 +463,19 @@ value  = "/usr/sbin/ufw"
 reason = "ufw is required"
 "#;
 
+    const SLACK_NOTIFY_TOML: &str = r#"
+[module]
+id      = "slack-notify"
+name    = "Slack Notifications"
+version = "0.1.0"
+description = "Sends incident alerts to a Slack channel via incoming webhook"
+tier    = "open"
+builtin = true
+
+[provides]
+notifiers = ["slack"]
+"#;
+
     fn parse(toml: &str) -> ModuleManifest {
         let doc = toml.parse::<toml_edit::DocumentMut>().unwrap();
         ModuleManifest::from_doc(&doc).unwrap()
@@ -442,12 +523,40 @@ builtin = false
         let m = parse(SEARCH_PROTECTION_TOML);
         assert_eq!(m.collectors, vec!["nginx-access-log"]);
         assert_eq!(m.detectors, vec!["search-abuse"]);
+        assert!(m.notifiers.is_empty());
+    }
+
+    #[test]
+    fn parses_notifiers() {
+        let m = parse(SLACK_NOTIFY_TOML);
+        assert_eq!(m.notifiers, vec!["slack"]);
+        assert!(m.collectors.is_empty());
+        assert!(m.detectors.is_empty());
+        assert!(m.skills.is_empty());
+    }
+
+    #[test]
+    fn parses_cloudflare_notifier() {
+        let toml = r#"
+[module]
+id = "cloudflare-integration"
+name = "Cloudflare Integration"
+version = "0.1.0"
+description = "Pushes blocked IPs to Cloudflare edge"
+tier = "open"
+builtin = true
+
+[provides]
+notifiers = ["cloudflare_push"]
+"#;
+        let m = parse(toml);
+        assert_eq!(m.notifiers, vec!["cloudflare_push"]);
+        assert_eq!(notifier_section("cloudflare_push"), Some("cloudflare"));
     }
 
     #[test]
     fn skills_deduplicated_from_rules() {
         let m = parse(SEARCH_PROTECTION_TOML);
-        // Two rules share the same detector but different skills — both should appear
         assert_eq!(m.skills, vec!["rate-limit-nginx", "block-ip-ufw"]);
     }
 
@@ -491,23 +600,49 @@ skill = "my-skill"
     }
 
     #[test]
-    fn collector_section_known_ids() {
-        assert_eq!(
-            collector_section("nginx-access-log"),
-            Some("collectors.nginx_access")
-        );
+    fn collector_section_native_ids() {
         assert_eq!(collector_section("auth-log"), Some("collectors.auth_log"));
+        assert_eq!(collector_section("journald"), Some("collectors.journald"));
         assert_eq!(
             collector_section("exec-audit"),
             Some("collectors.exec_audit")
         );
         assert_eq!(collector_section("docker"), Some("collectors.docker"));
         assert_eq!(collector_section("integrity"), Some("collectors.integrity"));
-        assert_eq!(collector_section("journald"), Some("collectors.journald"));
+        assert_eq!(
+            collector_section("nginx-access-log"),
+            Some("collectors.nginx_access")
+        );
+        assert_eq!(
+            collector_section("nginx-error-log"),
+            Some("collectors.nginx_error")
+        );
+        assert_eq!(
+            collector_section("syslog-firewall"),
+            Some("collectors.syslog_firewall")
+        );
+        assert_eq!(collector_section("macos-log"), Some("collectors.macos_log"));
     }
 
     #[test]
-    fn detector_section_known_ids() {
+    fn collector_section_external_ids() {
+        assert_eq!(collector_section("falco-log"), Some("collectors.falco_log"));
+        assert_eq!(
+            collector_section("suricata-eve"),
+            Some("collectors.suricata_eve")
+        );
+        assert_eq!(
+            collector_section("wazuh-alerts"),
+            Some("collectors.wazuh_alerts")
+        );
+        assert_eq!(
+            collector_section("osquery-log"),
+            Some("collectors.osquery_log")
+        );
+    }
+
+    #[test]
+    fn detector_section_all_ids() {
         assert_eq!(
             detector_section("ssh-bruteforce"),
             Some("detectors.ssh_bruteforce")
@@ -522,12 +657,34 @@ skill = "my-skill"
             detector_section("search-abuse"),
             Some("detectors.search_abuse")
         );
+        assert_eq!(detector_section("web-scan"), Some("detectors.web_scan"));
+        assert_eq!(
+            detector_section("execution-guard"),
+            Some("detectors.execution_guard")
+        );
+        assert_eq!(
+            detector_section("user-agent-scanner"),
+            Some("detectors.user_agent_scanner")
+        );
+    }
+
+    #[test]
+    fn notifier_section_all_ids() {
+        assert_eq!(notifier_section("slack"), Some("slack"));
+        assert_eq!(notifier_section("cloudflare_push"), Some("cloudflare"));
+        assert_eq!(notifier_section("cloudflare"), Some("cloudflare"));
+        assert_eq!(notifier_section("telegram"), Some("telegram"));
+        assert_eq!(notifier_section("webhook"), Some("webhook"));
+        assert_eq!(notifier_section("abuseipdb"), Some("abuseipdb"));
+        assert_eq!(notifier_section("geoip"), Some("geoip"));
+        assert_eq!(notifier_section("fail2ban"), Some("fail2ban"));
     }
 
     #[test]
     fn unknown_ids_return_none() {
         assert!(collector_section("unknown-collector").is_none());
         assert!(detector_section("unknown-detector").is_none());
+        assert!(notifier_section("unknown-notifier").is_none());
     }
 
     #[test]
@@ -540,6 +697,19 @@ skill = "my-skill"
         assert!(rule.contains("/usr/sbin/nginx *"));
         assert!(rule.contains("NOPASSWD"));
         assert!(rule.contains("my-module"));
+    }
+
+    #[test]
+    fn planned_effects_includes_notifiers() {
+        let m = parse(SLACK_NOTIFY_TOML);
+        let effects = module_planned_effects(
+            Path::new("/etc/innerwarden/config.toml"),
+            Path::new("/etc/innerwarden/agent.toml"),
+            &m,
+        );
+        assert!(effects.iter().any(|e| e.contains("[slack] enabled = true")));
+        assert!(effects.iter().any(|e| e.contains("innerwarden-agent")));
+        assert!(!effects.iter().any(|e| e.contains("innerwarden-sensor")));
     }
 
     #[test]
@@ -561,6 +731,21 @@ skill = "my-skill"
             .any(|e| e.contains("rate-limit-nginx") && e.contains("Remove")));
         assert!(effects.iter().any(|e| e.contains("innerwarden-sensor")));
         assert!(effects.iter().any(|e| e.contains("innerwarden-agent")));
+    }
+
+    #[test]
+    fn disable_effects_includes_notifiers() {
+        let m = parse(SLACK_NOTIFY_TOML);
+        let effects = module_disable_effects(
+            Path::new("/etc/innerwarden/config.toml"),
+            Path::new("/etc/innerwarden/agent.toml"),
+            &m,
+        );
+        assert!(effects
+            .iter()
+            .any(|e| e.contains("[slack] enabled = false")));
+        assert!(effects.iter().any(|e| e.contains("innerwarden-agent")));
+        assert!(!effects.iter().any(|e| e.contains("innerwarden-sensor")));
     }
 
     #[test]
@@ -624,7 +809,6 @@ skill    = "my-skill"
 
         let modules = scan_modules_dir(root.path());
         assert_eq!(modules.len(), 2);
-        // Sorted by ID
         assert_eq!(modules[0].id, "mod-a");
         assert_eq!(modules[1].id, "mod-b");
     }

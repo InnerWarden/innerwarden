@@ -1035,7 +1035,7 @@ fn cmd_status_global(
         println!("  (none installed)");
     } else {
         for m in &modules {
-            let enabled = is_module_enabled(&cli.sensor_config, m);
+            let enabled = is_module_enabled(&cli.sensor_config, &cli.agent_config, m);
             let indicator = if enabled { "●" } else { "○" };
             let label = if enabled { "enabled " } else { "disabled" };
             println!("  {indicator} {:<20} {}  {}", m.id, label, m.name);
@@ -1217,7 +1217,7 @@ fn cmd_module_enable(cli: &Cli, path: &std::path::Path, yes: bool) -> Result<()>
     println!("Enabling module: {} ({})\n", manifest.name, manifest.id);
 
     // 3. Check if already enabled
-    if is_module_enabled(&cli.sensor_config, &manifest) {
+    if is_module_enabled(&cli.sensor_config, &cli.agent_config, &manifest) {
         println!(
             "Module '{}' is already enabled. Nothing to do.",
             manifest.id
@@ -1285,7 +1285,7 @@ fn cmd_module_disable(cli: &Cli, path: &std::path::Path, yes: bool) -> Result<()
 
     println!("Disabling module: {} ({})\n", manifest.name, manifest.id);
 
-    if !is_module_enabled(&cli.sensor_config, &manifest) {
+    if !is_module_enabled(&cli.sensor_config, &cli.agent_config, &manifest) {
         println!("Module '{}' is not enabled. Nothing to do.", manifest.id);
         return Ok(());
     }
@@ -1337,7 +1337,7 @@ fn cmd_module_list(cli: &Cli, modules_dir: &std::path::Path) -> Result<()> {
     println!("{}", "─".repeat(80));
 
     for m in &modules {
-        let status = if is_module_enabled(&cli.sensor_config, m) {
+        let status = if is_module_enabled(&cli.sensor_config, &cli.agent_config, m) {
             "enabled"
         } else {
             "disabled"
@@ -1351,7 +1351,7 @@ fn cmd_module_list(cli: &Cli, modules_dir: &std::path::Path) -> Result<()> {
 
 fn cmd_module_status(cli: &Cli, id: &str, modules_dir: &std::path::Path) -> Result<()> {
     use module_manifest::{
-        collector_section, detector_section, is_module_enabled, scan_modules_dir,
+        collector_section, detector_section, is_module_enabled, notifier_section, scan_modules_dir,
     };
 
     let modules = scan_modules_dir(modules_dir);
@@ -1363,7 +1363,7 @@ fn cmd_module_status(cli: &Cli, id: &str, modules_dir: &std::path::Path) -> Resu
         )
     })?;
 
-    let enabled = is_module_enabled(&cli.sensor_config, manifest);
+    let enabled = is_module_enabled(&cli.sensor_config, &cli.agent_config, manifest);
     let status = if enabled { "enabled" } else { "disabled" };
     let builtin = if manifest.builtin { "yes" } else { "no" };
 
@@ -1401,14 +1401,38 @@ fn cmd_module_status(cli: &Cli, id: &str, modules_dir: &std::path::Path) -> Resu
     }
 
     if !manifest.skills.is_empty() {
-        println!("Skills:      {}", manifest.skills.join(", "));
+        let active =
+            config_editor::read_str_array(&cli.agent_config, "responder", "allowed_skills");
+        let parts: Vec<String> = manifest
+            .skills
+            .iter()
+            .map(|s| {
+                let on = active.iter().any(|a| a == s);
+                format!("{s} ({})", if on { "enabled" } else { "disabled" })
+            })
+            .collect();
+        println!("Skills:      {}", parts.join(", "));
+    }
+
+    if !manifest.notifiers.is_empty() {
+        let parts: Vec<String> = manifest
+            .notifiers
+            .iter()
+            .map(|id| {
+                let on = notifier_section(id)
+                    .map(|s| config_editor::read_bool(&cli.agent_config, s, "enabled"))
+                    .unwrap_or(false);
+                format!("{id} ({})", if on { "enabled" } else { "disabled" })
+            })
+            .collect();
+        println!("Notifiers:   {}", parts.join(", "));
     }
 
     Ok(())
 }
 
 fn apply_module_disable(cli: &Cli, manifest: &module_manifest::ModuleManifest) -> Result<()> {
-    use module_manifest::{collector_section, detector_section};
+    use module_manifest::{collector_section, detector_section, notifier_section};
 
     // Disable collectors
     for id in &manifest.collectors {
@@ -1439,6 +1463,16 @@ fn apply_module_disable(cli: &Cli, manifest: &module_manifest::ModuleManifest) -
         }
     }
 
+    // Disable notifiers in agent config
+    for id in &manifest.notifiers {
+        if let Some(section) = notifier_section(id) {
+            config_editor::write_bool(&cli.agent_config, section, "enabled", false)?;
+            println!("  [done] [{section}] enabled = false");
+        } else {
+            println!("  [warn] unknown notifier '{id}' — skipped");
+        }
+    }
+
     // Remove sudoers drop-in
     if !manifest.allowed_commands.is_empty() {
         let drop_in_name = format!("innerwarden-module-{}", manifest.id);
@@ -1452,7 +1486,7 @@ fn apply_module_disable(cli: &Cli, manifest: &module_manifest::ModuleManifest) -
 
     // Restart services
     let needs_sensor = !manifest.collectors.is_empty() || !manifest.detectors.is_empty();
-    let needs_agent = !manifest.skills.is_empty();
+    let needs_agent = !manifest.skills.is_empty() || !manifest.notifiers.is_empty();
 
     if needs_sensor {
         systemd::restart_service("innerwarden-sensor", cli.dry_run)?;
@@ -1493,7 +1527,7 @@ fn apply_module_enable(
     manifest: &module_manifest::ModuleManifest,
     sudoers_rule_fn: &dyn Fn(&str, &[String]) -> String,
 ) -> Result<()> {
-    use module_manifest::{collector_section, detector_section};
+    use module_manifest::{collector_section, detector_section, notifier_section};
 
     // Enable collectors in sensor config
     for id in &manifest.collectors {
@@ -1532,6 +1566,16 @@ fn apply_module_enable(
         }
     }
 
+    // Enable notifiers in agent config
+    for id in &manifest.notifiers {
+        if let Some(section) = notifier_section(id) {
+            config_editor::write_bool(&cli.agent_config, section, "enabled", true)?;
+            println!("  [done] [{section}] enabled = true");
+        } else {
+            println!("  [warn] unknown notifier '{id}' — no agent config section found; skipped");
+        }
+    }
+
     // Install sudoers drop-in if commands are declared
     if !manifest.allowed_commands.is_empty() {
         let rule = sudoers_rule_fn(&manifest.id, &manifest.allowed_commands);
@@ -1546,7 +1590,7 @@ fn apply_module_enable(
 
     // Restart services
     let needs_sensor = !manifest.collectors.is_empty() || !manifest.detectors.is_empty();
-    let needs_agent = !manifest.skills.is_empty();
+    let needs_agent = !manifest.skills.is_empty() || !manifest.notifiers.is_empty();
 
     if needs_sensor {
         systemd::restart_service("innerwarden-sensor", cli.dry_run)?;
@@ -1986,7 +2030,7 @@ fn cmd_module_uninstall(cli: &Cli, id: &str, modules_dir: &Path, yes: bool) -> R
     println!("Uninstalling module: {} ({})", manifest.name, manifest.id);
 
     // Disable first if enabled
-    let enabled = is_module_enabled(&cli.sensor_config, &manifest);
+    let enabled = is_module_enabled(&cli.sensor_config, &cli.agent_config, &manifest);
     if enabled {
         println!("  Module is currently enabled — will disable before removing.");
     }
@@ -2203,7 +2247,11 @@ fn cmd_module_update_all(cli: &Cli, modules_dir: &Path, check_only: bool, yes: b
             Ok(()) => {
                 println!("  [done] {} updated to {}", c.manifest.id, c.new_version);
                 // Re-enable if it was enabled before
-                if module_manifest::is_module_enabled(&cli.sensor_config, &c.manifest) {
+                if module_manifest::is_module_enabled(
+                    &cli.sensor_config,
+                    &cli.agent_config,
+                    &c.manifest,
+                ) {
                     let _ = cmd_module_enable(cli, &install_dir, true);
                 }
                 updated += 1;
