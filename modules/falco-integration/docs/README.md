@@ -7,10 +7,21 @@ threats that log-based detection cannot see — process spawns, file access,
 network connections, privilege escalation — at the kernel level.
 
 InnerWarden ingests Falco's alert output and provides:
-- AI-assisted triage for High/Critical alerts
-- Response actions (block-ip, suspend-user-sudo) when responder is enabled
 - Attacker journey investigation via the dashboard
-- Correlation with SSH, auditd, and other collector events
+- Correlation with SSH, auditd, Suricata, and other collector events
+- Rich context injected into the AI triage prompt for better decisions
+
+## Current Limitations
+
+Falco events currently enrich the AI context and appear in the dashboard,
+but **no dedicated detector triggers automated response actions** from Falco
+alerts alone. This means Falco alerts do not directly block IPs or suspend
+users — they provide intelligence that improves AI decisions on other
+incidents (SSH brute-force, sudo abuse, etc.).
+
+**Planned:** A Falco alert detector that promotes high-severity alerts
+into incidents with automated response (block-ip, kill-process) is planned
+for a future release.
 
 ## What It Detects
 

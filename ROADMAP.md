@@ -86,6 +86,8 @@ This roadmap is high-level only; implementation details live in the code, commit
 ## Phase 2 — Hardening & polish (next)
 
 **Detection improvements:**
+- 📋 **Falco alert detector** — promote high-severity Falco runtime alerts into incidents with automated response (block-ip, kill-process)
+- 📋 **osquery anomaly detector** — detect new SUID binaries, unauthorized SSH keys, unexpected listening ports from osquery differential results
 - 📋 **Detector auto-tuning** — adaptive thresholds based on baseline traffic (currently manual via `innerwarden tune`)
 - 📋 **`execution_guard` block mode** — move from observe/kill to pre-exec block via seccomp-notify or eBPF
 - 📋 **DNS anomaly detector** — detect DNS exfiltration and C2 beaconing patterns
