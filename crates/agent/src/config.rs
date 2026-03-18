@@ -40,6 +40,10 @@ pub struct AgentConfig {
     pub slack: SlackConfig,
     #[serde(default)]
     pub cloudflare: CloudflareConfig,
+    #[serde(default)]
+    pub allowlist: AllowlistConfig,
+    #[serde(default)]
+    pub web_push: WebPushConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -887,6 +891,77 @@ impl Default for CloudflareConfig {
 
 fn default_cloudflare_notes_prefix() -> String {
     "innerwarden".to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Allowlist
+// ---------------------------------------------------------------------------
+
+/// Entities in the allowlist are still logged and notified but skip the AI
+/// gate — no automated response skill is ever executed for them.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct AllowlistConfig {
+    /// IP addresses or CIDR ranges that are never auto-responded to.
+    /// Examples: ["10.0.0.1", "192.168.0.0/24"]
+    #[serde(default)]
+    pub trusted_ips: Vec<String>,
+
+    /// Usernames that are never auto-responded to.
+    /// Examples: ["deploy", "backup"]
+    #[serde(default)]
+    pub trusted_users: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Web Push
+// ---------------------------------------------------------------------------
+
+/// Browser Web Push notification configuration (RFC 8291 / VAPID RFC 8292).
+///
+/// Generate keys with: `innerwarden notify web-push setup`
+#[derive(Debug, Deserialize, Clone)]
+pub struct WebPushConfig {
+    /// Enable browser push notifications for High/Critical incidents.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// VAPID subject — must be "mailto:..." or "https://..." for push service contact.
+    #[serde(default = "default_vapid_subject")]
+    pub vapid_subject: String,
+
+    /// VAPID private key in PKCS#8 PEM format.
+    /// Set via agent.env: INNERWARDEN_VAPID_PRIVATE_KEY=<pem>
+    #[serde(default)]
+    pub vapid_private_key: String,
+
+    /// VAPID public key — base64url-encoded uncompressed P-256 point (65 bytes → 87 chars).
+    /// This value is served to browsers at GET /api/push/vapid-key.
+    #[serde(default)]
+    pub vapid_public_key: String,
+
+    /// Minimum severity for push notification: "high" or "critical" (default: "high")
+    #[serde(default = "default_web_push_min_severity")]
+    pub min_severity: String,
+}
+
+fn default_vapid_subject() -> String {
+    "mailto:admin@example.com".to_string()
+}
+
+fn default_web_push_min_severity() -> String {
+    "high".to_string()
+}
+
+impl Default for WebPushConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            vapid_subject: default_vapid_subject(),
+            vapid_private_key: String::new(),
+            vapid_public_key: String::new(),
+            min_severity: default_web_push_min_severity(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

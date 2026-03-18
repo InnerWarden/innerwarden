@@ -397,6 +397,23 @@ enum Command {
         /// Shell to generate completions for: bash, zsh, or fish
         shell: String,
     },
+
+    /// Manage trusted IPs, CIDRs, and users that skip automated response.
+    ///
+    /// Allowlisted entities are still logged and notified via webhook/Telegram/Slack
+    /// but the AI gate is skipped — no automated skill (block, suspend, etc.) is
+    /// ever executed for them.
+    ///
+    /// Examples:
+    ///   innerwarden allowlist add --ip 10.0.0.1
+    ///   innerwarden allowlist add --ip 192.168.0.0/24
+    ///   innerwarden allowlist add --user deploy
+    ///   innerwarden allowlist remove --ip 10.0.0.1
+    ///   innerwarden allowlist list
+    Allowlist {
+        #[command(subcommand)]
+        command: AllowlistCommand,
+    },
 }
 
 /// Notification channel setup sub-commands.
@@ -497,6 +514,60 @@ enum NotifyCommand {
         #[arg(long)]
         channel: Option<String>,
     },
+
+    /// Set up browser Web Push notifications (RFC 8291 / VAPID).
+    ///
+    /// Generates a VAPID key pair and writes the configuration to agent.toml.
+    /// After setup, open the InnerWarden dashboard and click "Enable notifications"
+    /// to subscribe your browser.
+    ///
+    /// Examples:
+    ///   innerwarden notify web-push
+    ///   innerwarden notify web-push --subject mailto:admin@example.com
+    #[clap(name = "web-push")]
+    WebPush {
+        /// VAPID subject — "mailto:..." contact address for the push service (default: mailto:admin@example.com)
+        #[arg(long)]
+        subject: Option<String>,
+    },
+}
+
+/// Allowlist sub-commands.
+#[derive(Subcommand)]
+enum AllowlistCommand {
+    /// Add a trusted IP, CIDR, or user to the allowlist.
+    ///
+    /// Examples:
+    ///   innerwarden allowlist add --ip 10.0.0.1
+    ///   innerwarden allowlist add --ip 192.168.0.0/24
+    ///   innerwarden allowlist add --user deploy
+    Add {
+        /// IP address or CIDR range to trust (e.g. 10.0.0.1 or 192.168.0.0/24)
+        #[arg(long)]
+        ip: Option<String>,
+
+        /// Username to trust
+        #[arg(long)]
+        user: Option<String>,
+    },
+
+    /// Remove an IP, CIDR, or user from the allowlist.
+    ///
+    /// Examples:
+    ///   innerwarden allowlist remove --ip 10.0.0.1
+    ///   innerwarden allowlist remove --user deploy
+    Remove {
+        /// IP address or CIDR to remove
+        #[arg(long)]
+        ip: Option<String>,
+
+        /// Username to remove
+        #[arg(long)]
+        user: Option<String>,
+    },
+
+    /// Show all currently trusted IPs, CIDRs, and users.
+    List,
 }
 
 /// External integration setup sub-commands.
@@ -774,6 +845,9 @@ fn main() -> Result<()> {
                 ref password,
             }) => cmd_configure_dashboard(&cli, user, password.as_deref()),
             Some(NotifyCommand::Test { ref channel }) => cmd_test_alert(&cli, channel.as_deref()),
+            Some(NotifyCommand::WebPush { ref subject }) => {
+                cmd_notify_web_push_setup(&cli, subject.as_deref())
+            }
         },
         Command::Integrate { ref command } => match command {
             None => cmd_configure_menu(&cli),
@@ -870,6 +944,15 @@ fn main() -> Result<()> {
             cmd_entity(&cli, target, days, &cli.data_dir.clone())
         }
         Command::Completions { ref shell } => cmd_completions(shell),
+        Command::Allowlist { ref command } => match command {
+            AllowlistCommand::Add { ref ip, ref user } => {
+                cmd_allowlist_add(&cli, ip.as_deref(), user.as_deref())
+            }
+            AllowlistCommand::Remove { ref ip, ref user } => {
+                cmd_allowlist_remove(&cli, ip.as_deref(), user.as_deref())
+            }
+            AllowlistCommand::List => cmd_allowlist_list(&cli),
+        },
     }
 }
 
@@ -7526,6 +7609,237 @@ fn unknown_cap_error(id: &str) -> anyhow::Error {
         "unknown capability '{}' — run 'innerwarden list' to see available capabilities",
         id
     )
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden allowlist
+// ---------------------------------------------------------------------------
+
+fn cmd_allowlist_add(cli: &Cli, ip: Option<&str>, user: Option<&str>) -> Result<()> {
+    use config_editor::write_array_push;
+    let mut changed = false;
+    if let Some(ip_val) = ip {
+        let added = write_array_push(&cli.agent_config, "allowlist", "trusted_ips", ip_val)?;
+        if added {
+            println!("Added to trusted IPs: {ip_val}");
+            changed = true;
+        } else {
+            println!("{ip_val} is already in trusted_ips.");
+        }
+    }
+    if let Some(user_val) = user {
+        let added = write_array_push(&cli.agent_config, "allowlist", "trusted_users", user_val)?;
+        if added {
+            println!("Added to trusted users: {user_val}");
+            changed = true;
+        } else {
+            println!("{user_val} is already in trusted_users.");
+        }
+    }
+    if !changed && ip.is_none() && user.is_none() {
+        anyhow::bail!("specify --ip <cidr> or --user <username>");
+    }
+    if changed {
+        println!(
+            "Allowlist updated. Restart the agent to apply:\n  sudo systemctl restart innerwarden-agent"
+        );
+    }
+    Ok(())
+}
+
+fn cmd_allowlist_remove(cli: &Cli, ip: Option<&str>, user: Option<&str>) -> Result<()> {
+    use config_editor::write_array_remove;
+    let mut changed = false;
+    if let Some(ip_val) = ip {
+        let removed = write_array_remove(&cli.agent_config, "allowlist", "trusted_ips", ip_val)?;
+        if removed {
+            println!("Removed from trusted IPs: {ip_val}");
+            changed = true;
+        } else {
+            println!("{ip_val} was not in trusted_ips.");
+        }
+    }
+    if let Some(user_val) = user {
+        let removed =
+            write_array_remove(&cli.agent_config, "allowlist", "trusted_users", user_val)?;
+        if removed {
+            println!("Removed from trusted users: {user_val}");
+            changed = true;
+        } else {
+            println!("{user_val} was not in trusted_users.");
+        }
+    }
+    if !changed && ip.is_none() && user.is_none() {
+        anyhow::bail!("specify --ip <cidr> or --user <username>");
+    }
+    if changed {
+        println!(
+            "Allowlist updated. Restart the agent to apply:\n  sudo systemctl restart innerwarden-agent"
+        );
+    }
+    Ok(())
+}
+
+fn cmd_allowlist_list(cli: &Cli) -> Result<()> {
+    use config_editor::read_str_array;
+    let ips = read_str_array(&cli.agent_config, "allowlist", "trusted_ips");
+    let users = read_str_array(&cli.agent_config, "allowlist", "trusted_users");
+
+    if ips.is_empty() && users.is_empty() {
+        println!("Allowlist is empty — no trusted IPs or users configured.");
+        println!("Add entries with: innerwarden allowlist add --ip <cidr>");
+        return Ok(());
+    }
+
+    if !ips.is_empty() {
+        println!("Trusted IPs / CIDRs:");
+        for ip in &ips {
+            println!("  {ip}");
+        }
+    }
+    if !users.is_empty() {
+        println!("Trusted users:");
+        for user in &users {
+            println!("  {user}");
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden notify web-push setup
+// ---------------------------------------------------------------------------
+
+fn cmd_notify_web_push_setup(cli: &Cli, subject: Option<&str>) -> Result<()> {
+    use config_editor::{write_bool, write_str};
+    use std::io::Write as _;
+
+    println!("Setting up Web Push notifications (RFC 8291 / VAPID)...");
+    println!();
+
+    // Check for existing keys
+    let existing_key = write_str(&cli.agent_config, "web_push", "vapid_public_key", "");
+    let has_existing = cli.agent_config.exists() && {
+        let content = std::fs::read_to_string(&cli.agent_config).unwrap_or_default();
+        content.contains("vapid_public_key") && !content.contains(r#"vapid_public_key = """#)
+    };
+    drop(existing_key);
+
+    if has_existing {
+        println!("⚠  VAPID keys are already configured.");
+        print!("   Generate new keys? This will break existing browser subscriptions. [y/N] ");
+        std::io::stdout().flush().ok();
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).ok();
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Keeping existing keys.");
+            println!();
+            print_web_push_next_steps(&cli.agent_config)?;
+            return Ok(());
+        }
+    }
+
+    // Generate VAPID key pair
+    // We use p256 here via the agent crate's web_push module — but since ctl
+    // is a separate binary, we implement key generation inline using the same
+    // algorithm so we don't need to depend on the agent crate.
+    let (private_pem, public_b64) = generate_vapid_keys_ctl()?;
+
+    let subject_val = subject.unwrap_or("mailto:admin@example.com");
+
+    // Write public key and subject to agent.toml
+    write_str(
+        &cli.agent_config,
+        "web_push",
+        "vapid_public_key",
+        &public_b64,
+    )?;
+    write_str(&cli.agent_config, "web_push", "vapid_subject", subject_val)?;
+    write_bool(&cli.agent_config, "web_push", "enabled", true)?;
+
+    // Write private key to agent.env (never in plain TOML)
+    let env_path = cli
+        .agent_config
+        .parent()
+        .unwrap_or(std::path::Path::new("/etc/innerwarden"))
+        .join("agent.env");
+    append_or_replace_env(&env_path, "INNERWARDEN_VAPID_PRIVATE_KEY", &private_pem)?;
+
+    println!("✓  VAPID key pair generated");
+    println!("   Public key  → {}", &cli.agent_config.display());
+    println!(
+        "   Private key → {} (INNERWARDEN_VAPID_PRIVATE_KEY)",
+        env_path.display()
+    );
+    println!();
+    print_web_push_next_steps(&cli.agent_config)?;
+    Ok(())
+}
+
+/// Generate a VAPID EC P-256 key pair (inline, no dep on agent crate).
+/// Returns (private_key_pkcs8_pem, public_key_base64url).
+fn generate_vapid_keys_ctl() -> Result<(String, String)> {
+    use p256::pkcs8::{EncodePrivateKey, LineEnding};
+    use p256::{ecdsa::SigningKey, EncodedPoint};
+
+    let signing_key = SigningKey::random(&mut rand_core::OsRng);
+    let verifying_key = signing_key.verifying_key();
+    let pem = signing_key
+        .to_pkcs8_pem(LineEnding::LF)
+        .map_err(|e| anyhow::anyhow!("failed to serialize VAPID private key: {e}"))?
+        .to_string();
+    let public_bytes = EncodedPoint::from(verifying_key).to_bytes().to_vec();
+    use base64::Engine as _;
+    let public_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&public_bytes);
+    Ok((pem, public_b64))
+}
+
+/// Append or replace a KEY=VALUE line in an env file.
+fn append_or_replace_env(path: &std::path::Path, key: &str, value: &str) -> Result<()> {
+    use std::io::Write as _;
+
+    let existing = if path.exists() {
+        std::fs::read_to_string(path)?
+    } else {
+        String::new()
+    };
+
+    // Escape newlines in PEM for single-line env var storage
+    let escaped_value = format!("\"{}\"", value.replace('\n', "\\n"));
+
+    let mut lines: Vec<String> = existing
+        .lines()
+        .filter(|l| !l.starts_with(&format!("{key}=")))
+        .map(|l| l.to_string())
+        .collect();
+    lines.push(format!("{key}={escaped_value}"));
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    for line in &lines {
+        writeln!(file, "{line}")?;
+    }
+    Ok(())
+}
+
+fn print_web_push_next_steps(agent_config: &std::path::Path) -> Result<()> {
+    println!("Next steps:");
+    println!("  1. Restart the agent:");
+    println!("       sudo systemctl restart innerwarden-agent");
+    println!("  2. Open the InnerWarden dashboard");
+    println!("  3. Click 'Enable browser notifications' in the top bar");
+    println!("  4. Allow notifications when your browser asks");
+    println!();
+    println!(
+        "The public key is configured in: {}",
+        agent_config.display()
+    );
+    println!("Browsers will receive High and Critical incident alerts in real time,");
+    println!("even when the dashboard tab is not open (requires browser running).");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

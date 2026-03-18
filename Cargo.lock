@@ -581,6 +581,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
 dependencies = [
  "generic-array 0.14.7",
+ "rand_core 0.6.4",
  "typenum",
 ]
 
@@ -1429,8 +1430,9 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-agent"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "argon2",
  "async-trait",
@@ -1440,8 +1442,10 @@ dependencies = [
  "clap",
  "dotenvy",
  "futures-core",
+ "hkdf",
  "hmac",
  "innerwarden_core",
+ "p256",
  "rand_core 0.6.4",
  "regex",
  "reqwest",
@@ -1460,13 +1464,16 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-ctl"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "clap",
  "clap_complete",
  "digest 0.10.7",
+ "p256",
+ "rand_core 0.6.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1477,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-sensor"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1497,7 +1504,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden_core"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "chrono",
  "serde",

@@ -1,5 +1,6 @@
 mod abuseipdb;
 mod ai;
+mod allowlist;
 mod cloudflare;
 mod config;
 mod correlation;
@@ -17,6 +18,7 @@ mod skills;
 mod slack;
 mod telegram;
 mod telemetry;
+mod web_push;
 mod webhook;
 
 use std::collections::{HashMap, HashSet};
@@ -841,9 +843,16 @@ async fn main() -> Result<()> {
         };
         let dashboard_data_dir = cli.data_dir.clone();
         let dashboard_bind = cli.dashboard_bind.clone();
+        let web_push_pub_key = cfg.web_push.vapid_public_key.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                dashboard::serve(dashboard_data_dir, dashboard_bind, auth, action_cfg).await
+            if let Err(e) = dashboard::serve(
+                dashboard_data_dir,
+                dashboard_bind,
+                auth,
+                action_cfg,
+                web_push_pub_key,
+            )
+            .await
             {
                 warn!(error = %e, "dashboard exited with error");
             }
@@ -1596,10 +1605,40 @@ async fn process_incidents(
             }
         }
 
+        // 1d. Web Push — browser notification for High/Critical incidents
+        web_push::notify_incident(incident, data_dir, &cfg.web_push).await;
+
         // 2. AI analysis — only when AI is enabled and incident passes the gate
         if !ai_enabled {
             handled += 1;
             continue;
+        }
+
+        // 2a. Allowlist gate — skip AI for explicitly trusted IPs and users
+        {
+            use innerwarden_core::entities::EntityType;
+            let ip_allowlisted = incident
+                .entities
+                .iter()
+                .find(|e| e.r#type == EntityType::Ip)
+                .is_some_and(|e| {
+                    allowlist::is_ip_allowlisted(&e.value, &cfg.allowlist.trusted_ips)
+                });
+            let user_allowlisted = incident
+                .entities
+                .iter()
+                .find(|e| e.r#type == EntityType::User)
+                .is_some_and(|e| {
+                    allowlist::is_user_allowlisted(&e.value, &cfg.allowlist.trusted_users)
+                });
+            if ip_allowlisted || user_allowlisted {
+                info!(
+                    incident_id = %incident.incident_id,
+                    "AI gate: skipping (entity is in allowlist)"
+                );
+                handled += 1;
+                continue;
+            }
         }
 
         if !ai::should_invoke_ai(incident, &blocked_set) {

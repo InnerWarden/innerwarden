@@ -111,6 +111,9 @@ struct DashboardState {
     action_cfg: Arc<DashboardActionConfig>,
     /// D6: SSE broadcast channel sender.
     event_tx: EventTx,
+    /// Web Push: VAPID public key (base64url) served to subscribing browsers.
+    /// Empty string when web push is not configured.
+    web_push_vapid_public_key: String,
 }
 
 #[derive(Clone)]
@@ -575,6 +578,7 @@ pub async fn serve(
     bind: String,
     auth: Option<DashboardAuth>,
     action_cfg: DashboardActionConfig,
+    web_push_vapid_public_key: String,
 ) -> Result<()> {
     if auth.is_none() {
         warn!(
@@ -591,6 +595,7 @@ pub async fn serve(
         data_dir: data_dir.clone(),
         action_cfg: Arc::new(action_cfg),
         event_tx: event_tx.clone(),
+        web_push_vapid_public_key,
     };
     let auth_layer = middleware::from_fn_with_state(auth, require_basic_auth);
 
@@ -619,6 +624,13 @@ pub async fn serve(
         .route("/api/action/honeypot", post(api_action_honeypot))
         // D6 — SSE live event stream
         .route("/api/events/stream", get(api_events_stream))
+        // Web Push
+        .route("/sw.js", get(service_worker_js))
+        .route("/api/push/vapid-key", get(api_push_vapid_key))
+        .route(
+            "/api/push/subscribe",
+            post(api_push_subscribe).delete(api_push_unsubscribe),
+        )
         .layer(auth_layer)
         .with_state(state);
 
@@ -6800,6 +6812,114 @@ const INDEX_HTML: &str = r##"<!doctype html>
 </body>
 </html>
 "##;
+
+// ---------------------------------------------------------------------------
+// Web Push handlers
+// ---------------------------------------------------------------------------
+
+/// GET /sw.js — Service Worker that handles incoming push events.
+async fn service_worker_js() -> impl IntoResponse {
+    const SW: &str = r#"
+self.addEventListener('push', function(event) {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch (_) {}
+  const title = data.title || 'InnerWarden Alert';
+  const options = {
+    body: data.body || 'A new security incident was detected.',
+    icon: '/favicon.ico',
+    badge: '/favicon.ico',
+    requireInteraction: true,
+    data: data,
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', function(event) {
+  event.notification.close();
+  event.waitUntil(clients.openWindow('/'));
+});
+"#;
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        SW,
+    )
+}
+
+/// GET /api/push/vapid-key — return the VAPID public key for browser subscription.
+async fn api_push_vapid_key(State(state): State<DashboardState>) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "publicKey": state.web_push_vapid_public_key,
+        "enabled": !state.web_push_vapid_public_key.is_empty(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct PushSubscribeBody {
+    endpoint: String,
+    keys: PushSubscribeKeys,
+}
+
+#[derive(Deserialize)]
+struct PushSubscribeKeys {
+    p256dh: String,
+    auth: String,
+}
+
+#[derive(Deserialize)]
+struct PushUnsubscribeBody {
+    endpoint: String,
+}
+
+/// POST /api/push/subscribe — register a new browser push subscription.
+async fn api_push_subscribe(
+    State(state): State<DashboardState>,
+    Json(body): Json<PushSubscribeBody>,
+) -> impl IntoResponse {
+    if state.web_push_vapid_public_key.is_empty() {
+        return Json(serde_json::json!({
+            "success": false,
+            "message": "web push is not configured — run `innerwarden notify web-push setup`",
+        }));
+    }
+
+    let sub = crate::web_push::WebPushSubscription {
+        endpoint: body.endpoint.clone(),
+        keys: crate::web_push::WebPushKeys {
+            p256dh: body.keys.p256dh,
+            auth: body.keys.auth,
+        },
+    };
+
+    // Deduplicate by endpoint before saving
+    let mut subs = crate::web_push::load_subscriptions(&state.data_dir);
+    subs.retain(|s| s.endpoint != body.endpoint);
+    subs.push(sub);
+
+    match crate::web_push::save_subscriptions(&state.data_dir, &subs) {
+        Ok(()) => Json(serde_json::json!({ "success": true })),
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "message": format!("failed to save subscription: {e:#}"),
+        })),
+    }
+}
+
+/// DELETE /api/push/subscribe — remove a push subscription by endpoint.
+async fn api_push_unsubscribe(
+    State(state): State<DashboardState>,
+    Json(body): Json<PushUnsubscribeBody>,
+) -> impl IntoResponse {
+    match crate::web_push::remove_subscription(&state.data_dir, &body.endpoint) {
+        Ok(_) => Json(serde_json::json!({ "success": true })),
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "message": format!("failed to remove subscription: {e:#}"),
+        })),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tests

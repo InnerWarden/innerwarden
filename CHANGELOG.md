@@ -11,6 +11,28 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.23] — 2026-03-18
+
+### Allowlists
+
+- **Structured IP/CIDR allowlist** — `[allowlist] trusted_ips` accepts exact IPs or CIDR prefixes (IPv4 `/0–/32`, IPv6 `/0–/128`); matched entities skip the AI gate and automated response (notifications still fire)
+- **User allowlist** — `[allowlist] trusted_users` skips automated response for matching Unix usernames
+- **`innerwarden allowlist add/remove/list`** — CTL subcommands to manage trusted IPs and users in `agent.toml` without manual TOML editing
+
+### Web Push notifications (RFC 8291 / RFC 8292)
+
+- **Browser push notifications** — native Web Push via VAPID (EC P-256 JWT) + RFC 8291 aes128gcm content encryption; no third-party push relay
+- **`innerwarden notify web-push --subject mailto:you@example.com`** — generates VAPID key pair, writes public key to `agent.toml` and private key to `agent.env`
+- **Dashboard subscribe/unsubscribe** — `GET /api/push/vapid-key`, `POST /api/push/subscribe`, `DELETE /api/push/subscribe`; service worker served at `/sw.js`
+- **Severity filter** — `[web_push] min_severity` (default `"high"`) — only incidents at or above threshold trigger a push
+- **Subscription persistence** — subscriptions stored in `data_dir/push-subscriptions.json`; expired subscriptions (HTTP 410) are pruned automatically
+
+### CI
+
+- **`replay-qa` job** — end-to-end validation added to GitHub Actions CI; runs `make replay-qa` against fixture data on every push/PR to the main branch
+
+---
+
 ## [0.1.22] — 2026-03-18
 
 ### Community modules
