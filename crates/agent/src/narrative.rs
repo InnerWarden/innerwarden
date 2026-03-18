@@ -11,16 +11,51 @@ use innerwarden_core::{
 use crate::correlation;
 
 // ---------------------------------------------------------------------------
+// Responder context for smart recommendations
+// ---------------------------------------------------------------------------
+
+/// Responder state passed into narrative generation so "What to check"
+/// recommendations can be context-aware.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ResponderHint {
+    pub enabled: bool,
+    pub dry_run: bool,
+    /// Whether `block-ip-*` is among the allowed skills.
+    pub has_block_ip: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /// Generate a Markdown daily summary from all events and incidents for a date.
+/// Convenience wrapper that uses default (disabled) responder hints.
+#[allow(dead_code)]
 pub fn generate(
     date: &str,
     host: &str,
     events: &[Event],
     incidents: &[Incident],
     correlation_window_secs: u64,
+) -> String {
+    generate_with_responder(
+        date,
+        host,
+        events,
+        incidents,
+        correlation_window_secs,
+        ResponderHint::default(),
+    )
+}
+
+/// Same as [`generate`] but with responder context for smart recommendations.
+pub fn generate_with_responder(
+    date: &str,
+    host: &str,
+    events: &[Event],
+    incidents: &[Incident],
+    correlation_window_secs: u64,
+    responder: ResponderHint,
 ) -> String {
     let mut out = String::with_capacity(2048);
 
@@ -56,28 +91,61 @@ pub fn generate(
     out.push_str(&format!("{tldr}\n\n"));
     out.push_str("---\n\n");
 
-    // Incidents section
+    // Incidents section — group repeated incidents by (first IP, title)
     if incidents.is_empty() {
         out.push_str("## Threats\n\nNo threats detected today.\n\n");
     } else {
         out.push_str("## Threats\n\n");
-        let mut sorted_incidents: Vec<&Incident> = incidents.iter().collect();
-        sorted_incidents
-            .sort_by(|a, b| severity_rank(&b.severity).cmp(&severity_rank(&a.severity)));
 
-        for inc in &sorted_incidents {
-            let icon = severity_icon(&inc.severity);
-            let sev_label = severity_plain(&inc.severity);
-            let time = inc.ts.format("%H:%M UTC").to_string();
+        // Build groups keyed by (first_ip_or_empty, normalised_title)
+        let groups = group_incidents(incidents);
 
-            out.push_str(&format!("### {icon} {}\n\n", inc.title));
-            out.push_str(&format!("- **Severity:** {sev_label}\n"));
-            out.push_str(&format!("- **When:** {time}\n"));
-            out.push_str(&format!("- **What happened:** {}\n", inc.summary));
+        // Sort groups by highest severity (descending)
+        let mut sorted_groups: Vec<&IncidentGroup> = groups.values().collect();
+        sorted_groups
+            .sort_by(|a, b| severity_rank(&b.max_severity).cmp(&severity_rank(&a.max_severity)));
 
-            if !inc.recommended_checks.is_empty() {
+        for group in &sorted_groups {
+            let icon = severity_icon(&group.max_severity);
+            let sev_label = severity_plain(&group.max_severity);
+            let representative = group.first;
+
+            if group.count == 1 {
+                // Single incident — original format
+                let time = representative.ts.format("%H:%M UTC").to_string();
+                out.push_str(&format!("### {icon} {}\n\n", representative.title));
+                out.push_str(&format!("- **Severity:** {sev_label}\n"));
+                out.push_str(&format!("- **When:** {time}\n"));
+                out.push_str(&format!(
+                    "- **What happened:** {}\n",
+                    representative.summary
+                ));
+            } else {
+                // Grouped incidents
+                let first_time = group.first_ts.format("%H:%M");
+                let last_time = group.last_ts.format("%H:%M");
+                let title = if group.ip.is_empty() {
+                    representative.title.clone()
+                } else {
+                    format!("{} ({})", representative.title, group.ip)
+                };
+                out.push_str(&format!("### {icon} {title}\n\n"));
+                out.push_str(&format!("- **Severity:** {sev_label}\n"));
+                out.push_str(&format!(
+                    "- **When:** {} incidents between {first_time}–{last_time} UTC\n",
+                    group.count
+                ));
+                out.push_str(&format!(
+                    "- **What happened:** {}\n",
+                    representative.summary
+                ));
+            }
+
+            // Smart "What to check" (Fix 2)
+            let checks = smart_checks(&representative.recommended_checks, responder);
+            if !checks.is_empty() {
                 out.push_str("- **What to check:**\n");
-                for check in &inc.recommended_checks {
+                for check in &checks {
                     out.push_str(&format!("  - {check}\n"));
                 }
             }
@@ -163,30 +231,47 @@ pub fn generate(
 }
 
 /// Convert a technical detector/event kind into plain English.
-fn human_event_kind(kind: &str) -> &'static str {
+///
+/// Returns a `Cow` so known kinds use a static string while unknown kinds
+/// fall back to displaying the raw `kind` value instead of "Unknown event".
+fn human_event_kind(kind: &str) -> std::borrow::Cow<'static, str> {
+    use std::borrow::Cow;
     match kind {
-        "ssh.login_failed" => "Failed SSH login",
-        "ssh.login_success" => "Successful SSH login",
-        "ssh.invalid_user" => "SSH login with unknown username",
-        "ssh.disconnected" => "SSH disconnection",
-        "sudo.command" => "Sudo command executed",
-        "shell.command_exec" => "Shell command executed",
-        "network.connection_blocked" => "Blocked connection attempt",
-        "http.request" => "HTTP request",
-        "http.error" => "HTTP error",
-        "http.scanner_ua" => "Scanner detected (by User-Agent)",
-        "file.changed" => "File modification",
-        "ssh.authorized_keys_changed" => "SSH authorized_keys modified",
-        "cron.tampering" => "Cron job modification",
-        "container.start" => "Container started",
-        "container.stop" => "Container stopped",
-        "container.die" => "Container crashed",
-        "container.privileged" => "Privileged container started",
-        "container.sock_mount" => "Container with Docker socket access",
-        "container.dangerous_cap" => "Container with dangerous capabilities",
-        "wazuh.syslog" | "wazuh.web" | "wazuh.ids" => "Wazuh alert",
-        "falco.syscall" | "falco.k8s_audit" => "Falco runtime alert",
-        _ => "Unknown event",
+        "ssh.login_failed" => Cow::Borrowed("Failed SSH login"),
+        "ssh.login_success" => Cow::Borrowed("Successful SSH login"),
+        "ssh.invalid_user" => Cow::Borrowed("SSH login with unknown username"),
+        "ssh.disconnected" => Cow::Borrowed("SSH disconnection"),
+        "sudo.command" => Cow::Borrowed("Sudo command executed"),
+        "shell.command_exec" => Cow::Borrowed("Shell command executed"),
+        "network.connection_blocked" => Cow::Borrowed("Blocked connection attempt"),
+        "http.request" => Cow::Borrowed("HTTP request"),
+        "http.error" => Cow::Borrowed("HTTP error"),
+        "http.scanner_ua" => Cow::Borrowed("Scanner detected (by User-Agent)"),
+        "file.changed" => Cow::Borrowed("File modification"),
+        "ssh.authorized_keys_changed" => Cow::Borrowed("SSH authorized_keys modified"),
+        "cron.tampering" => Cow::Borrowed("Cron job modification"),
+        "container.start" => Cow::Borrowed("Container started"),
+        "container.stop" => Cow::Borrowed("Container stopped"),
+        "container.die" => Cow::Borrowed("Container crashed"),
+        "container.privileged" => Cow::Borrowed("Privileged container started"),
+        "container.sock_mount" => Cow::Borrowed("Container with Docker socket access"),
+        "container.dangerous_cap" => Cow::Borrowed("Container with dangerous capabilities"),
+        "wazuh.syslog" | "wazuh.web" | "wazuh.ids" => Cow::Borrowed("Wazuh alert"),
+        "falco.syscall" | "falco.k8s_audit" => Cow::Borrowed("Falco runtime alert"),
+        // Suricata protocol events
+        "suricata.tls" => Cow::Borrowed("TLS connection observed"),
+        "suricata.dns" => Cow::Borrowed("DNS query observed"),
+        "suricata.http" => Cow::Borrowed("HTTP transaction observed"),
+        "suricata.alert" => Cow::Borrowed("Suricata IDS alert"),
+        "suricata.anomaly" => Cow::Borrowed("Network anomaly"),
+        // Wildcard-style fallbacks for known prefixes
+        _ if kind.starts_with("suricata.") => Cow::Owned(format!("Suricata event ({kind})")),
+        _ if kind.starts_with("docker.") => Cow::Borrowed("Docker event"),
+        _ if kind.starts_with("container.") => Cow::Borrowed("Docker event"),
+        _ if kind.starts_with("osquery.") => Cow::Borrowed("osquery result"),
+        _ if kind.starts_with("falco.") => Cow::Borrowed("Falco alert"),
+        // Truly unknown — show the raw kind instead of a generic label
+        _ => Cow::Owned(format!("event: {kind}")),
     }
 }
 
@@ -246,6 +331,107 @@ pub fn cleanup_old(data_dir: &Path, keep_days: usize) -> Result<()> {
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Incident grouping (Fix 1)
+// ---------------------------------------------------------------------------
+
+/// A group of incidents sharing the same (IP, normalised title).
+struct IncidentGroup<'a> {
+    first: &'a Incident,
+    count: usize,
+    ip: String,
+    first_ts: chrono::DateTime<chrono::Utc>,
+    last_ts: chrono::DateTime<chrono::Utc>,
+    max_severity: Severity,
+}
+
+/// Extract the first IP entity from an incident (empty string if none).
+fn first_ip(inc: &Incident) -> String {
+    inc.entities
+        .iter()
+        .find(|e| e.r#type == EntityType::Ip)
+        .map(|e| e.value.clone())
+        .unwrap_or_default()
+}
+
+/// Normalise a title for grouping: lowercase + trim whitespace.
+fn normalise_title(title: &str) -> String {
+    title.trim().to_lowercase()
+}
+
+/// Group incidents by (first_ip, normalised title).  Order-preserving via
+/// `Vec` index tracking; returns a map keyed by (ip, title).
+fn group_incidents(incidents: &[Incident]) -> HashMap<(String, String), IncidentGroup<'_>> {
+    let mut groups: HashMap<(String, String), IncidentGroup<'_>> = HashMap::new();
+
+    for inc in incidents {
+        let ip = first_ip(inc);
+        let key = (ip.clone(), normalise_title(&inc.title));
+
+        groups
+            .entry(key)
+            .and_modify(|g| {
+                g.count += 1;
+                if inc.ts < g.first_ts {
+                    g.first_ts = inc.ts;
+                    g.first = inc;
+                }
+                if inc.ts > g.last_ts {
+                    g.last_ts = inc.ts;
+                }
+                if severity_rank(&inc.severity) > severity_rank(&g.max_severity) {
+                    g.max_severity = inc.severity.clone();
+                }
+            })
+            .or_insert(IncidentGroup {
+                first: inc,
+                count: 1,
+                ip,
+                first_ts: inc.ts,
+                last_ts: inc.ts,
+                max_severity: inc.severity.clone(),
+            });
+    }
+    groups
+}
+
+// ---------------------------------------------------------------------------
+// Smart recommendations (Fix 2)
+// ---------------------------------------------------------------------------
+
+/// Rewrite "What to check" recommendations based on responder configuration.
+fn smart_checks(original: &[String], responder: ResponderHint) -> Vec<String> {
+    if !responder.enabled || !responder.has_block_ip {
+        // Responder disabled or block-ip not allowed — keep originals as-is
+        return original.to_vec();
+    }
+
+    let block_keywords = [
+        "blocking the ip",
+        "block the ip",
+        "ufw",
+        "fail2ban",
+        "iptables",
+        "nftables",
+    ];
+
+    original
+        .iter()
+        .map(|check| {
+            let lower = check.to_lowercase();
+            let is_block_rec = block_keywords.iter().any(|kw| lower.contains(kw));
+            if !is_block_rec {
+                return check.clone();
+            }
+            if responder.dry_run {
+                "InnerWarden would block this IP (dry-run mode). Enable live mode to act automatically.".to_string()
+            } else {
+                "IP was blocked automatically by InnerWarden. Review the decision in the audit trail.".to_string()
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

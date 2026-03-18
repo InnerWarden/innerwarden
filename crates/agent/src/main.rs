@@ -3872,12 +3872,22 @@ async fn process_narrative_tick(
                 .or_else(|| all_incidents.entries.first().map(|i| i.host.as_str()))
                 .unwrap_or("unknown");
 
-            let md = narrative::generate(
+            let responder_hint = narrative::ResponderHint {
+                enabled: cfg.responder.enabled,
+                dry_run: cfg.responder.dry_run,
+                has_block_ip: cfg
+                    .responder
+                    .allowed_skills
+                    .iter()
+                    .any(|s| s.starts_with("block-ip")),
+            };
+            let md = narrative::generate_with_responder(
                 &today,
                 host,
                 &all_events.entries,
                 &all_incidents.entries,
                 cfg.correlation.window_seconds,
+                responder_hint,
             );
             if let Err(e) = narrative::write(data_dir, &today, &md) {
                 state.telemetry.observe_error("narrative_writer");
