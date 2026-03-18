@@ -2,37 +2,41 @@
 
 ## Supported Versions
 
-InnerWarden is currently a `0.x` project. Security fixes are handled on a best-effort basis for the latest development line.
-
 | Version | Supported |
 | --- | --- |
-| latest `main` | Yes |
-| older snapshots | Best effort only |
+| v0.1.x (latest release) | Yes |
+| older releases | No |
+
+Always update to the latest release: `innerwarden upgrade`
 
 ## Reporting a Vulnerability
 
-Please do not open public issues for suspected vulnerabilities that could put users or hosts at risk.
+**Do not open public issues for security vulnerabilities.**
 
-Preferred process:
+Use [GitHub private vulnerability reporting](https://github.com/InnerWarden/innerwarden/security/advisories/new) to report securely.
 
-1. Use GitHub private vulnerability reporting if it is enabled for the repository.
-2. If private reporting is unavailable, contact the maintainer privately through the repository profile.
-3. Include reproduction steps, impact, affected configuration, and any suggested mitigation.
+Include:
 
-Helpful details:
+- InnerWarden version (`innerwarden status`)
+- Steps to reproduce
+- Impact (what an attacker can do)
+- Whether responder was enabled (`dry_run = true` or `false`)
 
-- InnerWarden version or commit SHA
-- deployment mode (`local`, `trial`, `dashboard`, `honeypot`, etc.)
-- whether responder actions were enabled
-- whether the issue affects confidentiality, integrity, or availability
+## What We Do
 
-## Response Expectations
+- Acknowledge within 48 hours
+- Validate and assess severity
+- Fix and release a patched version
+- Credit the reporter (unless they prefer anonymity)
 
-The project will try to:
+## Security Features
 
-- acknowledge receipt quickly
-- validate the issue
-- coordinate a fix or mitigation
-- avoid publishing sensitive details before a fix is available
+Inner Warden includes:
 
-Because this is a small actively developed project, timelines are best-effort rather than guaranteed.
+- **Dependency auditing** — cargo-deny runs on every push (RustSec advisories + license compliance)
+- **Secrets scanning** — gitleaks + GitHub secret scanning with push protection
+- **Automated dependency updates** — Dependabot weekly
+- **GitHub Actions pinned to SHA** — prevents supply chain attacks
+- **Branch protection** — CI + Security checks required before merge
+- **Append-only audit trail** — every decision logged to JSONL, immutable
+- **Safe defaults** — dry_run = true, responder disabled, confidence threshold above max on install
