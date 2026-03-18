@@ -1,180 +1,211 @@
-# InnerWarden
+# Inner Warden
 
-A self-defending security agent for Linux and macOS servers.
+**Your server should defend itself.**
 
-Three binaries (two daemons + a CLI). Installs in 10 seconds. Detects attacks and can respond automatically when response skills are enabled (non-dry-run mode).
+Inner Warden is an autonomous security agent for Linux and macOS. It detects attacks, alerts you, and — when you allow it — responds automatically. No cloud. No dependencies. Just two Rust daemons and a CLI.
 
 ```bash
 curl -fsSL https://innerwarden.com/install | sudo bash
 ```
 
----
-
-## What happens when someone attacks your server
-
-```
-Without Inner Warden:
-
-00:00  Attacker starts SSH brute force
-03:00  Maybe someone reads auth.log
-04:00  Maybe someone blocks the IP manually
-???    Maybe the attacker is already inside
-
-With Inner Warden (auto-execution enabled):
-
-00:00  Attacker starts SSH brute force from 203.0.113.10
-00:45  Detector fires: 8 failed logins in 5 minutes
-00:46  AI evaluates: confidence 0.94 → action: block_ip
-00:46  Skill executes: ufw deny from 203.0.113.10
-00:47  Telegram alert sent to operator
-00:47  Decision logged to audit trail. Server defended itself.
-```
-
-No human needed when auto-execution is enabled; otherwise approvals/alerts apply. Full audit trail. Reversible.
+Installs in 10 seconds. Starts in observe-only mode. You decide when to go live.
 
 ---
 
-## The arsenal
+## What it does
 
-Inner Warden carries defensive skills. When a threat is detected, the agent picks the right tool and acts.
+1. **Watches** — collects signals from your host: SSH, Docker, nginx, sudo, shell audit, firewall logs
+2. **Detects** — eight stateful detectors identify brute-force, credential stuffing, port scans, sudo abuse, and more
+3. **Alerts you** — Telegram, Slack, browser push, webhook — real time, on your phone
+4. **Decides** — optionally asks AI for a confidence-scored recommendation (not required)
+5. **Acts** — blocks the IP, suspends sudo, deploys a honeypot, captures traffic. Or does nothing — your call.
+
+Everything is local, audited, and reversible.
+
+---
+
+## What happens when your server is attacked
+
+```
+00:00  SSH brute-force begins from 203.0.113.10
+00:45  Detector fires — 8 failed logins, 5 usernames, one IP
+
+       AI evaluates: "coordinated brute-force"
+       Confidence: 0.94
+       Recommended action: block_ip
+
+00:46  Firewall rule added: ufw deny from 203.0.113.10
+00:46  Telegram alert lands on your phone
+00:46  Decision logged to audit trail
+
+       Threat contained.
+```
+
+No human needed when auto-execution is enabled. Otherwise, you approve via Telegram or the dashboard. Full audit trail. Every action reversible.
+
+---
+
+## Response skills
+
+When a threat is confirmed, Inner Warden picks the right tool.
 
 | Skill | What it does |
 |-------|-------------|
-| **Block IP** | Firewall block via ufw, iptables, nftables, or pf (macOS) |
-| **Suspend sudo** | Revokes sudo for a compromised user. Auto-expires after TTL. |
-| **Deploy honeypot** | SSH/HTTP decoy captures attacker credentials and behavior |
-| **Rate limit nginx** | Blocks abusive HTTP traffic at nginx layer with TTL |
-| **Monitor IP** | Captures traffic from a suspicious IP for forensic analysis |
+| **Block IP** | Firewall deny via ufw, iptables, nftables, or pf (macOS) |
+| **Suspend sudo** | Revokes sudo for a user via sudoers drop-in. Auto-expires after TTL. |
+| **Kill process** | Terminates all processes for a compromised user. TTL-bounded. |
+| **Block container** | Pauses a Docker container. Auto-unpauses after TTL. |
+| **Deploy honeypot** | SSH/HTTP decoy with LLM-powered shell — captures credentials and behavior |
+| **Rate limit nginx** | Blocks abusive HTTP traffic at the nginx layer with TTL |
+| **Monitor IP** | Bounded tcpdump capture for forensic analysis |
 
-All skills are bounded, audited, and reversible.
-Premium skills (honeypot, monitor-ip) are opt-in.
+All skills are bounded, audited, and reversible. Nothing persists beyond its TTL unless you extend it.
 
 ---
 
 ## What it detects
 
-| Detector | Threat |
-|----------|--------|
-| `ssh_bruteforce` | Repeated SSH failures from the same IP |
-| `credential_stuffing` | Many usernames tried from one IP (spray attack) |
-| `port_scan` | Rapid unique-port probing from one source |
-| `sudo_abuse` | Burst of suspicious privileged commands by a user |
-| `search_abuse` | High-rate requests hammering expensive HTTP endpoints |
-| `execution_guard` | Suspicious shell commands via AST analysis (tree-sitter-bash) |
-| `web_scan` | HTTP error floods from one IP — automated path traversal and LFI probing |
-| `user_agent_scanner` | Requests carrying known scanner User-Agents (Nikto, sqlmap, Nuclei, 17 more) |
+| Detector | Threat | MITRE |
+|----------|--------|-------|
+| `ssh_bruteforce` | Repeated SSH failures from one IP | T1110.001 |
+| `credential_stuffing` | Many usernames tried from one IP | T1110.004 |
+| `port_scan` | Rapid unique-port probing | T1595 |
+| `sudo_abuse` | Burst of privileged commands by a user | T1548 |
+| `search_abuse` | High-rate requests to expensive endpoints | — |
+| `execution_guard` | Suspicious shell commands via AST analysis | T1059 |
+| `web_scan` | HTTP error floods — path traversal, LFI probing | T1190 |
+| `user_agent_scanner` | Known scanner signatures (Nikto, sqlmap, Nuclei, 17+) | T1595.002 |
 
-`execution_guard` parses commands structurally. It catches `curl | sh` pipelines, `/tmp` execution, reverse shell patterns, and staged download-chmod-execute sequences.
+`execution_guard` parses commands structurally using tree-sitter-bash. It catches `curl | sh` pipelines, `/tmp` execution, reverse shell patterns, and staged download-chmod-execute sequences.
 
 ---
 
 ## How it works
 
 ```
-[Sensors] → [Detectors] → [AI Decision] → [Skills Execute]
- watch       identify       assess threat    block / suspend /
- activity    patterns       pick response    honeypot / capture
+[Sensor]  →  [Detectors]  →  [AI triage]  →  [Skill execution]
+ watch        identify        assess &         block / suspend /
+ activity     patterns        recommend        honeypot / capture
 ```
 
-**Sensor** — collects signals from the host. No AI, no HTTP, fully deterministic.
-Sources: auth.log, journald, Docker events, file integrity (with cron and SSH key tampering detection), nginx access/error logs, shell audit (opt-in), macOS unified log, syslog/kern.log (firewall drops). Optional: Falco, Suricata, osquery, Wazuh integration.
+**Sensor** — deterministic signal collection. No AI, no HTTP. Sources: auth.log, journald, Docker events, file integrity, nginx, shell audit, macOS unified log, syslog firewall. Optional: Falco, Suricata, osquery, Wazuh, AWS CloudTrail.
 
-**Agent** — reads incidents, applies an algorithm gate (skip low severity, private IPs, already-blocked), optionally calls AI for triage, and executes the chosen skill.
+**Agent** — reads incidents, applies algorithm gate (skip low severity, private IPs, already-blocked), optionally sends to AI for confidence-scored triage, executes the chosen skill. Policy-gated: nothing runs unless you've explicitly enabled it.
 
-Two Rust daemons (sensor and agent) plus a Rust CLI (`innerwarden`, with `innerwarden-ctl` as an alternate symlink). No external dependencies at runtime. ~13 MB RAM (sensor ~5 MB + agent ~8 MB); dashboard adds ~230 MB when enabled.
+Two Rust daemons. No external dependencies. ~13 MB RAM total. Dashboard adds ~230 MB when enabled.
+
+---
+
+## AI is optional — and controlled
+
+Inner Warden detects and logs threats without any AI provider. Add AI when you want:
+
+- **Confidence-scored recommendations** — not binary yes/no, but 0.0–1.0 scored decisions
+- **Policy-gated execution** — AI recommends, your policy decides if it runs
+- **Full transparency** — every AI decision recorded in append-only JSONL with reasoning
+- **Three providers** — OpenAI, Anthropic, or Ollama (fully local, no API key)
+
+AI is advisory unless you explicitly enable auto-execution. You set the confidence threshold.
 
 ---
 
 ## Operator in the loop
 
-Not everything should be automatic. Inner Warden supports human approval when you want it.
+Not everything should be automatic.
 
-- **Telegram alerts** — every High/Critical incident pushed to your phone in real time
-- **Approve or deny** — inline keyboard in Telegram, decision logged to audit trail
+- **Telegram** — every High/Critical incident pushed to your phone. Approve or deny with inline buttons.
+- **Slack** — incident notifications via incoming webhook
+- **Browser push** — native Web Push (VAPID), no relay service
 - **Webhook** — HTTP POST to any endpoint with severity filter
-- **Dashboard** — local authenticated UI for investigation, entity search, operator actions, live SSE push, and attacker path viewer
-
-AI is advisory unless you explicitly enable auto-execution. You control the threshold.
+- **Dashboard** — local authenticated UI: investigation, entity search, operator actions, live SSE, attacker path viewer
 
 ---
 
 ## Safety model
 
-Inner Warden starts in the safest possible posture:
+Inner Warden starts in the safest possible posture.
 
-- `responder.enabled = false` — no actions taken, observe only
-- `dry_run = true` — logs what it *would* do without doing it
-- Shell audit is opt-in with explicit privacy consent
-- `execution_guard` runs in observe mode — detects, does not block
-- AI is optional — detection and logging work without any provider
-- Every decision is recorded in append-only `decisions-YYYY-MM-DD.jsonl`
+| Default | Meaning |
+|---------|---------|
+| `responder.enabled = false` | No actions taken. Observe only. |
+| `dry_run = true` | Logs what it *would* do, without doing it. |
+| `execution_guard` in observe mode | Detects suspicious commands, does not block. |
+| Shell audit opt-in | Requires explicit privacy consent. |
+| AI optional | Detection and logging work without any provider. |
+| Append-only audit trail | Every decision in `decisions-YYYY-MM-DD.jsonl`. |
 
-Go live when you trust what you see: flip `dry_run = false`.
+Go live when you trust what you see:
+
+```toml
+[responder]
+dry_run = false
+```
 
 ---
 
 ## Modules
 
-Detectors and skills are packaged into modules — enable what you need:
+Enable what you need.
 
 | Module | Threat | Response |
 |--------|--------|----------|
 | `ssh-protection` | SSH brute-force + credential stuffing | Block IP |
 | `network-defense` | Port scanning | Block IP |
 | `sudo-protection` | Sudo privilege abuse | Suspend user sudo |
-| `execution-guard` | Malicious shell commands (AST) | Detect (observe mode) |
-| `search-protection` | HTTP endpoint abuse | Rate limit at nginx |
-| `file-integrity` | Unauthorized file changes | Alert via webhook |
-| `container-security` | Docker lifecycle anomalies | Observe |
+| `execution-guard` | Malicious shell commands (AST) | Kill process / observe |
+| `search-protection` | HTTP endpoint abuse | Rate limit nginx |
+| `file-integrity` | Unauthorized file changes | Alert |
+| `container-security` | Docker lifecycle anomalies | Block container / observe |
 | `threat-capture` | Active threat investigation | Honeypot + traffic capture |
-| `falco-integration` | Kernel/container anomalies (Falco) | Incident passthrough |
-| `suricata-integration` | Network IDS alerts (Suricata) | Incident passthrough |
-| `osquery-integration` | Host state queries (osquery) | Enriched events |
+| `nginx-error-monitor` | HTTP error floods, path traversal | Block IP |
+| `slack-notify` | Incident notifications | Slack webhook |
+| `cloudflare-integration` | L7 DDoS / botnet IPs | Block at Cloudflare edge |
+| `abuseipdb-enrichment` | IP reputation context | Enriched AI prompt |
+| `geoip-enrichment` | Country/ISP geolocation | Enriched AI prompt |
+| `fail2ban-integration` | Sync active fail2ban bans | Block enforcement |
+| `crowdsec-integration` | CrowdSec community intel | Block enforcement |
+| `falco-integration` | Kernel/container anomalies | Incident passthrough |
+| `suricata-integration` | Network IDS alerts | Incident passthrough |
+| `osquery-integration` | Host state queries | Enriched events |
 | `wazuh-integration` | Wazuh HIDS alerts | Incident passthrough |
-| `nginx-error-monitor` | HTTP error floods and path traversal probes | Block IP |
-| `slack-notify` | Incident notifications to Slack | — (notification only) |
-| `cloudflare-integration` | L7 DDoS / botnet IPs reaching the host | Block at Cloudflare edge |
-| `abuseipdb-enrichment` | IP reputation context before AI analysis | Enriched AI prompt |
-| `geoip-enrichment` | Country/ISP geolocation context | Enriched AI prompt |
-| `fail2ban-integration` | Sync active fail2ban bans into InnerWarden | Block enforcement |
-| `crowdsec-integration` | CrowdSec community threat intel | Block enforcement |
 
 ```bash
 innerwarden enable block-ip
-innerwarden enable search-protection
-innerwarden enable shell-audit    # prompts for privacy consent
+innerwarden enable ssh-protection
+innerwarden enable shell-audit       # prompts for privacy consent
 ```
 
+Community modules:
 ```bash
-innerwarden module install <url>       # community modules (SHA-256 verified)
-innerwarden module enable /path/to/module
+innerwarden module install <url>     # SHA-256 verified
+innerwarden module search <term>     # search the registry
 ```
 
 ---
 
 ## Scan advisor
 
-`innerwarden scan` probes your server and recommends the right modules:
+Let your server tell you what it needs.
 
 ```
 $ innerwarden scan
 
-● sshd          running    → ssh-protection        ESSENTIAL  [NATIVE]
-● docker        running    → container-security     RECOMMENDED [NATIVE]
-● nginx         running    → search-protection      RECOMMENDED [NATIVE]
-  falco         not found  → falco-integration      OPTIONAL   [EXTERNAL] requires: falco install
-  fail2ban      running    → fail2ban-integration   RECOMMENDED [NATIVE]
+  sshd       running  → ssh-protection       ESSENTIAL    [NATIVE]
+  docker     running  → container-security    RECOMMENDED  [NATIVE]
+  nginx      running  → search-protection     RECOMMENDED  [NATIVE]
+  falco      not found → falco-integration    OPTIONAL     [EXTERNAL] requires: falco install
+  fail2ban   running  → fail2ban-integration  RECOMMENDED  [NATIVE]
 
-⚠ Conflicts detected:
-  fail2ban-integration + abuseipdb-enrichment — both auto-block IPs; enable one
+  Conflicts detected:
+    fail2ban-integration + abuseipdb-enrichment — both auto-block IPs; enable one
 
-Activation sequence:
-  1. innerwarden enable block-ip
-  2. innerwarden enable ssh-protection
-  3. innerwarden enable fail2ban-integration
+  Activation sequence:
+    1. innerwarden enable block-ip
+    2. innerwarden enable ssh-protection
+    3. innerwarden enable fail2ban-integration
 ```
 
-Modules are labeled **NATIVE** (built into InnerWarden, reads existing logs) or **EXTERNAL** (requires a separate tool installation). The advisor detects conflicts between overlapping integrations and suggests the optimal activation order.
+**NATIVE** = reads existing logs, zero external deps. **EXTERNAL** = requires separate tool install.
 
 ---
 
@@ -186,12 +217,12 @@ curl -fsSL https://innerwarden.com/install | sudo bash
 
 No API key required. What it does:
 - Creates a dedicated `innerwarden` service user
-- Downloads pre-built binaries for your architecture (x86_64 or aarch64), SHA-256 verified
-- Writes config to `/etc/innerwarden/` and creates the data directory
-- Starts `innerwarden-sensor` + `innerwarden-agent` via systemd (Linux) or launchd (macOS)
-- Safe posture by default: detection and logging active, no response skills enabled, `dry_run = true`
+- Downloads SHA-256 verified binaries for your architecture (x86_64 / aarch64)
+- Writes config to `/etc/innerwarden/`, creates data directory
+- Starts sensor + agent via systemd (Linux) or launchd (macOS)
+- Safe posture: detection active, no response skills enabled, `dry_run = true`
 
-With integrations (Falco, Suricata, osquery):
+With external integrations:
 ```bash
 curl -fsSL https://innerwarden.com/install | sudo bash -s -- --with-integrations
 ```
@@ -203,92 +234,99 @@ INNERWARDEN_BUILD_FROM_SOURCE=1 curl -fsSL https://innerwarden.com/install | sud
 
 ### Configure AI
 
-AI triage is optional. Inner Warden detects and logs threats without it. Add AI to get confidence-scored decisions and autonomous response.
+AI triage is optional. Add it when you want confidence-scored decisions.
 
-**OpenAI** (fastest to set up):
+**OpenAI:**
 ```bash
-# Add to /etc/innerwarden/agent.env
+# /etc/innerwarden/agent.env
 OPENAI_API_KEY=sk-...
 ```
 
 **Anthropic:**
 ```bash
-# Add to /etc/innerwarden/agent.env
+# /etc/innerwarden/agent.env
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 ```toml
-# Set in /etc/innerwarden/agent.toml
+# /etc/innerwarden/agent.toml
 [ai]
 provider = "anthropic"
 model = "claude-haiku-4-5-20251001"
 ```
 
-**Ollama (local, no key needed):**
+**Ollama (local, no key):**
 ```bash
-curl -fsSL https://ollama.ai/install.sh | sh
-ollama pull llama3.2
+curl -fsSL https://ollama.ai/install.sh | sh && ollama pull llama3.2
 ```
 ```toml
-# Set in /etc/innerwarden/agent.toml
+# /etc/innerwarden/agent.toml
 [ai]
 enabled = true
 provider = "ollama"
 model = "llama3.2"
-# base_url = "http://localhost:11434"  # default, override if needed
 ```
 
-After changing either file, restart the agent:
+After changing config:
 ```bash
 sudo systemctl restart innerwarden-agent          # Linux
 sudo launchctl kickstart -k system/com.innerwarden.agent  # macOS
 ```
 
-Run `innerwarden doctor` to validate your provider configuration.
+Run `innerwarden doctor` to validate your provider.
 
 ### After install
 
 ```bash
 innerwarden status     # verify services are running
-innerwarden doctor     # diagnose any issues with fix hints
-innerwarden list       # see available capabilities and modules
+innerwarden doctor     # diagnose issues with fix hints
+innerwarden list       # see capabilities and modules
 ```
 
-Enable response skills when ready. Each `enable` command patches the config, writes sudoers rules, and restarts the relevant service — no manual editing needed:
+Enable response skills when ready:
+```bash
+innerwarden enable block-ip          # IP blocking (ufw default, or iptables/nftables)
+innerwarden enable sudo-protection   # detect + respond to sudo abuse
+innerwarden enable shell-audit       # shell command trail via auditd
+```
+
+### Configure notifications
 
 ```bash
-innerwarden enable block-ip          # IP blocking via ufw (default), iptables, or nftables
-innerwarden enable sudo-protection   # detect sudo abuse and suspend user sudo rights
-innerwarden enable shell-audit       # shell command trail via auditd (prompts for privacy consent)
+innerwarden notify telegram          # interactive wizard
+innerwarden notify slack --webhook-url https://hooks.slack.com/...
+innerwarden notify web-push --subject mailto:you@example.com
+innerwarden notify webhook --url https://hooks.example.com/notify
+innerwarden notify test              # verify all channels
 ```
 
-After enabling, the responder is active but still in `dry_run = true` mode — it logs what it would do without executing. When you trust the decisions, flip one flag in `/etc/innerwarden/agent.toml`:
+### Go live
 
-```toml
-[responder]
-dry_run = false
+After enabling skills, the responder is active but still in `dry_run = true`. When you trust the decisions:
+
+```bash
+innerwarden configure responder --enable --dry-run false
 ```
-
-Then restart: `sudo systemctl restart innerwarden-agent` (Linux) or `sudo launchctl kickstart -k system/com.innerwarden.agent` (macOS).
 
 ### Updates
 
 ```bash
-innerwarden upgrade          # fetch and install the latest release (SHA-256 verified)
-innerwarden upgrade --check  # check if an update is available without installing
+innerwarden upgrade          # fetch + install latest (SHA-256 verified)
+innerwarden upgrade --check  # check without installing
 ```
 
-### Control plane reference
+### Control plane
 
 ```bash
-innerwarden list                              # capabilities and modules with status
-innerwarden status                            # services + active capabilities
-innerwarden status block-ip                   # status of a specific capability
-innerwarden doctor                            # diagnostics with fix hints
-innerwarden enable block-ip                   # activate (ufw by default)
-innerwarden enable block-ip --param backend=iptables  # activate with a specific backend
-innerwarden disable block-ip                  # deactivate and clean up
-innerwarden --dry-run enable block-ip         # preview what enable would do
-innerwarden scan                              # detect installed tools and recommend modules
+innerwarden list                                    # capabilities + modules
+innerwarden status                                  # services + active capabilities
+innerwarden doctor                                  # diagnostics with fix hints
+innerwarden enable block-ip                         # activate
+innerwarden enable block-ip --param backend=iptables
+innerwarden disable block-ip                        # deactivate and clean up
+innerwarden --dry-run enable block-ip               # preview
+innerwarden scan                                    # detect + recommend
+innerwarden allowlist add --ip 10.0.0.0/8           # skip AI for trusted ranges
+innerwarden allowlist add --user deploy             # skip AI for trusted users
 ```
 
 ---
@@ -305,15 +343,15 @@ Pre-built binaries: `x86_64` and `aarch64` for both platforms.
 ## Build and test
 
 ```bash
-make test    # 537 tests
-make build   # debug build (sensor + agent + ctl)
+make test       # 573 tests
+make build      # debug build (sensor + agent + ctl)
+make replay-qa  # end-to-end integration test
 ```
 
-Run locally with fixture data:
+Run locally:
 ```bash
 make run-sensor   # writes to ./data/
 make run-agent    # reads from ./data/
-make replay-qa    # end-to-end replay validation
 ```
 
 ---
@@ -321,16 +359,16 @@ make replay-qa    # end-to-end replay validation
 ## FAQ
 
 **Is this an EDR?**
-No. It is a self-contained defense agent with bounded response skills and full audit trails. It does not phone home, has no cloud dependency, and runs entirely on your host.
+No. It is a self-contained defense agent with bounded response skills and full audit trails. No cloud, no phone-home, runs entirely on your host.
 
 **Does it block by default?**
-No. It starts in observe-only mode. You enable response skills and disable dry-run when you are ready.
+No. Starts in observe-only mode. You enable response skills and disable dry-run when ready.
 
 **Do I need an AI provider?**
-No. Detection, logging, dashboards, and reports all work without AI. The AI layer adds confidence-scored triage for automated decisions — it is optional.
+No. Detection, logging, dashboard, and reports all work without AI. AI adds confidence-scored triage for autonomous response — it is optional.
 
 **How is this different from Fail2ban?**
-Fail2ban blocks IPs based on regex patterns. Inner Warden has eight detectors, eight response skills (including sudo suspension, honeypots, and traffic capture), AI-assisted triage, Telegram approval workflows, and a full investigation dashboard.
+Fail2ban blocks IPs based on regex patterns. Inner Warden has eight detectors, seven response skills (including sudo suspension, process kill, container pause, honeypots, and traffic capture), AI-assisted triage, Telegram approval workflows, and a full investigation dashboard.
 
 **Can I add custom detectors or skills?**
 Yes. See [module authoring guide](docs/module-authoring.md).
@@ -339,6 +377,7 @@ Yes. See [module authoring guide](docs/module-authoring.md).
 
 ## Links
 
+- [Website](https://www.innerwarden.com)
 - [Roadmap](ROADMAP.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
