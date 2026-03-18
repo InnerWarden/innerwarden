@@ -11,6 +11,17 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.28] — 2026-03-18
+
+### AI providers
+
+- **12 providers + any OpenAI-compatible API** — built-in support for OpenAI, Anthropic, Groq, DeepSeek, Mistral, xAI/Grok, Google Gemini, Ollama, Together, MiniMax, Fireworks, OpenRouter. Unknown providers also work with `base_url`.
+- **Dynamic model discovery** — the AI wizard fetches available models from the provider's API after entering the key. No hardcoded model lists. Always shows what's actually available for that account.
+- **`innerwarden configure ai`** — new top-level command. Interactive wizard or direct: `innerwarden configure ai groq --key gsk-...`
+- **`innerwarden configure responder`** — enable/disable responder and dry-run mode from the CLI.
+
+---
+
 ## [0.1.27] — 2026-03-18
 
 ### Collective defense
