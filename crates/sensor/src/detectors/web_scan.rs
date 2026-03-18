@@ -40,6 +40,9 @@ impl WebScanDetector {
         }
 
         let ip = event.details["ip"].as_str()?.to_string();
+        if super::is_internal_ip(&ip) {
+            return None;
+        }
         let now = event.ts;
         let cutoff = now - self.window;
 

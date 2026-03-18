@@ -36,6 +36,9 @@ impl PortScanDetector {
         }
 
         let src_ip = event.details["src_ip"].as_str()?.to_string();
+        if super::is_internal_ip(&src_ip) {
+            return None;
+        }
         let dst_port = u16::try_from(event.details["dst_port"].as_u64()?).ok()?;
         let now = event.ts;
         let cutoff = now - self.window;
