@@ -17,8 +17,8 @@
 //   api_key   = ""   # or ABUSEIPDB_API_KEY env var
 //   max_age_days = 30
 
-use serde::Deserialize;
-use tracing::{debug, warn};
+use serde::{Deserialize, Serialize};
+use tracing::{debug, info, warn};
 
 // ---------------------------------------------------------------------------
 // API response types
@@ -101,6 +101,66 @@ impl AbuseIpDbClient {
         !self.api_key.is_empty()
     }
 
+    /// Report an abusive IP to the AbuseIPDB database.
+    ///
+    /// Called after a successful block so that our defense contributes to the
+    /// global threat intelligence network.  Returns `true` on success.
+    ///
+    /// API: POST https://api.abuseipdb.com/api/v2/report
+    /// Docs: https://docs.abuseipdb.com/#report-endpoint
+    pub async fn report(&self, ip: &str, categories: &str, comment: &str) -> bool {
+        if !self.is_configured() {
+            return false;
+        }
+
+        debug!(ip, categories, "reporting IP to AbuseIPDB");
+
+        let body = ReportRequest {
+            ip: ip.to_string(),
+            categories: categories.to_string(),
+            comment: comment.to_string(),
+        };
+
+        let resp = self
+            .http
+            .post("https://api.abuseipdb.com/api/v2/report")
+            .header("Key", &self.api_key)
+            .header("Accept", "application/json")
+            .json(&body)
+            .send()
+            .await;
+
+        let resp = match resp {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(ip, error = %e, "AbuseIPDB report request failed");
+                return false;
+            }
+        };
+
+        if resp.status().as_u16() == 429 {
+            warn!("AbuseIPDB rate limit hit — skipping report");
+            return false;
+        }
+
+        if resp.status().as_u16() == 422 {
+            // Duplicate report or validation error — not a failure worth retrying
+            debug!(
+                ip,
+                "AbuseIPDB report rejected (422) — likely duplicate or invalid"
+            );
+            return false;
+        }
+
+        if resp.status().is_success() {
+            info!(ip, categories, "reported IP to AbuseIPDB");
+            true
+        } else {
+            warn!(ip, status = %resp.status(), "AbuseIPDB report returned non-200");
+            false
+        }
+    }
+
     /// Look up the reputation of a single IP address.
     /// Returns `None` on any non-fatal error (API down, rate limit, parse failure)
     /// so callers can proceed without enrichment.
@@ -157,6 +217,34 @@ impl AbuseIpDbClient {
             isp: data.data.isp,
             is_tor: data.data.is_tor.unwrap_or(false),
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Report request
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct ReportRequest {
+    ip: String,
+    categories: String,
+    comment: String,
+}
+
+/// Map an InnerWarden detector name to AbuseIPDB category IDs.
+///
+/// Categories: https://www.abuseipdb.com/categories
+///   14 = Port Scan, 15 = Hacking, 18 = Brute-Force, 21 = Web App Attack, 22 = SSH
+pub fn detector_to_categories(detector: &str) -> &'static str {
+    match detector {
+        d if d.contains("ssh_bruteforce") => "18,22",
+        d if d.contains("credential_stuffing") => "18,22",
+        d if d.contains("port_scan") => "14",
+        d if d.contains("web_scan") || d.contains("scanner_ua") => "21",
+        d if d.contains("search_abuse") => "21",
+        d if d.contains("execution_guard") => "15",
+        d if d.contains("sudo_abuse") => "15",
+        _ => "15", // generic "Hacking"
     }
 }
 
@@ -265,5 +353,35 @@ mod tests {
         // When config key is non-empty, use it
         let key = resolve_api_key("mykey123");
         assert_eq!(key, "mykey123");
+    }
+
+    #[test]
+    fn detector_categories_ssh() {
+        assert_eq!(detector_to_categories("ssh_bruteforce"), "18,22");
+        assert_eq!(detector_to_categories("credential_stuffing"), "18,22");
+    }
+
+    #[test]
+    fn detector_categories_scan() {
+        assert_eq!(detector_to_categories("port_scan"), "14");
+        assert_eq!(detector_to_categories("web_scan"), "21");
+        assert_eq!(detector_to_categories("scanner_ua"), "21");
+    }
+
+    #[test]
+    fn detector_categories_fallback() {
+        assert_eq!(detector_to_categories("unknown_detector"), "15");
+    }
+
+    #[test]
+    fn report_request_serializes() {
+        let req = ReportRequest {
+            ip: "1.2.3.4".to_string(),
+            categories: "18,22".to_string(),
+            comment: "test".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"ip\":\"1.2.3.4\""));
+        assert!(json.contains("\"categories\":\"18,22\""));
     }
 }

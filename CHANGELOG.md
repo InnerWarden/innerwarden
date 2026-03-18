@@ -9,6 +9,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Collective defense
+
+- **AbuseIPDB report-back** — when `report_blocks = true`, every successful IP block is reported to the AbuseIPDB database with attack categories (SSH brute-force → 18,22, port scan → 14, web scan → 21, etc.) and a comment with the AI's reasoning. Your server's defense now feeds the global threat intelligence network.
+
 ---
 
 ## [0.1.26] — 2026-03-18

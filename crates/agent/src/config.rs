@@ -1296,6 +1296,13 @@ pub struct AbuseIpDbConfig {
     /// from known malicious IPs.
     #[serde(default)]
     pub auto_block_threshold: u8,
+
+    /// Report blocked IPs back to AbuseIPDB (default: false).
+    /// When enabled, every successful block_ip action is reported to the
+    /// AbuseIPDB database with the appropriate attack categories.
+    /// This contributes to the global threat intelligence network.
+    #[serde(default)]
+    pub report_blocks: bool,
 }
 
 impl Default for AbuseIpDbConfig {
@@ -1305,6 +1312,7 @@ impl Default for AbuseIpDbConfig {
             api_key: String::new(),
             max_age_days: default_abuseipdb_max_age_days(),
             auto_block_threshold: 0,
+            report_blocks: false,
         }
     }
 }

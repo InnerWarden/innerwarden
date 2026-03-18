@@ -2351,6 +2351,20 @@ async fn execute_decision(
                             }
                         }
                     }
+                    // Report the blocked IP to AbuseIPDB
+                    if result.success && cfg.abuseipdb.enabled && cfg.abuseipdb.report_blocks {
+                        if let Some(ref client) = state.abuseipdb {
+                            let detector =
+                                incident.incident_id.split(':').next().unwrap_or("unknown");
+                            let categories = abuseipdb::detector_to_categories(detector);
+                            let comment = format!(
+                                "InnerWarden auto-block: {} (confidence {:.0}%)",
+                                decision.reason,
+                                decision.confidence * 100.0
+                            );
+                            client.report(ip, categories, &comment).await;
+                        }
+                    }
                     (result.message, cf_pushed)
                 }
                 None => (format!("skipped: skill '{effective_id}' not found"), false),
