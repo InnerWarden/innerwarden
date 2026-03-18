@@ -318,6 +318,11 @@ struct IncidentView {
     summary: String,
     entities: Vec<String>,
     tags: Vec<String>,
+    /// Resolution status: "blocked", "suspended", "monitored", "ignored", or "open"
+    outcome: String,
+    /// What action was taken (e.g. "block-ip-ufw", "fail2ban:sshd")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action_taken: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -882,22 +887,55 @@ async fn api_incidents(
     let mut incidents = read_jsonl::<innerwarden_core::incident::Incident>(&path);
     incidents.sort_by(|a, b| b.ts.cmp(&a.ts));
 
+    // Load decisions to cross-reference outcomes
+    let decisions = read_jsonl::<DecisionEntry>(&dated_path(&state.data_dir, "decisions", &date));
+    let decision_map: std::collections::HashMap<String, &DecisionEntry> = decisions
+        .iter()
+        .map(|d| (d.incident_id.clone(), d))
+        .collect();
+
     let total = incidents.len();
     let items = incidents
         .into_iter()
         .take(limit)
-        .map(|inc| IncidentView {
-            ts: inc.ts,
-            incident_id: inc.incident_id,
-            severity: format!("{:?}", inc.severity).to_lowercase(),
-            title: inc.title,
-            summary: inc.summary,
-            entities: inc
-                .entities
-                .into_iter()
-                .map(|e| format!("{:?}:{}", e.r#type, e.value))
-                .collect(),
-            tags: inc.tags,
+        .map(|inc| {
+            let (outcome, action_taken) = if let Some(d) = decision_map.get(&inc.incident_id) {
+                let outcome = match d.action_type.as_str() {
+                    "block_ip" => "blocked",
+                    "suspend_user_sudo" => "suspended",
+                    "kill_process" => "killed",
+                    "block_container" => "contained",
+                    "monitor" => "monitored",
+                    "honeypot" => "honeypot",
+                    "ignore" => "ignored",
+                    _ => "resolved",
+                };
+                let source = if d.ai_provider.starts_with("fail2ban") {
+                    format!("fail2ban → {}", d.skill_id.as_deref().unwrap_or(""))
+                } else if d.ai_provider.starts_with("abuseipdb") {
+                    "abuseipdb auto-block".to_string()
+                } else {
+                    d.skill_id.clone().unwrap_or_default()
+                };
+                (outcome.to_string(), Some(source))
+            } else {
+                ("open".to_string(), None)
+            };
+            IncidentView {
+                ts: inc.ts,
+                incident_id: inc.incident_id,
+                severity: format!("{:?}", inc.severity).to_lowercase(),
+                title: inc.title,
+                summary: inc.summary,
+                entities: inc
+                    .entities
+                    .into_iter()
+                    .map(|e| format!("{:?}:{}", e.r#type, e.value))
+                    .collect(),
+                tags: inc.tags,
+                outcome,
+                action_taken,
+            }
         })
         .collect();
 

@@ -413,9 +413,9 @@ pub async fn sync_tick(
                             )
                         } else {
                             let err: String =
-                                decision_entry.execution_result.chars().take(200).collect();
+                                decision_entry.execution_result.chars().take(100).collect();
                             format!(
-                                "⚠️ fail2ban ban <code>{ip}</code> (jail: {jail}) — block failed:\n<code>{err}</code>",
+                                "⚠️ fail2ban detected <code>{ip}</code> (jail: {jail}) — firewall block failed.\nCheck <code>innerwarden doctor</code> for fix hints.",
                             )
                         };
                         let tg = tg.clone();
