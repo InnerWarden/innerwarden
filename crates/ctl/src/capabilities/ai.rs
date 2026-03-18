@@ -27,6 +27,7 @@ const VALID_PROVIDERS: &[&str] = &[
     "xai",
     "fireworks",
     "openrouter",
+    "gemini",
 ];
 
 // ---------------------------------------------------------------------------
@@ -387,7 +388,10 @@ mod tests {
         let mut agent = NamedTempFile::new().unwrap();
         writeln!(agent, "[ai]\nenabled = false\n").unwrap();
         let mut params = HashMap::new();
-        params.insert("provider".to_string(), "gemini".to_string());
+        params.insert(
+            "provider".to_string(),
+            "nonexistent-provider-xyz".to_string(),
+        );
         let opts = make_opts(&sensor, &agent, params);
         assert!(AiCapability.activate(&opts).is_err());
     }

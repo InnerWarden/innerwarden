@@ -3060,7 +3060,10 @@ struct WizardProvider {
     name: &'static str,
     label: &'static str,
     signup_url: &'static str,
-    models: &'static [(&'static str, &'static str)], // (model_id, description)
+    /// Base URL for the models API. Empty = use the default from OPENAI_COMPATIBLE.
+    models_url: &'static str,
+    /// How to list models: "openai" = GET /v1/models, "anthropic" = GET /v1/models, "ollama" = GET /api/tags
+    api_style: &'static str,
 }
 
 const WIZARD_PROVIDERS: &[WizardProvider] = &[
@@ -3068,62 +3071,155 @@ const WIZARD_PROVIDERS: &[WizardProvider] = &[
         name: "openai",
         label: "OpenAI",
         signup_url: "platform.openai.com",
-        models: &[
-            ("gpt-4o-mini", "fast, low cost (recommended)"),
-            ("gpt-4o", "most capable, higher cost"),
-            ("gpt-4.1-nano", "cheapest, good enough for most threats"),
-        ],
+        models_url: "https://api.openai.com",
+        api_style: "openai",
     },
     WizardProvider {
         name: "anthropic",
         label: "Anthropic",
         signup_url: "console.anthropic.com",
-        models: &[
-            ("claude-haiku-4-5-20251001", "fast, low cost (recommended)"),
-            ("claude-sonnet-4-6-20250514", "most capable, higher cost"),
-        ],
+        models_url: "https://api.anthropic.com",
+        api_style: "anthropic",
     },
     WizardProvider {
         name: "groq",
         label: "Groq",
         signup_url: "console.groq.com",
-        models: &[
-            ("llama-3.3-70b-versatile", "fast, free tier (recommended)"),
-            ("llama-3.1-8b-instant", "fastest, smaller model"),
-            ("deepseek-r1-distill-llama-70b", "reasoning model"),
-        ],
+        models_url: "https://api.groq.com/openai",
+        api_style: "openai",
     },
     WizardProvider {
         name: "deepseek",
         label: "DeepSeek",
         signup_url: "platform.deepseek.com",
-        models: &[
-            ("deepseek-chat", "general purpose (recommended)"),
-            ("deepseek-reasoner", "reasoning model, slower"),
-        ],
+        models_url: "https://api.deepseek.com",
+        api_style: "openai",
     },
     WizardProvider {
         name: "mistral",
         label: "Mistral",
         signup_url: "console.mistral.ai",
-        models: &[
-            ("mistral-small-latest", "fast, low cost (recommended)"),
-            ("mistral-medium-latest", "more capable"),
-            ("mistral-large-latest", "most capable, higher cost"),
-        ],
+        models_url: "https://api.mistral.ai",
+        api_style: "openai",
     },
     WizardProvider {
         name: "xai",
         label: "xAI / Grok",
         signup_url: "console.x.ai",
-        models: &[
-            ("grok-3-mini-fast", "fast, low cost (recommended)"),
-            ("grok-3-mini", "more capable"),
-        ],
+        models_url: "https://api.x.ai",
+        api_style: "openai",
+    },
+    WizardProvider {
+        name: "gemini",
+        label: "Google Gemini",
+        signup_url: "aistudio.google.com",
+        models_url: "https://generativelanguage.googleapis.com",
+        api_style: "gemini",
     },
 ];
 
-fn ask_key_and_model(provider: &WizardProvider) -> Result<(String, Option<String>)> {
+/// Fetch available models from the provider's API using the key.
+/// Returns a sorted list of model IDs, or an empty vec on failure.
+fn fetch_models(base_url: &str, api_key: &str, api_style: &str) -> Vec<String> {
+    let url = match api_style {
+        "anthropic" => format!("{base_url}/v1/models"),
+        "ollama" => format!("{base_url}/api/tags"),
+        "gemini" => format!("{base_url}/v1beta/models?key={api_key}"),
+        _ => format!("{base_url}/v1/models"),
+    };
+
+    let resp = match api_style {
+        "anthropic" => ureq::get(&url)
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .call(),
+        "gemini" => ureq::get(&url).call(),
+        _ => ureq::get(&url)
+            .header("Authorization", &format!("Bearer {api_key}"))
+            .call(),
+    };
+
+    let resp = match resp {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
+
+    let body: serde_json::Value = match resp.into_body().read_json() {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+
+    // OpenAI / Anthropic style: { "data": [{ "id": "model-name" }, ...] }
+    // Ollama style: { "models": [{ "name": "model-name" }, ...] }
+    // Gemini style: { "models": [{ "name": "models/gemini-2.0-flash", ... }] }
+    let models: Vec<String> = if api_style == "gemini" {
+        body.get("models")
+            .and_then(|m| m.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| {
+                        m.get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|s| s.strip_prefix("models/").unwrap_or(s).to_string())
+                    })
+                    .filter(|m| {
+                        let l = m.to_lowercase();
+                        l.contains("gemini") && !l.contains("embed") && !l.contains("aqa")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else if api_style == "ollama" {
+        body.get("models")
+            .and_then(|m| m.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| {
+                        m.get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        body.get("data")
+            .and_then(|d| d.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| {
+                        m.get("id")
+                            .and_then(|id| id.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    // Filter to chat-capable models (heuristic: skip embeddings, tts, whisper, dall-e, etc.)
+    let mut filtered: Vec<String> = models
+        .into_iter()
+        .filter(|m| {
+            let l = m.to_lowercase();
+            !l.contains("embed")
+                && !l.contains("tts")
+                && !l.contains("whisper")
+                && !l.contains("dall-e")
+                && !l.contains("davinci")
+                && !l.contains("babbage")
+                && !l.contains("moderation")
+                && !l.contains("search")
+        })
+        .collect();
+    filtered.sort();
+    filtered
+}
+
+fn ask_key_and_model(
+    provider: &WizardProvider,
+    custom_base_url: Option<&str>,
+) -> Result<(String, Option<String>)> {
     println!(
         "{} — enter your API key (get one at {})",
         provider.label, provider.signup_url
@@ -3133,23 +3229,44 @@ fn ask_key_and_model(provider: &WizardProvider) -> Result<(String, Option<String
         anyhow::bail!("API key cannot be empty");
     }
 
-    if provider.models.len() <= 1 {
-        return Ok((key, None));
+    let base_url = custom_base_url.unwrap_or(provider.models_url);
+    print!("\n  Fetching available models...");
+    std::io::stdout().flush().ok();
+    let models = fetch_models(base_url, &key, provider.api_style);
+
+    if models.is_empty() {
+        println!(" could not fetch model list.");
+        println!("  Enter a model name manually, or press Enter for the provider default.\n");
+        let model = prompt("Model")?;
+        let model = if model.is_empty() { None } else { Some(model) };
+        return Ok((key, model));
     }
 
-    println!("\nChoose a model:\n");
-    for (i, (id, desc)) in provider.models.iter().enumerate() {
-        println!("  {}. {} — {}", i + 1, id, desc);
+    println!(" found {} models.\n", models.len());
+    let show = models.len().min(20);
+    for (i, m) in models.iter().take(show).enumerate() {
+        println!("  {:>2}. {}", i + 1, m);
+    }
+    if models.len() > show {
+        println!(
+            "  ... and {} more (type the name to use any)",
+            models.len() - show
+        );
     }
     println!();
-    let model_choice = prompt(&format!("Model [1-{}, default=1]", provider.models.len()))?;
-    let idx = model_choice
-        .trim()
-        .parse::<usize>()
-        .unwrap_or(1)
-        .saturating_sub(1)
-        .min(provider.models.len() - 1);
-    let model = provider.models[idx].0.to_string();
+    let model_choice = prompt(&format!("Model [1-{show}, or type name, default=1]"))?;
+    let trimmed = model_choice.trim();
+
+    let model = if trimmed.is_empty() {
+        models[0].clone()
+    } else if let Ok(idx) = trimmed.parse::<usize>() {
+        let idx = idx.saturating_sub(1).min(models.len() - 1);
+        models[idx].clone()
+    } else {
+        // User typed a model name directly
+        trimmed.to_string()
+    };
+
     Ok((key, Some(model)))
 }
 
@@ -3158,8 +3275,7 @@ fn cmd_configure_ai_interactive(cli: &Cli) -> Result<()> {
     println!("InnerWarden uses AI to evaluate threats and decide how to respond.");
     println!("Choose a provider — any one works. Pick what you already have:\n");
     for (i, p) in WIZARD_PROVIDERS.iter().enumerate() {
-        let default_model = p.models[0].0;
-        println!("  {}. {:12} — {}", i + 1, p.label, default_model);
+        println!("  {}. {}", i + 1, p.label);
     }
     let ollama_idx = WIZARD_PROVIDERS.len() + 1;
     let other_idx = WIZARD_PROVIDERS.len() + 2;
@@ -3180,26 +3296,70 @@ fn cmd_configure_ai_interactive(cli: &Cli) -> Result<()> {
 
     if num >= 1 && num <= WIZARD_PROVIDERS.len() {
         let provider = &WIZARD_PROVIDERS[num - 1];
-        let (key, model) = ask_key_and_model(provider)?;
+        let (key, model) = ask_key_and_model(provider, None)?;
         cmd_configure_ai(cli, provider.name, Some(&key), model.as_deref(), None)
     } else if num == ollama_idx {
-        cmd_ai_install(cli, "qwen3-coder:480b", None, false)
-    } else if num == other_idx {
-        println!("Any provider with an OpenAI-compatible API works.");
-        println!("You need the base URL and an API key.\n");
-        let name = prompt("Provider name (e.g. fireworks, openrouter)")?;
-        let base_url = prompt("Base URL (e.g. https://api.example.com)")?;
-        let key = prompt("API key")?;
-        let model = prompt("Model name (leave empty for default)")?;
-        let model = if model.is_empty() {
-            None
+        // Ollama: fetch local models if running, or install
+        let local_models = fetch_models("http://localhost:11434", "", "ollama");
+        if local_models.is_empty() {
+            println!("Ollama not running locally. Installing...\n");
+            cmd_ai_install(cli, "qwen3-coder:480b", None, false)
         } else {
-            Some(model.as_str())
-        };
-        if base_url.is_empty() || key.is_empty() {
-            anyhow::bail!("Base URL and API key are required");
+            println!("Found {} local Ollama models:\n", local_models.len());
+            for (i, m) in local_models.iter().enumerate() {
+                println!("  {}. {}", i + 1, m);
+            }
+            println!();
+            let mc = prompt(&format!("Model [1-{}, default=1]", local_models.len()))?;
+            let idx = mc
+                .trim()
+                .parse::<usize>()
+                .unwrap_or(1)
+                .saturating_sub(1)
+                .min(local_models.len() - 1);
+            cmd_configure_ai(cli, "ollama", None, Some(&local_models[idx]), None)
         }
-        cmd_configure_ai(cli, &name, Some(&key), model, Some(&base_url))
+    } else if num == other_idx {
+        println!("Any provider with an OpenAI-compatible API works.\n");
+        let name = prompt("Provider name (e.g. fireworks, openrouter, together)")?;
+        let base_url = prompt("Base URL (e.g. https://api.example.com)")?;
+        if base_url.is_empty() {
+            anyhow::bail!("Base URL is required");
+        }
+        println!("\n{name} — enter your API key");
+        let key = prompt("API key")?;
+        if key.is_empty() {
+            anyhow::bail!("API key cannot be empty");
+        }
+        print!("\n  Fetching available models...");
+        std::io::stdout().flush().ok();
+        let models = fetch_models(&base_url, &key, "openai");
+        let model = if models.is_empty() {
+            println!(" could not fetch model list.");
+            let m = prompt("Model name")?;
+            if m.is_empty() {
+                None
+            } else {
+                Some(m)
+            }
+        } else {
+            println!(" found {} models.\n", models.len());
+            let show = models.len().min(20);
+            for (i, m) in models.iter().take(show).enumerate() {
+                println!("  {:>2}. {}", i + 1, m);
+            }
+            println!();
+            let mc = prompt(&format!("Model [1-{show}, default=1]"))?;
+            let trimmed = mc.trim();
+            Some(if trimmed.is_empty() {
+                models[0].clone()
+            } else if let Ok(idx) = trimmed.parse::<usize>() {
+                models[idx.saturating_sub(1).min(models.len() - 1)].clone()
+            } else {
+                trimmed.to_string()
+            })
+        };
+        cmd_configure_ai(cli, &name, Some(&key), model.as_deref(), Some(&base_url))
     } else {
         println!("Skipped. Run later:  innerwarden configure ai <provider> --key <key>");
         Ok(())
@@ -3262,6 +3422,11 @@ fn cmd_configure_ai(
                 "meta-llama/llama-3.3-70b-instruct",
                 Some("OPENROUTER_API_KEY"),
                 Some("https://openrouter.ai/api"),
+            ),
+            "gemini" => (
+                "gemini-2.0-flash",
+                Some("GEMINI_API_KEY"),
+                Some("https://generativelanguage.googleapis.com/v1beta/openai"),
             ),
             // Unknown provider — still works if the user provides base_url + key
             _ => (

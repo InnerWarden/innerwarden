@@ -239,6 +239,11 @@ const OPENAI_COMPATIBLE: &[(&str, &str, &str)] = &[
     ("mistral", "https://api.mistral.ai", "mistral-small-latest"),
     ("xai", "https://api.x.ai", "grok-3-mini-fast"),
     (
+        "gemini",
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        "gemini-2.0-flash",
+    ),
+    (
         "fireworks",
         "https://api.fireworks.ai/inference",
         "accounts/fireworks/models/llama-v3p3-70b-instruct",
