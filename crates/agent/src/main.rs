@@ -1707,6 +1707,44 @@ async fn process_incidents(
         } // end if !notify_suppressed
 
         // 2. AI analysis — only when AI is enabled and incident passes the gate
+
+        // Pipeline test: recognise `innerwarden test` incidents by tag and
+        // write an acknowledgement decision without calling the AI provider.
+        if incident.tags.contains(&"pipeline-test".to_string()) {
+            info!(
+                incident_id = %incident.incident_id,
+                "pipeline test incident detected — writing acknowledgement decision"
+            );
+            let test_ip = incident
+                .entities
+                .iter()
+                .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
+                .map(|e| e.value.clone());
+            let entry = decisions::DecisionEntry {
+                ts: chrono::Utc::now(),
+                incident_id: incident.incident_id.clone(),
+                host: incident.host.clone(),
+                ai_provider: "pipeline-test".to_string(),
+                action_type: "monitor".to_string(),
+                target_ip: test_ip,
+                target_user: None,
+                skill_id: None,
+                confidence: 1.0,
+                auto_executed: false,
+                dry_run: true,
+                reason: "Pipeline test acknowledged — sensor → agent → decision path is working".to_string(),
+                estimated_threat: "none".to_string(),
+                execution_result: "test-ok".to_string(),
+            };
+            if let Some(writer) = &mut state.decision_writer {
+                if let Err(e) = writer.write(&entry) {
+                    warn!("failed to write pipeline-test decision: {e:#}");
+                }
+            }
+            handled += 1;
+            continue;
+        }
+
         if !ai_enabled {
             handled += 1;
             continue;

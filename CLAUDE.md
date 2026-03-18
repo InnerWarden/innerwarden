@@ -14,7 +14,7 @@ crates/
   sensor/   — innerwarden-sensor binary (deterministic collection, zero AI/HTTP)
   agent/    — innerwarden-agent binary (AI triage, skill execution, dashboard, notifications)
   ctl/      — innerwarden / innerwarden-ctl binary (control plane CLI)
-modules/    — vertical security modules (manifest + config + docs + tests)
+modules/    — vertical security modules (manifest + config + docs + tests), includes openclaw-protection for AI agent environments
 integrations/ — declarative integration recipes for external tools
 docs/
   internal/ — detailed capability and operations references (this file's companions)
@@ -90,7 +90,12 @@ See [docs/internal/operations.md](docs/internal/operations.md) for full command 
 
 **Agent** — reads incrementally via byte-offset cursors. Fast loop (2s): webhook + Telegram → algorithm gate → enrichment (AbuseIPDB, GeoIP) → AI provider → skill executor → audit trail → notifications. Slow loop (30s): narrative, telemetry, data retention.
 
-**CTL** — control plane CLI: capability enable/disable, module management, diagnostics, upgrade, notifications setup, IP management, reporting, tuning.
+**CTL** — control plane CLI: capability enable/disable, module management, diagnostics, upgrade, notifications setup, IP management, reporting, tuning, pipeline test (`innerwarden test`).
+
+**Agent API for AI agents** — dashboard exposes `/api/agent/*` endpoints that autonomous AI agents (OpenClaw, n8n, etc.) can query:
+- `GET /api/agent/security-context` — current threat level, incident counts, recommendation
+- `GET /api/agent/check-ip?ip=X` — check if an IP is known threat or blocked
+- `POST /api/agent/check-command` — analyze a command for dangerous patterns without executing it (reverse shells, download+execute, obfuscation, persistence, destructive commands)
 
 ---
 

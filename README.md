@@ -183,6 +183,42 @@ innerwarden module search <term>     # search the registry
 
 ---
 
+## Protecting AI agents
+
+If you run OpenClaw, n8n, Langchain, or any autonomous AI agent on your server, Inner Warden can watch what it does and stop it if something goes wrong.
+
+```bash
+innerwarden enable openclaw-protection
+```
+
+This enables real-time monitoring of every command your agent executes — using structural analysis (tree-sitter AST), not just regex. Download-and-execute pipelines, reverse shells, staged attacks, and obfuscated commands are caught before they can do damage.
+
+### Let your agent ask before acting
+
+Inner Warden exposes an API that AI agents can query:
+
+```bash
+# "Is my server safe right now?"
+curl -s http://localhost:8787/api/agent/security-context
+# → {"threat_level": "low", "recommendation": "safe to proceed"}
+
+# "Is this command safe to run?"
+curl -s -X POST http://localhost:8787/api/agent/check-command \
+  -H "Content-Type: application/json" \
+  -d '{"command": "curl https://example.com/setup.sh | bash"}'
+# → {"risk_score": 40, "recommendation": "review", "signals": ["download_and_execute"]}
+
+# "Is this IP safe to connect to?"
+curl -s "http://localhost:8787/api/agent/check-ip?ip=203.0.113.10"
+# → {"known_threat": true, "blocked": true, "recommendation": "avoid"}
+```
+
+Your agent calls `check-command` before executing. If the recommendation is `deny`, it stops. No changes to the agent runtime needed — just an HTTP call.
+
+See [AI Agent Protection docs](modules/openclaw-protection/docs/README.md) for full integration guide.
+
+---
+
 ## Scan advisor
 
 Let your server tell you what it needs.
@@ -279,6 +315,7 @@ Run `innerwarden doctor` to validate your provider.
 ```bash
 innerwarden status     # verify services are running
 innerwarden doctor     # diagnose issues with fix hints
+innerwarden test       # inject a synthetic incident and verify the full pipeline responds
 innerwarden list       # see capabilities and modules
 ```
 

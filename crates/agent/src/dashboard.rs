@@ -622,6 +622,10 @@ pub async fn serve(
         // Honeypot tab
         .route("/api/honeypot/sessions", get(api_honeypot_sessions))
         .route("/api/action/honeypot", post(api_action_honeypot))
+        // Agent API — for AI agents (OpenClaw, n8n, etc.) to query security state
+        .route("/api/agent/security-context", get(api_agent_security_context))
+        .route("/api/agent/check-ip", get(api_agent_check_ip))
+        .route("/api/agent/check-command", post(api_agent_check_command))
         // D6 — SSE live event stream
         .route("/api/events/stream", get(api_events_stream))
         // Web Push
@@ -2167,6 +2171,326 @@ fn hostname() -> String {
     std::env::var("HOSTNAME")
         .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
         .unwrap_or_else(|_| "unknown".to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Agent API — security context for AI agents (OpenClaw, n8n, etc.)
+// ---------------------------------------------------------------------------
+
+/// GET /api/agent/security-context — threat overview for AI agents
+async fn api_agent_security_context(
+    State(state): State<DashboardState>,
+) -> Json<serde_json::Value> {
+    let date = resolve_date(None);
+    let incidents = read_jsonl::<innerwarden_core::incident::Incident>(
+        &dated_path(&state.data_dir, "incidents", &date),
+    );
+    let decisions = read_jsonl::<DecisionEntry>(
+        &dated_path(&state.data_dir, "decisions", &date),
+    );
+
+    let total_incidents = incidents.len();
+    let high_or_critical = incidents
+        .iter()
+        .filter(|i| matches!(i.severity, innerwarden_core::event::Severity::High | innerwarden_core::event::Severity::Critical))
+        .count();
+    let blocks_today = decisions
+        .iter()
+        .filter(|d| d.action_type == "block_ip" && !d.dry_run)
+        .count();
+
+    // Collect top detectors from incident IDs (prefix before first ':')
+    let mut detector_counts = std::collections::HashMap::<String, usize>::new();
+    for inc in &incidents {
+        let detector = inc
+            .incident_id
+            .split(':')
+            .next()
+            .unwrap_or("unknown")
+            .to_string();
+        *detector_counts.entry(detector).or_default() += 1;
+    }
+    let mut top: Vec<_> = detector_counts.into_iter().collect();
+    top.sort_by(|a, b| b.1.cmp(&a.1));
+    let top_threats: Vec<String> = top.iter().take(5).map(|(k, _)| k.clone()).collect();
+
+    let threat_level = if high_or_critical >= 5 {
+        "critical"
+    } else if high_or_critical >= 2 {
+        "high"
+    } else if total_incidents >= 5 {
+        "medium"
+    } else {
+        "low"
+    };
+
+    let recommendation = match threat_level {
+        "critical" => "server under active attack — avoid risky operations",
+        "high" => "elevated threat level — proceed with caution",
+        _ => "safe to proceed",
+    };
+
+    Json(serde_json::json!({
+        "threat_level": threat_level,
+        "active_incidents_today": total_incidents,
+        "high_or_critical_today": high_or_critical,
+        "recent_blocks_today": blocks_today,
+        "top_threats": top_threats,
+        "recommendation": recommendation,
+        "date": date,
+    }))
+}
+
+/// Query params for check-ip
+#[derive(serde::Deserialize)]
+struct CheckIpQuery {
+    ip: String,
+}
+
+/// GET /api/agent/check-ip?ip=X — check if an IP is known threat
+async fn api_agent_check_ip(
+    State(state): State<DashboardState>,
+    Query(query): Query<CheckIpQuery>,
+) -> Json<serde_json::Value> {
+    let ip = query.ip.trim();
+    let date = resolve_date(None);
+    let incidents = read_jsonl::<innerwarden_core::incident::Incident>(
+        &dated_path(&state.data_dir, "incidents", &date),
+    );
+    let decisions = read_jsonl::<DecisionEntry>(
+        &dated_path(&state.data_dir, "decisions", &date),
+    );
+
+    // Count incidents involving this IP
+    let matching_incidents: Vec<_> = incidents
+        .iter()
+        .filter(|inc| {
+            inc.entities
+                .iter()
+                .any(|e| e.r#type == innerwarden_core::entities::EntityType::Ip && e.value == ip)
+        })
+        .collect();
+
+    let incident_count = matching_incidents.len();
+    let blocked = decisions
+        .iter()
+        .any(|d| d.action_type == "block_ip" && d.target_ip.as_deref() == Some(ip));
+    let last_seen = matching_incidents
+        .iter()
+        .map(|i| i.ts)
+        .max()
+        .map(|ts| ts.to_rfc3339());
+
+    let mut detectors = std::collections::HashSet::new();
+    for inc in &matching_incidents {
+        if let Some(d) = inc.incident_id.split(':').next() {
+            detectors.insert(d.to_string());
+        }
+    }
+
+    let recommendation = if blocked {
+        "avoid"
+    } else if incident_count > 0 {
+        "caution"
+    } else {
+        "no threat data"
+    };
+
+    Json(serde_json::json!({
+        "ip": ip,
+        "known_threat": incident_count > 0 || blocked,
+        "incident_count": incident_count,
+        "blocked": blocked,
+        "last_seen": last_seen,
+        "detectors": detectors.into_iter().collect::<Vec<_>>(),
+        "recommendation": recommendation,
+    }))
+}
+
+/// Request body for check-command
+#[derive(serde::Deserialize)]
+struct CheckCommandRequest {
+    command: String,
+}
+
+/// POST /api/agent/check-command — analyze a command for dangerous patterns
+async fn api_agent_check_command(
+    Json(body): Json<CheckCommandRequest>,
+) -> Json<serde_json::Value> {
+    let cmd = body.command.trim();
+    if cmd.is_empty() {
+        return Json(serde_json::json!({
+            "command": "",
+            "risk_score": 0,
+            "severity": "none",
+            "signals": [],
+            "recommendation": "allow",
+            "explanation": "empty command",
+        }));
+    }
+
+    let lower = cmd.to_ascii_lowercase();
+    let mut signals = Vec::new();
+    let mut score: u32 = 0;
+
+    // Reverse shell indicators — always deny (score 60+)
+    const REVERSE_SHELL: &[&str] = &[
+        "/dev/tcp/", "/dev/udp/", "nc -e", "ncat -e", "netcat -e",
+        "bash -i", "socat exec:", "socat tcp", "socat udp", "0>&1",
+        ">&/dev/tcp",
+    ];
+    for indicator in REVERSE_SHELL {
+        if lower.contains(indicator) {
+            signals.push(serde_json::json!({
+                "signal": "reverse_shell",
+                "score": 60,
+                "detail": format!("reverse shell indicator: `{indicator}`"),
+            }));
+            score += 60;
+            break;
+        }
+    }
+
+    // Download-and-execute patterns
+    let downloaders = ["curl", "wget", "fetch", "http"];
+    let executors = ["sh", "bash", "zsh", "dash", "python", "perl", "ruby", "node"];
+
+    // Pattern 1: pipe-based (curl ... | bash)
+    if cmd.contains('|') {
+        let parts: Vec<&str> = cmd.split('|').collect();
+        if parts.len() >= 2 {
+            let left = parts[0].to_ascii_lowercase();
+            let right = parts[1..].join("|").to_ascii_lowercase();
+            let has_downloader = downloaders.iter().any(|d| left.contains(d));
+            let has_executor = executors.iter().any(|e| {
+                right.split_whitespace().any(|w| w.trim_start_matches("./") == *e)
+            });
+            if has_downloader && has_executor {
+                signals.push(serde_json::json!({
+                    "signal": "download_and_execute",
+                    "score": 40,
+                    "detail": "dangerous pipeline: download piped to shell interpreter",
+                }));
+                score += 40;
+            }
+        }
+    }
+
+    // Pattern 2: staged (wget -O /tmp/x && chmod +x && /tmp/x)
+    {
+        let has_download = downloaders.iter().any(|d| lower.contains(d));
+        let has_chmod_exec = lower.contains("chmod +x") || lower.contains("chmod 755") || lower.contains("chmod 777");
+        if has_download && has_chmod_exec {
+            signals.push(serde_json::json!({
+                "signal": "download_chmod_execute",
+                "score": 40,
+                "detail": "staged attack: download + chmod + execute sequence",
+            }));
+            score += 40;
+        }
+    }
+
+    // Obfuscation patterns
+    const OBFUSCATION: &[&str] = &[
+        "base64 -d", "base64 --decode", "openssl enc -d",
+        "| xxd -r", "eval $(echo", "eval \"$(echo", "eval `echo",
+    ];
+    for indicator in OBFUSCATION {
+        if lower.contains(indicator) {
+            signals.push(serde_json::json!({
+                "signal": "obfuscated_command",
+                "score": 30,
+                "detail": format!("obfuscation pattern: `{indicator}`"),
+            }));
+            score += 30;
+            break;
+        }
+    }
+
+    // Persistence indicators
+    const PERSISTENCE: &[&str] = &[
+        "crontab", "/etc/cron", ".bashrc", ".bash_profile", ".profile",
+        "/etc/profile", "/etc/rc.local", "systemctl enable", "update-rc.d",
+        "chkconfig", ".config/autostart",
+    ];
+    for indicator in PERSISTENCE {
+        if lower.contains(indicator) {
+            signals.push(serde_json::json!({
+                "signal": "persistence_attempt",
+                "score": 20,
+                "detail": format!("persistence indicator: `{indicator}`"),
+            }));
+            score += 20;
+            break;
+        }
+    }
+
+    // Execution from temp directories
+    const TMP_DIRS: &[&str] = &["/tmp/", "/var/tmp/", "/dev/shm/", "/run/shm/"];
+    for prefix in TMP_DIRS {
+        if lower.contains(prefix) {
+            signals.push(serde_json::json!({
+                "signal": "tmp_execution",
+                "score": 30,
+                "detail": format!("references world-writable directory: {prefix}"),
+            }));
+            score += 30;
+            break;
+        }
+    }
+
+    // Destructive commands (rm -rf /, chmod 777, dd if=/dev/zero)
+    if lower.contains("rm -rf /") && !lower.contains("rm -rf ./") {
+        signals.push(serde_json::json!({
+            "signal": "destructive_command",
+            "score": 50,
+            "detail": "recursive removal from root directory",
+        }));
+        score += 50;
+    }
+    if lower.contains("chmod 777") || lower.contains("chmod -r 777") {
+        signals.push(serde_json::json!({
+            "signal": "insecure_permissions",
+            "score": 20,
+            "detail": "world-writable permissions",
+        }));
+        score += 20;
+    }
+
+    let severity = if score >= 60 {
+        "high"
+    } else if score >= 30 {
+        "medium"
+    } else {
+        "low"
+    };
+
+    let recommendation = if score >= 60 {
+        "deny"
+    } else if score >= 30 {
+        "review"
+    } else {
+        "allow"
+    };
+
+    let explanation = if signals.is_empty() {
+        "no dangerous patterns detected".to_string()
+    } else {
+        signals
+            .iter()
+            .filter_map(|s| s.get("detail").and_then(|d| d.as_str()))
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+
+    Json(serde_json::json!({
+        "command": cmd,
+        "risk_score": score,
+        "severity": severity,
+        "signals": signals,
+        "recommendation": recommendation,
+        "explanation": explanation,
+    }))
 }
 
 // ---------------------------------------------------------------------------
