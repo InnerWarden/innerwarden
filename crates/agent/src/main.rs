@@ -1300,6 +1300,7 @@ async fn main() -> Result<()> {
                             &mut state.decision_writer,
                             &mut state.decision_cooldowns,
                             &host,
+                            state.telegram_client.as_ref(),
                         ).await;
                     }
                     false
@@ -1366,6 +1367,7 @@ async fn main() -> Result<()> {
                             &mut state.decision_writer,
                             &mut state.decision_cooldowns,
                             &host,
+                            state.telegram_client.as_ref(),
                         ).await;
                     }
                     false

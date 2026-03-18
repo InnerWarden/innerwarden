@@ -269,6 +269,7 @@ impl Fail2BanState {
 
 /// Process fail2ban bans for one tick.
 /// Returns the number of new IPs blocked.
+#[allow(clippy::too_many_arguments)]
 pub async fn sync_tick(
     fb: &mut Fail2BanState,
     blocklist: &mut Blocklist,
@@ -277,6 +278,7 @@ pub async fn sync_tick(
     decision_writer: &mut Option<DecisionWriter>,
     decision_cooldowns: &mut std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
     host: &str,
+    telegram_client: Option<&std::sync::Arc<crate::telegram::TelegramClient>>,
 ) -> usize {
     // Determine which jails to poll
     let jails: Vec<String> = if fb.jails.is_empty() {
@@ -401,6 +403,28 @@ pub async fn sync_tick(
                     estimated_threat: "high".to_string(),
                     execution_result,
                 };
+                // Send Telegram follow-up so the operator knows the outcome
+                if cfg.telegram.bot.enabled {
+                    if let Some(tg) = telegram_client {
+                        let msg = if decision_entry.execution_result.starts_with("Blocked") {
+                            format!(
+                                "🛡️ <b>Blocked</b> <code>{ip}</code> via fail2ban (jail: {jail})\n\
+                                 Firewall rule added. Attacker can no longer connect.",
+                            )
+                        } else {
+                            let err: String =
+                                decision_entry.execution_result.chars().take(200).collect();
+                            format!(
+                                "⚠️ fail2ban ban <code>{ip}</code> (jail: {jail}) — block failed:\n<code>{err}</code>",
+                            )
+                        };
+                        let tg = tg.clone();
+                        tokio::spawn(async move {
+                            let _ = tg.send_text_message(&msg).await;
+                        });
+                    }
+                }
+
                 if let Err(e) = writer.write(&decision_entry) {
                     warn!(error = %e, "failed to write fail2ban decision to audit trail");
                 }
