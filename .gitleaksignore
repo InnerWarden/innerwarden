@@ -1,10 +1,14 @@
 # All false positives — no real secrets
 
-# OSQUERY_KEY is a public GPG key, not a secret
-install.sh:generic-api-key:848
+# OSQUERY_KEY is a public GPG key for package verification
 modules/osquery-integration/docs/README.md:generic-api-key:84
+modules/osquery-integration/docs/README.md:generic-api-key:95
 
-# Cargo.lock contains crate checksums, not API keys
+# install.sh contains the same public OSQUERY_KEY
+install.sh:generic-api-key:844
+install.sh:generic-api-key:848
+
+# Cargo.lock contains crate checksums
 Cargo.lock:generic-api-key:1643
 
 # README example env var placeholders
