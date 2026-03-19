@@ -5,12 +5,20 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use chrono::{Local, NaiveDate};
 use innerwarden_core::{event::Event, incident::Incident};
+use tracing::warn;
+
+/// Hard ceiling for a single day's events file.  Incidents and decisions
+/// are exempt — they are tiny and operationally critical.
+const MAX_EVENTS_FILE_BYTES: u64 = 200 * 1024 * 1024; // 200 MB
 
 pub struct JsonlWriter {
     data_dir: PathBuf,
     write_events: bool,
     events_writer: Option<DatedWriter>,
     incidents_writer: Option<DatedWriter>,
+    /// Tracks whether we already logged the size-limit warning for today's
+    /// events file so we don't spam the log.
+    events_limit_warned: Option<NaiveDate>,
 }
 
 struct DatedWriter {
@@ -28,6 +36,7 @@ impl JsonlWriter {
             write_events,
             events_writer: None,
             incidents_writer: None,
+            events_limit_warned: None,
         })
     }
 
@@ -36,6 +45,23 @@ impl JsonlWriter {
             return Ok(());
         }
         let today = Local::now().date_naive();
+
+        // ── Disk-exhaustion guard ───────────────────────────────────────
+        let path = self
+            .data_dir
+            .join(format!("events-{}.jsonl", today.format("%Y-%m-%d")));
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if meta.len() >= MAX_EVENTS_FILE_BYTES {
+                if self.events_limit_warned != Some(today) {
+                    warn!(
+                        "events file exceeded 200MB — pausing event writes to prevent disk exhaustion"
+                    );
+                    self.events_limit_warned = Some(today);
+                }
+                return Ok(());
+            }
+        }
+
         let w = self.events_writer(today)?;
         let line = serde_json::to_string(event)?;
         writeln!(w.writer, "{line}")?;
