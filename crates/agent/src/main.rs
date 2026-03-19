@@ -149,6 +149,9 @@ struct AgentState {
     /// When Telegram is configured and AI recommends Honeypot, execution is deferred
     /// until the operator picks an action via the 4-button inline keyboard.
     pending_honeypot_choices: HashMap<String, PendingHoneypotChoice>,
+    /// Tracks how many times each IP has been blocked. When count > 1 the IP is
+    /// flagged as a repeat offender in the decision reason.
+    block_counts: HashMap<String, u32>,
 }
 
 /// Tracks a deferred honeypot-or-block decision waiting for operator input via Telegram.
@@ -1120,6 +1123,7 @@ async fn main() -> Result<()> {
         },
         circuit_breaker_until: None,
         pending_honeypot_choices: HashMap::new(),
+        block_counts: HashMap::new(),
     };
 
     let state_path = cli.data_dir.join("agent-state.json");
@@ -2025,7 +2029,7 @@ async fn process_incidents(
 
         state.telemetry.observe_ai_sent();
         let decision_start = Instant::now();
-        let decision = match provider.decide(&ctx).await {
+        let mut decision = match provider.decide(&ctx).await {
             Ok(d) => d,
             Err(e) => {
                 state.telemetry.observe_error("ai_provider");
@@ -2092,6 +2096,23 @@ async fn process_incidents(
         // the decision was not yet flushed to the decisions file.
         if let ai::AiAction::BlockIp { ip, .. } = &decision.action {
             state.blocklist.insert(ip.clone());
+
+            // Track repeat offenders: increment the block count for this IP.
+            // When an IP has been blocked more than once, annotate the decision
+            // reason so it surfaces in the audit trail and notifications.
+            let count = state.block_counts.entry(ip.clone()).or_insert(0);
+            *count += 1;
+            if *count > 1 {
+                warn!(
+                    ip = %ip,
+                    block_count = *count,
+                    "repeat offender detected"
+                );
+                decision.reason = format!(
+                    "{} [repeat offender — blocked {} times]",
+                    decision.reason, *count
+                );
+            }
         }
 
         info!(
@@ -4898,6 +4919,7 @@ mod tests {
             cloudflare_client: None,
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
+            block_counts: HashMap::new(),
         };
 
         // 4. Run the incident tick
@@ -5012,6 +5034,7 @@ mod tests {
             cloudflare_client: None,
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
+            block_counts: HashMap::new(),
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -5101,6 +5124,7 @@ mod tests {
             cloudflare_client: None,
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
+            block_counts: HashMap::new(),
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -5202,6 +5226,7 @@ mod tests {
             cloudflare_client: None,
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
+            block_counts: HashMap::new(),
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -5280,6 +5305,7 @@ mod tests {
             cloudflare_client: None,
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
+            block_counts: HashMap::new(),
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -5370,6 +5396,7 @@ mod tests {
             cloudflare_client: None,
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
+            block_counts: HashMap::new(),
         };
 
         let mut cursor = reader::AgentCursor::default();

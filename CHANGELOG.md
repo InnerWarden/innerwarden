@@ -11,6 +11,27 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.3] — 2026-03-19
+
+### Security hardening
+
+- **Dashboard login rate limiting** — after 5 failed login attempts within 15 minutes, the IP is blocked from trying again. Returns HTTP 429. Prevents brute-force on the dashboard itself.
+- **Ban escalation for repeat offenders** — when an IP is blocked more than once, the decision reason is annotated with "repeat offender (blocked N times)". Flows through to Telegram, audit trail, and AbuseIPDB reports.
+- **Dashboard HTTPS warning** — warns when the dashboard runs with auth on a non-localhost address over HTTP. Credentials would be sent in plaintext.
+- **AI prompt injection sanitization** — attacker-controlled strings (usernames, paths, summaries) are sanitized before injection into the AI prompt. Control characters stripped, whitespace normalized.
+
+### CrowdSec integration
+
+- CrowdSec installed and enrolled on production server. Community blocklist flowing — known bad IPs are blocked preventively before they attack.
+
+### Other
+
+- Data retention enabled (7-day auto-cleanup of JSONL files)
+- Watchdog cron (10-min health check, auto-restart + Telegram alert)
+- OpenClaw skill published on ClawHub (innerwarden-security v1.0.3, "Benign" verdict)
+
+---
+
 ## [0.1.2] — 2026-03-19
 
 ### NPM log support
