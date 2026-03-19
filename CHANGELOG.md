@@ -11,6 +11,25 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.2] — 2026-03-19
+
+### NPM log support
+- **Nginx Proxy Manager format** — the nginx_access collector now auto-detects and parses NPM log format (`[Client IP]` style). Sites behind Docker NPM are now protected by search_abuse, user_agent_scanner, and web_scan detectors.
+
+### Bot detection
+- **Known good bot whitelist** — 25+ legitimate crawlers (Google, Bing, DuckDuckGo, etc.) excluded from abuse detection.
+- **rDNS verification** — for major search engine bots, the sensor verifies the IP via reverse DNS. Fake Googlebots (spoofed user-agent) are tagged `bot:spoofed` and treated as attackers.
+
+### OpenClaw integration
+- **innerwarden-security skill** — OpenClaw skill that installs Inner Warden, validates commands, monitors health, and fixes issues. Auto-detects AI provider. Prompt injection defense built in.
+
+### Fixes
+- **All strings in English** — removed all Portuguese from dashboard, Telegram, and agent messages.
+- **max_completion_tokens** — auto-detects newer OpenAI models (gpt-5.x, o1, o3) that require the new parameter.
+- **systemd dependency** — agent no longer dies when sensor restarts (Requires → Wants).
+
+---
+
 ## [0.1.1] — 2026-03-18
 
 ### New detectors
