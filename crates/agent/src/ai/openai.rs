@@ -220,6 +220,19 @@ fn trunc(s: &str, max: usize) -> &str {
     }
 }
 
+/// Sanitize attacker-controlled strings before injecting into AI prompts.
+/// Strips patterns commonly used in prompt injection attacks.
+fn sanitize(s: &str) -> String {
+    s.chars()
+        // Remove control characters (except newline/tab)
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect::<String>()
+        // Collapse whitespace runs
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn build_prompt(ctx: &DecisionContext<'_>) -> String {
     // For the main incident we send structured fields separately rather than
     // the full serialized Incident, so we can truncate free-text strings.
@@ -228,8 +241,8 @@ fn build_prompt(ctx: &DecisionContext<'_>) -> String {
         "ts": inc.ts,
         "incident_id": inc.incident_id,
         "severity": format!("{:?}", inc.severity),
-        "title": trunc(&inc.title, 200),
-        "summary": trunc(&inc.summary, 500),
+        "title": sanitize(trunc(&inc.title, 200)),
+        "summary": sanitize(trunc(&inc.summary, 500)),
         "entities": inc.entities,
         "tags": inc.tags,
     });
@@ -244,7 +257,7 @@ fn build_prompt(ctx: &DecisionContext<'_>) -> String {
                 json!({
                     "ts": e.ts,
                     "kind": e.kind,
-                    "summary": trunc(&e.summary, 200),
+                    "summary": sanitize(trunc(&e.summary, 200)),
                     "severity": format!("{:?}", e.severity),
                     "source": e.source,
                 })
@@ -263,8 +276,8 @@ fn build_prompt(ctx: &DecisionContext<'_>) -> String {
                     "incident_id": inc.incident_id,
                     "detector_kind": inc.incident_id.split(':').next().unwrap_or("unknown"),
                     "severity": format!("{:?}", inc.severity),
-                    "title": trunc(&inc.title, 200),
-                    "summary": trunc(&inc.summary, 300),
+                    "title": sanitize(trunc(&inc.title, 200)),
+                    "summary": sanitize(trunc(&inc.summary, 300)),
                     "entities": inc.entities,
                 })
             })

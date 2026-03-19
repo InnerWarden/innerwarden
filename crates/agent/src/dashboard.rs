@@ -1,6 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use anyhow::{Context, Result};
 use argon2::password_hash::{PasswordHashString, SaltString};
@@ -596,6 +597,21 @@ pub async fn serve(
         );
     }
 
+    // HTTPS warning: credentials sent in plaintext over non-localhost HTTP
+    if auth.is_some() {
+        let is_localhost = bind.starts_with("127.0.0.1")
+            || bind.starts_with("[::1]")
+            || bind.starts_with("localhost");
+        if !is_localhost {
+            warn!(
+                bind = %bind,
+                "dashboard is accessible over HTTP on a non-localhost address. \
+                 Credentials will be sent in plaintext. Consider using a reverse \
+                 proxy with TLS or binding to 127.0.0.1."
+            );
+        }
+    }
+
     // D6: broadcast channel — capacity 64 is plenty; lagged receivers are dropped.
     let (event_tx, _) = broadcast::channel::<SsePayload>(64);
 
@@ -697,8 +713,90 @@ pub fn generate_password_hash_interactive() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Auth middleware
+// Auth middleware + login rate limiting
 // ---------------------------------------------------------------------------
+
+/// Maximum failed login attempts before an IP is temporarily blocked.
+const LOGIN_RATE_LIMIT_MAX_ATTEMPTS: usize = 5;
+/// Window (in seconds) for counting failed attempts AND the block duration.
+const LOGIN_RATE_LIMIT_WINDOW_SECS: u64 = 15 * 60; // 15 minutes
+
+/// Global rate-limiter: maps source IP string → list of failed-login timestamps.
+static LOGIN_RATE_LIMITER: LazyLock<Mutex<HashMap<String, Vec<std::time::Instant>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Extract a client IP string from the request.
+/// Checks `X-Forwarded-For` and `X-Real-IP` headers first (reverse-proxy scenario),
+/// then falls back to the socket peer address injected by `axum::serve`.
+fn extract_client_ip(req: &Request<Body>) -> String {
+    // X-Forwarded-For: first entry is the original client
+    if let Some(val) = req.headers().get("x-forwarded-for") {
+        if let Ok(s) = val.to_str() {
+            if let Some(first) = s.split(',').next() {
+                let trimmed = first.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+            }
+        }
+    }
+    // X-Real-IP
+    if let Some(val) = req.headers().get("x-real-ip") {
+        if let Ok(s) = val.to_str() {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    // Fallback: socket peer address from axum::serve ConnectInfo
+    if let Some(addr) = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+    {
+        return addr.0.ip().to_string();
+    }
+    "unknown".to_string()
+}
+
+/// Check whether `ip` is currently rate-limited and, if not, record a failed attempt.
+/// Returns `true` if the IP should be blocked (too many recent failures).
+fn check_and_record_failed_login(ip: &str) -> bool {
+    let mut map = LOGIN_RATE_LIMITER.lock().unwrap_or_else(|e| e.into_inner());
+    let cutoff = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(LOGIN_RATE_LIMIT_WINDOW_SECS))
+        .unwrap_or_else(std::time::Instant::now);
+
+    let attempts = map.entry(ip.to_string()).or_default();
+    // Purge old entries outside the window
+    attempts.retain(|t| *t > cutoff);
+
+    if attempts.len() >= LOGIN_RATE_LIMIT_MAX_ATTEMPTS {
+        return true; // already rate-limited
+    }
+    attempts.push(std::time::Instant::now());
+    attempts.len() >= LOGIN_RATE_LIMIT_MAX_ATTEMPTS
+}
+
+/// Returns `true` if `ip` is currently rate-limited (without recording a new attempt).
+fn is_rate_limited(ip: &str) -> bool {
+    let map = LOGIN_RATE_LIMITER.lock().unwrap_or_else(|e| e.into_inner());
+    let cutoff = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(LOGIN_RATE_LIMIT_WINDOW_SECS))
+        .unwrap_or_else(std::time::Instant::now);
+    if let Some(attempts) = map.get(ip) {
+        let recent = attempts.iter().filter(|t| **t > cutoff).count();
+        recent >= LOGIN_RATE_LIMIT_MAX_ATTEMPTS
+    } else {
+        false
+    }
+}
+
+/// Clear the rate-limit record for an IP (called on successful login).
+fn clear_rate_limit(ip: &str) {
+    let mut map = LOGIN_RATE_LIMITER.lock().unwrap_or_else(|e| e.into_inner());
+    map.remove(ip);
+}
 
 async fn require_basic_auth(
     State(auth): State<Option<DashboardAuth>>,
@@ -710,6 +808,14 @@ async fn require_basic_auth(
         return next.run(req).await;
     };
 
+    let client_ip = extract_client_ip(&req);
+
+    // Check if this IP is already rate-limited before doing any auth work
+    if is_rate_limited(&client_ip) {
+        warn!(ip = %client_ip, "login rate-limited: too many failed attempts");
+        return rate_limited_response();
+    }
+
     let Some(raw_header) = req.headers().get(header::AUTHORIZATION) else {
         return unauthorized_response();
     };
@@ -720,8 +826,21 @@ async fn require_basic_auth(
         return unauthorized_response();
     };
     if !auth.verify(&user, &password) {
+        let blocked = check_and_record_failed_login(&client_ip);
+        if blocked {
+            warn!(
+                ip = %client_ip,
+                "login rate-limited after {} failed attempts in {} min window",
+                LOGIN_RATE_LIMIT_MAX_ATTEMPTS,
+                LOGIN_RATE_LIMIT_WINDOW_SECS / 60
+            );
+            return rate_limited_response();
+        }
         return unauthorized_response();
     }
+
+    // Successful auth — clear any prior failed attempts for this IP
+    clear_rate_limit(&client_ip);
     next.run(req).await
 }
 
@@ -740,6 +859,14 @@ fn unauthorized_response() -> Response {
         HeaderValue::from_static(r#"Basic realm="innerwarden-dashboard", charset="UTF-8""#),
     );
     response
+}
+
+fn rate_limited_response() -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        "Too many failed login attempts. Try again later.",
+    )
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------
