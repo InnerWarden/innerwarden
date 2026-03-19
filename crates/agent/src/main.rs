@@ -3491,18 +3491,18 @@ async fn process_telegram_approval(
                         }
                     }
                     let reply = if cfg.responder.dry_run {
-                        format!("🧪 Simulado — {ip} seria jogado no honeypot. Ative live mode para executar de verdade.")
+                        format!("🧪 Dry run — {ip} would be sent to the honeypot. Enable live mode to execute for real.")
                     } else if exec_result.success {
-                        format!("🍯 {ip} no honeypot. Agora vamos ver o que esse cara tenta fazer.")
+                        format!("🍯 {ip} sent to honeypot. Now let's see what they try to do.")
                     } else {
                         format!(
-                            "❌ Falha ao ativar honeypot para {ip}: {}",
+                            "❌ Failed to activate honeypot for {ip}: {}",
                             exec_result.message
                         )
                     };
                     tg_reply!(reply);
                 } else {
-                    tg_reply!(format!("⚠️ Honeypot skill não disponível para {ip}."));
+                    tg_reply!(format!("⚠️ Honeypot skill not available for {ip}."));
                 }
             }
             "block" => {
@@ -3551,15 +3551,15 @@ async fn process_telegram_approval(
                         }
                     }
                     let reply = if cfg.responder.dry_run {
-                        format!("🧪 Simulado — {ip} seria bloqueado no firewall.")
+                        format!("🧪 Dry run — {ip} would be blocked in the firewall.")
                     } else if exec_result.success {
-                        format!("🛡 {ip} bloqueado no firewall. Acabou para esse cara.")
+                        format!("🛡 {ip} blocked in the firewall. Done with this one.")
                     } else {
-                        format!("❌ Falha ao bloquear {ip}: {}", exec_result.message)
+                        format!("❌ Failed to block {ip}: {}", exec_result.message)
                     };
                     tg_reply!(reply);
                 } else {
-                    tg_reply!(format!("⚠️ Skill de bloqueio não disponível para {ip}."));
+                    tg_reply!(format!("⚠️ Block skill not available for {ip}."));
                 }
             }
             "monitor" => {
@@ -4102,7 +4102,7 @@ async fn spawn_post_session_tasks(
         };
         let prompt = format!(
             "Attacker IP {ip} ran these commands in an SSH honeypot:\n{cmd_text}\n\n\
-             In 1-2 sentences in Portuguese (pt-BR), what does this attacker appear to be doing? \
+             In 1-2 sentences in English, what does this attacker appear to be doing? \
              Be specific and direct."
         );
         ai.chat(
@@ -4110,9 +4110,9 @@ async fn spawn_post_session_tasks(
             &prompt,
         )
         .await
-        .unwrap_or_else(|_| "Análise indisponível.".to_string())
+        .unwrap_or_else(|_| "Analysis unavailable.".to_string())
     } else {
-        "Análise de IA não configurada.".to_string()
+        "AI analysis not configured.".to_string()
     };
 
     // Auto-block the attacker IP if responder is enabled and IP not already blocked
@@ -4330,7 +4330,7 @@ async fn handle_always_on_connection(
             "Attacker IP {ip} connected to an SSH honeypot.\n\
              Auth attempts: {}\n\
              Shell commands:\n{cmd_text}\n\n\
-             In 1-2 sentences in Portuguese (pt-BR), what does this attacker appear to be doing? \
+             In 1-2 sentences in English, what does this attacker appear to be doing? \
              Be specific and direct.",
             evidence.auth_attempts.len(),
         );
@@ -4339,13 +4339,12 @@ async fn handle_always_on_connection(
             &prompt,
         )
         .await
-        .unwrap_or_else(|_| "Análise indisponível.".to_string())
+        .unwrap_or_else(|_| "Analysis unavailable.".to_string())
     } else {
         if evidence.auth_attempts.is_empty() {
-            "Conexão sem tentativas de autenticação — provavelmente scanner automatizado."
-                .to_string()
+            "Connection without authentication attempts — likely automated scanner.".to_string()
         } else {
-            "IA não configurada — sem veredicto disponível.".to_string()
+            "AI not configured — no verdict available.".to_string()
         }
     };
 

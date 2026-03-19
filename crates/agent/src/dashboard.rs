@@ -6017,7 +6017,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       showToast('❌ Request failed: ' + e.message, 'err');
     } finally {
       btn.disabled = false;
-      btn.textContent = '🧪 Iniciar sessão de teste';
+      btn.textContent = '🧪 Start test session';
     }
   }
 
@@ -6033,9 +6033,9 @@ const INDEX_HTML: &str = r##"<!doctype html>
       'font-family:inherit" ' +
       'onmouseover="this.style.background=\'rgba(120,229,255,0.15)\'" ' +
       'onmouseout="this.style.background=\'rgba(120,229,255,0.08)\'">' +
-      '🧪 Iniciar sessão de teste</button>' +
+      '🧪 Start test session</button>' +
       '<span style="font-size:0.68rem;color:var(--muted);margin-left:10px">' +
-      'Injeta um incidente de teste — o agente avalia e aciona o honeypot no próximo tick (≤2 s).' +
+      'Injects a test incident — the agent evaluates and triggers the honeypot on the next tick (≤2 s).' +
       '</span></div>';
 
     if (sessions.length === 0) {

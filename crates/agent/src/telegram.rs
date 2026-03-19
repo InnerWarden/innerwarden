@@ -415,13 +415,13 @@ impl TelegramClient {
         let pct = (ai_confidence * 100.0) as u32;
 
         let text = format!(
-            "🎯 <b>Tenho um suspeito aqui</b>\n\
+            "🎯 <b>Suspect detected</b>\n\
              \n\
              <b>IP:</b> <code>{ip}</code>\n\
-             <b>Incidente:</b> {title}\n\
-             <b>Avaliação IA:</b> {reason} (confiança: {pct}%)\n\
+             <b>Incident:</b> {title}\n\
+             <b>AI assessment:</b> {reason} (confidence: {pct}%)\n\
              \n\
-             O que fazemos com esse cara?",
+             What should we do with this one?",
             ip = escape_html(ip),
             title = escape_html(&incident.title),
             reason = escape_html(ai_reason),
@@ -531,17 +531,17 @@ impl TelegramClient {
     ) -> Result<()> {
         let mut lines = Vec::new();
         lines.push(format!(
-            "🍯 <b>Sessão de honeypot encerrada</b>\n\n\
-             <b>Atacante:</b> <code>{ip}</code>\n\
-             <b>Sessão:</b> <code>{session_id}</code>\n\
-             <b>Duração:</b> {duration_secs}s | <b>Comandos:</b> {}",
+            "🍯 <b>Honeypot session ended</b>\n\n\
+             <b>Attacker:</b> <code>{ip}</code>\n\
+             <b>Session:</b> <code>{session_id}</code>\n\
+             <b>Duration:</b> {duration_secs}s | <b>Commands:</b> {}",
             commands.len(),
             ip = escape_html(ip),
             session_id = escape_html(session_id),
         ));
 
         if !commands.is_empty() {
-            let mut cmd_block = "\n<b>O que ele tentou:</b>\n".to_string();
+            let mut cmd_block = "\n<b>What they tried:</b>\n".to_string();
             for cmd in commands.iter().take(8) {
                 cmd_block.push_str(&format!("  $ <code>{}</code>\n", escape_html(cmd)));
             }
@@ -551,17 +551,14 @@ impl TelegramClient {
         if !iocs.is_empty() {
             let ioc_text = iocs.format_telegram();
             if !ioc_text.is_empty() {
-                lines.push(format!("\n<b>IOCs extraídos:</b>\n{ioc_text}"));
+                lines.push(format!("\n<b>Extracted IOCs:</b>\n{ioc_text}"));
             }
         }
 
-        lines.push(format!(
-            "\n<b>Veredicto IA:</b> {}",
-            escape_html(ai_verdict)
-        ));
+        lines.push(format!("\n<b>AI verdict:</b> {}", escape_html(ai_verdict)));
 
         if auto_blocked {
-            lines.push("\n✅ IP bloqueado automaticamente.".to_string());
+            lines.push("\n✅ IP automatically blocked.".to_string());
         }
 
         let text = lines.join("\n");
@@ -1681,19 +1678,19 @@ mod tests {
         // Verify the message body would contain the key fields.
         // We test by constructing the expected format string directly.
         let ip = "185.220.101.45";
-        let title = "47 tentativas SSH em 5 min";
-        let reason = "IP novo, sem histórico em listas negras";
+        let title = "47 SSH attempts in 5 min";
+        let reason = "New IP, no history in blocklists";
         let confidence = 0.87_f32;
         let pct = (confidence * 100.0) as u32;
 
         let text = format!(
-            "🎯 <b>Tenho um suspeito aqui</b>\n\
+            "🎯 <b>Suspect detected</b>\n\
              \n\
              <b>IP:</b> <code>{ip}</code>\n\
-             <b>Incidente:</b> {title}\n\
-             <b>Avaliação IA:</b> {reason} (confiança: {pct}%)\n\
+             <b>Incident:</b> {title}\n\
+             <b>AI assessment:</b> {reason} (confidence: {pct}%)\n\
              \n\
-             O que fazemos com esse cara?",
+             What should we do with this one?",
             ip = escape_html(ip),
             title = escape_html(title),
             reason = escape_html(reason),
@@ -1702,16 +1699,16 @@ mod tests {
 
         assert!(text.contains("185.220.101.45"), "IP must appear in message");
         assert!(
-            text.contains("47 tentativas"),
+            text.contains("47 SSH attempts"),
             "incident title must appear in message"
         );
         assert!(text.contains("87%"), "confidence percentage must appear");
         assert!(
-            text.contains("Tenho um suspeito"),
+            text.contains("Suspect detected"),
             "personality heading must appear"
         );
         assert!(
-            text.contains("O que fazemos"),
+            text.contains("What should we do"),
             "operator question must appear"
         );
 
