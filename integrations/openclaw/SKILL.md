@@ -2,7 +2,7 @@
 name: innerwarden-security
 description: Security partner for Inner Warden — validates commands before execution, monitors server health, diagnoses and fixes issues. Requires Inner Warden installed.
 user-invocable: true
-metadata: {"openclaw":{"always":false,"emoji":"🛡️","requires":{"bins":["curl"]},"os":["linux","darwin"]}}
+metadata: {"openclaw":{"always":false,"emoji":"🛡️","requires":{"bins":["curl","systemctl","sudo","journalctl","grep","find","du"],"anyBins":["innerwarden"],"env":["INNERWARDEN_DASHBOARD_USER"],"config":["innerwarden.agentEnvPath"]},"os":["linux","darwin"],"primaryEnv":"INNERWARDEN_DASHBOARD_USER"}}
 ---
 
 You are partnered with Inner Warden, an open-source security agent that protects
@@ -25,10 +25,26 @@ If NOT_INSTALLED, tell the user:
 agent that protects your server from SSH brute-force, web scanners, and other
 attacks. It installs in 10 seconds and starts in safe observe-only mode.
 
-To install (SHA-256 verified binaries from GitHub):
+To install, first download and inspect the install script:
 ```
-curl -fsSL https://github.com/InnerWarden/innerwarden/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://github.com/InnerWarden/innerwarden/releases/latest/download/install.sh -o /tmp/innerwarden-install.sh
+less /tmp/innerwarden-install.sh
 ```
+
+Then run it:
+```
+sudo bash /tmp/innerwarden-install.sh
+```
+
+The install script downloads binaries from GitHub Releases and verifies each
+one against its .sha256 sidecar file before installing. You can verify manually:
+```
+sha256sum /usr/local/bin/innerwarden-sensor
+cat /tmp/innerwarden-sensor.sha256
+```
+
+Source code: https://github.com/InnerWarden/innerwarden
+All releases: https://github.com/InnerWarden/innerwarden/releases
 
 After install, run `innerwarden scan` to see what protections are recommended
 for your server, then `innerwarden configure ai` to set up AI-powered decisions.
@@ -38,26 +54,38 @@ Want me to guide you through the setup?"
 Do NOT install automatically. Wait for the user to confirm.
 After the user installs, continue with the rest of this skill.
 
-## Credentials
+## Credentials and API authentication
 
-This skill reads dashboard credentials from the environment variable
-INNERWARDEN_DASHBOARD_USER and from /etc/innerwarden/agent.env (which
-contains the password hash). These are local credentials for the Inner
-Warden dashboard API running on localhost:8787.
+The Inner Warden dashboard API runs on localhost:8787. It has two modes:
 
-If INNERWARDEN_DASHBOARD_USER is not set, the dashboard API runs without
-auth and no credentials are needed.
+**No auth (default after install):** API is open, no credentials needed.
+**Basic auth (when user configures a password):** requires HTTP Basic Auth.
 
+To determine which mode and authenticate:
 ```bash
-IW_USER="${INNERWARDEN_DASHBOARD_USER:-}"
-IW_PASS_HASH=$(sudo grep INNERWARDEN_DASHBOARD_PASSWORD_HASH /etc/innerwarden/agent.env 2>/dev/null | cut -d= -f2-)
+# Step 1: try without auth
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8787/api/agent/security-context)
+
+if [ "$RESPONSE" = "200" ]; then
+  # No auth needed — API is open
+  echo "API open, no auth required"
+elif [ "$RESPONSE" = "401" ]; then
+  # Auth required — read credentials from local config
+  # INNERWARDEN_DASHBOARD_USER is set in the environment (declared in skill metadata)
+  # The plaintext password is NOT stored anywhere — only an argon2 hash exists
+  # The user must provide the password or disable dashboard auth
+  echo "Dashboard auth is enabled. Ask the user for the dashboard password."
+  echo "Or disable auth: sudo innerwarden configure dashboard --no-auth"
+fi
 ```
 
-Test API access:
-```bash
-curl -s http://localhost:8787/api/agent/security-context
-```
-If you get 401, auth is required. If you get JSON, no auth needed.
+**Important:** This skill NEVER transmits credentials off-host. All API calls
+go to localhost:8787 only. The password hash in /etc/innerwarden/agent.env is
+an argon2 hash — it cannot be used directly for authentication. If dashboard
+auth is enabled, the user must provide the plaintext password or disable auth.
+
+File accessed: `/etc/innerwarden/agent.env` (read-only, to check if auth is configured).
+This path is declared in the skill metadata via `config: ["innerwarden.agentEnvPath"]`.
 
 ## PART 1: Security operations
 
