@@ -162,7 +162,9 @@ impl DashboardAuth {
     }
 
     fn verify(&self, user: &str, password: &str) -> bool {
-        if user != self.username {
+        // Use constant-time comparison for the username to prevent
+        // timing side-channels that could enumerate valid usernames.
+        if !constant_time_eq(user, &self.username) {
             return false;
         }
         let parsed = PasswordHash::new(self.password_hash.as_str());
@@ -173,6 +175,17 @@ impl DashboardAuth {
             Err(_) => false,
         }
     }
+}
+
+/// Constant-time string equality to prevent timing side-channel attacks.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.bytes()
+        .zip(b.bytes())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 // ---------------------------------------------------------------------------
