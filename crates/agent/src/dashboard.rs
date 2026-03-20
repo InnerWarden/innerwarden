@@ -4118,13 +4118,62 @@ fn dated_path(data_dir: &Path, prefix: &str, date: &str) -> PathBuf {
     data_dir.join(format!("{prefix}-{date}.jsonl"))
 }
 
+/// File content cache entry — avoids re-reading + re-parsing JSONL on every request.
+struct FileCache {
+    raw: String,
+    size: u64,
+    modified: std::time::SystemTime,
+    cached_at: std::time::Instant,
+}
+
+/// Global JSONL file cache. Key: file path string. TTL: 5 seconds.
+/// Under bot attack, this prevents hundreds of file reads per second.
+static JSONL_CACHE: LazyLock<Mutex<HashMap<String, FileCache>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+const JSONL_CACHE_TTL_SECS: u64 = 5;
+
 fn read_jsonl<T: DeserializeOwned>(path: &Path) -> Vec<T> {
+    let key = path.to_string_lossy().to_string();
+
+    // Check cache first
+    let meta = std::fs::metadata(path).ok();
+    let file_size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+    let file_modified = meta
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+
+    {
+        let cache = JSONL_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = cache.get(&key) {
+            if entry.size == file_size
+                && entry.modified == file_modified
+                && entry.cached_at.elapsed().as_secs() < JSONL_CACHE_TTL_SECS
+            {
+                // Cache hit — parse from cached string (avoids file I/O)
+                return entry
+                    .raw
+                    .lines()
+                    .filter_map(|line| {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            return None;
+                        }
+                        serde_json::from_str::<T>(trimmed).ok()
+                    })
+                    .collect();
+            }
+        }
+    }
+
+    // Cache miss — read file
     let content = match std::fs::read_to_string(path) {
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };
 
-    content
+    let result = content
         .lines()
         .filter_map(|line| {
             let trimmed = line.trim();
@@ -4143,7 +4192,27 @@ fn read_jsonl<T: DeserializeOwned>(path: &Path) -> Vec<T> {
                 }
             }
         })
-        .collect()
+        .collect();
+
+    // Store in cache (cap file size to avoid caching huge files)
+    if content.len() < 10 * 1024 * 1024 {
+        let mut cache = JSONL_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        // Prune stale entries
+        if cache.len() > 20 {
+            cache.retain(|_, v| v.cached_at.elapsed().as_secs() < JSONL_CACHE_TTL_SECS * 2);
+        }
+        cache.insert(
+            key,
+            FileCache {
+                raw: content,
+                size: file_size,
+                modified: file_modified,
+                cached_at: std::time::Instant::now(),
+            },
+        );
+    }
+
+    result
 }
 
 // ---------------------------------------------------------------------------
