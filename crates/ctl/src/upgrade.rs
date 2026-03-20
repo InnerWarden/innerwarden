@@ -249,10 +249,13 @@ pub fn fetch_signature(url: &str) -> Result<String> {
 }
 
 /// Verify Ed25519 signature of binary bytes.
+/// The signing process hashes the binary with SHA-256 first, then signs the
+/// 32-byte digest. Verification replicates this: SHA-256(binary) → verify.
 /// Returns `Ok(())` if the signature is valid, `Err` if invalid or malformed.
 pub fn verify_signature(binary_bytes: &[u8], signature_b64: &str) -> Result<()> {
     use base64::Engine;
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    use sha2::{Digest, Sha256};
 
     let pub_key_bytes = base64::engine::general_purpose::STANDARD
         .decode(RELEASE_PUBLIC_KEY_B64)
@@ -271,8 +274,10 @@ pub fn verify_signature(binary_bytes: &[u8], signature_b64: &str) -> Result<()> 
         .map_err(|_| anyhow::anyhow!("signature wrong length"))?;
     let signature = Signature::from_bytes(&sig_bytes);
 
+    // CI signs SHA-256(binary), not the raw binary
+    let digest = Sha256::digest(binary_bytes);
     verifying_key
-        .verify(binary_bytes, &signature)
+        .verify(&digest, &signature)
         .context("signature verification FAILED — binary may be tampered")?;
 
     Ok(())
