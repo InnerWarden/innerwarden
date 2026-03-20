@@ -38,9 +38,9 @@ impl GuardianMode {
 
     pub fn description(&self) -> &'static str {
         match self {
-            GuardianMode::Guard => "I act on threats automatically",
-            GuardianMode::DryRun => "I simulate actions — no real changes",
-            GuardianMode::Watch => "I alert you and wait for your call",
+            GuardianMode::Guard => "Threats get neutralized on sight. You get the report.",
+            GuardianMode::DryRun => "I simulate kills — nothing real hits the firewall yet.",
+            GuardianMode::Watch => "I flag everything, you make the call.",
         }
     }
 }
@@ -229,27 +229,34 @@ impl TelegramClient {
         }
 
         let cf_line = if cloudflare_pushed {
-            "\n☁️ Also pushed to Cloudflare edge — blocked at CDN level too."
+            "\n☁️ Pushed to Cloudflare edge too — blocked before they even reach your server."
         } else {
             ""
         };
 
         let text = if dry_run {
             format!(
-                "🧪 <b>Simulated</b> — <b>{host}</b>\n\
+                "🧪 <b>Simulation</b> — <b>{host}</b>\n\
                  Would've {action_label} <code>{target}</code>{enrichment}\n\
                  <i>{incident_title}</i>\n\
-                 Confidence: {pct}% | No real action taken (dry-run mode){cf_line}",
+                 Confidence: {pct}% — dry-run, no real action.\n\
+                 <i>Want me to start dropping these for real? Enable live mode.</i>{cf_line}",
                 host = escape_html(host),
                 target = escape_html(target),
                 incident_title = escape_html(incident_title),
             )
         } else {
+            let kill_quip = match pct {
+                95..=100 => "Clean kill. Zero doubt.",
+                85..=94 => "Textbook containment.",
+                70..=84 => "Threat actor down. Solid confidence.",
+                _ => "Contained — keeping eyes on it.",
+            };
             format!(
-                "✅ <b>Threat neutralized</b> — <b>{host}</b>\n\
+                "🔥 <b>Target eliminated</b> — <b>{host}</b>\n\
                  {action_label} <code>{target}</code>{enrichment}\n\
                  <i>{incident_title}</i>\n\
-                 Confidence: {pct}% | This actor won't be back.{cf_line}",
+                 Confidence: {pct}% — {kill_quip}{cf_line}",
                 host = escape_html(host),
                 target = escape_html(target),
                 incident_title = escape_html(incident_title),
@@ -415,13 +422,13 @@ impl TelegramClient {
         let pct = (ai_confidence * 100.0) as u32;
 
         let text = format!(
-            "🎯 <b>Suspect detected</b>\n\
+            "🎯 <b>Live target acquired</b>\n\
              \n\
              <b>IP:</b> <code>{ip}</code>\n\
              <b>Incident:</b> {title}\n\
-             <b>AI assessment:</b> {reason} (confidence: {pct}%)\n\
+             <b>AI read:</b> {reason} ({pct}% confidence)\n\
              \n\
-             What should we do with this one?",
+             Your call, operator — trap them or drop them?",
             ip = escape_html(ip),
             title = escape_html(&incident.title),
             reason = escape_html(ai_reason),
@@ -435,14 +442,14 @@ impl TelegramClient {
             "🍯 Honeypot"
         };
         let block_label = if ai_suggested == "block" {
-            "🚫 Bloquear ✓"
+            "🚫 Block ✓"
         } else {
-            "🚫 Bloquear"
+            "🚫 Block"
         };
         let monitor_label = if ai_suggested == "monitor" {
-            "👁 Monitorar ✓"
+            "👁 Monitor ✓"
         } else {
-            "👁 Monitorar"
+            "👁 Monitor"
         };
 
         let body = serde_json::json!({
@@ -458,7 +465,7 @@ impl TelegramClient {
                     ],
                     [
                         { "text": monitor_label,  "callback_data": format!("hpot:monitor:{ip}")  },
-                        { "text": "❌ Ignorar",   "callback_data": format!("hpot:ignore:{ip}")   }
+                        { "text": "❌ Ignore",    "callback_data": format!("hpot:ignore:{ip}")   }
                     ]
                 ]
             }
@@ -531,17 +538,17 @@ impl TelegramClient {
     ) -> Result<()> {
         let mut lines = Vec::new();
         lines.push(format!(
-            "🍯 <b>Honeypot session ended</b>\n\n\
+            "🍯 <b>Honeypot debrief</b> — session over\n\n\
              <b>Attacker:</b> <code>{ip}</code>\n\
              <b>Session:</b> <code>{session_id}</code>\n\
-             <b>Duration:</b> {duration_secs}s | <b>Commands:</b> {}",
+             <b>Duration:</b> {duration_secs}s | <b>Commands captured:</b> {}",
             commands.len(),
             ip = escape_html(ip),
             session_id = escape_html(session_id),
         ));
 
         if !commands.is_empty() {
-            let mut cmd_block = "\n<b>What they tried:</b>\n".to_string();
+            let mut cmd_block = "\n<b>Their playbook:</b>\n".to_string();
             for cmd in commands.iter().take(8) {
                 cmd_block.push_str(&format!("  $ <code>{}</code>\n", escape_html(cmd)));
             }
@@ -558,7 +565,7 @@ impl TelegramClient {
         lines.push(format!("\n<b>AI verdict:</b> {}", escape_html(ai_verdict)));
 
         if auto_blocked {
-            lines.push("\n✅ IP automatically blocked.".to_string());
+            lines.push("\n✅ IP auto-blocked — they walked right into it.".to_string());
         }
 
         let text = lines.join("\n");
@@ -568,14 +575,14 @@ impl TelegramClient {
 
         if !auto_blocked {
             keyboard_rows.push(vec![serde_json::json!({
-                "text": "🚫 Bloquear agora",
+                "text": "🚫 Block now",
                 "callback_data": format!("hpot:block:{ip}")
             })]);
         }
 
         if let Some(ref dash_url) = self.dashboard_url {
             keyboard_rows.push(vec![serde_json::json!({
-                "text": "📊 Ver no dashboard",
+                "text": "📊 View in dashboard",
                 "url": dash_url
             })]);
         }
@@ -636,18 +643,18 @@ impl TelegramClient {
         let (action_line, header) = if dry_run {
             (
                 format!(
-                    "Would've blocked <code>{}</code> — dry-run mode, no real action.",
+                    "Would've dropped <code>{}</code> — dry-run, standing down.",
                     escape_html(ip)
                 ),
-                "🧪 <b>Simulation</b> — AbuseIPDB auto-block",
+                "🧪 <b>Dry-run</b> — known bad actor flagged",
             )
         } else {
             (
                 format!(
-                    "Blocked <code>{}</code> instantly — no AI token wasted.",
+                    "Dropped <code>{}</code> on sight — known threat, no AI needed.",
                     escape_html(ip)
                 ),
-                "🛡 <b>Auto-blocked</b> — AbuseIPDB gate",
+                "🛡 <b>Instant kill</b> — AbuseIPDB reputation gate",
             )
         };
 
@@ -721,7 +728,7 @@ impl TelegramClient {
     pub async fn send_menu(&self) -> Result<()> {
         let body = serde_json::json!({
             "chat_id": self.chat_id,
-            "text": "🛡 <b>InnerWarden</b> — what would you like?",
+            "text": "👾 <b>InnerWarden</b> — what do you need, operator?",
             "parse_mode": "HTML",
             "reply_markup": {
                 "inline_keyboard": [
@@ -851,15 +858,15 @@ impl TelegramClient {
                                         let ip = parts[1];
                                         let toast = match action {
                                             "honeypot" => {
-                                                format!("🍯 Jogando {ip} no honeypot...")
+                                                format!("🍯 Routing {ip} to honeypot — let them think they're in...")
                                             }
                                             "block" => {
-                                                format!("🚫 Bloqueando {ip} no firewall...")
+                                                format!("🚫 Dropping {ip} at the firewall...")
                                             }
                                             "monitor" => {
-                                                format!("👁 Monitorando {ip} silenciosamente...")
+                                                format!("👁 Silent monitoring on {ip} — collecting intel...")
                                             }
-                                            _ => "👍 Registrado.".to_string(),
+                                            _ => "👍 Logged.".to_string(),
                                         };
                                         let _ =
                                             self.answer_callback_toast(&callback.id, &toast).await;
@@ -1129,14 +1136,20 @@ fn format_incident_message(
 
     // Mode-specific header and call-to-action
     let (mode_prefix, cta) = match mode {
-        GuardianMode::Guard => (
-            "⚡ Live threat —",
-            "\n<i>AI defense active.</i>".to_string(),
-        ),
-        GuardianMode::DryRun => (
-            "🧪 Dry-run —",
-            "\n<i>Simulation only — enable live mode to let me act.</i>".to_string(),
-        ),
+        GuardianMode::Guard => {
+            let quip = incident_quip(incident);
+            (
+                "⚡",
+                format!("\n{quip}\n<i>Handling it — stand by for action report.</i>"),
+            )
+        }
+        GuardianMode::DryRun => {
+            let quip = incident_quip(incident);
+            (
+                "🧪",
+                format!("\n{quip}\n<i>Dry-run — I'd act on this. Enable live mode to let me.</i>"),
+            )
+        }
         GuardianMode::Watch => {
             let quip = incident_quip(incident);
             ("🚨", quip.to_string())
@@ -1484,10 +1497,14 @@ mod tests {
         );
         let msg = format_incident_message(&inc, None, GuardianMode::Guard);
         assert!(
-            msg.contains("AI defense active"),
-            "GUARD mode shows defense active"
+            msg.contains("action report"),
+            "GUARD mode mentions action report"
         );
-        assert!(!msg.contains("Block"), "GUARD mode has no block CTA");
+        // GUARD mode should NOT show Block/Ignore buttons inline
+        assert!(
+            !msg.contains("🛡 Block"),
+            "GUARD mode has no block CTA button text"
+        );
     }
 
     #[test]
@@ -1549,8 +1566,10 @@ mod tests {
         assert_eq!(GuardianMode::Guard.label(), "🟢 GUARD");
         assert_eq!(GuardianMode::DryRun.label(), "🟡 DRY-RUN");
         assert_eq!(GuardianMode::Watch.label(), "🔵 WATCH");
-        assert!(GuardianMode::Guard.description().contains("automatically"));
-        assert!(GuardianMode::Watch.description().contains("your call"));
+        assert!(GuardianMode::Guard.description().contains("neutralized"));
+        assert!(GuardianMode::Watch
+            .description()
+            .contains("you make the call"));
     }
 
     #[test]
@@ -1684,13 +1703,13 @@ mod tests {
         let pct = (confidence * 100.0) as u32;
 
         let text = format!(
-            "🎯 <b>Suspect detected</b>\n\
+            "🎯 <b>Live target acquired</b>\n\
              \n\
              <b>IP:</b> <code>{ip}</code>\n\
              <b>Incident:</b> {title}\n\
-             <b>AI assessment:</b> {reason} (confidence: {pct}%)\n\
+             <b>AI read:</b> {reason} ({pct}% confidence)\n\
              \n\
-             What should we do with this one?",
+             Your call, operator — trap them or drop them?",
             ip = escape_html(ip),
             title = escape_html(title),
             reason = escape_html(reason),
@@ -1704,11 +1723,11 @@ mod tests {
         );
         assert!(text.contains("87%"), "confidence percentage must appear");
         assert!(
-            text.contains("Suspect detected"),
+            text.contains("Live target acquired"),
             "personality heading must appear"
         );
         assert!(
-            text.contains("What should we do"),
+            text.contains("trap them or drop them"),
             "operator question must appear"
         );
 
@@ -1721,10 +1740,10 @@ mod tests {
         assert_eq!(honeypot_label_suggested, "🍯 Honeypot ✓");
 
         let block_label_not_suggested = if "honeypot" == "block" {
-            "🚫 Bloquear ✓"
+            "🚫 Block ✓"
         } else {
-            "🚫 Bloquear"
+            "🚫 Block"
         };
-        assert_eq!(block_label_not_suggested, "🚫 Bloquear");
+        assert_eq!(block_label_not_suggested, "🚫 Block");
     }
 }
