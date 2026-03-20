@@ -1266,6 +1266,11 @@ async fn main() -> Result<()> {
                             warn!("narrative tick error: {e:#}");
                         }
                     }
+                    // Trim in-memory structures to prevent unbounded memory growth
+                    state.blocklist.trim_if_needed(10_000);
+                    state.decision_cooldowns.retain(|_, ts| {
+                        *ts > chrono::Utc::now() - chrono::Duration::hours(2)
+                    });
                     let removed = data_retention::cleanup(&cli.data_dir, &cfg.data);
                     if removed > 0 {
                         info!(removed, "data_retention: cleaned up old files");
@@ -1337,6 +1342,11 @@ async fn main() -> Result<()> {
                             warn!("narrative tick error: {e:#}");
                         }
                     }
+                    // Trim in-memory structures to prevent unbounded memory growth
+                    state.blocklist.trim_if_needed(10_000);
+                    state.decision_cooldowns.retain(|_, ts| {
+                        *ts > chrono::Utc::now() - chrono::Duration::hours(2)
+                    });
                     let removed = data_retention::cleanup(&cli.data_dir, &cfg.data);
                     if removed > 0 {
                         info!(removed, "data_retention: cleaned up old files");
