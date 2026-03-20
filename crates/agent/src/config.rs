@@ -1276,6 +1276,7 @@ pub struct CrowdSecConfig {
     /// in a single tick stalls the agent and exhausts memory.
     /// Remaining IPs are processed in subsequent ticks.
     #[serde(default = "default_crowdsec_max_per_sync")]
+    #[allow(dead_code)]
     pub max_per_sync: usize,
 }
 

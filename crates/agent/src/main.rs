@@ -1286,16 +1286,7 @@ async fn main() -> Result<()> {
                 }
                 _ = crowdsec_ticker.tick() => {
                     if let Some(ref mut cs) = state.crowdsec {
-                        let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
-                        crowdsec::sync_tick(
-                            cs,
-                            &mut state.blocklist,
-                            &state.skill_registry,
-                            &cfg,
-                            &mut state.decision_writer,
-                            &mut state.decision_cooldowns,
-                            &host,
-                        ).await;
+                        crowdsec::sync_threat_list(cs).await;
                     }
                     false
                 }
@@ -1358,16 +1349,7 @@ async fn main() -> Result<()> {
                 }
                 _ = crowdsec_ticker.tick() => {
                     if let Some(ref mut cs) = state.crowdsec {
-                        let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
-                        crowdsec::sync_tick(
-                            cs,
-                            &mut state.blocklist,
-                            &state.skill_registry,
-                            &cfg,
-                            &mut state.decision_writer,
-                            &mut state.decision_cooldowns,
-                            &host,
-                        ).await;
+                        crowdsec::sync_threat_list(cs).await;
                     }
                     false
                 }
@@ -2012,6 +1994,67 @@ async fn process_incidents(
                         handled += 1;
                         continue;
                     } // else (not protected IP)
+                }
+            }
+        }
+
+        // CrowdSec threat list gate: if the IP is in the community blocklist,
+        // auto-block without calling AI (same pattern as AbuseIPDB gate).
+        if let Some(ref cs) = state.crowdsec {
+            let primary_ip = incident
+                .entities
+                .iter()
+                .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
+                .map(|e| e.value.clone());
+            if let Some(ref ip) = primary_ip {
+                if cs.is_known_threat(ip)
+                    && !blocked_set.contains(ip)
+                    && !state.blocklist.contains(ip)
+                    && !allowlist::is_ip_allowlisted(ip, &cfg.ai.protected_ips)
+                {
+                    info!(
+                        incident_id = %incident.incident_id,
+                        ip,
+                        "CrowdSec threat list match — auto-blocking, skipping AI"
+                    );
+                    let skill_id = format!("block-ip-{}", cfg.responder.block_backend);
+                    let auto_decision = ai::AiDecision {
+                        action: ai::AiAction::BlockIp {
+                            ip: ip.clone(),
+                            skill_id,
+                        },
+                        confidence: 1.0,
+                        auto_execute: true,
+                        reason: "CrowdSec community threat list match".to_string(),
+                        alternatives: vec![],
+                        estimated_threat: "high".into(),
+                    };
+                    blocked_set.insert(ip.clone());
+                    state.blocklist.insert(ip.clone());
+                    if let Some(key) = decision_cooldown_key_for_decision(incident, &auto_decision)
+                    {
+                        state.decision_cooldowns.insert(key, chrono::Utc::now());
+                    }
+                    let (execution_result, _cf_pushed) = if cfg.responder.enabled {
+                        execute_decision(&auto_decision, incident, data_dir, cfg, state).await
+                    } else {
+                        ("skipped: responder disabled".to_string(), false)
+                    };
+                    if let Some(writer) = &mut state.decision_writer {
+                        let entry = decisions::build_entry(
+                            &incident.incident_id,
+                            &incident.host,
+                            "crowdsec",
+                            &auto_decision,
+                            cfg.responder.dry_run,
+                            &execution_result,
+                        );
+                        if let Err(e) = writer.write(&entry) {
+                            warn!("failed to write CrowdSec decision: {e:#}");
+                        }
+                    }
+                    handled += 1;
+                    continue;
                 }
             }
         }
