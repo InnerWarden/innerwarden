@@ -667,6 +667,20 @@ pub async fn serve(
             next.run(req).await
         }
     });
+    // Global rate limiter — rejects requests from IPs exceeding 120/min with 429.
+    // Prevents memory exhaustion from bot traffic when dashboard is internet-facing.
+    let rate_limit_layer = middleware::from_fn(|req: Request<Body>, next: Next| async move {
+        let ip = extract_client_ip(&req);
+        if global_rate_check(&ip) {
+            return axum::http::Response::builder()
+                .status(429)
+                .header("retry-after", "60")
+                .body(Body::from("Too Many Requests"))
+                .unwrap()
+                .into_response();
+        }
+        next.run(req).await
+    });
 
     // Agent API routes — no auth required (localhost service-to-service)
     // These are used by AI agents (OpenClaw, n8n, etc.) to query security state.
@@ -715,7 +729,10 @@ pub async fn serve(
         .layer(auth_layer)
         .with_state(state);
 
-    let app = agent_api.merge(dashboard).layer(activity_layer);
+    let app = agent_api
+        .merge(dashboard)
+        .layer(activity_layer)
+        .layer(rate_limit_layer);
 
     // D6: spawn file watcher and heartbeat tasks
     tokio::spawn(watch_for_new_entries(data_dir, event_tx.clone()));
@@ -776,6 +793,41 @@ const LOGIN_RATE_LIMIT_WINDOW_SECS: u64 = 15 * 60; // 15 minutes
 /// Global rate-limiter: maps source IP string → list of failed-login timestamps.
 static LOGIN_RATE_LIMITER: LazyLock<Mutex<HashMap<String, Vec<std::time::Instant>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+// ---------------------------------------------------------------------------
+// Global request rate limiter — prevents memory exhaustion from bot traffic
+// ---------------------------------------------------------------------------
+
+/// Max requests per IP per minute before returning 429.
+const GLOBAL_RATE_LIMIT_PER_MIN: usize = 120;
+
+/// Global request rate limiter: maps IP → ring of timestamps.
+/// Pruned lazily; entries older than 60s are ignored in count.
+static GLOBAL_RATE_LIMITER: LazyLock<Mutex<HashMap<String, Vec<std::time::Instant>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Check if an IP exceeds the global request rate limit. Records the request.
+fn global_rate_check(ip: &str) -> bool {
+    let mut map = GLOBAL_RATE_LIMITER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let cutoff = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(60))
+        .unwrap_or_else(std::time::Instant::now);
+
+    // Prune stale IPs periodically (when map grows large)
+    if map.len() > 1000 {
+        map.retain(|_, v| {
+            v.retain(|t| *t > cutoff);
+            !v.is_empty()
+        });
+    }
+
+    let timestamps = map.entry(ip.to_string()).or_default();
+    timestamps.retain(|t| *t > cutoff);
+    timestamps.push(std::time::Instant::now());
+    timestamps.len() > GLOBAL_RATE_LIMIT_PER_MIN
+}
 
 /// Extract a client IP string from the request.
 /// Checks `X-Forwarded-For` and `X-Real-IP` headers first (reverse-proxy scenario),
