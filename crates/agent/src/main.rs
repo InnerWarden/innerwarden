@@ -130,6 +130,11 @@ impl NarrativeAccumulator {
 
     fn ingest_incidents(&mut self, incidents: &[innerwarden_core::incident::Incident]) {
         self.incidents.extend_from_slice(incidents);
+        // Cap at 500 incidents — narrative only needs recent ones for the report
+        if self.incidents.len() > 500 {
+            let drain = self.incidents.len() - 500;
+            self.incidents.drain(..drain);
+        }
     }
 
     fn reset_for_date(&mut self, date: &str) {
@@ -143,13 +148,24 @@ impl NarrativeAccumulator {
         }
     }
 
-    /// Build synthetic Events from accumulated counters for narrative::generate.
-    /// Only builds the minimum needed — kind + entities for the activity breakdown.
+    /// Build synthetic Events from counters for narrative::generate.
+    /// Caps total at 2000 events to prevent memory explosion on busy hosts.
+    /// Uses proportional sampling when total exceeds cap.
     fn synthetic_events(&self) -> Vec<innerwarden_core::event::Event> {
         use innerwarden_core::{entities::EntityRef, event::Event};
-        let mut events = Vec::new();
+        const MAX_SYNTHETIC: usize = 2000;
+
+        let total: usize = self.events_by_kind.values().sum();
+        let scale = if total > MAX_SYNTHETIC {
+            MAX_SYNTHETIC as f64 / total as f64
+        } else {
+            1.0
+        };
+
+        let mut events = Vec::with_capacity(MAX_SYNTHETIC.min(total) + 20);
         for (kind, count) in &self.events_by_kind {
-            for _ in 0..*count {
+            let n = ((*count as f64) * scale).ceil() as usize;
+            for _ in 0..n.max(1) {
                 events.push(Event {
                     ts: chrono::Utc::now(),
                     host: String::new(),
@@ -163,36 +179,33 @@ impl NarrativeAccumulator {
                 });
             }
         }
-        // Add entity info from top IPs/users (for "Most active" section)
-        for (ip, count) in self.ip_counts.iter().take(10) {
-            for _ in 0..*count.min(&5) {
-                events.push(Event {
-                    ts: chrono::Utc::now(),
-                    host: String::new(),
-                    source: String::new(),
-                    kind: "synthetic.entity".to_string(),
-                    severity: innerwarden_core::event::Severity::Info,
-                    summary: String::new(),
-                    details: serde_json::Value::Null,
-                    tags: vec![],
-                    entities: vec![EntityRef::ip(ip)],
-                });
-            }
+
+        // Top IPs (max 10, 1 event each)
+        for (ip, _) in self.ip_counts.iter().take(10) {
+            events.push(Event {
+                ts: chrono::Utc::now(),
+                host: String::new(),
+                source: String::new(),
+                kind: "synthetic.entity".to_string(),
+                severity: innerwarden_core::event::Severity::Info,
+                summary: String::new(),
+                details: serde_json::Value::Null,
+                tags: vec![],
+                entities: vec![EntityRef::ip(ip)],
+            });
         }
-        for (user, count) in self.user_counts.iter().take(10) {
-            for _ in 0..*count.min(&5) {
-                events.push(Event {
-                    ts: chrono::Utc::now(),
-                    host: String::new(),
-                    source: String::new(),
-                    kind: "synthetic.entity".to_string(),
-                    severity: innerwarden_core::event::Severity::Info,
-                    summary: String::new(),
-                    details: serde_json::Value::Null,
-                    tags: vec![],
-                    entities: vec![EntityRef::user(user)],
-                });
-            }
+        for (user, _) in self.user_counts.iter().take(10) {
+            events.push(Event {
+                ts: chrono::Utc::now(),
+                host: String::new(),
+                source: String::new(),
+                kind: "synthetic.entity".to_string(),
+                severity: innerwarden_core::event::Severity::Info,
+                summary: String::new(),
+                details: serde_json::Value::Null,
+                tags: vec![],
+                entities: vec![EntityRef::user(user)],
+            });
         }
         events
     }
@@ -1398,9 +1411,13 @@ async fn main() -> Result<()> {
                     }
                     // Trim in-memory structures to prevent unbounded memory growth
                     state.blocklist.trim_if_needed(10_000);
-                    state.decision_cooldowns.retain(|_, ts| {
-                        *ts > chrono::Utc::now() - chrono::Duration::hours(2)
-                    });
+                    let cutoff_2h = chrono::Utc::now() - chrono::Duration::hours(2);
+                    state.decision_cooldowns.retain(|_, ts| *ts > cutoff_2h);
+                    state.notification_cooldowns.retain(|_, ts| *ts > cutoff_2h);
+                    // Cap block_counts to 5000 entries
+                    if state.block_counts.len() > 5000 {
+                        state.block_counts.clear();
+                    }
                     let removed = data_retention::cleanup(&cli.data_dir, &cfg.data);
                     if removed > 0 {
                         info!(removed, "data_retention: cleaned up old files");
@@ -1465,9 +1482,13 @@ async fn main() -> Result<()> {
                     }
                     // Trim in-memory structures to prevent unbounded memory growth
                     state.blocklist.trim_if_needed(10_000);
-                    state.decision_cooldowns.retain(|_, ts| {
-                        *ts > chrono::Utc::now() - chrono::Duration::hours(2)
-                    });
+                    let cutoff_2h = chrono::Utc::now() - chrono::Duration::hours(2);
+                    state.decision_cooldowns.retain(|_, ts| *ts > cutoff_2h);
+                    state.notification_cooldowns.retain(|_, ts| *ts > cutoff_2h);
+                    // Cap block_counts to 5000 entries
+                    if state.block_counts.len() > 5000 {
+                        state.block_counts.clear();
+                    }
                     let removed = data_retention::cleanup(&cli.data_dir, &cfg.data);
                     if removed > 0 {
                         info!(removed, "data_retention: cleaned up old files");
