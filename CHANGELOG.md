@@ -11,6 +11,22 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.5] — 2026-03-20
+
+### Security hardening (red team response)
+
+- **Config self-monitoring** — integrity detector always monitors `/etc/innerwarden/*`, detects config tampering
+- **Protected IP ranges** — AI can never block RFC1918/loopback IPs, decisions downgraded to ignore
+- **Hash-chained audit trail** — each decision includes SHA-256 of the previous, tampering breaks the chain
+- **Minimal sudoers** — ufw/iptables/nftables rules restricted to deny/delete/status only (no disable, flush, or reset)
+- **Dashboard blocks actions over insecure HTTP** — operator actions disabled when auth is configured on non-localhost without TLS
+- **Telegram destructive command warnings** — `/enable` and `/disable` show warning before execution
+- **Prompt sanitization on all AI providers** — Anthropic provider now sanitizes attacker-controlled fields (was OpenAI/Ollama only)
+- **Disk exhaustion protection** — events file capped at 200MB/day
+- **Constant-time auth** — dashboard username comparison prevents timing attacks
+
+---
+
 ## [0.1.4] — 2026-03-19
 
 ### New commands

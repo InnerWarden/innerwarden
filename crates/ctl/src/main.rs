@@ -2563,11 +2563,17 @@ fn cmd_upgrade(cli: &Cli, check_only: bool, yes: bool, install_dir: &Path) -> Re
         } else {
             "no sha256"
         };
+        let sig_status = if dp.sig_asset.is_some() {
+            "  sig ✓"
+        } else {
+            ""
+        };
         println!(
-            "  {:<28} {}  ({})",
+            "  {:<28} {}  ({}{})",
             dp.target.binary,
             fmt_bytes(dp.asset.size),
-            sha_status
+            sha_status,
+            sig_status
         );
     }
 
@@ -2619,9 +2625,21 @@ fn cmd_upgrade(cli: &Cli, check_only: bool, yes: bool, install_dir: &Path) -> Re
                     "SHA-256 mismatch for {binary}:\n  expected {expected}\n  got      {actual}"
                 );
             }
-            println!("{}  sha256 ok", fmt_bytes(bytes));
+            print!("{}  sha256 ok", fmt_bytes(bytes));
         } else {
-            println!("{}  (no sha256 sidecar)", fmt_bytes(bytes));
+            print!("{}  (no sha256 sidecar)", fmt_bytes(bytes));
+        }
+
+        // Verify Ed25519 signature if .sig sidecar is present
+        if let Some(sig_asset) = dp.sig_asset {
+            let sig_b64 = fetch_signature(&sig_asset.browser_download_url)?;
+            let binary_bytes =
+                std::fs::read(&tmp_path).context("cannot read downloaded binary for sig check")?;
+            verify_signature(&binary_bytes, &sig_b64)?;
+            println!("  sig ok");
+        } else {
+            println!();
+            println!("  [warn] unsigned release — signature verification skipped for {binary}");
         }
 
         // Install to all target names

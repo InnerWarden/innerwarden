@@ -1442,7 +1442,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-agent"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1476,7 +1476,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-ctl"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -1484,6 +1484,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "digest 0.10.7",
+ "ed25519-dalek",
  "p256",
  "rand_core 0.6.4",
  "serde",
@@ -1496,7 +1497,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-sensor"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1517,7 +1518,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden_core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "chrono",
  "serde",
