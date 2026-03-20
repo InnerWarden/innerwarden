@@ -111,9 +111,12 @@ jobs:
             [[ "$binary" == *.sig ]] && continue
             [[ "$binary" == */install.sh ]] && continue
             echo "signing $(basename $binary)..."
-            openssl pkeyutl -sign -inkey /tmp/sign-key.pem -out /tmp/sig.raw -rawin < "$binary"
+            # Ed25519: hash first (openssl pkeyutl -rawin can't handle large files via stdin),
+            # then sign the 32-byte digest.
+            sha256sum "$binary" | awk '{print $1}' | xxd -r -p > /tmp/digest.bin
+            openssl pkeyutl -sign -inkey /tmp/sign-key.pem -in /tmp/digest.bin -out /tmp/sig.raw
             base64 -w0 /tmp/sig.raw > "${binary}.sig"
-            rm -f /tmp/sig.raw
+            rm -f /tmp/sig.raw /tmp/digest.bin
           done
           rm -f /tmp/sign-key.pem
           echo "=== Signed assets ==="
@@ -247,9 +250,11 @@ jobs:
             [[ "$binary" == *.sha256 ]] && continue
             [[ "$binary" == *.sig ]] && continue
             echo "signing $(basename $binary)..."
-            openssl pkeyutl -sign -inkey /tmp/sign-key.pem -out /tmp/sig.raw -rawin < "$binary"
+            # Ed25519: hash first, then sign the 32-byte digest
+            shasum -a 256 "$binary" | awk '{print $1}' | xxd -r -p > /tmp/digest.bin
+            openssl pkeyutl -sign -inkey /tmp/sign-key.pem -in /tmp/digest.bin -out /tmp/sig.raw
             base64 /tmp/sig.raw | tr -d '\n' > "${binary}.sig"
-            rm -f /tmp/sig.raw
+            rm -f /tmp/sig.raw /tmp/digest.bin
           done
           rm -f /tmp/sign-key.pem
 
