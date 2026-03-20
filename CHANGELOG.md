@@ -11,7 +11,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [0.1.29] — 2026-03-20
+## [0.1.6] — 2026-03-20
 
 ### Telegram personality overhaul
 
