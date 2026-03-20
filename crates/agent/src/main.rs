@@ -91,6 +91,113 @@ struct Cli {
 // Shared agent state (passed through tick functions)
 // ---------------------------------------------------------------------------
 
+/// Accumulates event/incident stats incrementally for narrative generation.
+/// Avoids re-reading the full events file every 5 minutes.
+#[derive(Default)]
+struct NarrativeAccumulator {
+    /// Event counts by kind (e.g. "ssh.login_failed" → 42)
+    events_by_kind: HashMap<String, usize>,
+    /// IP mention counts
+    ip_counts: HashMap<String, usize>,
+    /// User mention counts
+    user_counts: HashMap<String, usize>,
+    /// Total events seen today
+    total_events: usize,
+    /// All incidents seen today (small — typically <100)
+    incidents: Vec<innerwarden_core::incident::Incident>,
+    /// Date this accumulator is for (resets on date change)
+    date: String,
+}
+
+impl NarrativeAccumulator {
+    fn ingest_events(&mut self, events: &[innerwarden_core::event::Event]) {
+        for ev in events {
+            self.total_events += 1;
+            *self.events_by_kind.entry(ev.kind.clone()).or_insert(0) += 1;
+            for entity in &ev.entities {
+                match entity.r#type {
+                    innerwarden_core::entities::EntityType::Ip => {
+                        *self.ip_counts.entry(entity.value.clone()).or_insert(0) += 1;
+                    }
+                    innerwarden_core::entities::EntityType::User => {
+                        *self.user_counts.entry(entity.value.clone()).or_insert(0) += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn ingest_incidents(&mut self, incidents: &[innerwarden_core::incident::Incident]) {
+        self.incidents.extend_from_slice(incidents);
+    }
+
+    fn reset_for_date(&mut self, date: &str) {
+        if self.date != date {
+            self.events_by_kind.clear();
+            self.ip_counts.clear();
+            self.user_counts.clear();
+            self.total_events = 0;
+            self.incidents.clear();
+            self.date = date.to_string();
+        }
+    }
+
+    /// Build synthetic Events from accumulated counters for narrative::generate.
+    /// Only builds the minimum needed — kind + entities for the activity breakdown.
+    fn synthetic_events(&self) -> Vec<innerwarden_core::event::Event> {
+        use innerwarden_core::{entities::EntityRef, event::Event};
+        let mut events = Vec::new();
+        for (kind, count) in &self.events_by_kind {
+            for _ in 0..*count {
+                events.push(Event {
+                    ts: chrono::Utc::now(),
+                    host: String::new(),
+                    source: String::new(),
+                    kind: kind.clone(),
+                    severity: innerwarden_core::event::Severity::Info,
+                    summary: String::new(),
+                    details: serde_json::Value::Null,
+                    tags: vec![],
+                    entities: vec![],
+                });
+            }
+        }
+        // Add entity info from top IPs/users (for "Most active" section)
+        for (ip, count) in self.ip_counts.iter().take(10) {
+            for _ in 0..*count.min(&5) {
+                events.push(Event {
+                    ts: chrono::Utc::now(),
+                    host: String::new(),
+                    source: String::new(),
+                    kind: "synthetic.entity".to_string(),
+                    severity: innerwarden_core::event::Severity::Info,
+                    summary: String::new(),
+                    details: serde_json::Value::Null,
+                    tags: vec![],
+                    entities: vec![EntityRef::ip(ip)],
+                });
+            }
+        }
+        for (user, count) in self.user_counts.iter().take(10) {
+            for _ in 0..*count.min(&5) {
+                events.push(Event {
+                    ts: chrono::Utc::now(),
+                    host: String::new(),
+                    source: String::new(),
+                    kind: "synthetic.entity".to_string(),
+                    severity: innerwarden_core::event::Severity::Info,
+                    summary: String::new(),
+                    details: serde_json::Value::Null,
+                    tags: vec![],
+                    entities: vec![EntityRef::user(user)],
+                });
+            }
+        }
+        events
+    }
+}
+
 struct AgentState {
     skill_registry: skills::SkillRegistry,
     blocklist: skills::Blocklist,
@@ -152,6 +259,10 @@ struct AgentState {
     /// Tracks how many times each IP has been blocked. When count > 1 the IP is
     /// flagged as a repeat offender in the decision reason.
     block_counts: HashMap<String, u32>,
+    /// Incremental narrative accumulator — avoids re-reading events file.
+    narrative_acc: NarrativeAccumulator,
+    /// Byte offset for incremental incident reading (narrative accumulator).
+    narrative_incidents_offset: u64,
 }
 
 /// Tracks a deferred honeypot-or-block decision waiting for operator input via Telegram.
@@ -1141,6 +1252,8 @@ async fn main() -> Result<()> {
         circuit_breaker_until: None,
         pending_honeypot_choices: HashMap::new(),
         block_counts: HashMap::new(),
+        narrative_acc: NarrativeAccumulator::default(),
+        narrative_incidents_offset: 0,
     };
 
     let state_path = cli.data_dir.join("agent-state.json");
@@ -4078,12 +4191,26 @@ async fn process_narrative_tick(
     state.telemetry.observe_events(&new_events.entries);
     cursor.set_events_offset(&today, new_events.new_offset);
 
+    // Feed new events into the narrative accumulator (incremental, no file re-read)
+    state.narrative_acc.reset_for_date(&today);
+    state.narrative_acc.ingest_events(&new_events.entries);
+
+    // Also ingest any new incidents incrementally
+    let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
+    let new_incidents = reader::read_new_entries::<innerwarden_core::incident::Incident>(
+        &incidents_path,
+        state.narrative_incidents_offset,
+    )
+    .inspect_err(|_| {
+        state.telemetry.observe_error("incident_reader");
+    })?;
+    if !new_incidents.entries.is_empty() {
+        state.narrative_acc.ingest_incidents(&new_incidents.entries);
+        state.narrative_incidents_offset = new_incidents.new_offset;
+    }
+
     // Regenerate daily summary when there are new events, subject to a minimum
     // rewrite interval to avoid thrashing on busy hosts.
-    // Rule: write if events arrived AND either (a) first write ever, or
-    // (b) at least 5 minutes have passed since the last write.
-    // Additionally, always write after 30 minutes regardless of event count, so
-    // the summary doesn't become stale if a handful of events trickle in slowly.
     const NARRATIVE_MIN_INTERVAL_SECS: u64 = 300; // 5 minutes
     const NARRATIVE_MAX_STALE_SECS: u64 = 1800; // 30 minutes
     if cfg.narrative.enabled && events_count > 0 {
@@ -4094,36 +4221,13 @@ async fn process_narrative_tick(
         let should_write =
             elapsed >= NARRATIVE_MIN_INTERVAL_SECS || elapsed >= NARRATIVE_MAX_STALE_SECS;
         if should_write {
-            let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
-            // Read events for narrative summary. To prevent OOM on busy hosts where
-            // the events file can grow to 100MB+, only read the last 2MB of the file
-            // (roughly the most recent ~5000 events). The narrative summarizes trends
-            // and patterns, so a recent window is sufficient.
-            const NARRATIVE_MAX_READ_BYTES: u64 = 2 * 1024 * 1024;
-            let events_file_size = std::fs::metadata(&events_path)
-                .map(|m| m.len())
-                .unwrap_or(0);
-            let events_read_offset = events_file_size.saturating_sub(NARRATIVE_MAX_READ_BYTES);
-            let all_events = reader::read_new_entries::<innerwarden_core::event::Event>(
-                &events_path,
-                events_read_offset,
-            )
-            .inspect_err(|_| {
-                state.telemetry.observe_error("narrative_reader");
-            })?;
-            let all_incidents = reader::read_new_entries::<innerwarden_core::incident::Incident>(
-                &incidents_path,
-                0,
-            )
-            .inspect_err(|_| {
-                state.telemetry.observe_error("narrative_reader");
-            })?;
+            // Generate synthetic events from accumulated counters (no file I/O)
+            let all_events_synthetic = state.narrative_acc.synthetic_events();
+            let all_incidents_ref = &state.narrative_acc.incidents;
 
-            let host = all_events
-                .entries
+            let host = all_incidents_ref
                 .first()
-                .map(|e| e.host.as_str())
-                .or_else(|| all_incidents.entries.first().map(|i| i.host.as_str()))
+                .map(|i| i.host.as_str())
                 .unwrap_or("unknown");
 
             let responder_hint = narrative::ResponderHint {
@@ -4138,8 +4242,8 @@ async fn process_narrative_tick(
             let md = narrative::generate_with_responder(
                 &today,
                 host,
-                &all_events.entries,
-                &all_incidents.entries,
+                &all_events_synthetic,
+                all_incidents_ref,
                 cfg.correlation.window_seconds,
                 responder_hint,
             );
@@ -5100,6 +5204,8 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            narrative_acc: NarrativeAccumulator::default(),
+            narrative_incidents_offset: 0,
         };
 
         // 4. Run the incident tick
@@ -5215,6 +5321,8 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            narrative_acc: NarrativeAccumulator::default(),
+            narrative_incidents_offset: 0,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -5305,6 +5413,8 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            narrative_acc: NarrativeAccumulator::default(),
+            narrative_incidents_offset: 0,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -5407,6 +5517,8 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            narrative_acc: NarrativeAccumulator::default(),
+            narrative_incidents_offset: 0,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -5486,6 +5598,8 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            narrative_acc: NarrativeAccumulator::default(),
+            narrative_incidents_offset: 0,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -5577,6 +5691,8 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            narrative_acc: NarrativeAccumulator::default(),
+            narrative_incidents_offset: 0,
         };
 
         let mut cursor = reader::AgentCursor::default();
