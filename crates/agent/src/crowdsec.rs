@@ -1,16 +1,18 @@
 // ---------------------------------------------------------------------------
-// CrowdSec integration — polls the local LAPI and syncs ban decisions
+// CrowdSec integration — community threat intelligence lookup
 // ---------------------------------------------------------------------------
 //
-// CrowdSec runs a Local API (LAPI) on each host. This module polls it for
-// active ban decisions and forwards new IPs to InnerWarden's block skill,
-// bypassing the AI layer (CrowdSec's own engine already made the decision).
+// CrowdSec runs a Local API (LAPI) on each host. This module maintains a
+// local HashSet of banned IPs from the CrowdSec community blocklist.
 //
-// Flow:
-//   1. Every `poll_secs` seconds, GET /v1/decisions?type=ban&scope=ip
-//   2. Compare against the last-seen decision set (persisted in memory)
-//   3. For each new IP: execute block_ip via the configured skill
-//   4. Write a DecisionEntry to decisions-*.jsonl (ai_provider = "crowdsec")
+// Architecture (lookup table, not preventive blocking):
+//   1. Every `poll_secs` seconds, GET /v1/decisions/stream (delta mode)
+//   2. Add new IPs to `threat_list`, remove expired ones
+//   3. When the agent processes an incident, it checks `is_known_threat(ip)`
+//   4. If the IP is in the CrowdSec list → auto-block (same as AbuseIPDB gate)
+//
+// This avoids creating 24k+ firewall rules. Only IPs that actually attack
+// your server get blocked — the list is just intelligence, not enforcement.
 //
 // Required: CrowdSec LAPI must be running and the API key must be set.
 //   - Default URL: http://localhost:8080
@@ -19,11 +21,10 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::collections::HashSet;
 use tracing::{debug, info, warn};
 
-use crate::config::{AgentConfig, CrowdSecConfig};
-use crate::decisions::{DecisionEntry, DecisionWriter};
-use crate::skills::{self, Blocklist, SkillContext, SkillRegistry};
+use crate::config::CrowdSecConfig;
 
 // ---------------------------------------------------------------------------
 // LAPI response types
@@ -32,19 +33,21 @@ use crate::skills::{self, Blocklist, SkillContext, SkillRegistry};
 #[derive(Debug, Deserialize)]
 struct StreamResponse {
     new: Option<Vec<CrowdSecDecision>>,
-    #[allow(dead_code)]
     deleted: Option<Vec<CrowdSecDecision>>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CrowdSecDecision {
+    #[allow(dead_code)]
     pub id: i64,
+    #[allow(dead_code)]
     pub origin: String,
     #[allow(dead_code)]
     pub r#type: String,
     #[allow(dead_code)]
     pub scope: String,
-    pub value: String,    // the IP address
+    pub value: String, // the IP address
+    #[allow(dead_code)]
     pub duration: String, // e.g. "87599.956744792s"
     #[serde(rename = "simulated")]
     pub simulated: Option<bool>,
@@ -80,24 +83,15 @@ impl CrowdSecClient {
         }
     }
 
-    /// Fetch new IP ban decisions from the LAPI using the stream endpoint.
-    /// On first call (`startup = true`), fetches current bans.
-    /// On subsequent calls, only fetches new/deleted decisions since last poll.
-    /// This avoids downloading the entire 24k+ decision list every tick.
-    pub async fn fetch_bans(&self, startup: bool) -> Result<Vec<CrowdSecDecision>> {
-        let url = if startup {
-            format!(
-                "{}/v1/decisions/stream?startup=true&scopes=ip",
-                self.base_url
-            )
-        } else {
-            format!(
-                "{}/v1/decisions/stream?startup=false&scopes=ip",
-                self.base_url
-            )
-        };
+    /// Fetch new/deleted IP ban decisions from the LAPI stream endpoint.
+    /// Returns (new_ips, deleted_ips).
+    async fn fetch_stream(&self) -> Result<(Vec<String>, Vec<String>)> {
+        let url = format!(
+            "{}/v1/decisions/stream?startup=false&scopes=ip",
+            self.base_url
+        );
 
-        debug!(url = %url, startup, "polling CrowdSec LAPI stream");
+        debug!(url = %url, "polling CrowdSec LAPI stream");
 
         let resp = self
             .http
@@ -113,7 +107,7 @@ impl CrowdSecClient {
             })?;
 
         if resp.status().as_u16() == 204 {
-            return Ok(vec![]);
+            return Ok((vec![], vec![]));
         }
 
         if !resp.status().is_success() {
@@ -132,47 +126,36 @@ impl CrowdSecClient {
             );
         }
 
-        // Stream endpoint returns {"new": [...], "deleted": [...]}
-        // Cap body at 8MB as safety net
+        // Cap body at 8MB safety net
         const MAX_BODY: usize = 8 * 1024 * 1024;
         let bytes = resp.bytes().await?;
         if bytes.len() > MAX_BODY {
             warn!(
                 body_bytes = bytes.len(),
-                "CrowdSec stream response too large, skipping"
+                "CrowdSec stream response too large, skipping this tick"
             );
-            return Ok(vec![]);
+            return Ok((vec![], vec![]));
         }
         let text = std::str::from_utf8(&bytes).unwrap_or("null");
         if text.trim() == "null" || text.trim().is_empty() {
-            return Ok(vec![]);
+            return Ok((vec![], vec![]));
         }
 
-        // Try stream format first: {"new": [...], "deleted": [...]}
-        if let Ok(stream) = serde_json::from_str::<StreamResponse>(text) {
-            let new_decisions = stream.new.unwrap_or_default();
-            if new_decisions.len() > 500 {
-                info!(
-                    total = new_decisions.len(),
-                    "CrowdSec: capping stream at 500 new decisions"
-                );
-                return Ok(new_decisions.into_iter().take(500).collect());
-            }
-            return Ok(new_decisions);
-        }
+        let stream: StreamResponse =
+            serde_json::from_str(text).context("failed to parse CrowdSec stream response")?;
 
-        // Fallback: plain array (older LAPI or direct /v1/decisions)
-        let all = serde_json::from_str::<Vec<CrowdSecDecision>>(text)
-            .context("failed to parse CrowdSec decision list")?;
-        if all.len() > 500 {
-            info!(
-                total = all.len(),
-                "CrowdSec: capping fetch at 500 decisions"
-            );
-            Ok(all.into_iter().take(500).collect())
-        } else {
-            Ok(all)
-        }
+        let extract_ips = |decisions: Vec<CrowdSecDecision>| -> Vec<String> {
+            decisions
+                .into_iter()
+                .filter(|d| d.simulated != Some(true))
+                .map(|d| d.value)
+                .collect()
+        };
+
+        let new_ips = stream.new.map(extract_ips).unwrap_or_default();
+        let deleted_ips = stream.deleted.map(extract_ips).unwrap_or_default();
+
+        Ok((new_ips, deleted_ips))
     }
 
     pub fn is_configured(&self) -> bool {
@@ -181,248 +164,95 @@ impl CrowdSecClient {
 }
 
 // ---------------------------------------------------------------------------
-// Sync tick — called from the agent's fast loop
+// Threat list — in-memory lookup table
 // ---------------------------------------------------------------------------
 
-/// Max entries to keep in known_ips before trimming.
-const KNOWN_IPS_MAX: usize = 10_000;
+/// Max IPs to keep in the threat list before stopping additions.
+/// At ~50 bytes per IP string, 50k IPs ≈ 2.5MB — acceptable.
+const THREAT_LIST_MAX: usize = 50_000;
 
-/// State persisted between ticks so we only act on *new* decisions.
+/// CrowdSec state: a lookup table of known-bad IPs, updated via delta stream.
+/// No firewall rules are created. The list is consulted when processing incidents.
 pub struct CrowdSecState {
-    /// IPs we have already processed (blocked via InnerWarden or already in blocklist).
-    pub known_ips: std::collections::HashSet<String>,
+    /// Known-bad IPs from CrowdSec community intelligence.
+    threat_list: HashSet<String>,
     pub client: CrowdSecClient,
-    /// Always false — we never request the full list. Delta-only from the start.
-    /// CrowdSec CAPI returns 24k+ decisions on startup=true which causes OOM.
-    pub is_startup: bool,
 }
 
 impl CrowdSecState {
     pub fn new(cfg: &CrowdSecConfig) -> Self {
         Self {
-            known_ips: std::collections::HashSet::new(),
+            threat_list: HashSet::new(),
             client: CrowdSecClient::new(cfg),
-            is_startup: false, // never request full list — delta only
         }
     }
 
-    /// Trim known_ips if it grows beyond KNOWN_IPS_MAX to prevent memory leak.
-    fn trim_if_needed(&mut self) {
-        if self.known_ips.len() > KNOWN_IPS_MAX {
-            let excess = self.known_ips.len() - (KNOWN_IPS_MAX / 2);
-            let to_remove: Vec<String> = self.known_ips.iter().take(excess).cloned().collect();
-            for ip in to_remove {
-                self.known_ips.remove(&ip);
-            }
-            info!(
-                retained = self.known_ips.len(),
-                "CrowdSec: trimmed known_ips set"
-            );
-        }
+    /// Check if an IP is in the CrowdSec community threat list.
+    pub fn is_known_threat(&self, ip: &str) -> bool {
+        self.threat_list.contains(ip)
+    }
+
+    /// Number of IPs in the threat list.
+    #[allow(dead_code)]
+    pub fn threat_count(&self) -> usize {
+        self.threat_list.len()
     }
 }
 
-/// Process CrowdSec decisions for one tick.
-/// Returns the number of new IPs blocked.
-///
-/// Caps the number of new blocks per tick to `cfg.crowdsec.max_per_sync`
-/// (default: 50) to prevent flooding the firewall and exhausting memory
-/// when CrowdSec CAPI returns thousands of community bans at once.
-pub async fn sync_tick(
-    cs: &mut CrowdSecState,
-    blocklist: &mut Blocklist,
-    skill_registry: &SkillRegistry,
-    cfg: &AgentConfig,
-    decision_writer: &mut Option<DecisionWriter>,
-    decision_cooldowns: &mut std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
-    host: &str,
-) -> usize {
+/// Update the threat list from CrowdSec LAPI (delta stream).
+/// Called from the agent's slow loop. Returns (added, removed) counts.
+pub async fn sync_threat_list(cs: &mut CrowdSecState) -> (usize, usize) {
     if !cs.client.is_configured() {
-        return 0;
+        return (0, 0);
     }
 
-    let startup = cs.is_startup;
-    let mut decisions = match cs.client.fetch_bans(startup).await {
-        Ok(d) => d,
+    let (new_ips, deleted_ips) = match cs.client.fetch_stream().await {
+        Ok(r) => r,
         Err(e) => {
-            warn!(error = %e, "CrowdSec sync failed");
-            return 0;
+            warn!(error = %e, "CrowdSec threat list sync failed");
+            return (0, 0);
         }
     };
 
-    let total_from_api = decisions.len();
-    let max_per_sync = cfg.crowdsec.max_per_sync;
-
-    // CrowdSec CAPI can return 10k+ decisions. Pre-filter to avoid holding
-    // a massive vec in memory: keep only IPs we haven't seen yet, capped at
-    // 2x max_per_sync (headroom for skips due to private IPs / cooldowns).
-    if decisions.len() > max_per_sync * 2 {
-        let cap = max_per_sync * 2;
-        let before = decisions.len();
-        decisions.retain(|d| !cs.known_ips.contains(&d.value) && !blocklist.contains(&d.value));
-        decisions.truncate(cap);
-        info!(
-            before,
-            after = decisions.len(),
-            "CrowdSec: pre-filtered decisions to avoid memory spike"
-        );
+    // Remove expired IPs
+    let mut removed = 0;
+    for ip in &deleted_ips {
+        if cs.threat_list.remove(ip) {
+            removed += 1;
+        }
     }
-    let mut new_blocks = 0usize;
-    let mut skipped_known = 0usize;
 
-    for decision in decisions {
-        let ip = &decision.value;
-
-        // Skip simulated decisions
-        if decision.simulated == Some(true) {
-            continue;
-        }
-
-        // Skip already-known IPs (fast path — no firewall call)
-        if cs.known_ips.contains(ip) || blocklist.contains(ip) {
-            cs.known_ips.insert(ip.clone());
-            skipped_known += 1;
-            continue;
-        }
-
-        // Skip private / loopback IPs (same gate as AI layer)
-        if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
-            if is_private_or_loopback(addr) {
-                cs.known_ips.insert(ip.clone());
-                continue;
-            }
-        }
-
-        // Decision cooldown — skip if we already blocked this IP recently
-        let cooldown_key = format!("block_ip:crowdsec:ip:{ip}");
-        let cooldown_cutoff = chrono::Utc::now() - chrono::Duration::seconds(3600);
-        if decision_cooldowns
-            .get(&cooldown_key)
-            .is_some_and(|ts| *ts > cooldown_cutoff)
-        {
-            cs.known_ips.insert(ip.clone());
-            continue;
-        }
-
-        // Cap: stop blocking after max_per_sync new IPs this tick.
-        // The remaining IPs stay unknown and will be picked up next tick.
-        if new_blocks >= max_per_sync {
-            debug!(
-                max_per_sync,
-                "CrowdSec: hit per-sync cap, deferring remaining IPs to next tick"
+    // Add new IPs (respect cap)
+    let mut added = 0;
+    for ip in &new_ips {
+        if cs.threat_list.len() >= THREAT_LIST_MAX {
+            warn!(
+                max = THREAT_LIST_MAX,
+                "CrowdSec threat list at capacity, skipping new additions"
             );
             break;
         }
-
-        info!(
-            ip = %ip,
-            origin = %decision.origin,
-            duration = %decision.duration,
-            "CrowdSec ban — blocking IP"
-        );
-
-        // Execute block skill directly (bypass AI)
-        let skill_id = format!("block-ip-{}", cfg.responder.block_backend);
-        let skill = skill_registry
-            .get(&skill_id)
-            .or_else(|| skill_registry.block_skill_for_backend(&cfg.responder.block_backend));
-
-        let execution_result = match skill {
-            Some(skill) => {
-                use innerwarden_core::{entities::EntityRef, event::Severity, incident::Incident};
-                let synthetic_incident = Incident {
-                    ts: chrono::Utc::now(),
-                    host: host.to_string(),
-                    incident_id: format!("crowdsec:{}", decision.id),
-                    severity: Severity::High,
-                    title: format!("CrowdSec ban: {ip}"),
-                    summary: format!(
-                        "CrowdSec banned {} (origin: {}, duration: {})",
-                        ip, decision.origin, decision.duration
-                    ),
-                    evidence: serde_json::json!({
-                        "source": "crowdsec",
-                        "origin": decision.origin,
-                        "duration": decision.duration,
-                    }),
-                    recommended_checks: vec![],
-                    tags: vec!["crowdsec".to_string()],
-                    entities: vec![EntityRef::ip(ip)],
-                };
-                let ctx = SkillContext {
-                    incident: synthetic_incident,
-                    target_ip: Some(ip.clone()),
-                    target_user: None,
-                    target_container: None,
-                    duration_secs: None,
-                    host: host.to_string(),
-                    data_dir: std::path::PathBuf::new(),
-                    honeypot: skills::HoneypotRuntimeConfig::default(),
-                    ai_provider: None,
-                };
-                let result = skill.execute(&ctx, cfg.responder.dry_run).await;
-                if result.success {
-                    blocklist.insert(ip.clone());
-                    new_blocks += 1;
-                }
-                result.message
+        // Skip private/loopback
+        if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
+            if is_private_or_loopback(addr) {
+                continue;
             }
-            None => {
-                warn!(skill_id = %skill_id, "CrowdSec: no block skill available");
-                format!("skipped: skill '{skill_id}' not found or not in allowed_skills")
-            }
-        };
-
-        cs.known_ips.insert(ip.clone());
-        decision_cooldowns.insert(cooldown_key, chrono::Utc::now());
-
-        // Write audit trail
-        if let Some(writer) = decision_writer {
-            let entry = DecisionEntry {
-                ts: chrono::Utc::now(),
-                incident_id: format!("crowdsec:{}", decision.id),
-                host: host.to_string(),
-                ai_provider: format!("crowdsec:{}", decision.origin),
-                action_type: "block_ip".to_string(),
-                target_ip: Some(ip.clone()),
-                target_user: None,
-                skill_id: Some(skill_id),
-                confidence: 1.0,
-                auto_executed: true,
-                dry_run: cfg.responder.dry_run,
-                reason: format!(
-                    "CrowdSec ban from origin '{}', duration {}",
-                    decision.origin, decision.duration
-                ),
-                estimated_threat: "high".to_string(),
-                execution_result,
-                prev_hash: None,
-            };
-            if let Err(e) = writer.write(&entry) {
-                warn!(error = %e, "failed to write CrowdSec decision to audit trail");
-            }
+        }
+        if cs.threat_list.insert(ip.clone()) {
+            added += 1;
         }
     }
 
-    if new_blocks > 0 || total_from_api > 100 {
+    if added > 0 || removed > 0 {
         info!(
-            new_blocks,
-            total_from_api,
-            skipped_known,
-            max_per_sync,
-            "CrowdSec sync: {new_blocks} blocked, {skipped_known} already known, {total_from_api} total from API"
+            added,
+            removed,
+            total = cs.threat_list.len(),
+            "CrowdSec threat list updated"
         );
     }
 
-    // After first successful sync, switch to delta mode
-    if cs.is_startup {
-        cs.is_startup = false;
-    }
-
-    // Prevent unbounded memory growth
-    cs.trim_if_needed();
-
-    new_blocks
+    (added, removed)
 }
 
 fn is_private_or_loopback(addr: std::net::IpAddr) -> bool {
@@ -443,36 +273,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_decisions_from_json() {
-        let raw = r#"[
-            {"id":1,"origin":"crowdsec","type":"ban","scope":"ip","value":"1.2.3.4","duration":"86399s"},
-            {"id":2,"origin":"cscli","type":"ban","scope":"ip","value":"5.6.7.8","duration":"3600s","simulated":false}
-        ]"#;
-        let decisions: Vec<CrowdSecDecision> = serde_json::from_str(raw).unwrap();
-        assert_eq!(decisions.len(), 2);
-        assert_eq!(decisions[0].value, "1.2.3.4");
-        assert_eq!(decisions[1].origin, "cscli");
+    fn parse_stream_response() {
+        let raw = r#"{"new":[{"id":1,"origin":"CAPI","type":"ban","scope":"ip","value":"1.2.3.4","duration":"86399s"}],"deleted":[{"id":2,"origin":"CAPI","type":"ban","scope":"ip","value":"5.6.7.8","duration":"0s"}]}"#;
+        let stream: StreamResponse = serde_json::from_str(raw).unwrap();
+        assert_eq!(stream.new.as_ref().unwrap().len(), 1);
+        assert_eq!(stream.new.as_ref().unwrap()[0].value, "1.2.3.4");
+        assert_eq!(stream.deleted.as_ref().unwrap().len(), 1);
+        assert_eq!(stream.deleted.as_ref().unwrap()[0].value, "5.6.7.8");
     }
 
     #[test]
     fn parse_null_response() {
-        // CrowdSec returns literal "null" when no decisions exist
         let text = "null";
         assert!(text.trim() == "null");
     }
 
     #[test]
-    fn parse_empty_array() {
-        let raw = "[]";
-        let decisions: Vec<CrowdSecDecision> = serde_json::from_str(raw).unwrap();
-        assert!(decisions.is_empty());
+    fn parse_empty_stream() {
+        let raw = r#"{"new":null,"deleted":null}"#;
+        let stream: StreamResponse = serde_json::from_str(raw).unwrap();
+        assert!(stream.new.is_none());
+        assert!(stream.deleted.is_none());
     }
 
     #[test]
     fn skips_simulated_decisions() {
-        let raw = r#"[{"id":1,"origin":"crowdsec","type":"ban","scope":"ip","value":"1.2.3.4","duration":"3600s","simulated":true}]"#;
-        let decisions: Vec<CrowdSecDecision> = serde_json::from_str(raw).unwrap();
-        assert!(decisions[0].simulated == Some(true));
+        let raw = r#"{"new":[{"id":1,"origin":"CAPI","type":"ban","scope":"ip","value":"1.2.3.4","duration":"3600s","simulated":true}]}"#;
+        let stream: StreamResponse = serde_json::from_str(raw).unwrap();
+        let new = stream.new.unwrap();
+        // Simulated should be filtered by extract_ips
+        let filtered: Vec<String> = new
+            .into_iter()
+            .filter(|d| d.simulated != Some(true))
+            .map(|d| d.value)
+            .collect();
+        assert!(filtered.is_empty());
     }
 
     #[test]
@@ -480,5 +315,14 @@ mod tests {
         assert!(is_private_or_loopback("192.168.1.1".parse().unwrap()));
         assert!(is_private_or_loopback("127.0.0.1".parse().unwrap()));
         assert!(!is_private_or_loopback("1.2.3.4".parse().unwrap()));
+    }
+
+    #[test]
+    fn threat_list_lookup() {
+        let mut list = HashSet::new();
+        list.insert("1.2.3.4".to_string());
+        list.insert("5.6.7.8".to_string());
+        assert!(list.contains("1.2.3.4"));
+        assert!(!list.contains("9.9.9.9"));
     }
 }
