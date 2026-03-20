@@ -4167,10 +4167,29 @@ fn read_jsonl<T: DeserializeOwned>(path: &Path) -> Vec<T> {
         }
     }
 
-    // Cache miss — read file
-    let content = match std::fs::read_to_string(path) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
+    // Cache miss — read only the tail of the file (last 256KB ≈ 500 entries).
+    // Dashboard lists show max 50-100 items; reading the full file wastes memory.
+    const MAX_READ_BYTES: u64 = 256 * 1024;
+    let content = if file_size > MAX_READ_BYTES {
+        match std::fs::File::open(path) {
+            Ok(mut f) => {
+                use std::io::{Read, Seek, SeekFrom};
+                let _ = f.seek(SeekFrom::End(-(MAX_READ_BYTES as i64)));
+                let mut buf = String::with_capacity(MAX_READ_BYTES as usize);
+                let _ = f.read_to_string(&mut buf);
+                // Drop the first (possibly partial) line
+                if let Some(pos) = buf.find('\n') {
+                    buf.drain(..=pos);
+                }
+                buf
+            }
+            Err(_) => return Vec::new(),
+        }
+    } else {
+        match std::fs::read_to_string(path) {
+            Ok(v) => v,
+            Err(_) => return Vec::new(),
+        }
     };
 
     let result = content
@@ -4194,8 +4213,8 @@ fn read_jsonl<T: DeserializeOwned>(path: &Path) -> Vec<T> {
         })
         .collect();
 
-    // Store in cache (cap file size to avoid caching huge files)
-    if content.len() < 10 * 1024 * 1024 {
+    // Store in cache (only cache small results)
+    if content.len() < 512 * 1024 {
         let mut cache = JSONL_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         // Prune stale entries
         if cache.len() > 20 {
