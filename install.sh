@@ -1020,16 +1020,20 @@ echo "  innerwarden enable sudo-protection   # suspend sudo on abuse"
 echo
 echo "── Dashboard ───────────────────────────────────────────────────"
 if [[ "$OS_TYPE" == "Darwin" ]]; then
-echo "  http://localhost:8787  (no login required by default)"
+echo "  http://localhost:8787"
 else
-echo "  http://$(hostname -I | awk '{print $1}' 2>/dev/null || echo YOUR_SERVER_IP):8787"
-echo "  Open in your browser — no login required by default."
+echo "  Dashboard binds to localhost for security. Access via SSH tunnel:"
+echo "    ssh -L 8787:localhost:8787 user@your-server"
+echo "  Then open http://localhost:8787 in your browser."
 fi
-echo "  To add a password:  innerwarden configure dashboard"
+echo
+echo "── Getting started ─────────────────────────────────────────────"
+echo "  innerwarden setup    — interactive first-time wizard (AI + Telegram + modules)"
 echo
 echo "── Useful commands ─────────────────────────────────────────────"
 echo "  innerwarden status   — system overview"
 echo "  innerwarden doctor   — diagnose issues with fix hints"
+echo "  innerwarden scan     — detect what's on your server, recommend modules"
 echo "  innerwarden list     — show available capabilities"
 echo "  innerwarden upgrade  — update to the latest release"
 if [[ "$OS_TYPE" == "Darwin" ]]; then
