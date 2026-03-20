@@ -4032,12 +4032,22 @@ async fn process_narrative_tick(
             elapsed >= NARRATIVE_MIN_INTERVAL_SECS || elapsed >= NARRATIVE_MAX_STALE_SECS;
         if should_write {
             let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
-            // Always read from offset 0 — summary covers the full day, not just new entries
-            let all_events =
-                reader::read_new_entries::<innerwarden_core::event::Event>(&events_path, 0)
-                    .inspect_err(|_| {
-                        state.telemetry.observe_error("narrative_reader");
-                    })?;
+            // Read events for narrative summary. To prevent OOM on busy hosts where
+            // the events file can grow to 100MB+, only read the last 2MB of the file
+            // (roughly the most recent ~5000 events). The narrative summarizes trends
+            // and patterns, so a recent window is sufficient.
+            const NARRATIVE_MAX_READ_BYTES: u64 = 2 * 1024 * 1024;
+            let events_file_size = std::fs::metadata(&events_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            let events_read_offset = events_file_size.saturating_sub(NARRATIVE_MAX_READ_BYTES);
+            let all_events = reader::read_new_entries::<innerwarden_core::event::Event>(
+                &events_path,
+                events_read_offset,
+            )
+            .inspect_err(|_| {
+                state.telemetry.observe_error("narrative_reader");
+            })?;
             let all_incidents = reader::read_new_entries::<innerwarden_core::incident::Incident>(
                 &incidents_path,
                 0,
