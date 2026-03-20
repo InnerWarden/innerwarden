@@ -27,6 +27,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **CrowdSec rate-limit** — cap new blocks per sync to 50 (configurable via `max_per_sync`), preventing OOM when CAPI returns 10k+ IPs. Trim `known_ips` at 10k to prevent unbounded memory growth.
 - **Last Portuguese strings removed** — honeypot buttons (Bloquear/Monitorar/Ignorar), toast messages, and monitoring callback all translated to English
 
 ---
