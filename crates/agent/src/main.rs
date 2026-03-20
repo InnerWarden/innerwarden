@@ -2374,12 +2374,21 @@ async fn process_incidents(
             "AI decision"
         );
 
-        // Honeypot operator-in-the-loop: when Telegram is configured and the AI
-        // recommends Honeypot, defer execution and ask the operator what to do.
-        // The operator sees a 4-button keyboard: Honeypot / Block / Monitor / Ignore.
-        // Execution is resumed in process_telegram_approval when the choice arrives.
+        // Honeypot: when AI recommends honeypot with high confidence and auto_execute,
+        // activate it directly and notify the operator after. Only ask for confirmation
+        // when confidence is below threshold or auto_execute is false.
         if let ai::AiAction::Honeypot { ip } = &decision.action {
-            if let Some(ref tg) = state.telegram_client {
+            let should_auto =
+                decision.auto_execute && decision.confidence >= cfg.ai.confidence_threshold;
+            if should_auto {
+                // Auto-execute honeypot — same as operator clicking "Honeypot"
+                info!(
+                    ip = %ip,
+                    confidence = decision.confidence,
+                    "AI auto-activating honeypot (high confidence)"
+                );
+                // Fall through to normal execution below (don't defer to Telegram)
+            } else if let Some(ref tg) = state.telegram_client {
                 let ttl = cfg.telegram.approval_ttl_secs;
                 let tg_clone = tg.clone();
                 let reason = decision.reason.clone();
