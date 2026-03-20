@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
@@ -30,14 +30,14 @@ pub struct TelemetrySnapshot {
 
 #[derive(Debug, Default)]
 pub struct TelemetryState {
-    events_by_collector: HashMap<String, u64>,
-    incidents_by_detector: HashMap<String, u64>,
+    events_by_collector: BTreeMap<String, u64>,
+    incidents_by_detector: BTreeMap<String, u64>,
     gate_pass_count: u64,
     ai_sent_count: u64,
     ai_decision_count: u64,
     decision_latency_sum_ms: u128,
-    errors_by_component: HashMap<String, u64>,
-    decisions_by_action: HashMap<String, u64>,
+    errors_by_component: BTreeMap<String, u64>,
+    decisions_by_action: BTreeMap<String, u64>,
     dry_run_execution_count: u64,
     real_execution_count: u64,
 }
@@ -99,14 +99,14 @@ impl TelemetryState {
         TelemetrySnapshot {
             ts: Utc::now(),
             tick: tick.to_string(),
-            events_by_collector: to_btreemap(self.events_by_collector.clone()),
-            incidents_by_detector: to_btreemap(self.incidents_by_detector.clone()),
+            events_by_collector: self.events_by_collector.clone(),
+            incidents_by_detector: self.incidents_by_detector.clone(),
             gate_pass_count: self.gate_pass_count,
             ai_sent_count: self.ai_sent_count,
             ai_decision_count: self.ai_decision_count,
             avg_decision_latency_ms: avg_latency,
-            errors_by_component: to_btreemap(self.errors_by_component.clone()),
-            decisions_by_action: to_btreemap(self.decisions_by_action.clone()),
+            errors_by_component: self.errors_by_component.clone(),
+            decisions_by_action: self.decisions_by_action.clone(),
             dry_run_execution_count: self.dry_run_execution_count,
             real_execution_count: self.real_execution_count,
         }
@@ -140,7 +140,9 @@ impl TelemetryWriter {
             .to_string();
 
         if today != self.current_date {
-            self.writer.flush().ok();
+            if let Err(e) = self.writer.flush() {
+                warn!("telemetry flush failed during date rollover: {e}");
+            }
             let file = open_or_create(&self.data_dir, &today)?;
             self.writer = BufWriter::new(file);
             self.current_date = today;
@@ -208,10 +210,6 @@ fn open_or_create(data_dir: &Path, date: &str) -> Result<File> {
         .append(true)
         .open(&path)
         .with_context(|| format!("failed to open {}", path.display()))
-}
-
-fn to_btreemap(map: HashMap<String, u64>) -> BTreeMap<String, u64> {
-    map.into_iter().collect()
 }
 
 #[cfg(test)]
