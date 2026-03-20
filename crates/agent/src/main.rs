@@ -3550,10 +3550,13 @@ async fn process_telegram_approval(
         info!(ip = %ip, operator = %operator, action = %chosen, "Telegram honeypot choice received");
 
         let Some(choice) = state.pending_honeypot_choices.remove(&ip) else {
-            debug!(
+            info!(
                 ip = %ip,
-                "Telegram honeypot choice for unknown or expired IP — ignoring"
+                "Telegram honeypot choice for unknown or expired IP"
             );
+            tg_reply!(format!(
+                "⏳ That choice for {ip} expired or was already handled. If the threat is still active, it'll show up again."
+            ));
             return;
         };
 
