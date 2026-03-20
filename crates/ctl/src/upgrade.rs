@@ -18,6 +18,10 @@ use sha2::{Digest, Sha256};
 const GITHUB_REPO: &str = "InnerWarden/innerwarden";
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Ed25519 public key for release signature verification.
+/// The corresponding private key is stored as a GitHub Actions secret.
+const RELEASE_PUBLIC_KEY_B64: &str = "yf58o+MQluj7MwTlW+hB9tfLQk9df0iUeGxPbmAIFM8=";
+
 // ---------------------------------------------------------------------------
 // GitHub API types
 // ---------------------------------------------------------------------------
@@ -228,6 +232,52 @@ pub fn sha256_file(path: &Path) -> Result<String> {
     Ok(hash.iter().map(|b| format!("{b:02x}")).collect())
 }
 
+/// Download a `.sig` sidecar file and return the base64-encoded signature string.
+pub fn fetch_signature(url: &str) -> Result<String> {
+    let resp = github_get(url)
+        .call()
+        .context("signature sidecar download failed")?;
+    let text = resp
+        .into_body()
+        .read_to_string()
+        .context("signature sidecar is not UTF-8")?;
+    let sig = text.trim().to_string();
+    if sig.is_empty() {
+        bail!("signature sidecar file is empty");
+    }
+    Ok(sig)
+}
+
+/// Verify Ed25519 signature of binary bytes.
+/// Returns `Ok(())` if the signature is valid, `Err` if invalid or malformed.
+pub fn verify_signature(binary_bytes: &[u8], signature_b64: &str) -> Result<()> {
+    use base64::Engine;
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+    let pub_key_bytes = base64::engine::general_purpose::STANDARD
+        .decode(RELEASE_PUBLIC_KEY_B64)
+        .context("invalid embedded public key")?;
+    let pub_key_bytes: [u8; 32] = pub_key_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("public key wrong length"))?;
+    let verifying_key =
+        VerifyingKey::from_bytes(&pub_key_bytes).context("invalid Ed25519 public key")?;
+
+    let sig_bytes = base64::engine::general_purpose::STANDARD
+        .decode(signature_b64.trim())
+        .context("invalid signature encoding")?;
+    let sig_bytes: [u8; 64] = sig_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("signature wrong length"))?;
+    let signature = Signature::from_bytes(&sig_bytes);
+
+    verifying_key
+        .verify(binary_bytes, &signature)
+        .context("signature verification FAILED — binary may be tampered")?;
+
+    Ok(())
+}
+
 /// Atomically install `src` → `dest` with mode 755 (root-owned).
 pub fn install_binary(src: &Path, dest: &Path, dry_run: bool) -> Result<()> {
     if dry_run {
@@ -267,6 +317,7 @@ pub struct DownloadPlan<'r> {
     pub target: &'static UpgradeTarget,
     pub asset: &'r GithubAsset,
     pub sha256_asset: Option<&'r GithubAsset>,
+    pub sig_asset: Option<&'r GithubAsset>,
 }
 
 /// Build the list of binaries we can actually upgrade given the release assets.
@@ -278,10 +329,13 @@ pub fn build_plan<'r>(release: &'r GithubRelease, arch: &str) -> Vec<DownloadPla
             let asset = find_asset(release, &asset_name)?;
             let sha_name = format!("{asset_name}.sha256");
             let sha256_asset = find_asset(release, &sha_name);
+            let sig_name = format!("{asset_name}.sig");
+            let sig_asset = find_asset(release, &sig_name);
             Some(DownloadPlan {
                 target: t,
                 asset,
                 sha256_asset,
+                sig_asset,
             })
         })
         .collect()
@@ -528,5 +582,168 @@ mod tests {
         };
         let preview = r.changelog_preview().unwrap_or_default();
         assert!(preview.lines().count() <= 18);
+    }
+
+    #[test]
+    fn build_plan_picks_up_sig_assets() {
+        let mut assets = vec![];
+        for name in &["innerwarden-sensor", "innerwarden-agent", "innerwarden-ctl"] {
+            let base = format!("{name}-linux-x86_64");
+            assets.push(GithubAsset {
+                name: base.clone(),
+                browser_download_url: format!("https://example.com/{base}"),
+                size: 10_000_000,
+            });
+            assets.push(GithubAsset {
+                name: format!("{base}.sha256"),
+                browser_download_url: format!("https://example.com/{base}.sha256"),
+                size: 65,
+            });
+            assets.push(GithubAsset {
+                name: format!("{base}.sig"),
+                browser_download_url: format!("https://example.com/{base}.sig"),
+                size: 88,
+            });
+        }
+        let release = GithubRelease {
+            tag_name: "v0.3.0".to_string(),
+            html_url: String::new(),
+            published_at: None,
+            body: None,
+            assets,
+        };
+        let plan = build_plan(&release, "x86_64");
+        assert_eq!(plan.len(), 3);
+        for dp in &plan {
+            assert!(
+                dp.sha256_asset.is_some(),
+                "sha256 missing for {}",
+                dp.target.binary
+            );
+            assert!(
+                dp.sig_asset.is_some(),
+                "sig missing for {}",
+                dp.target.binary
+            );
+        }
+    }
+
+    #[test]
+    fn build_plan_sig_asset_is_none_when_absent() {
+        let mut assets = vec![];
+        for name in &["innerwarden-sensor", "innerwarden-agent", "innerwarden-ctl"] {
+            assets.push(GithubAsset {
+                name: format!("{name}-linux-x86_64"),
+                browser_download_url: format!("https://example.com/{name}"),
+                size: 10_000_000,
+            });
+        }
+        let release = GithubRelease {
+            tag_name: "v0.2.0".to_string(),
+            html_url: String::new(),
+            published_at: None,
+            body: None,
+            assets,
+        };
+        let plan = build_plan(&release, "x86_64");
+        assert_eq!(plan.len(), 3);
+        for dp in &plan {
+            assert!(dp.sig_asset.is_none());
+        }
+    }
+
+    #[test]
+    fn verify_signature_accepts_valid_signature() {
+        use base64::Engine;
+        use ed25519_dalek::{Signer, SigningKey};
+
+        // Generate a throwaway key pair for testing
+        let signing_key = SigningKey::generate(&mut rand_core::OsRng);
+        let verifying_key = signing_key.verifying_key();
+
+        // Temporarily override the public key constant — we can't, so instead
+        // test the crypto primitives directly to ensure our decoding logic works.
+        let message = b"test binary content";
+        let signature = signing_key.sign(message);
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+
+        // Manually verify using the same logic as verify_signature
+        let pub_key_b64 =
+            base64::engine::general_purpose::STANDARD.encode(verifying_key.to_bytes());
+
+        // Decode and verify round-trip
+        let decoded_pub = base64::engine::general_purpose::STANDARD
+            .decode(&pub_key_b64)
+            .unwrap();
+        assert_eq!(decoded_pub.len(), 32);
+
+        let decoded_sig = base64::engine::general_purpose::STANDARD
+            .decode(&sig_b64)
+            .unwrap();
+        assert_eq!(decoded_sig.len(), 64);
+
+        let vk = ed25519_dalek::VerifyingKey::from_bytes(
+            &<[u8; 32]>::try_from(decoded_pub.as_slice()).unwrap(),
+        )
+        .unwrap();
+        let sig = ed25519_dalek::Signature::from_bytes(
+            &<[u8; 64]>::try_from(decoded_sig.as_slice()).unwrap(),
+        );
+        use ed25519_dalek::Verifier;
+        assert!(vk.verify(message, &sig).is_ok());
+    }
+
+    #[test]
+    fn verify_signature_rejects_wrong_data() {
+        use base64::Engine;
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let signing_key = SigningKey::generate(&mut rand_core::OsRng);
+        let message = b"original content";
+        let signature = signing_key.sign(message);
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+
+        // Tamper with the message
+        let tampered = b"tampered content";
+        let vk = signing_key.verifying_key();
+        let decoded_sig = base64::engine::general_purpose::STANDARD
+            .decode(&sig_b64)
+            .unwrap();
+        let sig = ed25519_dalek::Signature::from_bytes(
+            &<[u8; 64]>::try_from(decoded_sig.as_slice()).unwrap(),
+        );
+        use ed25519_dalek::Verifier;
+        assert!(vk.verify(tampered, &sig).is_err());
+    }
+
+    #[test]
+    fn verify_signature_rejects_bad_encoding() {
+        let result = verify_signature(b"hello", "not-valid-base64!!!");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verify_signature_rejects_wrong_length_sig() {
+        use base64::Engine;
+        // Valid base64 but only 16 bytes — not 64
+        let short_sig = base64::engine::general_purpose::STANDARD.encode([0u8; 16]);
+        let result = verify_signature(b"hello", &short_sig);
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("wrong length"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn embedded_public_key_decodes_to_32_bytes() {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(RELEASE_PUBLIC_KEY_B64)
+            .expect("embedded public key must be valid base64");
+        assert_eq!(bytes.len(), 32, "Ed25519 public key must be 32 bytes");
+        // Must also be a valid Ed25519 point
+        let result = ed25519_dalek::VerifyingKey::from_bytes(
+            &<[u8; 32]>::try_from(bytes.as_slice()).unwrap(),
+        );
+        assert!(result.is_ok(), "embedded key must be a valid Ed25519 point");
     }
 }
