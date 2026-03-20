@@ -30,6 +30,13 @@ use crate::skills::{self, Blocklist, SkillContext, SkillRegistry};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
+struct StreamResponse {
+    new: Option<Vec<CrowdSecDecision>>,
+    #[allow(dead_code)]
+    deleted: Option<Vec<CrowdSecDecision>>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct CrowdSecDecision {
     pub id: i64,
     pub origin: String,
@@ -73,11 +80,24 @@ impl CrowdSecClient {
         }
     }
 
-    /// Fetch all active IP ban decisions from the LAPI.
-    pub async fn fetch_bans(&self) -> Result<Vec<CrowdSecDecision>> {
-        let url = format!("{}/v1/decisions?type=ban&scope=ip", self.base_url);
+    /// Fetch new IP ban decisions from the LAPI using the stream endpoint.
+    /// On first call (`startup = true`), fetches current bans.
+    /// On subsequent calls, only fetches new/deleted decisions since last poll.
+    /// This avoids downloading the entire 24k+ decision list every tick.
+    pub async fn fetch_bans(&self, startup: bool) -> Result<Vec<CrowdSecDecision>> {
+        let url = if startup {
+            format!(
+                "{}/v1/decisions/stream?startup=true&scopes=ip",
+                self.base_url
+            )
+        } else {
+            format!(
+                "{}/v1/decisions/stream?startup=false&scopes=ip",
+                self.base_url
+            )
+        };
 
-        debug!(url = %url, "polling CrowdSec LAPI");
+        debug!(url = %url, startup, "polling CrowdSec LAPI stream");
 
         let resp = self
             .http
@@ -93,7 +113,6 @@ impl CrowdSecClient {
             })?;
 
         if resp.status().as_u16() == 204 {
-            // 204 No Content = no active decisions
             return Ok(vec![]);
         }
 
@@ -113,16 +132,14 @@ impl CrowdSecClient {
             );
         }
 
-        // 200 with body = list of decisions (may be null if empty).
-        // Cap response body at 8MB — CrowdSec CAPI can return 3-5MB for large community lists.
-        // The real memory protection is the 500-decision hard cap below + max_per_sync in sync_tick.
+        // Stream endpoint returns {"new": [...], "deleted": [...]}
+        // Cap body at 8MB as safety net
         const MAX_BODY: usize = 8 * 1024 * 1024;
         let bytes = resp.bytes().await?;
         if bytes.len() > MAX_BODY {
             warn!(
                 body_bytes = bytes.len(),
-                max = MAX_BODY,
-                "CrowdSec LAPI response too large, skipping this tick"
+                "CrowdSec stream response too large, skipping"
             );
             return Ok(vec![]);
         }
@@ -131,11 +148,22 @@ impl CrowdSecClient {
             return Ok(vec![]);
         }
 
+        // Try stream format first: {"new": [...], "deleted": [...]}
+        if let Ok(stream) = serde_json::from_str::<StreamResponse>(text) {
+            let new_decisions = stream.new.unwrap_or_default();
+            if new_decisions.len() > 500 {
+                info!(
+                    total = new_decisions.len(),
+                    "CrowdSec: capping stream at 500 new decisions"
+                );
+                return Ok(new_decisions.into_iter().take(500).collect());
+            }
+            return Ok(new_decisions);
+        }
+
+        // Fallback: plain array (older LAPI or direct /v1/decisions)
         let all = serde_json::from_str::<Vec<CrowdSecDecision>>(text)
             .context("failed to parse CrowdSec decision list")?;
-
-        // Hard cap: never return more than 500 decisions per fetch.
-        // The vec is dropped immediately after — only 500 entries survive.
         if all.len() > 500 {
             info!(
                 total = all.len(),
@@ -164,6 +192,9 @@ pub struct CrowdSecState {
     /// IPs we have already processed (blocked via InnerWarden or already in blocklist).
     pub known_ips: std::collections::HashSet<String>,
     pub client: CrowdSecClient,
+    /// True on first tick — tells the stream API to send current bans.
+    /// After first tick, only new/deleted decisions are returned.
+    pub is_startup: bool,
 }
 
 impl CrowdSecState {
@@ -171,6 +202,7 @@ impl CrowdSecState {
         Self {
             known_ips: std::collections::HashSet::new(),
             client: CrowdSecClient::new(cfg),
+            is_startup: true,
         }
     }
 
@@ -209,7 +241,8 @@ pub async fn sync_tick(
         return 0;
     }
 
-    let mut decisions = match cs.client.fetch_bans().await {
+    let startup = cs.is_startup;
+    let mut decisions = match cs.client.fetch_bans(startup).await {
         Ok(d) => d,
         Err(e) => {
             warn!(error = %e, "CrowdSec sync failed");
@@ -379,6 +412,11 @@ pub async fn sync_tick(
             max_per_sync,
             "CrowdSec sync: {new_blocks} blocked, {skipped_known} already known, {total_from_api} total from API"
         );
+    }
+
+    // After first successful sync, switch to delta mode
+    if cs.is_startup {
+        cs.is_startup = false;
     }
 
     // Prevent unbounded memory growth
