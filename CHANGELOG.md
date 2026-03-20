@@ -11,6 +11,26 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.29] — 2026-03-20
+
+### Telegram personality overhaul
+
+- **Hacker-partner voice** — all Telegram messages now speak with the personality of a skilled security operator, not a robotic monitoring system
+- **Guard mode quips** — incident alerts in GUARD and DRY-RUN modes now include context-aware one-liners per threat type
+- **Action reports** — post-kill messages use confidence-scaled quips: "Clean kill. Zero doubt." / "Textbook containment."
+- **Mode descriptions** — GUARD: "Threats get neutralized on sight. You get the report." / WATCH: "I flag everything, you make the call."
+- **/threats** — visual severity icons, relative time (3h ago), cleaner spacing
+- **/decisions** — action-specific icons (block/suspend/honeypot/monitor/kill), confidence + mode display
+- **/blocked** — "Kill list" header with count
+- **AbuseIPDB auto-block** — "Instant kill — AbuseIPDB reputation gate" / "Dropped on sight — known threat, no AI needed."
+- **Honeypot** — "Live target acquired" / "trap them or drop them?" / session debrief with "Their playbook:" heading
+
+### Fixed
+
+- **Last Portuguese strings removed** — honeypot buttons (Bloquear/Monitorar/Ignorar), toast messages, and monitoring callback all translated to English
+
+---
+
 ## [0.1.5] — 2026-03-20
 
 ### Security hardening (red team response)

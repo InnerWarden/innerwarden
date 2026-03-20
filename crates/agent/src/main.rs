@@ -2975,9 +2975,17 @@ async fn process_telegram_approval(
                 .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
                 .unwrap_or_else(|_| "unknown".to_string());
             let today_line = if incident_count == 0 {
-                "Perimeter clean — no threat actors in the logs.".to_string()
+                "All quiet. No threat actors in the logs today.".to_string()
+            } else if decision_count == 0 {
+                format!(
+                    "{incident_count} intrusion attempt{} detected — none acted on yet.",
+                    if incident_count == 1 { "" } else { "s" }
+                )
             } else {
-                format!("{incident_count} intrusion attempts, {decision_count} neutralized")
+                format!(
+                    "{incident_count} intrusion attempt{}, {decision_count} neutralized.",
+                    if incident_count == 1 { "" } else { "s" }
+                )
             };
             let text = format!(
                 "👾 <b>InnerWarden</b> — <b>{host}</b>\n\
@@ -2985,8 +2993,8 @@ async fn process_telegram_approval(
                  Mode: <b>{mode_label}</b>\n\
                  <i>{mode_desc}</i>\n\
                  \n\
-                 Threat brain: {ai_label}\n\
-                 Intel today: {today_line}\n\
+                 AI: {ai_label}\n\
+                 Today: {today_line}\n\
                  \n\
                  /threats · /decisions · /blocked",
             );
@@ -3100,20 +3108,19 @@ async fn process_telegram_approval(
         if cfg.telegram.bot.enabled {
             let mode = guardian_mode(cfg);
             let text = match mode {
-                telegram::GuardianMode::Guard => "🟢 <b>Already running in GUARD mode.</b>\n\
-                     High-confidence threats get neutralized on sight — no confirmation needed.\n\
-                     You'll get an action report after each hit.\n\n\
-                     To switch to passive WATCH mode:\n\
-                     <code>innerwarden configure responder</code> → option 1"
+                telegram::GuardianMode::Guard => "🟢 <b>Already in GUARD mode.</b>\n\
+                     I see a threat, I drop it. You get the action report after.\n\
+                     High-confidence targets get neutralized — no questions asked.\n\n\
+                     Switch to passive: <code>innerwarden configure responder</code> → option 1"
                     .to_string(),
                 _ => {
                     format!(
-                        "🟢 <b>GUARD mode</b> — autonomous threat neutralization.\n\
-                         When I'm confident, I act. No need to ask.\n\n\
-                         To activate, run on your server:\n\
+                        "🟢 <b>GUARD mode</b> — full autonomous defense.\n\
+                         When I'm confident, I act. You sleep, I don't.\n\n\
+                         Activate on your server:\n\
                          <code>innerwarden configure responder</code>\n\
-                         Then pick option 3 (Live mode).\n\n\
-                         Current mode: {} — <i>{}</i>",
+                         Pick option 3 (Live mode).\n\n\
+                         Current: {} — <i>{}</i>",
                         mode.label(),
                         mode.description()
                     )
@@ -3130,19 +3137,18 @@ async fn process_telegram_approval(
             let mode = guardian_mode(cfg);
             let text = match mode {
                 telegram::GuardianMode::Watch => "🔵 <b>Already in WATCH mode.</b>\n\
-                     I detect and log everything — you decide what gets dropped.\n\
-                     Good for baselining or when you want full visibility before acting.\n\n\
-                     To switch to autonomous GUARD mode:\n\
-                     <code>innerwarden configure responder</code> → option 3"
+                     Eyes on everything, hands off. I detect and log — you call the shots.\n\
+                     Good for baselining before going live.\n\n\
+                     Go autonomous: <code>innerwarden configure responder</code> → option 3"
                     .to_string(),
                 _ => {
                     format!(
                         "🔵 <b>WATCH mode</b> — passive recon, active alerts.\n\
-                         I flag every IOC, you make the call on containment.\n\n\
-                         To activate, run on your server:\n\
+                         Every IOC flagged, every anomaly logged. Your call on what gets dropped.\n\n\
+                         Activate on your server:\n\
                          <code>innerwarden configure responder</code>\n\
-                         Then pick option 1 (Observe only).\n\n\
-                         Current mode: {} — <i>{}</i>",
+                         Pick option 1 (Observe only).\n\n\
+                         Current: {} — <i>{}</i>",
                         mode.label(),
                         mode.description()
                     )
@@ -3158,19 +3164,19 @@ async fn process_telegram_approval(
         if cfg.telegram.bot.enabled {
             let blocked: Vec<String> = state.blocklist.as_vec();
             let text = if blocked.is_empty() {
-                "📋 No threat actors contained in this session.\n\
-                 <i>Previous blocks are still enforced in the firewall.</i>"
+                "🛡 No kills this session — perimeter's been clean.\n\
+                 <i>Previous firewall rules still active.</i>"
                     .to_string()
             } else {
                 let mut sorted = blocked;
                 sorted.sort();
                 let list = sorted
                     .iter()
-                    .map(|ip| format!("• <code>{ip}</code>"))
+                    .map(|ip| format!("  <code>{ip}</code>"))
                     .collect::<Vec<_>>()
                     .join("\n");
                 format!(
-                    "🛡 <b>Contained threat actors</b> ({} this session)\n\n{list}",
+                    "🛡 <b>Kill list</b> — {} contained this session\n\n{list}",
                     sorted.len()
                 )
             };
@@ -3183,7 +3189,7 @@ async fn process_telegram_approval(
         info!(operator = %result.operator_name, "Telegram unknown command received");
         if cfg.telegram.bot.enabled {
             tg_reply!(
-                "Unknown command. Type /help for the full operator playbook, or just ask me directly."
+                "Didn't catch that. /help for the full playbook — or just type what you need, I'll figure it out."
             );
         }
         return;
@@ -3237,7 +3243,7 @@ async fn process_telegram_approval(
                 });
             } else {
                 tg_reply!(
-                    "AI brain is offline. Activate it:\n<code>innerwarden enable ai</code>\nor via bot: /enable ai"
+                    "No AI brain connected yet — I need one to answer questions.\n\nActivate:\n<code>innerwarden enable ai</code>\nor via /enable ai"
                 );
             }
         }
@@ -3670,7 +3676,9 @@ async fn process_telegram_approval(
                         warn!("failed to write monitor decision entry: {e:#}");
                     }
                 }
-                tg_reply!(format!("👁 Registrado. Monitorando {ip} silenciosamente."));
+                tg_reply!(format!(
+                    "👁 Silent monitoring active on {ip} — collecting intel."
+                ));
             }
             _ => {
                 // "ignore" or anything else
@@ -3798,24 +3806,33 @@ fn read_last_incidents(data_dir: &Path, today: &str, n: usize) -> String {
     let path = data_dir.join(format!("incidents-{today}.jsonl"));
     let contents = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => return "No incidents recorded today.".to_string(),
+        Err(_) => return "🔇 Clean slate — no intrusion attempts today.".to_string(),
     };
 
     let lines: Vec<&str> = contents.lines().filter(|l| !l.trim().is_empty()).collect();
 
     if lines.is_empty() {
-        return "No incidents recorded today.".to_string();
+        return "🔇 Clean slate — no intrusion attempts today.".to_string();
     }
 
     let last_n: Vec<&str> = lines.iter().rev().take(n).copied().collect::<Vec<_>>();
     let now = chrono::Utc::now();
+
+    let sev_icon = |s: &str| match s {
+        "critical" => "🔴",
+        "high" => "🟠",
+        "medium" => "🟡",
+        "low" => "🟢",
+        _ => "⚪",
+    };
 
     let formatted: Vec<String> = last_n
         .into_iter()
         .rev()
         .filter_map(|line| {
             let v: serde_json::Value = serde_json::from_str(line).ok()?;
-            let severity = v["severity"].as_str().unwrap_or("?").to_uppercase();
+            let severity = v["severity"].as_str().unwrap_or("?");
+            let icon = sev_icon(severity);
             let title = v["title"].as_str().unwrap_or("unknown").to_string();
             let entity = v["entities"]
                 .as_array()
@@ -3832,12 +3849,14 @@ fn read_last_incidents(data_dir: &Path, today: &str, n: usize) -> String {
                         .num_minutes();
                     if mins < 1 {
                         "just now".to_string()
-                    } else {
+                    } else if mins < 60 {
                         format!("{mins}m ago")
+                    } else {
+                        format!("{}h ago", mins / 60)
                     }
                 })
                 .unwrap_or_default();
-            Some(format!("[{severity}] {title} — {entity} {age}"))
+            Some(format!("{icon} {title}\n   <code>{entity}</code> · {age}"))
         })
         .collect();
 
@@ -3845,9 +3864,9 @@ fn read_last_incidents(data_dir: &Path, today: &str, n: usize) -> String {
         "No parseable incidents today.".to_string()
     } else {
         format!(
-            "Last {} incidents:\n{}",
+            "🚨 <b>Recent threats</b> (last {})\n\n{}",
             formatted.len(),
-            formatted.join("\n")
+            formatted.join("\n\n")
         )
     }
 }
@@ -3857,16 +3876,34 @@ fn read_last_decisions(data_dir: &Path, today: &str, n: usize) -> String {
     let path = data_dir.join(format!("decisions-{today}.jsonl"));
     let contents = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => return "No decisions recorded today.".to_string(),
+        Err(_) => return "⚖️ No decisions yet today — standing by.".to_string(),
     };
 
     let lines: Vec<&str> = contents.lines().filter(|l| !l.trim().is_empty()).collect();
 
     if lines.is_empty() {
-        return "No decisions recorded today.".to_string();
+        return "⚖️ No decisions yet today — standing by.".to_string();
     }
 
     let last_n: Vec<&str> = lines.iter().rev().take(n).copied().collect::<Vec<_>>();
+
+    let action_icon = |a: &str| {
+        if a.contains("block") || a.contains("Block") {
+            "🚫"
+        } else if a.contains("suspend") || a.contains("Suspend") {
+            "👑"
+        } else if a.contains("honeypot") || a.contains("Honeypot") {
+            "🍯"
+        } else if a.contains("monitor") || a.contains("Monitor") {
+            "👁"
+        } else if a.contains("kill") || a.contains("Kill") {
+            "💀"
+        } else if a.contains("Ignore") || a.contains("ignore") {
+            "🙈"
+        } else {
+            "⚡"
+        }
+    };
 
     let formatted: Vec<String> = last_n
         .into_iter()
@@ -3874,17 +3911,18 @@ fn read_last_decisions(data_dir: &Path, today: &str, n: usize) -> String {
         .filter_map(|line| {
             let v: serde_json::Value = serde_json::from_str(line).ok()?;
             let action = v["action_type"].as_str().unwrap_or("?").to_string();
+            let icon = action_icon(&action);
             let target = v["target_ip"]
                 .as_str()
                 .or_else(|| v["target_user"].as_str())
                 .unwrap_or("?")
                 .to_string();
             let confidence = v["confidence"].as_f64().unwrap_or(0.0);
+            let pct = (confidence * 100.0) as u32;
             let dry_run = v["dry_run"].as_bool().unwrap_or(true);
-            let mode = if dry_run { "dry-run" } else { "live" };
+            let mode = if dry_run { "sim" } else { "live" };
             Some(format!(
-                "[{action}] {target} — {:.0}% confidence — {mode}",
-                confidence * 100.0
+                "{icon} {action} <code>{target}</code>\n   {pct}% confidence · {mode}"
             ))
         })
         .collect();
@@ -3893,9 +3931,9 @@ fn read_last_decisions(data_dir: &Path, today: &str, n: usize) -> String {
         "No parseable decisions today.".to_string()
     } else {
         format!(
-            "Last {} decisions:\n{}",
+            "⚖️ <b>Recent decisions</b> (last {})\n\n{}",
             formatted.len(),
-            formatted.join("\n")
+            formatted.join("\n\n")
         )
     }
 }
