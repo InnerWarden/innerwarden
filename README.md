@@ -21,6 +21,13 @@ curl -fsSL https://innerwarden.com/install | sudo bash
 
 Installs in 10 seconds. Starts in observe-only mode. You decide when to go live.
 
+<p align="center">
+  <img src="docs/images/dashboard-threats.png" alt="Dashboard — real-time threat overview" width="820">
+</p>
+<p align="center">
+  <img src="docs/images/dashboard-investigate.png" alt="Dashboard — IP investigation view" width="820">
+</p>
+
 ---
 
 ## What it does
