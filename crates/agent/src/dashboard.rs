@@ -121,6 +121,10 @@ struct DashboardState {
     /// True when auth is configured but dashboard is exposed over HTTP on
     /// a non-localhost address. Actions are disabled in this mode.
     insecure_http: bool,
+    /// Auto-sleep: timestamp of last request. After 15 min of inactivity,
+    /// the dashboard returns a lightweight "sleeping" page instead of
+    /// reading JSONL files.
+    last_activity: Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Clone)]
@@ -638,14 +642,31 @@ pub async fn serve(
         !is_localhost
     };
 
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let state = DashboardState {
         data_dir: data_dir.clone(),
         action_cfg: Arc::new(action_cfg),
         event_tx: event_tx.clone(),
         web_push_vapid_public_key,
         insecure_http,
+        last_activity: Arc::new(std::sync::atomic::AtomicU64::new(now_secs)),
     };
     let auth_layer = middleware::from_fn_with_state(auth, require_basic_auth);
+    let activity_state = state.last_activity.clone();
+    let activity_layer = middleware::from_fn(move |req: Request<Body>, next: Next| {
+        let ts = activity_state.clone();
+        async move {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            ts.store(now, std::sync::atomic::Ordering::Relaxed);
+            next.run(req).await
+        }
+    });
 
     let app = Router::new()
         .route("/", get(index))
@@ -687,6 +708,7 @@ pub async fn serve(
             post(api_push_subscribe).delete(api_push_unsubscribe),
         )
         .layer(auth_layer)
+        .layer(activity_layer)
         .with_state(state);
 
     // D6: spawn file watcher and heartbeat tasks
@@ -1023,11 +1045,34 @@ async fn index() -> impl IntoResponse {
     )
 }
 
+/// Dashboard auto-sleep timeout: 15 minutes of no requests.
+const DASHBOARD_SLEEP_SECS: u64 = 15 * 60;
+
+fn is_dashboard_sleeping(last_activity: &std::sync::atomic::AtomicU64) -> bool {
+    let last = last_activity.load(std::sync::atomic::Ordering::Relaxed);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    now.saturating_sub(last) > DASHBOARD_SLEEP_SECS
+}
+
 async fn api_overview(
     State(state): State<DashboardState>,
     Query(query): Query<ListQuery>,
 ) -> Json<OverviewResponse> {
     let date = resolve_date(query.date.as_deref());
+    // When sleeping, return minimal data from telemetry only (no JSONL reads)
+    if is_dashboard_sleeping(&state.last_activity) {
+        return Json(OverviewResponse {
+            date: date.clone(),
+            events_count: 0,
+            incidents_count: 0,
+            decisions_count: 0,
+            top_detectors: vec![],
+            latest_telemetry: crate::telemetry::read_latest_snapshot(&state.data_dir, &date),
+        });
+    }
     Json(compute_overview(&state.data_dir, &date))
 }
 
