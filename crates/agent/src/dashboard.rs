@@ -2809,9 +2809,9 @@ async fn api_agent_check_command(Json(body): Json<CheckCommandRequest>) -> Json<
         "low"
     };
 
-    let recommendation = if score >= 60 {
+    let recommendation = if score >= 40 {
         "deny"
-    } else if score >= 30 {
+    } else if score >= 20 {
         "review"
     } else {
         "allow"
