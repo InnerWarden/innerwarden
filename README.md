@@ -33,7 +33,7 @@ Installs in 10 seconds. Starts in observe-only mode. You decide when to go live.
 ## What it does
 
 1. **Watches** — collects signals from your host: SSH, Docker, nginx, sudo, shell audit, firewall logs
-2. **Detects** — eleven stateful detectors identify brute-force, credential stuffing, port scans, sudo abuse, and more
+2. **Detects** — thirteen stateful detectors identify brute-force, credential stuffing, port scans, sudo abuse, and more
 3. **Alerts you** — Telegram, Slack, browser push, webhook — real time, on your phone
 4. **Decides** — optionally asks AI for a confidence-scored recommendation (not required)
 5. **Acts** — blocks the IP, suspends sudo, deploys a honeypot, captures traffic. Or does nothing — your call.
@@ -97,6 +97,7 @@ All skills are bounded, audited, and reversible. Nothing persists beyond its TTL
 | `docker_anomaly` | Rapid container restarts, OOM kills | T1610 |
 | `integrity_alert` | Changes to /etc/passwd, /etc/shadow, sudoers, SSH keys | T1098 |
 | `osquery_anomaly` | New SUID binaries, unauthorized SSH keys, crontab changes | T1053 |
+| `distributed_ssh` | Coordinated botnet scan — many IPs, few attempts each | T1110 |
 
 `execution_guard` parses commands structurally using tree-sitter-bash. It catches `curl | sh` pipelines, `/tmp` execution, reverse shell patterns, and staged download-chmod-execute sequences.
 
@@ -407,7 +408,7 @@ Pre-built binaries: `x86_64` and `aarch64` for both platforms.
 ## Build and test
 
 ```bash
-make test       # 609 tests
+make test       # 640 tests
 make build      # debug build (sensor + agent + ctl)
 make replay-qa  # end-to-end integration test
 ```
@@ -432,7 +433,7 @@ No. Starts in observe-only mode. You enable response skills and disable dry-run 
 No. Detection, logging, dashboard, and reports all work without AI. AI adds confidence-scored triage for autonomous response — it is optional.
 
 **How is this different from Fail2ban?**
-Fail2ban blocks IPs based on regex patterns. Inner Warden has eleven detectors, eight response skills (including sudo suspension, process kill, container pause, honeypots, and traffic capture), twelve AI providers, Telegram bot, AbuseIPDB intelligence sharing, and a full investigation dashboard.
+Fail2ban blocks IPs based on regex patterns. Inner Warden has thirteen detectors, eight response skills (including sudo suspension, process kill, container pause, honeypots, and traffic capture), twelve AI providers, Telegram bot, AbuseIPDB intelligence sharing, and a full investigation dashboard.
 
 **Can I add custom detectors or skills?**
 Yes. See [module authoring guide](docs/module-authoring.md).
