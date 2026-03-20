@@ -113,14 +113,38 @@ impl CrowdSecClient {
             );
         }
 
-        // 200 with body = list of decisions (may be null if empty)
-        let text = resp.text().await?;
+        // 200 with body = list of decisions (may be null if empty).
+        // Cap response body at 2MB to prevent OOM from massive community lists.
+        const MAX_BODY: usize = 2 * 1024 * 1024;
+        let bytes = resp.bytes().await?;
+        if bytes.len() > MAX_BODY {
+            warn!(
+                body_bytes = bytes.len(),
+                max = MAX_BODY,
+                "CrowdSec LAPI response too large, truncating parse"
+            );
+        }
+        let text = std::str::from_utf8(&bytes[..bytes.len().min(MAX_BODY)]).unwrap_or("null");
         if text.trim() == "null" || text.trim().is_empty() {
             return Ok(vec![]);
         }
 
-        serde_json::from_str::<Vec<CrowdSecDecision>>(&text)
-            .context("failed to parse CrowdSec decision list")
+        // Truncated JSON may fail to parse — that's fine, we'll retry next tick
+        let all = serde_json::from_str::<Vec<CrowdSecDecision>>(text).unwrap_or_else(|e| {
+            warn!(error = %e, "CrowdSec: JSON parse failed (possibly truncated), will retry");
+            vec![]
+        });
+
+        // Hard cap: never return more than 500 decisions per fetch
+        if all.len() > 500 {
+            info!(
+                total = all.len(),
+                "CrowdSec: capping fetch at 500 decisions"
+            );
+            Ok(all.into_iter().take(500).collect())
+        } else {
+            Ok(all)
+        }
     }
 
     pub fn is_configured(&self) -> bool {
@@ -185,7 +209,7 @@ pub async fn sync_tick(
         return 0;
     }
 
-    let decisions = match cs.client.fetch_bans().await {
+    let mut decisions = match cs.client.fetch_bans().await {
         Ok(d) => d,
         Err(e) => {
             warn!(error = %e, "CrowdSec sync failed");
@@ -195,6 +219,21 @@ pub async fn sync_tick(
 
     let total_from_api = decisions.len();
     let max_per_sync = cfg.crowdsec.max_per_sync;
+
+    // CrowdSec CAPI can return 10k+ decisions. Pre-filter to avoid holding
+    // a massive vec in memory: keep only IPs we haven't seen yet, capped at
+    // 2x max_per_sync (headroom for skips due to private IPs / cooldowns).
+    if decisions.len() > max_per_sync * 2 {
+        let cap = max_per_sync * 2;
+        let before = decisions.len();
+        decisions.retain(|d| !cs.known_ips.contains(&d.value) && !blocklist.contains(&d.value));
+        decisions.truncate(cap);
+        info!(
+            before,
+            after = decisions.len(),
+            "CrowdSec: pre-filtered decisions to avoid memory spike"
+        );
+    }
     let mut new_blocks = 0usize;
     let mut skipped_known = 0usize;
 
