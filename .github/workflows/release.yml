@@ -99,6 +99,27 @@ jobs:
           echo "=== Release assets ==="
           ls -lh dist/
 
+      # ── Sign binaries with Ed25519 ──────────────────────────────────────
+      - name: Sign release binaries
+        if: env.RELEASE_SIGNING_KEY != ''
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          echo "$RELEASE_SIGNING_KEY" > /tmp/sign-key.pem
+          for binary in dist/innerwarden-*; do
+            [[ "$binary" == *.sha256 ]] && continue
+            [[ "$binary" == *.sig ]] && continue
+            [[ "$binary" == */install.sh ]] && continue
+            echo "signing $(basename $binary)..."
+            openssl pkcs8 -topk8 -nocrypt -in /tmp/sign-key.pem -out /tmp/sign-key-pkcs8.pem 2>/dev/null
+            openssl dgst -sign /tmp/sign-key-pkcs8.pem -out /tmp/sig.raw "$binary"
+            base64 -w0 /tmp/sig.raw > "${binary}.sig"
+            rm -f /tmp/sig.raw /tmp/sign-key-pkcs8.pem
+          done
+          rm -f /tmp/sign-key.pem
+          echo "=== Signed assets ==="
+          ls dist/*.sig 2>/dev/null
+
       # ── Verify asset names match what upgrade.rs expects ──────────────────
       - name: Verify asset manifest
         run: |
@@ -215,6 +236,24 @@ jobs:
 
           echo "=== macOS release assets ==="
           ls -lh dist/
+
+      # ── Sign macOS binaries ──────────────────────────────────────────────
+      - name: Sign macOS release binaries
+        if: env.RELEASE_SIGNING_KEY != ''
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          echo "$RELEASE_SIGNING_KEY" > /tmp/sign-key.pem
+          for binary in dist/innerwarden-*; do
+            [[ "$binary" == *.sha256 ]] && continue
+            [[ "$binary" == *.sig ]] && continue
+            echo "signing $(basename $binary)..."
+            openssl pkcs8 -topk8 -nocrypt -in /tmp/sign-key.pem -out /tmp/sign-key-pkcs8.pem 2>/dev/null
+            openssl dgst -sign /tmp/sign-key-pkcs8.pem -out /tmp/sig.raw "$binary"
+            base64 /tmp/sig.raw | tr -d '\n' > "${binary}.sig"
+            rm -f /tmp/sig.raw /tmp/sign-key-pkcs8.pem
+          done
+          rm -f /tmp/sign-key.pem
 
       # ── Upload macOS assets to existing release ────────────────────────────
       - name: Upload macOS assets to GitHub Release
