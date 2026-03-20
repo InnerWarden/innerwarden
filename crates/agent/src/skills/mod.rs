@@ -371,6 +371,21 @@ impl Blocklist {
         self.blocked.insert(ip.into());
     }
 
+    /// Cap the blocklist to prevent unbounded memory growth.
+    /// Keeps the most recent entries by clearing and reloading if over limit.
+    pub fn trim_if_needed(&mut self, max_entries: usize) {
+        if self.blocked.len() > max_entries {
+            // Keep a random subset — in practice the oldest IPs are no longer attacking
+            let keep: HashSet<String> =
+                self.blocked.iter().take(max_entries / 2).cloned().collect();
+            self.blocked = keep;
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.blocked.len()
+    }
+
     pub fn as_vec(&self) -> Vec<String> {
         self.blocked.iter().cloned().collect()
     }

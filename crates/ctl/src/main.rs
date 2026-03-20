@@ -5348,6 +5348,33 @@ fn cmd_watchdog(
             } else {
                 println!("✅ Agent is healthy — last activity {}s ago", age);
             }
+
+            // Memory check — restart agent if RSS exceeds 512MB
+            let max_rss_kb: u64 = 512 * 1024;
+            if let Some(rss_kb) = get_agent_rss_kb() {
+                let rss_mb = rss_kb / 1024;
+                if rss_kb > max_rss_kb {
+                    println!(
+                        "⚠️  Agent memory too high: {}MB (limit: {}MB) — restarting",
+                        rss_mb,
+                        max_rss_kb / 1024
+                    );
+                    let _ = std::process::Command::new("sudo")
+                        .args(["systemctl", "restart", "innerwarden-agent"])
+                        .status();
+                    if notify {
+                        let msg = format!(
+                            "⚠️ InnerWarden agent on {} was using {}MB RAM (limit: {}MB). Auto-restarted.",
+                            hostname(),
+                            rss_mb,
+                            max_rss_kb / 1024
+                        );
+                        maybe_send_watchdog_alert(cli, &msg);
+                    }
+                } else {
+                    println!("✅ Agent memory OK — {}MB", rss_mb);
+                }
+            }
         }
         None => {
             println!(
@@ -5364,6 +5391,39 @@ fn cmd_watchdog(
     }
 
     Ok(())
+}
+
+/// Read the RSS (resident set size) of the innerwarden-agent process in KB.
+/// Returns None if the process is not found or /proc is not available.
+fn get_agent_rss_kb() -> Option<u64> {
+    let output = std::process::Command::new("pgrep")
+        .args(["-f", "innerwarden-agent"])
+        .output()
+        .ok()?;
+    let pids = String::from_utf8_lossy(&output.stdout);
+    // Get the main agent PID (the actual binary, not sudo wrapper)
+    for pid_str in pids.lines() {
+        let pid = pid_str.trim();
+        if pid.is_empty() {
+            continue;
+        }
+        let status_path = format!("/proc/{pid}/status");
+        if let Ok(status) = std::fs::read_to_string(&status_path) {
+            for line in status.lines() {
+                if line.starts_with("VmRSS:") {
+                    let kb: u64 = line
+                        .split_whitespace()
+                        .nth(1)
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0);
+                    if kb > 0 {
+                        return Some(kb);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
