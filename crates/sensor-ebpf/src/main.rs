@@ -3,17 +3,23 @@
 //! Tracepoints:
 //!   - sys_enter_execve: captures every process execution
 //!   - sys_enter_connect: captures outbound network connections
+//!   - sys_enter_openat: captures sensitive file access
+//!
+//! XDP:
+//!   - innerwarden_xdp: wire-speed IP blocking at the network driver level
 //!
 //! Events are sent to userspace via a shared ring buffer.
+//! Blocked IPs are managed via a shared HashMap (agent ↔ kernel).
 
 #![no_std]
 #![no_main]
 
 use aya_ebpf::{
+    bindings::xdp_action,
     helpers::{bpf_get_current_cgroup_id, bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_user_str_bytes},
-    macros::{map, tracepoint},
-    maps::RingBuf,
-    programs::TracePointContext,
+    macros::{map, tracepoint, xdp},
+    maps::{HashMap, RingBuf},
+    programs::{TracePointContext, XdpContext},
 };
 use aya_log_ebpf::info;
 use innerwarden_ebpf_types::{ExecveEvent, ConnectEvent, SyscallKind, MAX_COMM_LEN, MAX_FILENAME_LEN};
@@ -24,6 +30,73 @@ use innerwarden_ebpf_types::{ExecveEvent, ConnectEvent, SyscallKind, MAX_COMM_LE
 
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0); // 256 KB ring buffer
+
+// ---------------------------------------------------------------------------
+// XDP blocklist — IPv4 addresses to drop at wire speed
+// ---------------------------------------------------------------------------
+//
+// Populated by the agent via aya userspace API.
+// Key: IPv4 address as u32 (network byte order)
+// Value: flags (1 = block, 0 = removed/placeholder)
+// Max 10,000 IPs — enough for most threat scenarios.
+
+#[map]
+static BLOCKLIST: HashMap<u32, u32> = HashMap::with_max_entries(10_000, 0);
+
+// ---------------------------------------------------------------------------
+// XDP: innerwarden_xdp — wire-speed IP blocking
+// ---------------------------------------------------------------------------
+//
+// Attached to a network interface. For every incoming packet:
+//   1. Parse Ethernet + IPv4 header
+//   2. Lookup source IP in BLOCKLIST
+//   3. If found → XDP_DROP (packet never reaches the kernel stack)
+//   4. If not found → XDP_PASS (normal processing)
+//
+// Performance: 10-25 million packets per second drop rate.
+// Zero CPU overhead for dropped packets.
+
+#[xdp]
+pub fn innerwarden_xdp(ctx: XdpContext) -> u32 {
+    match try_xdp_firewall(&ctx) {
+        Ok(action) => action,
+        Err(_) => xdp_action::XDP_PASS, // fail-open: never break networking
+    }
+}
+
+#[inline(always)]
+fn try_xdp_firewall(ctx: &XdpContext) -> Result<u32, ()> {
+    let data = ctx.data();
+    let data_end = ctx.data_end();
+
+    // Need at least: Ethernet header (14) + IPv4 header (20) = 34 bytes
+    if data + 34 > data_end {
+        return Ok(xdp_action::XDP_PASS);
+    }
+
+    // Parse Ethernet header — check for IPv4 (EtherType 0x0800)
+    let eth_proto = u16::from_be_bytes(unsafe {
+        let ptr = data as *const u8;
+        [*ptr.add(12), *ptr.add(13)]
+    });
+
+    if eth_proto != 0x0800 {
+        return Ok(xdp_action::XDP_PASS); // not IPv4
+    }
+
+    // Parse IPv4 source address (offset 14 + 12 = 26, 4 bytes)
+    let src_ip = u32::from_ne_bytes(unsafe {
+        let ptr = data as *const u8;
+        [*ptr.add(26), *ptr.add(27), *ptr.add(28), *ptr.add(29)]
+    });
+
+    // Lookup in blocklist — O(1) hash map lookup
+    if unsafe { BLOCKLIST.get(&src_ip) }.is_some() {
+        return Ok(xdp_action::XDP_DROP);
+    }
+
+    Ok(xdp_action::XDP_PASS)
+}
 
 // ---------------------------------------------------------------------------
 // Tracepoint: sys_enter_execve

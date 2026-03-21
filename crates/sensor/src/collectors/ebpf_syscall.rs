@@ -279,6 +279,86 @@ fn bytes_to_string(buf: &[u8]) -> String {
     String::from_utf8_lossy(&buf[..end]).to_string()
 }
 
+/// Pin path for the XDP blocklist BPF map.
+/// The agent writes to this map via bpftool to add/remove blocked IPs.
+const XDP_PIN_DIR: &str = "/sys/fs/bpf/innerwarden";
+const XDP_BLOCKLIST_PIN: &str = "/sys/fs/bpf/innerwarden/blocklist";
+
+/// Detect the default network interface for XDP attachment.
+fn detect_default_interface() -> Option<String> {
+    // Read /proc/net/route — first non-loopback default route
+    if let Ok(content) = std::fs::read_to_string("/proc/net/route") {
+        for line in content.lines().skip(1) {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() >= 2 && fields[1] == "00000000" {
+                return Some(fields[0].to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Attach XDP firewall program and pin the blocklist map.
+/// Non-critical — if it fails, the sensor continues without XDP.
+#[cfg(feature = "ebpf")]
+fn attach_xdp(bpf: &mut aya::Ebpf) {
+    use aya::programs::{Xdp, XdpFlags};
+
+    let iface = match detect_default_interface() {
+        Some(i) => i,
+        None => {
+            warn!("XDP: no default network interface found — skipping XDP firewall");
+            return;
+        }
+    };
+
+    match bpf.program_mut("innerwarden_xdp") {
+        Some(prog) => {
+            let xdp: &mut Xdp = match prog.try_into() {
+                Ok(x) => x,
+                Err(e) => {
+                    warn!(error = %e, "innerwarden_xdp: not an XDP program");
+                    return;
+                }
+            };
+            if let Err(e) = xdp.load() {
+                warn!(error = %e, "innerwarden_xdp: failed to load");
+                return;
+            }
+            // Use SKB mode (generic) for maximum compatibility.
+            // Native mode (XdpFlags::default()) is faster but requires driver support.
+            if let Err(e) = xdp.attach(&iface, XdpFlags::SKB_MODE) {
+                warn!(error = %e, iface = %iface, "innerwarden_xdp: failed to attach");
+                return;
+            }
+            info!(iface = %iface, "eBPF: innerwarden_xdp → {iface} (XDP firewall) ✅");
+        }
+        None => {
+            info!("eBPF: innerwarden_xdp program not found — XDP firewall not available");
+            return;
+        }
+    }
+
+    // Pin the BLOCKLIST map so the agent can access it via bpftool
+    if let Err(e) = std::fs::create_dir_all(XDP_PIN_DIR) {
+        warn!(error = %e, "XDP: failed to create pin directory {XDP_PIN_DIR}");
+        return;
+    }
+    if let Some(map) = bpf.map_mut("BLOCKLIST") {
+        if let Err(e) = map.pin(XDP_BLOCKLIST_PIN) {
+            // May already be pinned from a previous run
+            if !std::path::Path::new(XDP_BLOCKLIST_PIN).exists() {
+                warn!(error = %e, "XDP: failed to pin blocklist map");
+            }
+        } else {
+            info!("eBPF: XDP blocklist pinned at {XDP_BLOCKLIST_PIN}");
+        }
+    }
+}
+
+#[cfg(not(feature = "ebpf"))]
+fn attach_xdp(_bpf: &mut ()) {}
+
 /// Start the eBPF collector. Loads programs, attaches tracepoints, reads ring buffer.
 ///
 /// Events flow through the same mpsc channel as all other collectors.
@@ -381,6 +461,9 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
             }
         }
     }
+
+    // Attach XDP firewall (non-critical — continues without it)
+    attach_xdp(&mut bpf);
 
     // Read from ring buffer
     let mut ring_buf = match RingBuf::try_from(bpf.map_mut("EVENTS").unwrap()) {

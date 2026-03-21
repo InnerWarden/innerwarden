@@ -307,6 +307,7 @@ impl SkillRegistry {
                 Box::new(BlockIpIptables),
                 Box::new(BlockIpNftables),
                 Box::new(BlockIpPf),
+                Box::new(BlockIpXdp),
                 Box::new(MonitorIp),
                 Box::new(Honeypot),
                 Box::new(SuspendUserSudo),
@@ -345,6 +346,7 @@ impl SkillRegistry {
         let id = match backend {
             "iptables" => "block-ip-iptables",
             "nftables" => "block-ip-nftables",
+            "xdp" => "block-ip-xdp",
             _ => "block-ip-ufw",
         };
         self.get(id)
@@ -450,7 +452,7 @@ mod tests {
     fn registry_infos_are_serializable() {
         let reg = SkillRegistry::default_builtin();
         let infos = reg.infos();
-        assert_eq!(infos.len(), 10);
+        assert_eq!(infos.len(), 11);
         let json = serde_json::to_string(&infos).unwrap();
         assert!(json.contains("block-ip-ufw"));
     }
