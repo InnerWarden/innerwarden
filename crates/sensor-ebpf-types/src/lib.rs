@@ -33,6 +33,8 @@ pub enum SyscallKind {
     FileOpen = 3,
     /// Write to sensitive path
     FileWrite = 4,
+    /// Privilege escalation (commit_creds: uid changed to root)
+    PrivEsc = 5,
 }
 
 /// Event emitted by the eBPF `execve` tracepoint.
@@ -106,6 +108,27 @@ pub struct FileOpenEvent {
     pub filename: [u8; MAX_FILENAME_LEN],
     /// Open flags (O_RDONLY, O_WRONLY, O_RDWR, etc.)
     pub flags: u32,
+    pub ts_ns: u64,
+}
+
+/// Event emitted by the `commit_creds` kprobe — privilege escalation detection.
+///
+/// Fires when a process's UID transitions from non-root to root
+/// through a path other than legitimate login (sudo, su, sshd, login).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PrivEscEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub tgid: u32,
+    /// UID before the transition (the current uid at kprobe entry)
+    pub old_uid: u32,
+    /// UID after the transition (read from new cred struct)
+    pub new_uid: u32,
+    /// Cgroup ID (container awareness)
+    pub cgroup_id: u64,
+    /// Process name
+    pub comm: [u8; MAX_COMM_LEN],
     pub ts_ns: u64,
 }
 

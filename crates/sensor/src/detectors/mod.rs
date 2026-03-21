@@ -27,6 +27,7 @@ pub mod execution_guard;
 pub mod integrity_alert;
 pub mod osquery_anomaly;
 pub mod port_scan;
+pub mod privesc;
 pub mod process_tree;
 pub mod search_abuse;
 pub mod ssh_bruteforce;

@@ -5,6 +5,9 @@
 //!   - sys_enter_connect: captures outbound network connections
 //!   - sys_enter_openat: captures sensitive file access
 //!
+//! Kprobes:
+//!   - commit_creds: detects privilege escalation (uid 1000 → uid 0)
+//!
 //! XDP:
 //!   - innerwarden_xdp: wire-speed IP blocking at the network driver level
 //!
@@ -16,13 +19,13 @@
 
 use aya_ebpf::{
     bindings::xdp_action,
-    helpers::{bpf_get_current_cgroup_id, bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_user_str_bytes},
-    macros::{map, tracepoint, xdp},
+    helpers::{bpf_get_current_cgroup_id, bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_kernel, bpf_probe_read_user_str_bytes},
+    macros::{kprobe, map, tracepoint, xdp},
     maps::{HashMap, RingBuf},
-    programs::{TracePointContext, XdpContext},
+    programs::{ProbeContext, TracePointContext, XdpContext},
 };
 use aya_log_ebpf::info;
-use innerwarden_ebpf_types::{ExecveEvent, ConnectEvent, SyscallKind, MAX_COMM_LEN, MAX_FILENAME_LEN};
+use innerwarden_ebpf_types::{ExecveEvent, ConnectEvent, PrivEscEvent, SyscallKind, MAX_COMM_LEN, MAX_FILENAME_LEN};
 
 // ---------------------------------------------------------------------------
 // Ring buffer — shared between all eBPF programs, read by userspace
@@ -312,6 +315,85 @@ fn try_openat(ctx: &TracePointContext) -> Result<(), i64> {
     }
 
     entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Kprobe: commit_creds — privilege escalation detection
+// ---------------------------------------------------------------------------
+//
+// Fires when the kernel applies new credentials to a process.
+// Detects: non-root process becoming root through unexpected paths.
+//
+// commit_creds(struct cred *new) — the `cred` struct contains the new uid.
+// We compare current uid (before) with new uid (from cred arg).
+// If old_uid != 0 && new_uid == 0 → privilege escalation.
+//
+// Legitimate escalation (sudo, su, login, sshd, cron) is filtered
+// in userspace to avoid false positives.
+
+/// Offset of `uid` field in `struct cred` (after atomic_long_t usage).
+/// Linux 5.x+: usage(8) → uid(4) at offset 8.
+const CRED_UID_OFFSET: usize = 8;
+
+#[kprobe]
+pub fn innerwarden_privesc(ctx: ProbeContext) -> u32 {
+    match try_privesc(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 1,
+    }
+}
+
+fn try_privesc(ctx: &ProbeContext) -> Result<(), i64> {
+    // Current uid (before credential change)
+    let old_uid = bpf_get_current_uid_gid() as u32;
+
+    // Only care about non-root processes gaining root
+    if old_uid == 0 {
+        return Ok(());
+    }
+
+    // Read the new cred pointer (first argument to commit_creds)
+    let cred_ptr: *const u8 = unsafe { ctx.arg(0).ok_or(1i64)? };
+
+    // Read new uid from struct cred (offset 8: after atomic_long_t usage)
+    let new_uid: u32 = unsafe {
+        bpf_probe_read_kernel(cred_ptr.add(CRED_UID_OFFSET) as *const u32).map_err(|e| e)?
+    };
+
+    // Only fire when escalating TO root
+    if new_uid != 0 {
+        return Ok(());
+    }
+
+    // At this point: old_uid != 0, new_uid == 0 → privilege escalation
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let pid = pid_tgid as u32;
+    let tgid = (pid_tgid >> 32) as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    let mut entry = match EVENTS.reserve::<PrivEscEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()), // ring buffer full — fail-open
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::PrivEsc as u32;
+    event.pid = pid;
+    event.tgid = tgid;
+    event.old_uid = old_uid;
+    event.new_uid = new_uid;
+    event.cgroup_id = cgroup_id;
+    event.ts_ns = ts;
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+
     Ok(())
 }
 
