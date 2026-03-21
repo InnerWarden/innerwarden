@@ -50,6 +50,8 @@ pub struct ExecveEvent {
     pub gid: u32,
     /// Parent process ID
     pub ppid: u32,
+    /// Cgroup ID (identifies container namespace, 0 = host)
+    pub cgroup_id: u64,
     /// Process name (comm)
     pub comm: [u8; MAX_COMM_LEN],
     /// Filename being executed
@@ -72,6 +74,10 @@ pub struct ConnectEvent {
     pub pid: u32,
     pub tgid: u32,
     pub uid: u32,
+    /// Parent process ID
+    pub ppid: u32,
+    /// Cgroup ID (identifies container namespace, 0 = host)
+    pub cgroup_id: u64,
     pub comm: [u8; MAX_COMM_LEN],
     /// Destination IPv4 address (network byte order)
     pub dst_addr: u32,
@@ -89,6 +95,10 @@ pub struct FileOpenEvent {
     pub kind: u32,
     pub pid: u32,
     pub uid: u32,
+    /// Parent process ID
+    pub ppid: u32,
+    /// Cgroup ID (identifies container namespace, 0 = host)
+    pub cgroup_id: u64,
     pub comm: [u8; MAX_COMM_LEN],
     pub filename: [u8; MAX_FILENAME_LEN],
     /// Open flags (O_RDONLY, O_WRONLY, O_RDWR, etc.)
