@@ -15,9 +15,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Inner Warden eBPF test loader\n");
 
     // Load eBPF bytecode from file (in production, embedded via include_bytes!)
-    let path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "crates/sensor-ebpf/target/bpfel-unknown-none/release/innerwarden-ebpf".to_string());
+    let path = std::env::args().nth(1).unwrap_or_else(|| {
+        "crates/sensor-ebpf/target/bpfel-unknown-none/release/innerwarden-ebpf".to_string()
+    });
 
     let bytes = std::fs::read(&path)?;
     println!("Loaded {} bytes from {path}", bytes.len());
@@ -80,7 +80,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if data.len() >= 86 {
                                 let addr_bytes = &data[80..84];
                                 let port = u16::from_ne_bytes(data[84..86].try_into().unwrap());
-                                let ip = format!("{}.{}.{}.{}", addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3]);
+                                let ip = format!(
+                                    "{}.{}.{}.{}",
+                                    addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3]
+                                );
                                 println!("  CONN  pid={pid:<6} {comm} → {ip}:{port}");
                             }
                         }

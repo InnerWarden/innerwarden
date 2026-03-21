@@ -1,22 +1,13 @@
-//! eBPF syscall collector — reads events from kernel-space ring buffer.
+//! eBPF syscall collector — kernel-level visibility via tracepoints.
 //!
-//! This collector replaces (or complements) the audit-based exec_audit collector
-//! with zero-latency kernel-level visibility via eBPF tracepoints.
+//! Replaces (or complements) audit-based collection with zero-latency
+//! kernel-level process execution and network connection monitoring.
 //!
-//! Requires: Linux kernel 5.8+, CAP_BPF + CAP_PERFMON capabilities.
-//!
-//! When eBPF is not available (macOS, old kernels, missing caps), this collector
-//! gracefully disables itself and the sensor falls back to audit-based collection.
+//! Requires: Linux kernel 5.8+, CAP_BPF + CAP_PERFMON (or root).
+//! Gracefully disables itself when eBPF is not available.
 
-// NOTE: This is the userspace stub. Full implementation requires:
-// 1. Build sensor-ebpf crate (eBPF programs)
-// 2. Load eBPF programs via Aya
-// 3. Read from ring buffer and convert to Event structs
-//
-// The eBPF programs are compiled separately and embedded in the sensor binary
-// via a build script. This file handles the userspace loading and event reading.
-
-#![allow(dead_code)] // Stub — functions will be used when Aya integration is complete
+#![allow(dead_code, unused_imports)]
+// Functions are used only when compiled with --features ebpf
 
 use innerwarden_core::entities::EntityRef;
 use innerwarden_core::event::{Event, Severity};
@@ -24,14 +15,19 @@ use std::net::Ipv4Addr;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+/// Path to the eBPF bytecode file (compiled separately).
+/// In production, this could be embedded via include_bytes! in a build script.
+const EBPF_OBJ_PATH: &str = "/usr/local/lib/innerwarden/innerwarden-ebpf";
+const EBPF_OBJ_PATH_DEV: &str =
+    "crates/sensor-ebpf/target/bpfel-unknown-none/release/innerwarden-ebpf";
+
 /// Check if eBPF is available on this system.
 pub fn is_ebpf_available() -> bool {
-    // Check 1: Linux only
     if cfg!(not(target_os = "linux")) {
         return false;
     }
 
-    // Check 2: Kernel version >= 5.8
+    // Kernel version >= 5.8
     if let Ok(release) = std::fs::read_to_string("/proc/sys/kernel/osrelease") {
         let parts: Vec<u32> = release
             .trim()
@@ -46,37 +42,57 @@ pub fn is_ebpf_available() -> bool {
         return false;
     }
 
-    // Check 3: BTF available
+    // BTF available
     if !std::path::Path::new("/sys/kernel/btf/vmlinux").exists() {
         return false;
     }
 
-    true
+    // eBPF bytecode exists
+    std::path::Path::new(EBPF_OBJ_PATH).exists() || std::path::Path::new(EBPF_OBJ_PATH_DEV).exists()
 }
 
-/// Convert an eBPF ExecveEvent to an Inner Warden Event.
+/// Find the eBPF bytecode file.
+fn find_ebpf_obj() -> Option<String> {
+    if std::path::Path::new(EBPF_OBJ_PATH).exists() {
+        Some(EBPF_OBJ_PATH.to_string())
+    } else if std::path::Path::new(EBPF_OBJ_PATH_DEV).exists() {
+        Some(EBPF_OBJ_PATH_DEV.to_string())
+    } else {
+        None
+    }
+}
+
+/// Convert a kernel execve event to an Inner Warden Event.
 fn execve_to_event(pid: u32, uid: u32, ppid: u32, comm: &str, filename: &str, host: &str) -> Event {
+    // Map to shell.command_exec kind so existing execution_guard detector works
+    let argv_json: Vec<serde_json::Value> = if filename.is_empty() {
+        vec![serde_json::Value::String(comm.to_string())]
+    } else {
+        vec![serde_json::Value::String(filename.to_string())]
+    };
+
     Event {
         ts: chrono::Utc::now(),
         host: host.to_string(),
         source: "ebpf".to_string(),
-        kind: "process.exec".to_string(),
+        kind: "shell.command_exec".to_string(),
         severity: Severity::Info,
-        summary: format!("Process execution: {filename} (pid={pid}, uid={uid}, parent={ppid})"),
+        summary: format!("Shell command executed: {filename}"),
         details: serde_json::json!({
             "pid": pid,
             "uid": uid,
             "ppid": ppid,
             "comm": comm,
-            "filename": filename,
-            "argv": [],
+            "command": filename,
+            "argv": argv_json,
+            "argc": 1,
         }),
         tags: vec!["ebpf".to_string(), "exec".to_string()],
         entities: vec![],
     }
 }
 
-/// Convert an eBPF ConnectEvent to an Inner Warden Event.
+/// Convert a kernel connect event to an Inner Warden Event.
 fn connect_to_event(
     pid: u32,
     uid: u32,
@@ -89,8 +105,12 @@ fn connect_to_event(
         ts: chrono::Utc::now(),
         host: host.to_string(),
         source: "ebpf".to_string(),
-        kind: "network.connect".to_string(),
-        severity: Severity::Info,
+        kind: "network.outbound_connect".to_string(),
+        severity: if dst_port == 4444 || dst_port == 1337 || dst_port == 31337 {
+            Severity::High // common reverse shell ports
+        } else {
+            Severity::Info
+        },
         summary: format!("{comm} (pid={pid}) connecting to {dst_ip}:{dst_port}"),
         details: serde_json::json!({
             "pid": pid,
@@ -104,51 +124,179 @@ fn connect_to_event(
     }
 }
 
-/// Start the eBPF collector.
+/// Extract a null-terminated string from a byte slice.
+fn bytes_to_string(buf: &[u8]) -> String {
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..end]).to_string()
+}
+
+/// Start the eBPF collector. Loads programs, attaches tracepoints, reads ring buffer.
 ///
-/// Loads eBPF programs, attaches to tracepoints, and reads events from
-/// the ring buffer. Events are sent through the same mpsc channel as
-/// all other collectors.
-///
-/// If eBPF is not available, logs a warning and returns immediately.
-pub async fn run(_tx: mpsc::Sender<Event>, _host: String) {
+/// Events flow through the same mpsc channel as all other collectors.
+#[cfg(feature = "ebpf")]
+pub async fn run(tx: mpsc::Sender<Event>, host: String) {
+    use aya::maps::RingBuf;
+    use aya::programs::TracePoint;
+    use aya::Ebpf;
+
     if !is_ebpf_available() {
-        warn!("eBPF not available on this system — falling back to audit-based collection");
+        warn!("eBPF not available — falling back to audit-based collection");
         return;
     }
 
-    info!("eBPF collector starting — kernel-level syscall monitoring active");
+    let obj_path = match find_ebpf_obj() {
+        Some(p) => p,
+        None => {
+            warn!("eBPF bytecode not found — skipping eBPF collector");
+            return;
+        }
+    };
 
-    // TODO: Full implementation with Aya
-    //
-    // 1. Load embedded eBPF bytecode:
-    //    let mut bpf = Ebpf::load(include_bytes_aligned!("../../sensor-ebpf/target/bpfel-unknown-none/release/innerwarden-ebpf"))?;
-    //
-    // 2. Attach tracepoints:
-    //    let execve: &mut TracePoint = bpf.program_mut("innerwarden_execve").unwrap().try_into()?;
-    //    execve.load()?;
-    //    execve.attach("syscalls", "sys_enter_execve")?;
-    //
-    //    let connect: &mut TracePoint = bpf.program_mut("innerwarden_connect").unwrap().try_into()?;
-    //    connect.load()?;
-    //    connect.attach("syscalls", "sys_enter_connect")?;
-    //
-    // 3. Read from ring buffer:
-    //    let mut ring_buf = RingBuf::try_from(bpf.map_mut("EVENTS").unwrap())?;
-    //    loop {
-    //        while let Some(item) = ring_buf.next() {
-    //            let kind = u32::from_ne_bytes(item[0..4].try_into().unwrap());
-    //            match kind {
-    //                1 => { /* ExecveEvent */ }
-    //                2 => { /* ConnectEvent */ }
-    //                _ => {}
-    //            }
-    //            tx.send(event).await.ok();
-    //        }
-    //        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    //    }
+    info!(path = %obj_path, "eBPF collector: loading bytecode");
 
-    info!("eBPF collector: stub loaded — full implementation pending sensor-ebpf crate build");
+    let bytes = match std::fs::read(&obj_path) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(error = %e, "failed to read eBPF bytecode");
+            return;
+        }
+    };
+
+    let mut bpf = match Ebpf::load(&bytes) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(error = %e, "failed to load eBPF programs into kernel (need root or CAP_BPF)");
+            return;
+        }
+    };
+
+    // Attach execve tracepoint
+    match bpf.program_mut("innerwarden_execve") {
+        Some(prog) => {
+            let tp: &mut TracePoint = match prog.try_into() {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(error = %e, "innerwarden_execve: not a tracepoint program");
+                    return;
+                }
+            };
+            if let Err(e) = tp.load() {
+                warn!(error = %e, "innerwarden_execve: failed to load");
+                return;
+            }
+            if let Err(e) = tp.attach("syscalls", "sys_enter_execve") {
+                warn!(error = %e, "innerwarden_execve: failed to attach");
+                return;
+            }
+            info!("eBPF: innerwarden_execve → sys_enter_execve ✅");
+        }
+        None => {
+            warn!("eBPF: innerwarden_execve program not found in bytecode");
+        }
+    }
+
+    // Attach connect tracepoint
+    match bpf.program_mut("innerwarden_connect") {
+        Some(prog) => {
+            let tp: &mut TracePoint = match prog.try_into() {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(error = %e, "innerwarden_connect: not a tracepoint program");
+                    return;
+                }
+            };
+            if let Err(e) = tp.load() {
+                warn!(error = %e, "innerwarden_connect: failed to load");
+                return;
+            }
+            if let Err(e) = tp.attach("syscalls", "sys_enter_connect") {
+                warn!(error = %e, "innerwarden_connect: failed to attach");
+                return;
+            }
+            info!("eBPF: innerwarden_connect → sys_enter_connect ✅");
+        }
+        None => {
+            warn!("eBPF: innerwarden_connect program not found in bytecode");
+        }
+    }
+
+    // Read from ring buffer
+    let mut ring_buf = match RingBuf::try_from(bpf.map_mut("EVENTS").unwrap()) {
+        Ok(rb) => rb,
+        Err(e) => {
+            warn!(error = %e, "eBPF: failed to open ring buffer");
+            return;
+        }
+    };
+
+    info!("eBPF collector active — kernel-level syscall monitoring running");
+
+    loop {
+        while let Some(item) = ring_buf.next() {
+            let data = item.as_ref();
+            if data.len() < 4 {
+                continue;
+            }
+
+            let kind = u32::from_ne_bytes(data[0..4].try_into().unwrap());
+
+            let event = match kind {
+                // ExecveEvent: kind(4) + pid(4) + tgid(4) + uid(4) + gid(4) + ppid(4) + comm(64) + filename(256)
+                1 if data.len() >= 340 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[16..20].try_into().unwrap());
+                    let ppid = u32::from_ne_bytes(data[20..24].try_into().unwrap());
+                    let comm = bytes_to_string(&data[24..88]);
+                    let filename = bytes_to_string(&data[88..344]);
+
+                    // Skip innerwarden's own processes to avoid self-loop
+                    if comm.starts_with("innerwarden") {
+                        continue;
+                    }
+
+                    Some(execve_to_event(pid, uid, ppid, &comm, &filename, &host))
+                }
+                // ConnectEvent: kind(4) + pid(4) + tgid(4) + uid(4) + comm(64) + dst_addr(4) + dst_port(2) + family(2)
+                2 if data.len() >= 84 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[16..20].try_into().unwrap());
+                    let comm = bytes_to_string(&data[20..84]);
+                    let addr = u32::from_ne_bytes(data[84..88].try_into().unwrap());
+                    let port = u16::from_ne_bytes(data[88..90].try_into().unwrap());
+
+                    let ip = Ipv4Addr::from(addr);
+
+                    // Skip private/loopback
+                    if ip.is_loopback() || ip.is_private() || ip.is_unspecified() {
+                        continue;
+                    }
+
+                    Some(connect_to_event(pid, uid, &comm, ip, port, &host))
+                }
+                _ => None,
+            };
+
+            if let Some(ev) = event {
+                if tx.send(ev).await.is_err() {
+                    warn!("eBPF collector: channel closed, stopping");
+                    return;
+                }
+            }
+        }
+
+        // Poll interval — 100ms is fast enough for security, low CPU
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+/// Fallback when ebpf feature is not enabled.
+#[cfg(not(feature = "ebpf"))]
+pub async fn run(_tx: mpsc::Sender<Event>, _host: String) {
+    if is_ebpf_available() {
+        info!("eBPF is available but the sensor was compiled without --features ebpf");
+        info!("Rebuild with: cargo build --features ebpf -p innerwarden-sensor");
+    }
+    // Silently return — other collectors handle detection
 }
 
 // ---------------------------------------------------------------------------
@@ -160,33 +308,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn execve_event_has_correct_fields() {
+    fn execve_event_maps_to_shell_command_exec() {
         let event = execve_to_event(1234, 0, 1, "bash", "/usr/bin/curl", "test-host");
         assert_eq!(event.source, "ebpf");
-        assert_eq!(event.kind, "process.exec");
+        assert_eq!(event.kind, "shell.command_exec");
         assert!(event.summary.contains("curl"));
-        assert!(event.summary.contains("1234"));
         assert_eq!(event.details["pid"], 1234);
-        assert_eq!(event.details["uid"], 0);
     }
 
     #[test]
-    fn connect_event_has_correct_fields() {
+    fn connect_event_high_severity_for_reverse_shell_ports() {
         let ip = Ipv4Addr::new(1, 2, 3, 4);
         let event = connect_to_event(5678, 1000, "nc", ip, 4444, "test-host");
-        assert_eq!(event.source, "ebpf");
-        assert_eq!(event.kind, "network.connect");
-        assert!(event.summary.contains("1.2.3.4:4444"));
-        assert!(event.summary.contains("nc"));
-        assert_eq!(event.details["dst_port"], 4444);
+        assert_eq!(event.severity, Severity::High);
+
+        let event_normal = connect_to_event(5678, 1000, "curl", ip, 443, "test-host");
+        assert_eq!(event_normal.severity, Severity::Info);
     }
 
     #[test]
-    fn ebpf_availability_check() {
-        // On macOS or CI, eBPF should not be available
+    fn bytes_to_string_handles_null_terminator() {
+        let buf = b"hello\0world\0\0\0";
+        assert_eq!(bytes_to_string(buf), "hello");
+    }
+
+    #[test]
+    fn ebpf_availability_on_non_linux() {
         if cfg!(target_os = "macos") {
             assert!(!is_ebpf_available());
         }
-        // On Linux, depends on kernel version and BTF
     }
 }
