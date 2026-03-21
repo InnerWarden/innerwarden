@@ -11,6 +11,30 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.3.0] — 2026-03-21
+
+### Deep kernel security + intelligent response
+
+- **XDP wire-speed firewall** — blocks IPs at the network driver level (10M+ pps drop rate). Pinned BPF map at `/sys/fs/bpf/innerwarden/blocklist` managed by agent via bpftool.
+- **kprobe privilege escalation** — hooks kernel `commit_creds` function to detect real-time uid transitions from non-root to root through unexpected paths.
+- **LSM execution blocking** — BPF LSM hook on `bprm_check_security` blocks binary execution from /tmp, /dev/shm, /var/tmp. Policy-gated, off by default, auto-enables on high-severity threats.
+- **XDP allowlist** — operator IPs never dropped, checked before blocklist in kernel.
+- **Layered blocking** — single block decision triggers XDP + firewall + Cloudflare + AbuseIPDB in one action.
+- **Cross-detector correlation** — same IP in multiple detectors boosts AI confidence (1.15x for 2, 1.30x for 3, 1.50x for 4+).
+- **LSM auto-enable** — agent automatically activates kernel execution blocking when it detects download+execute or reverse shell incidents.
+- **Smart honeypot routing** — suspicious_login attackers (brute-force followed by success) redirected to honeypot; 20% of new attackers sampled; rest blocked via XDP.
+- **AbuseIPDB delayed reporting** — reports queued 5 minutes before sending to allow false-positive correction.
+- **Block rate limiter** — max 20 blocks per minute to prevent false-positive cascades.
+- **XDP TTL** — blocked IPs auto-expire after 24 hours.
+- **LSM process allowlist** — package managers (dpkg, apt, dnf), compilers (gcc, cargo), and system processes always allowed to execute from /tmp.
+- **Sensor HUD dashboard** — new default home page with Chart.js area timeline, threat gauge, polar area detector chart. Design matches innerwarden.com (surface-card, cyber-gradient-text, JetBrains Mono).
+- **Removed Falco integration** — superseded by native eBPF (kprobe + LSM deeper than Falco's tracepoints).
+- **Deprecated Fail2ban** — native detectors + XDP firewall are faster and smarter.
+
+19 detectors, 11 skills, 6 eBPF kernel programs, 692 tests.
+
+---
+
 ## [0.2.0] — 2026-03-21
 
 ### Phase 2 — eBPF Deep Visibility
