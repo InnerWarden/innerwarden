@@ -12,7 +12,7 @@ use anyhow::Result;
 use clap::Parser;
 use collectors::{
     auth_log::AuthLogCollector, cloudtrail::CloudTrailCollector, docker::DockerCollector,
-    exec_audit::ExecAuditCollector, falco_log::FalcoLogCollector, integrity::IntegrityCollector,
+    exec_audit::ExecAuditCollector, integrity::IntegrityCollector,
     journald::JournaldCollector, macos_log::MacosLogCollector, nginx_access::NginxAccessCollector,
     nginx_error::NginxErrorCollector, osquery_log::OsqueryLogCollector,
     suricata_eve::SuricataEveCollector, syslog_firewall::SyslogFirewallCollector,
@@ -116,7 +116,6 @@ async fn main() -> Result<()> {
     let shared_exec_audit_offset = Arc::new(AtomicU64::new(0));
     let shared_nginx_offset = Arc::new(AtomicU64::new(0));
     let shared_nginx_error_offset = Arc::new(AtomicU64::new(0));
-    let shared_falco_offset = Arc::new(AtomicU64::new(0));
     let shared_suricata_offset = Arc::new(AtomicU64::new(0));
     let shared_osquery_offset = Arc::new(AtomicU64::new(0));
     let shared_wazuh_offset = Arc::new(AtomicU64::new(0));
@@ -444,25 +443,6 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Spawn falco_log collector
-    if cfg.collectors.falco_log.enabled {
-        let fc = &cfg.collectors.falco_log;
-        let offset = state
-            .get_cursor("falco_log")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        shared_falco_offset.store(offset, Ordering::Relaxed);
-        let collector = FalcoLogCollector::new(&fc.path, &cfg.agent.host_id, offset);
-        info!(path = %fc.path, offset, "starting falco_log collector");
-        let tx_falco = tx.clone();
-        let shared = Arc::clone(&shared_falco_offset);
-        tokio::spawn(async move {
-            if let Err(e) = collector.run(tx_falco, shared).await {
-                tracing::error!("falco_log collector error: {e:#}");
-            }
-        });
-    }
-
     // Spawn suricata_eve collector
     if cfg.collectors.suricata_eve.enabled {
         let sc = &cfg.collectors.suricata_eve;
@@ -709,8 +689,6 @@ async fn main() -> Result<()> {
     let nginx_error_offset = shared_nginx_error_offset.load(Ordering::Relaxed);
     state.set_cursor("nginx_error", serde_json::json!(nginx_error_offset));
 
-    let falco_offset = shared_falco_offset.load(Ordering::Relaxed);
-    state.set_cursor("falco_log", serde_json::json!(falco_offset));
 
     let suricata_offset = shared_suricata_offset.load(Ordering::Relaxed);
     state.set_cursor("suricata_eve", serde_json::json!(suricata_offset));
@@ -734,7 +712,7 @@ async fn main() -> Result<()> {
 /// High/Critical events from these sources are promoted directly to incidents
 /// without going through an InnerWarden detector.
 fn is_passthrough_source(source: &str) -> bool {
-    matches!(source, "falco" | "suricata" | "wazuh")
+    matches!(source, "suricata" | "wazuh")
 }
 
 fn process_event(
@@ -890,11 +868,6 @@ fn passthrough_incident(
     );
 
     let recommended_checks = match ev.source.as_str() {
-        "falco" => vec![
-            "Review Falco alert details".to_string(),
-            "Investigate related container/process activity".to_string(),
-            "Check for lateral movement indicators".to_string(),
-        ],
         "suricata" => vec![
             "Review Suricata IDS signature".to_string(),
             "Check network flow context in eve.json".to_string(),
