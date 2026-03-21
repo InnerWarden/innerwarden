@@ -6449,12 +6449,14 @@ const INDEX_HTML: &str = r##"<!doctype html>
     if (!canvas || !CJ) return;
     const label = document.getElementById('threatLabel');
 
-    const ratio = events > 0 ? Math.min(incidents / Math.max(events * 0.01, 1), 1) : 0;
+    // Scale based on absolute incident count per day
+    // 0 = safe, 10 = guarded, 50 = elevated, 200+ = critical
+    const ratio = Math.min(incidents / 200, 1);
     let level = 'NOMINAL';
     let color = '#4ade80';
-    if (ratio > 0.5) { level = 'CRITICAL'; color = '#f43f5e'; }
-    else if (ratio > 0.2) { level = 'ELEVATED'; color = '#fbbf24'; }
-    else if (ratio > 0.05) { level = 'GUARDED'; color = '#7fe7ff'; }
+    if (incidents >= 200) { level = 'CRITICAL'; color = '#f43f5e'; }
+    else if (incidents >= 50) { level = 'ELEVATED'; color = '#fbbf24'; }
+    else if (incidents >= 10) { level = 'GUARDED'; color = '#7fe7ff'; }
 
     if (label) label.textContent = level;
     if (label) label.style.color = color;
