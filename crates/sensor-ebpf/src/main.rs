@@ -26,6 +26,7 @@ use aya_ebpf::{
     macros::{kprobe, lsm, map, tracepoint, xdp},
     maps::{HashMap, RingBuf},
     programs::{LsmContext, ProbeContext, TracePointContext, XdpContext},
+    EbpfContext,
 };
 use aya_log_ebpf::info;
 use innerwarden_ebpf_types::{ExecveEvent, ConnectEvent, PrivEscEvent, SyscallKind, MAX_COMM_LEN, MAX_FILENAME_LEN};
@@ -438,12 +439,8 @@ fn try_lsm_exec(ctx: &LsmContext) -> Result<i32, i64> {
     }
 
     // For bprm_check_security(struct linux_binprm *bprm):
-    // The bprm pointer is the first argument, accessible via raw context pointer.
-    // LSM context args are at ctx + 0 (first arg pointer).
-    let ctx_ptr = ctx.as_ptr() as *const *const u8;
-    let bprm_ptr: *const u8 = unsafe {
-        bpf_probe_read_kernel(ctx_ptr).map_err(|e| e)?
-    };
+    // Read the bprm pointer (first argument to the LSM hook)
+    let bprm_ptr: *const u8 = unsafe { ctx.arg(0) };
 
     // linux_binprm->filename offset on kernel 6.x
     // struct linux_binprm { ..., const char *filename @ offset 72, ... }
