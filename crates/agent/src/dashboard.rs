@@ -84,6 +84,14 @@ pub struct DashboardActionConfig {
     pub slack_enabled: bool,
     /// Whether Cloudflare integration is enabled.
     pub cloudflare_enabled: bool,
+    /// Whether CrowdSec integration is enabled.
+    pub crowdsec_enabled: bool,
+    /// Webhook payload format: "default" | "pagerduty" | "opsgenie".
+    pub webhook_format: String,
+    /// Whether sudo_protection detector is enabled.
+    pub sudo_protection_enabled: bool,
+    /// Whether execution_guard detector is enabled.
+    pub execution_guard_enabled: bool,
 }
 
 impl Default for DashboardActionConfig {
@@ -104,6 +112,10 @@ impl Default for DashboardActionConfig {
             telegram_enabled: false,
             slack_enabled: false,
             cloudflare_enabled: false,
+            crowdsec_enabled: false,
+            webhook_format: "default".to_string(),
+            sudo_protection_enabled: false,
+            execution_guard_enabled: false,
         }
     }
 }
@@ -1792,6 +1804,9 @@ async fn api_status(State(state): State<DashboardState>) -> Json<serde_json::Val
             "block_backend": action_cfg.block_backend,
             "allowed_skills": action_cfg.allowed_skills
         },
+        "webhook_format": action_cfg.webhook_format,
+        "sudo_protection": action_cfg.sudo_protection_enabled,
+        "execution_guard": action_cfg.execution_guard_enabled,
         "integrations": {
             "fail2ban": action_cfg.fail2ban_enabled,
             "geoip": action_cfg.geoip_enabled,
@@ -1800,7 +1815,8 @@ async fn api_status(State(state): State<DashboardState>) -> Json<serde_json::Val
             "honeypot_mode": action_cfg.honeypot_mode,
             "telegram": action_cfg.telegram_enabled,
             "slack": action_cfg.slack_enabled,
-            "cloudflare": action_cfg.cloudflare_enabled
+            "cloudflare": action_cfg.cloudflare_enabled,
+            "crowdsec": action_cfg.crowdsec_enabled
         }
     }))
 }
@@ -6310,6 +6326,12 @@ const INDEX_HTML: &str = r##"<!doctype html>
       card('🔔', 'Telegram',      integ.telegram,     'Real-time alerts + inline approval buttons on your phone',     integ.telegram ? 'ON' : 'OFF', 'external', 'Free. Best solo-operator channel — supports bidirectional approve/reject.',                  'innerwarden notify telegram') +
       card('💬', 'Slack',         integ.slack,        'Incident notifications to a Slack team channel',               integ.slack ? 'ON' : 'OFF',   'external', 'Free (requires workspace). Activating alongside Telegram doubles alert volume for same incident.', 'innerwarden notify slack') +
       card('☁️', 'Cloudflare',    integ.cloudflare,   'Pushes blocked IPs to Cloudflare edge after block-ip fires',   integ.cloudflare ? 'ON' : 'OFF','external', 'Free plan supports IP Access Rules. Effective for DDoS edge-layer defense.',               'innerwarden integrate cloudflare') +
+      card('🌐', 'CrowdSec',     integ.crowdsec||false, 'Community threat intelligence — known-bad IPs looked up on incident', integ.crowdsec ? 'ON' : 'OFF', 'external', 'Free. Requires CrowdSec LAPI running locally. Lookup-only, no preventive blocking.',       'innerwarden integrate crowdsec') +
+      card('📊', 'Prometheus',   true,               'Metrics endpoint at /metrics — scrape with Prometheus, visualize in Grafana', 'ON',  'native',   'Always available when dashboard is active. No config needed.',                               '') +
+      card('🚨', 'PagerDuty',    (s.webhook_format||'') === 'pagerduty', 'On-call alerts via PagerDuty Events API v2',  (s.webhook_format||'') === 'pagerduty' ? 'ON' : 'OFF', 'external', 'Set webhook.format = \"pagerduty\" and webhook.url to PagerDuty enqueue endpoint.',   'innerwarden configure webhook') +
+      card('📟', 'Opsgenie',     (s.webhook_format||'') === 'opsgenie',  'On-call alerts via Opsgenie Alert API',       (s.webhook_format||'') === 'opsgenie' ? 'ON' : 'OFF',  'external', 'Set webhook.format = \"opsgenie\" and webhook.url to Opsgenie alert endpoint.',      'innerwarden configure webhook') +
+      card('👑', 'Sudo Protection', s.sudo_protection||false, 'Detects privilege abuse and suspends sudo access', s.sudo_protection ? 'ON' : 'OFF', 'native', 'Detects 11 threat categories including SUID manipulation, SSH key injection, log tampering.', 'innerwarden enable sudo-protection') +
+      card('🔫', 'Execution Guard', s.execution_guard||false, 'Structural AST analysis of shell commands — catches obfuscation', s.execution_guard ? 'ON' : 'OFF', 'native', 'tree-sitter-bash analysis. Detects reverse shells, curl|bash, hex obfuscation.', 'innerwarden enable execution-guard') +
       '</div></div>';
 
     // ── Section 2b: Integration advisor ────────────────────────────────────
