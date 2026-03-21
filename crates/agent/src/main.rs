@@ -1036,6 +1036,18 @@ async fn main() -> Result<()> {
             telegram_enabled: cfg.telegram.enabled,
             slack_enabled: cfg.slack.enabled,
             cloudflare_enabled: cfg.cloudflare.enabled,
+            crowdsec_enabled: cfg.crowdsec.enabled,
+            webhook_format: cfg.webhook.format.clone(),
+            sudo_protection_enabled: cfg
+                .responder
+                .allowed_skills
+                .iter()
+                .any(|s| s.contains("suspend-user")),
+            execution_guard_enabled: cfg
+                .responder
+                .allowed_skills
+                .iter()
+                .any(|s| s.contains("execution")),
         };
         let dashboard_data_dir = cli.data_dir.clone();
         let dashboard_bind = cli.dashboard_bind.clone();
