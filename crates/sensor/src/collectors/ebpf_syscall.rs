@@ -273,6 +273,91 @@ fn file_open_to_event(
     }
 }
 
+/// Processes that legitimately escalate to root — filtered in userspace.
+const LEGITIMATE_ESCALATION: &[&str] = &[
+    "sudo",
+    "su",
+    "login",
+    "sshd",
+    "cron",
+    "crond",
+    "atd",
+    "polkitd",
+    "pkexec",
+    "systemd",
+    "dbus-daemon",
+    "gdm",
+    "lightdm",
+    "sddm",
+    "newgrp",
+];
+
+/// Convert a kernel privilege escalation event to an Inner Warden Event.
+fn privesc_to_event(
+    pid: u32,
+    old_uid: u32,
+    new_uid: u32,
+    cgroup_id: u64,
+    container_id: Option<&str>,
+    comm: &str,
+    host: &str,
+) -> Option<Event> {
+    let comm_base = comm.split('/').next_back().unwrap_or(comm);
+
+    // Filter legitimate escalation processes
+    if LEGITIMATE_ESCALATION.contains(&comm_base) {
+        return None;
+    }
+
+    let severity = if container_id.is_some() {
+        Severity::Critical // escalation inside container is always critical
+    } else {
+        Severity::High
+    };
+
+    let mut details = serde_json::json!({
+        "pid": pid,
+        "old_uid": old_uid,
+        "new_uid": new_uid,
+        "comm": comm,
+        "cgroup_id": cgroup_id,
+    });
+    if let Some(cid) = container_id {
+        details["container_id"] = serde_json::Value::String(cid.to_string());
+    }
+
+    let mut tags = vec![
+        "ebpf".to_string(),
+        "kprobe".to_string(),
+        "privesc".to_string(),
+    ];
+    let mut entities = vec![];
+    if let Some(cid) = container_id {
+        tags.push("container".to_string());
+        entities.push(EntityRef::container(cid));
+    }
+
+    let summary = if let Some(cid) = container_id {
+        format!(
+            "Privilege escalation: {comm} (pid={pid}) uid {old_uid} → {new_uid} [container {cid}]"
+        )
+    } else {
+        format!("Privilege escalation: {comm} (pid={pid}) uid {old_uid} → {new_uid}")
+    };
+
+    Some(Event {
+        ts: chrono::Utc::now(),
+        host: host.to_string(),
+        source: "ebpf".to_string(),
+        kind: "privilege.escalation".to_string(),
+        severity,
+        summary,
+        details,
+        tags,
+        entities,
+    })
+}
+
 /// Extract a null-terminated string from a byte slice.
 fn bytes_to_string(buf: &[u8]) -> String {
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
@@ -462,6 +547,20 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     }
 
+    // Attach commit_creds kprobe (privilege escalation detection — non-critical)
+    if let Some(prog) = bpf.program_mut("innerwarden_privesc") {
+        use aya::programs::KProbe;
+        if let Ok(kp) = TryInto::<&mut KProbe>::try_into(prog) {
+            if kp.load().is_ok() {
+                if let Err(e) = kp.attach("commit_creds", 0) {
+                    warn!(error = %e, "innerwarden_privesc: failed to attach to commit_creds");
+                } else {
+                    info!("eBPF: innerwarden_privesc → commit_creds (privilege escalation) ✅");
+                }
+            }
+        }
+    }
+
     // Attach XDP firewall (non-critical — continues without it)
     attach_xdp(&mut bpf);
 
@@ -576,6 +675,32 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         flags,
                         &host,
                     ))
+                }
+                // PrivEscEvent layout (#[repr(C)]):
+                //   kind(4) pid(4) tgid(4) old_uid(4) new_uid(4) _pad(4) cgroup_id(8) comm(64) ts_ns(8)
+                //   Offsets: 0  4  8  12  16  20  24  32..96
+                5 if data.len() >= 96 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let old_uid = u32::from_ne_bytes(data[12..16].try_into().unwrap());
+                    let new_uid = u32::from_ne_bytes(data[16..20].try_into().unwrap());
+                    let cgroup_id = u64::from_ne_bytes(data[24..32].try_into().unwrap());
+                    let comm = bytes_to_string(&data[32..96]);
+
+                    if comm.starts_with("innerwarden") {
+                        continue;
+                    }
+
+                    let container_id = resolve_container_id(pid);
+
+                    privesc_to_event(
+                        pid,
+                        old_uid,
+                        new_uid,
+                        cgroup_id,
+                        container_id.as_deref(),
+                        &comm,
+                        &host,
+                    )
                 }
                 _ => None,
             };

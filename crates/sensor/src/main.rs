@@ -27,6 +27,7 @@ use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
 use detectors::integrity_alert::IntegrityAlertDetector;
 use detectors::osquery_anomaly::OsqueryAnomalyDetector;
 use detectors::port_scan::PortScanDetector;
+use detectors::privesc::PrivescDetector;
 use detectors::process_tree::ProcessTreeDetector;
 use detectors::search_abuse::SearchAbuseDetector;
 use detectors::ssh_bruteforce::SshBruteforceDetector;
@@ -69,6 +70,7 @@ struct DetectorSet {
     c2_callback: Option<C2CallbackDetector>,
     process_tree: Option<ProcessTreeDetector>,
     container_escape: Option<ContainerEscapeDetector>,
+    privesc: Option<PrivescDetector>,
 }
 
 #[derive(Default)]
@@ -270,6 +272,10 @@ async fn main() -> Result<()> {
         container_escape: Some({
             info!("container_escape detector enabled");
             ContainerEscapeDetector::new(&cfg.agent.host_id, 600)
+        }),
+        privesc: Some({
+            info!("privesc detector enabled (eBPF commit_creds kprobe)");
+            PrivescDetector::new(&cfg.agent.host_id, 600)
         }),
     };
 
@@ -856,6 +862,12 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.container_escape {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.privesc {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }
