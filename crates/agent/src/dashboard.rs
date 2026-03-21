@@ -5806,7 +5806,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:6px;" id="sensorSources"></div>
     <div class="hud-panel">
       <h3 class="hud-panel-title">Event Timeline</h3>
-      <canvas id="sensorChart" height="200" style="width:100%;"></canvas>
+      <div style="position:relative;height:220px;"><canvas id="sensorChart"></canvas></div>
     </div>
     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
       <div class="hud-panel">
@@ -5815,7 +5815,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       </div>
       <div class="hud-panel">
         <h3 class="hud-panel-title">Detector Activity</h3>
-        <canvas id="detectorChart" height="180" style="width:100%;"></canvas>
+        <div style="position:relative;height:200px;"><canvas id="detectorChart"></canvas></div>
       </div>
     </div>
   </div>
