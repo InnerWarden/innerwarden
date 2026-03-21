@@ -5,6 +5,9 @@
 
 #![no_std]
 
+/// Maximum blocked IPs in XDP blocklist map.
+pub const XDP_BLOCKLIST_MAX: u32 = 10_000;
+
 /// Maximum command line length captured from execve.
 pub const MAX_COMM_LEN: usize = 64;
 /// Maximum filename/path length.
