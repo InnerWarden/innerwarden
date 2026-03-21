@@ -22,6 +22,10 @@ curl -fsSL https://innerwarden.com/install | sudo bash
 Installs in 10 seconds. Starts in observe-only mode. You decide when to go live.
 
 <p align="center">
+  <img src="docs/images/flow.jpg" alt="Inner Warden — distributed network security flow: threats → eBPF detection → enrichment → AI triage → response" width="820">
+</p>
+
+<p align="center">
   <img src="docs/images/dashboard-sensors.png" alt="Dashboard — sensor HUD with eBPF activity, threat gauge, and detector charts" width="820">
 </p>
 <p align="center">
@@ -124,13 +128,20 @@ Blocking is **layered** — a single block decision triggers XDP (instant kernel
  activity     patterns        recommend        honeypot / capture
 ```
 
-**Sensor** — deterministic signal collection. No AI, no HTTP. Sources: auth.log, journald, Docker events, file integrity, nginx, shell audit, macOS unified log, syslog firewall, **eBPF syscall tracing** (execve, connect, openat). Optional: Falco, Suricata, osquery, Wazuh, AWS CloudTrail.
+**Sensor** — deterministic signal collection. No AI, no HTTP. Sources: auth.log, journald, Docker events, file integrity, nginx, shell audit, macOS unified log, syslog firewall, **eBPF syscall tracing** (execve, connect, openat). Optional: Suricata, osquery, Wazuh, AWS CloudTrail.
 
 **eBPF** — six programs running inside the Linux kernel (5.8+):
 - 3 **tracepoints** (execve, connect, openat) — sees every process, connection, and file access
 - 1 **kprobe** (`commit_creds`) — detects privilege escalation in real time
 - 1 **LSM hook** (`bprm_check_security`) — blocks execution from /tmp and /dev/shm at the kernel level
 - 1 **XDP program** — wire-speed IP blocking at the network driver (10M+ pps drop rate)
+
+**Mesh network** — collaborative defense between nodes. Attack one server, all others block the IP automatically. Ed25519 signed signals, game-theory trust model (tit-for-tat), staging pool with TTL-based auto-reversal. No signal causes immediate action — everything is scored and staged.
+
+```bash
+innerwarden mesh enable
+innerwarden mesh add-peer https://peer-server:8790
+```
 
 All in 10KB of bytecode. Container-aware via cgroup ID. Zero performance overhead.
 
@@ -454,7 +465,7 @@ No. Starts in observe-only mode. You enable response skills and disable dry-run 
 No. Detection, logging, dashboard, and reports all work without AI. AI adds confidence-scored triage for autonomous response — it is optional.
 
 **How is this different from Fail2ban?**
-Fail2ban blocks IPs based on regex patterns. Inner Warden has nineteen detectors, six eBPF kernel programs (tracepoints + kprobe + LSM + XDP), eleven response skills (including sudo suspension, process kill, container pause, honeypots, and traffic capture), twelve AI providers, Telegram bot, AbuseIPDB intelligence sharing, and a full investigation dashboard.
+Fail2ban blocks IPs based on regex patterns. Inner Warden has nineteen detectors, six eBPF kernel programs, a collaborative defense mesh network, eleven response skills (including sudo suspension, process kill, container pause, honeypots, and traffic capture), twelve AI providers, Telegram bot, AbuseIPDB intelligence sharing, and a full investigation dashboard.
 
 **Can I add custom detectors or skills?**
 Yes. See [module authoring guide](docs/module-authoring.md).
