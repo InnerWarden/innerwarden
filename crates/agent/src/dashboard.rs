@@ -4376,8 +4376,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
       --line: #1a2943;
       --line2: #263554;
       --text: #edf6ff;
-      --muted: #8b9db8;
-      --ok: #3ac27e;
+      --muted: #a3b8d0;
+      --ok: #4ade80;
       --warn: #ffb84d;
       --danger: #f43f5e;
       --accent: #78e5ff;
@@ -5086,7 +5086,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
     .badge-critical { background: var(--danger); color: #fff; }
     .badge-high     { background: #f97316; color: #fff; }
-    .badge-medium   { background: #fbbf24; color: #000; }
+    .badge-medium   { background: #fbbf24; color: #422006; }
     .badge-low,.badge-info { background: rgba(120,229,255,0.2); color: var(--accent); }
     .report-anomaly-msg { font-size: 0.76rem; line-height: 1.45; }
     .report-suggestion {
@@ -5112,8 +5112,11 @@ const INDEX_HTML: &str = r##"<!doctype html>
     .panel-toggle-btn {
       display: none;
     }
+    .panel-toggle-btn.hidden {
+      display: none !important;
+    }
     @media (max-width: 860px) {
-      .panel-toggle-btn {
+      .panel-toggle-btn:not(.hidden) {
         display: flex;
         align-items: center;
         gap: 6px;
@@ -5129,6 +5132,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
         cursor: pointer;
         min-height: 30px;
         flex-shrink: 0;
+        z-index: 10;
       }
       .panel-toggle-btn:hover { background: rgba(120,229,255,0.14); }
     }
@@ -5256,7 +5260,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
 
     @media (max-width: 480px) {
-      .kpi-label { font-size: 0.56rem; }
+      .kpi-label { font-size: 0.65rem; }
       .kpi-value { font-size: 1rem; }
       .kpi-grid { gap: 5px; }
       .pivot-tab { font-size: 0.65rem; }
@@ -5397,6 +5401,9 @@ const INDEX_HTML: &str = r##"<!doctype html>
     @keyframes breathe {
       0%,100% { opacity:0.6; transform: scale(1); }
       50%      { opacity:1;   transform: scale(1.15); }
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
     }
     .live-dot {
       display: inline-block; width: 7px; height: 7px; border-radius: 50%;
@@ -5624,8 +5631,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
       <!-- Today summary strip -->
       <div class="kpi-grid" style="grid-template-columns: repeat(4,1fr)">
         <div class="kpi-card"><div class="kpi-label">Date</div><div class="kpi-value" id="kpi-date" style="font-size:0.7rem">—</div></div>
-        <div class="kpi-card"><div class="kpi-label">Activity</div><div class="kpi-value" id="kpi-events">0</div></div>
-        <div class="kpi-card"><div class="kpi-label">Blocked</div><div class="kpi-value" id="kpi-incidents" style="color:var(--ok)">0</div></div>
+        <div class="kpi-card"><div class="kpi-label">Events</div><div class="kpi-value" id="kpi-events">0</div></div>
+        <div class="kpi-card"><div class="kpi-label">Incidents</div><div class="kpi-value" id="kpi-incidents" style="color:var(--ok)">0</div></div>
         <div class="kpi-card"><div class="kpi-label">Contained</div><div class="kpi-value" id="kpi-decisions" style="color:var(--ok)">100%</div></div>
       </div>
 
@@ -5812,7 +5819,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       if (btn) btn.classList.toggle('active', k === name);
     });
     const toggleBtn = document.getElementById('panelToggleBtn');
-    if (toggleBtn) toggleBtn.style.display = name === 'investigate' ? '' : 'none';
+    if (toggleBtn) toggleBtn.classList.toggle('hidden', name !== 'investigate');
     if (name === 'report') loadReport();
     if (name === 'status') loadStatus();
     if (name === 'honeypot') loadHoneypot();
@@ -6505,7 +6512,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     const btn = document.getElementById('btnTestHoneypot');
     if (!btn) return;
     btn.disabled = true;
-    btn.textContent = '⏳ Iniciando...';
+    btn.textContent = '⏳ Starting...';
     try {
       const reason = 'Teste manual via dashboard';
       const resp = await fetch('/api/action/honeypot', {
@@ -6857,13 +6864,18 @@ const INDEX_HTML: &str = r##"<!doctype html>
         </div>
         <div class="evidence-title">${esc(entrySummary(entry))}</div>
         ${metaHtml}
-        <pre class="evidence-raw" id="raw-${idx}">${esc(JSON.stringify(entry.data, null, 2))}</pre>
+        <pre class="evidence-raw" id="raw-${idx}" data-json="${esc(JSON.stringify(entry.data))}"></pre>
       </div>`;
   }
 
   function toggleRaw(idx) {
     const el = document.getElementById('raw-' + idx);
-    if (el) el.classList.toggle('open');
+    if (!el) return;
+    if (!el.textContent && el.dataset.json) {
+      try { el.textContent = JSON.stringify(JSON.parse(el.dataset.json), null, 2); } catch(e) { el.textContent = el.dataset.json; }
+      delete el.dataset.json;
+    }
+    el.classList.toggle('open');
   }
 
   // ── Render single timeline entry ───────────────────────────────────────
@@ -7194,7 +7206,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
     document.getElementById('homeState').style.display = 'none';
     document.getElementById('journeyContent').style.display = 'block';
-    document.getElementById('journeyContent').innerHTML = '<div class="loading" style="padding:40px">Loading timeline…</div>';
+    document.getElementById('journeyContent').innerHTML = '<div class="loading" style="padding:40px;text-align:center"><div class="spinner" style="display:inline-block;width:20px;height:20px;border:2px solid var(--line2);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;margin-bottom:8px"></div><br>Loading timeline\u2026</div>';
 
     const panel = document.getElementById('rightPanel');
 
@@ -7616,6 +7628,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
   });
 
   document.getElementById('flt-apply').addEventListener('click', () => {
+    const list = document.getElementById('attackerList');
+    if (list) list.innerHTML = '<div class="loading" style="padding:20px">Loading...</div>';
     refreshLeft(true);
   });
   document.querySelectorAll('.pivot-tab').forEach((tab) => {
@@ -7672,7 +7686,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
           clearTimeout(fallbackTimer);
           clearInterval(fallbackTimer);
           const el = document.getElementById('refreshStatus');
-          if (el) el.innerHTML = '<span style="color:#78e5ff;font-size:0.7rem">&#9679; LIVE</span>';
+          if (el) el.innerHTML = '<span style="color:#78e5ff;font-size:0.85rem">&#9679; LIVE</span>';
           const reader = res.body.getReader();
           const dec = new TextDecoder();
           let buf = '';
