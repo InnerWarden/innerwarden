@@ -1760,8 +1760,10 @@ async fn api_sensors(State(state): State<DashboardState>) -> Json<serde_json::Va
 
     // Sample events file across its full length for timeline coverage.
     // Read 20 chunks of 64KB evenly spaced across the file → ~2000 events sampled.
-    let mut source_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut kind_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut source_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut kind_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     let mut timeline: std::collections::BTreeMap<String, std::collections::HashMap<String, usize>> =
         std::collections::BTreeMap::new();
     let mut total_events = 0usize;
@@ -1771,11 +1773,17 @@ async fn api_sensors(State(state): State<DashboardState>) -> Json<serde_json::Va
         move || -> Option<Vec<String>> {
             let file = std::fs::File::open(&path).ok()?;
             let len = file.metadata().ok()?.len();
-            if len == 0 { return Some(vec![]); }
+            if len == 0 {
+                return Some(vec![]);
+            }
 
             let chunk_size: u64 = 64 * 1024;
             let num_samples: u64 = 20;
-            let step = if len > chunk_size * num_samples { len / num_samples } else { 0 };
+            let step = if len > chunk_size * num_samples {
+                len / num_samples
+            } else {
+                0
+            };
             let mut chunks = Vec::new();
 
             for i in 0..num_samples {
@@ -1785,7 +1793,9 @@ async fn api_sensors(State(state): State<DashboardState>) -> Json<serde_json::Va
                 let mut limited = vec![0u8; chunk_size as usize];
                 let n = std::io::Read::read(&mut reader, &mut limited).ok()?;
                 chunks.push(String::from_utf8_lossy(&limited[..n]).to_string());
-                if step == 0 { break; } // file smaller than total sample size
+                if step == 0 {
+                    break;
+                } // file smaller than total sample size
             }
             Some(chunks)
         }
@@ -1827,9 +1837,12 @@ async fn api_sensors(State(state): State<DashboardState>) -> Json<serde_json::Va
     }
 
     // Read incidents for detector activity
-    let mut detector_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut detector_timeline: std::collections::BTreeMap<String, std::collections::HashMap<String, usize>> =
-        std::collections::BTreeMap::new();
+    let mut detector_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut detector_timeline: std::collections::BTreeMap<
+        String,
+        std::collections::HashMap<String, usize>,
+    > = std::collections::BTreeMap::new();
     let mut total_incidents = 0usize;
 
     if let Some(content) = tokio::task::spawn_blocking({
