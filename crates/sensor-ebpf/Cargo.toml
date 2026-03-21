@@ -1,9 +1,11 @@
 [package]
 name = "innerwarden-ebpf"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+version = "0.1.13"
+edition = "2021"
+license = "MIT"
 description = "eBPF programs for Inner Warden kernel-level security monitoring."
+
+[workspace]
 
 [[bin]]
 name = "innerwarden-ebpf"
