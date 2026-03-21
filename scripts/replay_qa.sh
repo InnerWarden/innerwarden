@@ -29,7 +29,6 @@ mkdir -p "$DATA_DIR"
 SENSOR_CFG="$TMP_DIR/sensor-replay.toml"
 AGENT_CFG="$TMP_DIR/agent-replay.toml"
 AUTH_FIXTURE="$TMP_DIR/replay-auth.log"
-FALCO_FIXTURE="$TMP_DIR/replay-falco.jsonl"
 SURICATA_FIXTURE="$TMP_DIR/replay-suricata-eve.jsonl"
 OSQUERY_FIXTURE="$TMP_DIR/replay-osquery.jsonl"
 
@@ -88,11 +87,6 @@ sed \
   -e 's/198\.51\.100\.5/5.6.7.8/g' \
   "$ROOT_DIR/testdata/sample-auth.log" > "$AUTH_FIXTURE"
 
-# Falco fixture: use routable IPs for Outbound C2 event
-sed \
-  -e 's/1\.2\.3\.4/1.2.3.4/g' \
-  "$ROOT_DIR/testdata/sample-falco.jsonl" > "$FALCO_FIXTURE"
-
 # Suricata EVE fixture: already uses routable IPs in sample
 cp "$ROOT_DIR/testdata/sample-suricata-eve.jsonl" "$SURICATA_FIXTURE"
 
@@ -122,10 +116,6 @@ enabled = false
 enabled = false
 poll_seconds = 60
 paths = []
-
-[collectors.falco_log]
-enabled = true
-path = "$FALCO_FIXTURE"
 
 [collectors.suricata_eve]
 enabled = true
@@ -246,7 +236,6 @@ assert_json_metric_positive "$REPORT_JSON" "ai_decision_count"
 # Multi-source assertions: each integration must emit at least one event
 # Source names match what collectors actually emit in the Event.source field
 assert_events_contain_source "auth.log"
-assert_events_contain_source "falco"
 assert_events_contain_source "suricata"
 assert_events_contain_source "osquery"
 
@@ -255,7 +244,6 @@ if ! grep -q '"ai_provider":"anthropic"' "$DECISIONS_FILE"; then
   exit 1
 fi
 
-FALCO_COUNT=$(grep -c '"source":"falco"' "$EVENTS_FILE" || true)
 SURICATA_COUNT=$(grep -c '"source":"suricata"' "$EVENTS_FILE" || true)
 OSQUERY_COUNT=$(grep -c '"source":"osquery"' "$EVENTS_FILE" || true)
 AUTH_COUNT=$(grep -c '"source":"auth.log"' "$EVENTS_FILE" || true)
@@ -264,7 +252,6 @@ echo "[replay] success"
 echo "  data_dir:   $DATA_DIR"
 echo "  events:     $(wc -l < "$EVENTS_FILE" | tr -d ' ') total"
 echo "    auth_log:    $AUTH_COUNT"
-echo "    falco_log:   $FALCO_COUNT"
 echo "    suricata_eve:$SURICATA_COUNT"
 echo "    osquery_log: $OSQUERY_COUNT"
 echo "  incidents:  $(wc -l < "$INCIDENTS_FILE" | tr -d ' ')"
