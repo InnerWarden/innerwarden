@@ -1,5 +1,6 @@
 pub mod credential_stuffing;
 pub mod distributed_ssh;
+pub mod suspicious_login;
 
 /// Returns true if the IP is private, loopback, link-local, or documentation range.
 /// These should never be treated as external attackers.
