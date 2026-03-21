@@ -35,6 +35,8 @@ pub enum SyscallKind {
     FileWrite = 4,
     /// Privilege escalation (commit_creds: uid changed to root)
     PrivEsc = 5,
+    /// LSM blocked execution (bprm_check_security denied /tmp, /dev/shm)
+    LsmBlocked = 6,
 }
 
 /// Event emitted by the eBPF `execve` tracepoint.

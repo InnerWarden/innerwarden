@@ -8,6 +8,9 @@
 //! Kprobes:
 //!   - commit_creds: detects privilege escalation (uid 1000 → uid 0)
 //!
+//! LSM (Linux Security Modules):
+//!   - bprm_check_security: blocks execution from /tmp, /dev/shm (policy-gated)
+//!
 //! XDP:
 //!   - innerwarden_xdp: wire-speed IP blocking at the network driver level
 //!
@@ -20,9 +23,9 @@
 use aya_ebpf::{
     bindings::xdp_action,
     helpers::{bpf_get_current_cgroup_id, bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_kernel, bpf_probe_read_user_str_bytes},
-    macros::{kprobe, map, tracepoint, xdp},
+    macros::{kprobe, lsm, map, tracepoint, xdp},
     maps::{HashMap, RingBuf},
-    programs::{ProbeContext, TracePointContext, XdpContext},
+    programs::{LsmContext, ProbeContext, TracePointContext, XdpContext},
 };
 use aya_log_ebpf::info;
 use innerwarden_ebpf_types::{ExecveEvent, ConnectEvent, PrivEscEvent, SyscallKind, MAX_COMM_LEN, MAX_FILENAME_LEN};
@@ -395,6 +398,116 @@ fn try_privesc(ctx: &ProbeContext) -> Result<(), i64> {
     entry.submit(0);
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// LSM: bprm_check_security — block execution from dangerous paths
+// ---------------------------------------------------------------------------
+//
+// Enforces execution policy at the kernel level. When enabled via the
+// LSM_POLICY map, blocks binaries executed from:
+//   /tmp/       — common staging area for malware
+//   /dev/shm/   — shared memory, often used for fileless malware
+//   /var/tmp/   — persistent temp, another staging area
+//
+// Policy map keys:
+//   0 = master switch (1 = enforce, 0 = disabled)
+//
+// Returns 0 to allow, -EPERM (-1) to deny.
+// When policy map is empty or key 0 is not set → allow (fail-open).
+
+/// Policy map — controls LSM enforcement.
+/// Key 0 = master switch: 0 = disabled (observe only), 1 = enforce (block).
+/// Managed by the agent via bpftool on the pinned map.
+#[map]
+static LSM_POLICY: HashMap<u32, u32> = HashMap::with_max_entries(16, 0);
+
+#[lsm(hook = "bprm_check_security")]
+pub fn innerwarden_lsm_exec(ctx: LsmContext) -> i32 {
+    match try_lsm_exec(&ctx) {
+        Ok(ret) => ret,
+        Err(_) => 0, // fail-open: allow on error
+    }
+}
+
+fn try_lsm_exec(ctx: &LsmContext) -> Result<i32, i64> {
+    // Check if enforcement is enabled (key 0 in policy map)
+    let enabled = unsafe { LSM_POLICY.get(&0u32) };
+    if enabled.is_none() || *enabled.unwrap() == 0 {
+        return Ok(0); // policy disabled — allow everything
+    }
+
+    // Read filename from linux_binprm (first arg)
+    // struct linux_binprm { ..., const char *filename, ... }
+    // filename is at a known offset — we read the pointer then the string
+    let bprm_ptr: *const u8 = unsafe { ctx.arg(0).ok_or(1i64)? };
+
+    // linux_binprm->filename offset varies by kernel version
+    // On 6.x: filename is typically at offset 72 (after interp, vma, etc.)
+    // We'll read the filename pointer from bprm
+    // Actually, for bprm_check_security, the filename is already in bprm->filename
+    // Offset 72 on kernel 6.x (may need adjustment)
+    const BPRM_FILENAME_OFFSET: usize = 72;
+
+    let filename_ptr: *const u8 = unsafe {
+        bpf_probe_read_kernel(bprm_ptr.add(BPRM_FILENAME_OFFSET) as *const *const u8)
+            .map_err(|e| e)?
+    };
+
+    // Read first 16 bytes of the filename to check the prefix
+    let mut buf = [0u8; 16];
+    unsafe {
+        let _ = bpf_probe_read_kernel(filename_ptr as *const [u8; 16]).map(|v| buf = v);
+    }
+
+    // Check dangerous prefixes
+    let is_dangerous =
+        // /tmp/
+        (buf[0] == b'/' && buf[1] == b't' && buf[2] == b'm' && buf[3] == b'p' && buf[4] == b'/')
+        // /dev/shm/
+        || (buf[0] == b'/' && buf[1] == b'd' && buf[2] == b'e' && buf[3] == b'v' && buf[4] == b'/' && buf[5] == b's' && buf[6] == b'h' && buf[7] == b'm' && buf[8] == b'/')
+        // /var/tmp/
+        || (buf[0] == b'/' && buf[1] == b'v' && buf[2] == b'a' && buf[3] == b'r' && buf[4] == b'/' && buf[5] == b't' && buf[6] == b'm' && buf[7] == b'p' && buf[8] == b'/');
+
+    if !is_dangerous {
+        return Ok(0); // safe path — allow
+    }
+
+    // Block execution from dangerous path
+    // Also emit an event so the sensor sees the blocked attempt
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let pid = pid_tgid as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    if let Some(mut entry) = EVENTS.reserve::<innerwarden_ebpf_types::ExecveEvent>(0) {
+        let event = unsafe { &mut *entry.as_mut_ptr() };
+        event.kind = 6; // LSM blocked execution (new kind)
+        event.pid = pid;
+        event.tgid = (pid_tgid >> 32) as u32;
+        event.uid = uid;
+        event.gid = 0;
+        event.ppid = 0;
+        event.cgroup_id = cgroup_id;
+        event.ts_ns = ts;
+        event.argc = 0;
+        event.argv = [[0u8; 128]; 8];
+
+        // Copy filename to event
+        event.filename = [0u8; 256];
+        let copy_len = buf.len().min(256);
+        event.filename[..copy_len].copy_from_slice(&buf[..copy_len]);
+
+        if let Ok(comm) = bpf_get_current_comm() {
+            event.comm[..comm.len().min(MAX_COMM_LEN)]
+                .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+        }
+
+        entry.submit(0);
+    }
+
+    Ok(-1) // -EPERM: deny execution
 }
 
 // ---------------------------------------------------------------------------

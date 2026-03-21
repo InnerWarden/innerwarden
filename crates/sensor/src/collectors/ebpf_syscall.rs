@@ -383,6 +383,59 @@ fn detect_default_interface() -> Option<String> {
     None
 }
 
+/// Pin path for the LSM policy map.
+const LSM_POLICY_PIN: &str = "/sys/fs/bpf/innerwarden/lsm_policy";
+
+/// Attach LSM execution policy and pin the policy map.
+/// Requires `lsm=...,bpf` in kernel boot cmdline.
+/// Non-critical — if LSM is not available, the sensor continues without it.
+#[cfg(feature = "ebpf")]
+fn attach_lsm(bpf: &mut aya::Ebpf) {
+    use aya::programs::Lsm;
+
+    match bpf.program_mut("innerwarden_lsm_exec") {
+        Some(prog) => {
+            let lsm: &mut Lsm = match prog.try_into() {
+                Ok(l) => l,
+                Err(e) => {
+                    info!(error = %e, "innerwarden_lsm_exec: not available (kernel may lack lsm=bpf)");
+                    return;
+                }
+            };
+
+            let btf = aya::Btf::from_sys_fs().ok();
+            if let Err(e) = lsm.load("bprm_check_security", &btf.as_ref().unwrap()) {
+                info!(error = %e, "innerwarden_lsm_exec: BPF LSM not enabled in kernel (add lsm=bpf to boot cmdline)");
+                return;
+            }
+            if let Err(e) = lsm.attach() {
+                warn!(error = %e, "innerwarden_lsm_exec: failed to attach");
+                return;
+            }
+            info!("eBPF: innerwarden_lsm_exec → bprm_check_security (LSM enforcement) ✅");
+        }
+        None => {
+            info!("eBPF: innerwarden_lsm_exec program not found — LSM not available");
+            return;
+        }
+    }
+
+    // Pin the LSM_POLICY map so the agent can enable/disable enforcement
+    if let Some(map) = bpf.map_mut("LSM_POLICY") {
+        if let Err(e) = map.pin(LSM_POLICY_PIN) {
+            if !std::path::Path::new(LSM_POLICY_PIN).exists() {
+                warn!(error = %e, "LSM: failed to pin policy map");
+            }
+        } else {
+            info!("eBPF: LSM policy map pinned at {LSM_POLICY_PIN}");
+            info!("eBPF: LSM enforcement is OFF by default — enable via: bpftool map update pinned {LSM_POLICY_PIN} key 0 0 0 0 value 1 0 0 0");
+        }
+    }
+}
+
+#[cfg(not(feature = "ebpf"))]
+fn attach_lsm(_bpf: &mut ()) {}
+
 /// Attach XDP firewall program and pin the blocklist map.
 /// Non-critical — if it fails, the sensor continues without XDP.
 #[cfg(feature = "ebpf")]
@@ -561,6 +614,9 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     }
 
+    // Attach LSM execution policy (non-critical — requires lsm=bpf in kernel cmdline)
+    attach_lsm(&mut bpf);
+
     // Attach XDP firewall (non-critical — continues without it)
     attach_xdp(&mut bpf);
 
@@ -701,6 +757,49 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         &comm,
                         &host,
                     )
+                }
+                // LSM blocked execution — uses ExecveEvent layout but kind=6
+                // Same offsets as ExecveEvent: kind(4) pid(4) tgid(4) uid(4) gid(4) ppid(4) cgroup_id(8) comm(64) filename(256)
+                6 if data.len() >= 352 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[12..16].try_into().unwrap());
+                    let cgroup_id = u64::from_ne_bytes(data[24..32].try_into().unwrap());
+                    let comm = bytes_to_string(&data[32..96]);
+                    let filename = bytes_to_string(&data[96..352]);
+
+                    let container_id = resolve_container_id(pid);
+
+                    let mut details = serde_json::json!({
+                        "pid": pid,
+                        "uid": uid,
+                        "comm": comm,
+                        "filename": filename,
+                        "cgroup_id": cgroup_id,
+                        "action": "blocked",
+                    });
+                    if let Some(ref cid) = container_id {
+                        details["container_id"] = serde_json::Value::String(cid.to_string());
+                    }
+
+                    let mut tags =
+                        vec!["ebpf".to_string(), "lsm".to_string(), "blocked".to_string()];
+                    let mut entities = vec![];
+                    if let Some(ref cid) = container_id {
+                        tags.push("container".to_string());
+                        entities.push(EntityRef::container(cid));
+                    }
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "lsm.exec_blocked".to_string(),
+                        severity: Severity::Critical,
+                        summary: format!("LSM blocked execution: {comm} tried to run {filename}"),
+                        details,
+                        tags,
+                        entities,
+                    })
                 }
                 _ => None,
             };
