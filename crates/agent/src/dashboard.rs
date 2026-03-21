@@ -6288,14 +6288,21 @@ const INDEX_HTML: &str = r##"<!doctype html>
         ? '<span class="integ-kind-native">NATIVE</span>'
         : '<span class="integ-kind-ext">EXTERNAL</span>';
       const cost = costNote ? '<div class="integ-cost">' + esc(costNote) + '</div>' : '';
-      const hint = !on && enableCmd ? '<div class="integ-hint">$ <code>' + esc(enableCmd) + '</code></div>' : '';
+      let toggleBtn = '';
+      if (enableCmd) {
+        const disableCmd = enableCmd.replace('enable', 'disable').replace('integrate ', 'integrate --disable ');
+        const cmd = on ? disableCmd : enableCmd;
+        const label = on ? '⏹ Disable' : '▶ Enable';
+        const cls = on ? 'integ-toggle off' : 'integ-toggle on';
+        toggleBtn = '<button class="' + cls + '" onclick="copyCmd(\'' + esc(cmd).replace(/'/g, "\\'") + '\')" title="Copy command">' + label + '</button>';
+      }
       return '<div class="integ-card ' + (on ? 'active' : 'inactive') + '">' +
         '<div class="integ-icon">' + icon + '</div>' +
         '<div class="integ-body">' +
         '<div class="integ-name">' + esc(name) + badge + kindBadge + '</div>' +
         '<div class="integ-desc">' + esc(desc) + '</div>' +
         cost +
-        hint +
+        toggleBtn +
         '</div></div>';
     };
 
@@ -6314,6 +6321,11 @@ const INDEX_HTML: &str = r##"<!doctype html>
       '.integ-desc{font-size:0.68rem;color:var(--muted);line-height:1.4}' +
       '.integ-cost{font-size:0.62rem;color:var(--muted);opacity:0.75;margin-top:3px;line-height:1.4}' +
       '.integ-hint{font-size:0.62rem;color:var(--accent);margin-top:5px}' +
+      '.integ-toggle{display:inline-block;margin-top:6px;padding:4px 12px;border:1px solid var(--line);border-radius:8px;font-size:0.65rem;font-weight:600;cursor:pointer;background:transparent;transition:all 0.2s}' +
+      '.integ-toggle.on{color:var(--ok);border-color:var(--ok)}' +
+      '.integ-toggle.on:hover{background:rgba(74,222,128,0.1)}' +
+      '.integ-toggle.off{color:var(--danger);border-color:var(--danger)}' +
+      '.integ-toggle.off:hover{background:rgba(244,63,94,0.1)}' +
       '.integ-hint code{font-family:\'JetBrains Mono\',monospace}' +
       '.integ-badge{display:inline-block;font-size:0.6rem;font-weight:700;padding:2px 7px;border-radius:20px;margin-left:6px;vertical-align:middle}' +
       '.integ-badge.on{background:rgba(58,194,126,0.2);color:var(--ok)}' +
@@ -7029,6 +7041,14 @@ const INDEX_HTML: &str = r##"<!doctype html>
     toast.className = 'toast ' + (type || 'ok') + ' visible';
     clearTimeout(toast._timer);
     toast._timer = setTimeout(() => toast.classList.remove('visible'), 4500);
+  }
+
+  function copyCmd(cmd) {
+    navigator.clipboard.writeText(cmd).then(() => {
+      showToast('Copied: ' + cmd, 'ok');
+    }).catch(() => {
+      showToast('Command: ' + cmd, 'ok');
+    });
   }
 
   // D8b — browser tab title badge: shows unseen incident count when tab is not focused.
