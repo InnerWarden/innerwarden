@@ -165,25 +165,35 @@ impl TelemetryWriter {
 }
 
 pub fn read_latest_snapshot(data_dir: &Path, date: &str) -> Option<TelemetrySnapshot> {
-    let safe_date: String = date
-        .chars()
-        .filter(|c| c.is_ascii_digit() || *c == '-')
-        .collect();
+    // Validate date format strictly — reject anything that isn't YYYY-MM-DD
+    let parsed = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+    let safe_date = parsed.format("%Y-%m-%d").to_string();
     let path = data_dir.join(format!("telemetry-{safe_date}.jsonl"));
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
 
     let mut latest: Option<TelemetrySnapshot> = None;
     for line in reader.lines() {
-        let line = line.ok()?;
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                warn!("failed to read telemetry line: {e}");
+                continue;
+            }
+        };
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-        let snapshot: TelemetrySnapshot = serde_json::from_str(trimmed).ok()?;
-        match &latest {
-            Some(current) if current.ts >= snapshot.ts => {}
-            _ => latest = Some(snapshot),
+        match serde_json::from_str::<TelemetrySnapshot>(trimmed) {
+            Ok(snapshot) => match &latest {
+                Some(current) if current.ts >= snapshot.ts => {}
+                _ => latest = Some(snapshot),
+            },
+            Err(e) => {
+                warn!("failed to parse telemetry snapshot: {e}");
+                continue;
+            }
         }
     }
 
@@ -204,7 +214,11 @@ fn action_tag(action: &AiAction) -> &'static str {
 }
 
 fn open_or_create(data_dir: &Path, date: &str) -> Result<File> {
-    let path = data_dir.join(format!("telemetry-{date}.jsonl"));
+    let safe_date: String = date
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '-')
+        .collect();
+    let path = data_dir.join(format!("telemetry-{safe_date}.jsonl"));
     OpenOptions::new()
         .create(true)
         .append(true)
