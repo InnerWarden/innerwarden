@@ -437,16 +437,16 @@ fn try_lsm_exec(ctx: &LsmContext) -> Result<i32, i64> {
         return Ok(0); // policy disabled — allow everything
     }
 
-    // Read filename from linux_binprm (first arg)
-    // struct linux_binprm { ..., const char *filename, ... }
-    // filename is at a known offset — we read the pointer then the string
-    let bprm_ptr: *const u8 = unsafe { ctx.arg::<*const u8>(0).ok_or(1i64)? };
+    // For bprm_check_security(struct linux_binprm *bprm):
+    // The bprm pointer is the first argument, accessible via raw context pointer.
+    // LSM context args are at ctx + 0 (first arg pointer).
+    let ctx_ptr = ctx.as_ptr() as *const *const u8;
+    let bprm_ptr: *const u8 = unsafe {
+        bpf_probe_read_kernel(ctx_ptr).map_err(|e| e)?
+    };
 
-    // linux_binprm->filename offset varies by kernel version
-    // On 6.x: filename is typically at offset 72 (after interp, vma, etc.)
-    // We'll read the filename pointer from bprm
-    // Actually, for bprm_check_security, the filename is already in bprm->filename
-    // Offset 72 on kernel 6.x (may need adjustment)
+    // linux_binprm->filename offset on kernel 6.x
+    // struct linux_binprm { ..., const char *filename @ offset 72, ... }
     const BPRM_FILENAME_OFFSET: usize = 72;
 
     let filename_ptr: *const u8 = unsafe {
