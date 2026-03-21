@@ -368,6 +368,31 @@ run_root install -o root -g root -m 755 "${IW_AGENT_BIN}"  "${AGENT_BIN}"
 run_root install -o root -g root -m 755 "${IW_CTL_BIN}"    "${BIN_DIR}/innerwarden-ctl"
 run_root install -o root -g root -m 755 "${IW_CTL_BIN}"    "${BIN_DIR}/innerwarden"
 
+# ── Install bpftool for eBPF support (Linux only) ────────────────────────
+# bpftool is required for XDP firewall and LSM enforcement management.
+# The sensor works without it (graceful fallback) but advanced features need it.
+if [[ "$OS_TYPE" == "Linux" ]]; then
+  if ! command -v bpftool >/dev/null 2>&1; then
+    log "installing bpftool for eBPF support..."
+    if command -v apt-get >/dev/null 2>&1; then
+      run_root apt-get install -y -qq linux-tools-common linux-tools-"$(uname -r)" 2>/dev/null \
+        || run_root apt-get install -y -qq bpftool 2>/dev/null \
+        || log "warning: could not install bpftool (XDP/LSM management unavailable)"
+    elif command -v dnf >/dev/null 2>&1; then
+      run_root dnf install -y -q bpftool 2>/dev/null \
+        || log "warning: could not install bpftool (XDP/LSM management unavailable)"
+    elif command -v yum >/dev/null 2>&1; then
+      run_root yum install -y -q bpftool 2>/dev/null \
+        || log "warning: could not install bpftool (XDP/LSM management unavailable)"
+    else
+      log "warning: could not detect package manager — install bpftool manually for XDP/LSM support"
+    fi
+  fi
+  if command -v bpftool >/dev/null 2>&1; then
+    log "bpftool available: $(bpftool version 2>/dev/null | head -1)"
+  fi
+fi
+
 HOST_ID="$(hostname -f 2>/dev/null || hostname)"
 
 # ── Preserve existing configs on upgrade ──────────────────────────────────
