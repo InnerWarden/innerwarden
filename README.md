@@ -22,6 +22,9 @@ curl -fsSL https://innerwarden.com/install | sudo bash
 Installs in 10 seconds. Starts in observe-only mode. You decide when to go live.
 
 <p align="center">
+  <img src="docs/images/dashboard-sensors.png" alt="Dashboard — sensor HUD with eBPF activity, threat gauge, and detector charts" width="820">
+</p>
+<p align="center">
   <img src="docs/images/dashboard-threats.png" alt="Dashboard — real-time threat overview" width="820">
 </p>
 <p align="center">
