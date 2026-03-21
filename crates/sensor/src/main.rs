@@ -18,6 +18,9 @@ use collectors::{
     suricata_eve::SuricataEveCollector, syslog_firewall::SyslogFirewallCollector,
     wazuh_alerts::WazuhAlertsCollector,
 };
+use detectors::c2_callback::C2CallbackDetector;
+use detectors::container_escape::ContainerEscapeDetector;
+use detectors::process_tree::ProcessTreeDetector;
 use detectors::credential_stuffing::CredentialStuffingDetector;
 use detectors::distributed_ssh::DistributedSshDetector;
 use detectors::docker_anomaly::DockerAnomalyDetector;
@@ -63,6 +66,9 @@ struct DetectorSet {
     osquery_anomaly: Option<OsqueryAnomalyDetector>,
     distributed_ssh: Option<DistributedSshDetector>,
     suspicious_login: Option<SuspiciousLoginDetector>,
+    c2_callback: Option<C2CallbackDetector>,
+    process_tree: Option<ProcessTreeDetector>,
+    container_escape: Option<ContainerEscapeDetector>,
 }
 
 #[derive(Default)]
@@ -252,6 +258,18 @@ async fn main() -> Result<()> {
         suspicious_login: cfg.detectors.ssh_bruteforce.enabled.then(|| {
             info!("suspicious_login detector enabled");
             SuspiciousLoginDetector::new(&cfg.agent.host_id, 300)
+        }),
+        c2_callback: Some({
+            info!("c2_callback detector enabled (eBPF network monitoring)");
+            C2CallbackDetector::new(&cfg.agent.host_id, 600)
+        }),
+        process_tree: Some({
+            info!("process_tree detector enabled (eBPF parent-child tracking)");
+            ProcessTreeDetector::new(&cfg.agent.host_id, 600)
+        }),
+        container_escape: Some({
+            info!("container_escape detector enabled");
+            ContainerEscapeDetector::new(&cfg.agent.host_id, 600)
         }),
     };
 
@@ -820,6 +838,24 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.suspicious_login {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.c2_callback {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.process_tree {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.container_escape {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }

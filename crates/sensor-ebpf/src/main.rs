@@ -10,7 +10,7 @@
 #![no_main]
 
 use aya_ebpf::{
-    helpers::{bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_user_str_bytes},
+    helpers::{bpf_get_current_cgroup_id, bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_user_str_bytes},
     macros::{map, tracepoint},
     maps::RingBuf,
     programs::TracePointContext,
@@ -72,7 +72,8 @@ fn try_execve(ctx: &TracePointContext) -> Result<(), i64> {
     event.tgid = tgid;
     event.uid = uid;
     event.gid = gid;
-    event.ppid = 0; // TODO: read from task_struct
+    event.ppid = 0; // resolved in userspace via /proc/<pid>/status
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
     event.ts_ns = ts;
     event.argc = 0;
 
@@ -156,6 +157,8 @@ fn try_connect(ctx: &TracePointContext) -> Result<(), i64> {
     event.pid = pid;
     event.tgid = tgid;
     event.uid = uid;
+    event.ppid = 0; // resolved in userspace
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
     event.dst_addr = addr;
     event.dst_port = port;
     event.family = family;
@@ -167,6 +170,75 @@ fn try_connect(ctx: &TracePointContext) -> Result<(), i64> {
 
     entry.submit(0);
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tracepoint: sys_enter_openat
+// ---------------------------------------------------------------------------
+//
+// Monitors file access to sensitive paths. Only emits events for paths
+// matching security-relevant prefixes to avoid flooding the ring buffer.
+
+#[tracepoint]
+pub fn innerwarden_openat(ctx: TracePointContext) -> u32 {
+    match try_openat(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 1,
+    }
+}
+
+fn try_openat(ctx: &TracePointContext) -> Result<(), i64> {
+    // sys_enter_openat args: [dfd, filename, flags, mode]
+    let filename_ptr: *const u8 = unsafe { ctx.read_at(24)? };
+
+    let mut filename_buf = [0u8; 256];
+    unsafe {
+        let _ = bpf_probe_read_user_str_bytes(filename_ptr, &mut filename_buf);
+    }
+
+    // Only emit events for sensitive paths (kernel-space filtering)
+    let is_sensitive = {
+        let f = &filename_buf;
+        // /etc/passwd, /etc/shadow, /etc/sudoers*
+        (f[0] == b'/' && f[1] == b'e' && f[2] == b't' && f[3] == b'c' && f[4] == b'/')
+        // /root/.ssh/
+        || (f[0] == b'/' && f[1] == b'r' && f[2] == b'o' && f[3] == b'o' && f[4] == b't')
+        // /home/*/.ssh/
+        || (f[0] == b'/' && f[1] == b'h' && f[2] == b'o' && f[3] == b'm' && f[4] == b'e')
+    };
+
+    if !is_sensitive {
+        return Ok(());
+    }
+
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let pid = pid_tgid as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let flags: u32 = unsafe { ctx.read_at(32)? };
+
+    let mut entry = match EVENTS.reserve::<innerwarden_ebpf_types::FileOpenEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = innerwarden_ebpf_types::SyscallKind::FileOpen as u32;
+    event.pid = pid;
+    event.uid = uid;
+    event.ppid = 0; // resolved in userspace
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    event.filename = filename_buf;
+    event.flags = flags;
+    event.ts_ns = ts;
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
     Ok(())
 }
 

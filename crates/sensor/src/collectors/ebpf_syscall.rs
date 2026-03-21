@@ -48,7 +48,8 @@ pub fn is_ebpf_available() -> bool {
     }
 
     // eBPF bytecode exists
-    std::path::Path::new(EBPF_OBJ_PATH).exists() || std::path::Path::new(EBPF_OBJ_PATH_DEV).exists()
+    std::path::Path::new(EBPF_OBJ_PATH).exists()
+        || std::path::Path::new(EBPF_OBJ_PATH_DEV).exists()
 }
 
 /// Find the eBPF bytecode file.
@@ -62,14 +63,89 @@ fn find_ebpf_obj() -> Option<String> {
     }
 }
 
+/// Resolve parent PID from /proc/<pid>/status. Best-effort (returns 0 on failure).
+fn resolve_ppid(pid: u32) -> u32 {
+    let path = format!("/proc/{pid}/status");
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        for line in content.lines() {
+            if let Some(val) = line.strip_prefix("PPid:\t") {
+                return val.trim().parse().unwrap_or(0);
+            }
+        }
+    }
+    0
+}
+
+/// Extract container ID from /proc/<pid>/cgroup. Returns None for host processes.
+fn resolve_container_id(pid: u32) -> Option<String> {
+    let path = format!("/proc/{pid}/cgroup");
+    let content = std::fs::read_to_string(&path).ok()?;
+    for line in content.lines() {
+        // Docker: 0::/docker/<container_id>
+        // Podman: 0::/libpod-<container_id>.scope
+        // k8s:    0::/kubepods/besteffort/pod<uuid>/<container_id>
+        if let Some(rest) = line.split("docker/").nth(1) {
+            let id = rest.split('/').next().unwrap_or(rest);
+            if id.len() >= 12 {
+                return Some(id[..12].to_string());
+            }
+        }
+        if let Some(rest) = line.split("libpod-").nth(1) {
+            let id = rest.split('.').next().unwrap_or(rest);
+            if id.len() >= 12 {
+                return Some(id[..12].to_string());
+            }
+        }
+        if line.contains("kubepods") {
+            // Last segment is the container ID
+            if let Some(id) = line.rsplit('/').next() {
+                if id.len() >= 12 {
+                    return Some(id[..12].to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Convert a kernel execve event to an Inner Warden Event.
-fn execve_to_event(pid: u32, uid: u32, ppid: u32, comm: &str, filename: &str, host: &str) -> Event {
-    // Map to shell.command_exec kind so existing execution_guard detector works
+#[allow(clippy::too_many_arguments)]
+fn execve_to_event(
+    pid: u32,
+    uid: u32,
+    ppid: u32,
+    cgroup_id: u64,
+    container_id: Option<&str>,
+    comm: &str,
+    filename: &str,
+    host: &str,
+) -> Event {
     let argv_json: Vec<serde_json::Value> = if filename.is_empty() {
         vec![serde_json::Value::String(comm.to_string())]
     } else {
         vec![serde_json::Value::String(filename.to_string())]
     };
+
+    let mut details = serde_json::json!({
+        "pid": pid,
+        "uid": uid,
+        "ppid": ppid,
+        "comm": comm,
+        "command": filename,
+        "argv": argv_json,
+        "argc": 1,
+        "cgroup_id": cgroup_id,
+    });
+    if let Some(cid) = container_id {
+        details["container_id"] = serde_json::Value::String(cid.to_string());
+    }
+
+    let mut tags = vec!["ebpf".to_string(), "exec".to_string()];
+    let mut entities = vec![];
+    if let Some(cid) = container_id {
+        tags.push("container".to_string());
+        entities.push(EntityRef::container(cid));
+    }
 
     Event {
         ts: chrono::Utc::now(),
@@ -78,49 +154,123 @@ fn execve_to_event(pid: u32, uid: u32, ppid: u32, comm: &str, filename: &str, ho
         kind: "shell.command_exec".to_string(),
         severity: Severity::Info,
         summary: format!("Shell command executed: {filename}"),
-        details: serde_json::json!({
-            "pid": pid,
-            "uid": uid,
-            "ppid": ppid,
-            "comm": comm,
-            "command": filename,
-            "argv": argv_json,
-            "argc": 1,
-        }),
-        tags: vec!["ebpf".to_string(), "exec".to_string()],
-        entities: vec![],
+        details,
+        tags,
+        entities,
     }
 }
 
 /// Convert a kernel connect event to an Inner Warden Event.
+#[allow(clippy::too_many_arguments)]
 fn connect_to_event(
     pid: u32,
     uid: u32,
+    ppid: u32,
+    cgroup_id: u64,
+    container_id: Option<&str>,
     comm: &str,
     dst_ip: Ipv4Addr,
     dst_port: u16,
     host: &str,
 ) -> Event {
+    let mut details = serde_json::json!({
+        "pid": pid,
+        "uid": uid,
+        "ppid": ppid,
+        "comm": comm,
+        "dst_ip": dst_ip.to_string(),
+        "dst_port": dst_port,
+        "cgroup_id": cgroup_id,
+    });
+    if let Some(cid) = container_id {
+        details["container_id"] = serde_json::Value::String(cid.to_string());
+    }
+
+    let mut tags = vec!["ebpf".to_string(), "network".to_string()];
+    let mut entities = vec![EntityRef::ip(dst_ip.to_string())];
+    if let Some(cid) = container_id {
+        tags.push("container".to_string());
+        entities.push(EntityRef::container(cid));
+    }
+
     Event {
         ts: chrono::Utc::now(),
         host: host.to_string(),
         source: "ebpf".to_string(),
         kind: "network.outbound_connect".to_string(),
         severity: if dst_port == 4444 || dst_port == 1337 || dst_port == 31337 {
-            Severity::High // common reverse shell ports
+            Severity::High
         } else {
             Severity::Info
         },
         summary: format!("{comm} (pid={pid}) connecting to {dst_ip}:{dst_port}"),
-        details: serde_json::json!({
-            "pid": pid,
-            "uid": uid,
-            "comm": comm,
-            "dst_ip": dst_ip.to_string(),
-            "dst_port": dst_port,
-        }),
-        tags: vec!["ebpf".to_string(), "network".to_string()],
-        entities: vec![EntityRef::ip(dst_ip.to_string())],
+        details,
+        tags,
+        entities,
+    }
+}
+
+/// Convert a kernel file open event to an Inner Warden Event.
+#[allow(clippy::too_many_arguments)]
+fn file_open_to_event(
+    pid: u32,
+    uid: u32,
+    ppid: u32,
+    cgroup_id: u64,
+    container_id: Option<&str>,
+    comm: &str,
+    filename: &str,
+    flags: u32,
+    host: &str,
+) -> Event {
+    let is_write = flags & 0x3 != 0; // O_WRONLY or O_RDWR
+
+    let mut details = serde_json::json!({
+        "pid": pid,
+        "uid": uid,
+        "ppid": ppid,
+        "comm": comm,
+        "filename": filename,
+        "flags": flags,
+        "write": is_write,
+        "cgroup_id": cgroup_id,
+    });
+    if let Some(cid) = container_id {
+        details["container_id"] = serde_json::Value::String(cid.to_string());
+    }
+
+    let mut tags = vec!["ebpf".to_string(), "file".to_string()];
+    let mut entities = vec![];
+    if let Some(cid) = container_id {
+        tags.push("container".to_string());
+        entities.push(EntityRef::container(cid));
+    }
+
+    Event {
+        ts: chrono::Utc::now(),
+        host: host.to_string(),
+        source: "ebpf".to_string(),
+        kind: if is_write {
+            "file.write_access".to_string()
+        } else {
+            "file.read_access".to_string()
+        },
+        severity: if is_write
+            && (filename.contains("shadow")
+                || filename.contains("sudoers")
+                || filename.contains("authorized_keys"))
+        {
+            Severity::High
+        } else {
+            Severity::Info
+        },
+        summary: format!(
+            "{comm} (pid={pid}) {} {filename}",
+            if is_write { "writing" } else { "reading" }
+        ),
+        details,
+        tags,
+        entities,
     }
 }
 
@@ -220,6 +370,19 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     }
 
+    // Attach openat tracepoint (file access monitoring — non-critical)
+    if let Some(prog) = bpf.program_mut("innerwarden_openat") {
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach("syscalls", "sys_enter_openat") {
+                    warn!(error = %e, "innerwarden_openat: failed to attach");
+                } else {
+                    info!("eBPF: innerwarden_openat → sys_enter_openat ✅");
+                }
+            }
+        }
+    }
+
     // Read from ring buffer
     let mut ring_buf = match RingBuf::try_from(bpf.map_mut("EVENTS").unwrap()) {
         Ok(rb) => rb,
@@ -229,7 +392,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     };
 
-    info!("eBPF collector active — kernel-level syscall monitoring running");
+    info!("eBPF collector active — kernel-level syscall monitoring (execve + connect + openat)");
 
     loop {
         while let Some(item) = ring_buf.next() {
@@ -241,37 +404,96 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
             let kind = u32::from_ne_bytes(data[0..4].try_into().unwrap());
 
             let event = match kind {
-                // ExecveEvent: kind(4) + pid(4) + tgid(4) + uid(4) + gid(4) + ppid(4) + comm(64) + filename(256)
-                1 if data.len() >= 340 => {
+                // ExecveEvent layout (#[repr(C)]):
+                //   kind(4) pid(4) tgid(4) uid(4) gid(4) ppid(4) cgroup_id(8) comm(64) filename(256)
+                //   Offsets: 0  4  8  12  16  20  24  32..96  96..352
+                1 if data.len() >= 352 => {
                     let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[16..20].try_into().unwrap());
-                    let ppid = u32::from_ne_bytes(data[20..24].try_into().unwrap());
-                    let comm = bytes_to_string(&data[24..88]);
-                    let filename = bytes_to_string(&data[88..344]);
+                    let uid = u32::from_ne_bytes(data[12..16].try_into().unwrap());
+                    let cgroup_id = u64::from_ne_bytes(data[24..32].try_into().unwrap());
+                    let comm = bytes_to_string(&data[32..96]);
+                    let filename = bytes_to_string(&data[96..352]);
 
-                    // Skip innerwarden's own processes to avoid self-loop
                     if comm.starts_with("innerwarden") {
                         continue;
                     }
 
-                    Some(execve_to_event(pid, uid, ppid, &comm, &filename, &host))
+                    let ppid = resolve_ppid(pid);
+                    let container_id = resolve_container_id(pid);
+
+                    Some(execve_to_event(
+                        pid,
+                        uid,
+                        ppid,
+                        cgroup_id,
+                        container_id.as_deref(),
+                        &comm,
+                        &filename,
+                        &host,
+                    ))
                 }
-                // ConnectEvent: kind(4) + pid(4) + tgid(4) + uid(4) + comm(64) + dst_addr(4) + dst_port(2) + family(2)
-                2 if data.len() >= 84 => {
+                // ConnectEvent layout (#[repr(C)]):
+                //   kind(4) pid(4) tgid(4) uid(4) ppid(4) _pad(4) cgroup_id(8) comm(64)
+                //   dst_addr(4) dst_port(2) family(2) ts_ns(8)
+                //   Offsets: 0  4  8  12  16  20  24  32..96  96  100  102
+                2 if data.len() >= 104 => {
                     let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[16..20].try_into().unwrap());
-                    let comm = bytes_to_string(&data[20..84]);
-                    let addr = u32::from_ne_bytes(data[84..88].try_into().unwrap());
-                    let port = u16::from_ne_bytes(data[88..90].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[12..16].try_into().unwrap());
+                    let cgroup_id = u64::from_ne_bytes(data[24..32].try_into().unwrap());
+                    let comm = bytes_to_string(&data[32..96]);
+                    let addr = u32::from_ne_bytes(data[96..100].try_into().unwrap());
+                    let port = u16::from_ne_bytes(data[100..102].try_into().unwrap());
 
                     let ip = Ipv4Addr::from(addr);
 
-                    // Skip private/loopback
                     if ip.is_loopback() || ip.is_private() || ip.is_unspecified() {
                         continue;
                     }
 
-                    Some(connect_to_event(pid, uid, &comm, ip, port, &host))
+                    let ppid = resolve_ppid(pid);
+                    let container_id = resolve_container_id(pid);
+
+                    Some(connect_to_event(
+                        pid,
+                        uid,
+                        ppid,
+                        cgroup_id,
+                        container_id.as_deref(),
+                        &comm,
+                        ip,
+                        port,
+                        &host,
+                    ))
+                }
+                // FileOpenEvent layout (#[repr(C)]):
+                //   kind(4) pid(4) uid(4) ppid(4) cgroup_id(8) comm(64) filename(256) flags(4)
+                //   Offsets: 0  4  8  12  16  24..88  88..344  344
+                3 if data.len() >= 348 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let cgroup_id = u64::from_ne_bytes(data[16..24].try_into().unwrap());
+                    let comm = bytes_to_string(&data[24..88]);
+                    let filename = bytes_to_string(&data[88..344]);
+                    let flags = u32::from_ne_bytes(data[344..348].try_into().unwrap());
+
+                    if comm.starts_with("innerwarden") {
+                        continue;
+                    }
+
+                    let ppid = resolve_ppid(pid);
+                    let container_id = resolve_container_id(pid);
+
+                    Some(file_open_to_event(
+                        pid,
+                        uid,
+                        ppid,
+                        cgroup_id,
+                        container_id.as_deref(),
+                        &comm,
+                        &filename,
+                        flags,
+                        &host,
+                    ))
                 }
                 _ => None,
             };
@@ -309,21 +531,78 @@ mod tests {
 
     #[test]
     fn execve_event_maps_to_shell_command_exec() {
-        let event = execve_to_event(1234, 0, 1, "bash", "/usr/bin/curl", "test-host");
+        let event = execve_to_event(1234, 0, 1, 0, None, "bash", "/usr/bin/curl", "test-host");
         assert_eq!(event.source, "ebpf");
         assert_eq!(event.kind, "shell.command_exec");
         assert!(event.summary.contains("curl"));
         assert_eq!(event.details["pid"], 1234);
+        assert_eq!(event.details["ppid"], 1);
+    }
+
+    #[test]
+    fn execve_event_with_container() {
+        let event = execve_to_event(
+            1234,
+            0,
+            1,
+            12345,
+            Some("abc123def456"),
+            "bash",
+            "/usr/bin/curl",
+            "test-host",
+        );
+        assert_eq!(event.details["container_id"], "abc123def456");
+        assert_eq!(event.details["cgroup_id"], 12345);
+        assert!(event.tags.contains(&"container".to_string()));
     }
 
     #[test]
     fn connect_event_high_severity_for_reverse_shell_ports() {
         let ip = Ipv4Addr::new(1, 2, 3, 4);
-        let event = connect_to_event(5678, 1000, "nc", ip, 4444, "test-host");
+        let event = connect_to_event(5678, 1000, 1, 0, None, "nc", ip, 4444, "test-host");
         assert_eq!(event.severity, Severity::High);
 
-        let event_normal = connect_to_event(5678, 1000, "curl", ip, 443, "test-host");
+        let event_normal = connect_to_event(5678, 1000, 1, 0, None, "curl", ip, 443, "test-host");
         assert_eq!(event_normal.severity, Severity::Info);
+    }
+
+    #[test]
+    fn connect_event_with_container() {
+        let ip = Ipv4Addr::new(1, 2, 3, 4);
+        let event = connect_to_event(
+            5678,
+            1000,
+            1,
+            99999,
+            Some("container123"),
+            "nc",
+            ip,
+            4444,
+            "test-host",
+        );
+        assert_eq!(event.details["container_id"], "container123");
+        assert!(event.tags.contains(&"container".to_string()));
+    }
+
+    #[test]
+    fn file_open_event_write_to_shadow() {
+        let event = file_open_to_event(
+            100, 0, 1, 0, None, "vim", "/etc/shadow", 0x1, // O_WRONLY
+            "test-host",
+        );
+        assert_eq!(event.kind, "file.write_access");
+        assert_eq!(event.severity, Severity::High);
+        assert_eq!(event.details["ppid"], 1);
+    }
+
+    #[test]
+    fn file_open_event_read_normal() {
+        let event = file_open_to_event(
+            100, 1000, 1, 0, None, "cat", "/etc/passwd", 0x0, // O_RDONLY
+            "test-host",
+        );
+        assert_eq!(event.kind, "file.read_access");
+        assert_eq!(event.severity, Severity::Info);
     }
 
     #[test]
@@ -336,6 +615,21 @@ mod tests {
     fn ebpf_availability_on_non_linux() {
         if cfg!(target_os = "macos") {
             assert!(!is_ebpf_available());
+        }
+    }
+
+    #[test]
+    fn resolve_ppid_nonexistent_process() {
+        // PID 999999999 shouldn't exist
+        assert_eq!(resolve_ppid(999_999_999), 0);
+    }
+
+    #[test]
+    fn resolve_container_id_host_process() {
+        // Host process shouldn't have a container ID
+        // (pid 1 is always the init process on the host)
+        if cfg!(target_os = "linux") {
+            assert!(resolve_container_id(1).is_none());
         }
     }
 }
