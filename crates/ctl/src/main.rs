@@ -334,6 +334,16 @@ enum Command {
     ///   innerwarden incidents
     ///   innerwarden incidents --days 2
     ///   innerwarden incidents --severity critical
+    /// List recent security incidents detected on this host.
+    ///
+    /// Shows threats from today (and optionally yesterday) with severity,
+    /// IP address, title and time. No need to open the dashboard.
+    ///
+    /// Examples:
+    ///   innerwarden incidents
+    ///   innerwarden incidents --live
+    ///   innerwarden incidents --days 2
+    ///   innerwarden incidents --severity high
     Incidents {
         /// How many days back to look (default: 1 = today only)
         #[arg(long, default_value = "1")]
@@ -342,6 +352,10 @@ enum Command {
         /// Filter by minimum severity: low, medium, high, critical (default: low = all)
         #[arg(long, default_value = "low")]
         severity: String,
+
+        /// Stream new incidents in real time (like tail -f but formatted)
+        #[arg(long)]
+        live: bool,
     },
 
     /// Block an IP address at the firewall and record it in the audit trail.
@@ -1054,8 +1068,16 @@ fn main() -> Result<()> {
                 yes,
             } => cmd_module_update_all(&cli, modules_dir, *check, *yes),
         },
-        Command::Incidents { days, ref severity } => {
-            cmd_incidents(&cli, days, severity, &cli.data_dir.clone())
+        Command::Incidents {
+            days,
+            ref severity,
+            live,
+        } => {
+            if live {
+                cmd_incidents_live(&cli, severity, &cli.data_dir.clone())
+            } else {
+                cmd_incidents(&cli, days, severity, &cli.data_dir.clone())
+            }
         }
         Command::Block { ref ip, ref reason } => cmd_block(&cli, ip, reason, &cli.data_dir.clone()),
         Command::Unblock { ref ip, ref reason } => {
@@ -6824,6 +6846,117 @@ fn print_tail_entry(v: &serde_json::Value, kind: &str) {
             format!("  {ip}")
         };
         println!("{time}  {sev_tag}  {title}{ip_part}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden incidents --live
+// ---------------------------------------------------------------------------
+
+fn cmd_incidents_live(cli: &Cli, severity_filter: &str, data_dir: &Path) -> Result<()> {
+    let effective_dir = resolve_data_dir(cli, data_dir);
+    let min_sev = parse_severity_filter(severity_filter);
+
+    println!("● LIVE — streaming incidents (Ctrl-C to stop)\n");
+
+    let mut offset: u64 = 0;
+    let mut current_date = String::new();
+
+    loop {
+        let today = epoch_secs_to_date(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        );
+
+        if today != current_date {
+            current_date = today.clone();
+            offset = 0;
+        }
+
+        let safe_date: String = today
+            .chars()
+            .filter(|c| c.is_ascii_digit() || *c == '-')
+            .collect();
+        let path = effective_dir.join(format!("incidents-{safe_date}.jsonl"));
+
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            let bytes = content.as_bytes();
+            if bytes.len() as u64 > offset {
+                let new_bytes = &bytes[offset as usize..];
+                let new_text = std::str::from_utf8(new_bytes).unwrap_or("");
+                for line in new_text.lines().filter(|l| !l.trim().is_empty()) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                        let sev = v["severity"].as_str().unwrap_or("info");
+                        if severity_rank_str(sev) >= min_sev {
+                            print_live_incident(&v);
+                        }
+                    }
+                }
+                offset = bytes.len() as u64;
+            }
+        }
+
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
+fn print_live_incident(v: &serde_json::Value) {
+    let ts = v["ts"].as_str().unwrap_or("");
+    let time = if ts.len() >= 19 { &ts[11..19] } else { ts };
+    let sev = v["severity"].as_str().unwrap_or("info");
+    let title = v["title"].as_str().unwrap_or("Unknown");
+    let summary = v["summary"].as_str().unwrap_or("");
+
+    let icon = match sev {
+        "critical" => "🔴",
+        "high" => "🟠",
+        "medium" => "🟡",
+        "low" => "🟢",
+        _ => "⚪",
+    };
+
+    let entities: Vec<String> = v["entities"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| e["value"].as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let entity_str = if entities.is_empty() {
+        String::new()
+    } else {
+        format!("  [{}]", entities.join(", "))
+    };
+
+    println!("{icon} {time}  {title}{entity_str}");
+    if !summary.is_empty() && summary != title {
+        // Truncate long summaries
+        let short: String = summary.chars().take(100).collect();
+        println!("  └ {short}");
+    }
+    println!();
+}
+
+fn parse_severity_filter(s: &str) -> u8 {
+    match s.to_lowercase().as_str() {
+        "critical" => 4,
+        "high" => 3,
+        "medium" => 2,
+        "low" => 1,
+        _ => 0,
+    }
+}
+
+fn severity_rank_str(s: &str) -> u8 {
+    match s.to_lowercase().as_str() {
+        "critical" => 4,
+        "high" => 3,
+        "medium" => 2,
+        "low" => 1,
+        _ => 0,
     }
 }
 
