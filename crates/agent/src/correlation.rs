@@ -197,6 +197,50 @@ fn within_window(a: DateTime<Utc>, b: DateTime<Utc>, window: Duration) -> bool {
     (a - b).num_seconds().abs() <= window.num_seconds()
 }
 
+/// Calculate a confidence boost based on cross-detector correlation.
+///
+/// When the same IP triggers multiple distinct detectors within the correlation
+/// window, this is strong evidence of a real attack — not a false positive.
+/// The boost multiplies the AI's base confidence:
+///
+///   1 detector  → 1.0x (no boost)
+///   2 detectors → 1.15x (e.g., ssh_bruteforce + port_scan)
+///   3 detectors → 1.30x (e.g., + credential_stuffing)
+///   4+ detectors → 1.50x (coordinated attack — near certainty)
+///
+/// The result is clamped to [0.0, 1.0].
+pub fn cross_detector_boost(
+    correlator: &mut TemporalCorrelator,
+    incident: &Incident,
+    base_confidence: f64,
+) -> (f64, Vec<String>) {
+    let related = correlator.related_to(incident, 20);
+
+    if related.is_empty() {
+        return (base_confidence, vec![]);
+    }
+
+    // Collect distinct detector kinds across related incidents
+    let mut detector_kinds: BTreeSet<String> = BTreeSet::new();
+    detector_kinds.insert(detector_kind(incident));
+    for r in &related {
+        detector_kinds.insert(detector_kind(r));
+    }
+
+    let distinct_detectors = detector_kinds.len();
+    let multiplier = match distinct_detectors {
+        0 | 1 => 1.0,
+        2 => 1.15,
+        3 => 1.30,
+        _ => 1.50,
+    };
+
+    let boosted = (base_confidence * multiplier).min(1.0);
+    let kinds: Vec<String> = detector_kinds.into_iter().collect();
+
+    (boosted, kinds)
+}
+
 #[derive(Debug, Clone)]
 struct WorkingCluster {
     tokens: BTreeSet<String>,
@@ -300,5 +344,112 @@ mod tests {
             .detector_kinds
             .iter()
             .any(|kind| kind == "ssh_bruteforce"));
+    }
+
+    #[test]
+    fn cross_detector_boost_no_correlation() {
+        let mut correlator = TemporalCorrelator::new(300, 100);
+        let inc = incident(
+            0,
+            "ssh_bruteforce:1.2.3.4:a",
+            vec![EntityRef::ip("1.2.3.4")],
+        );
+        let (boosted, detectors) = cross_detector_boost(&mut correlator, &inc, 0.7);
+        assert_eq!(boosted, 0.7); // no boost
+        assert!(detectors.is_empty());
+    }
+
+    #[test]
+    fn cross_detector_boost_two_detectors() {
+        let mut correlator = TemporalCorrelator::new(300, 100);
+
+        let first = incident(0, "port_scan:1.2.3.4:a", vec![EntityRef::ip("1.2.3.4")]);
+        correlator.observe(&first);
+
+        let second = incident(
+            30,
+            "ssh_bruteforce:1.2.3.4:b",
+            vec![EntityRef::ip("1.2.3.4")],
+        );
+        let (boosted, detectors) = cross_detector_boost(&mut correlator, &second, 0.7);
+
+        // 2 detectors → 1.15x boost: 0.7 * 1.15 = 0.805
+        assert!(boosted > 0.8);
+        assert_eq!(detectors.len(), 2);
+    }
+
+    #[test]
+    fn cross_detector_boost_three_detectors() {
+        let mut correlator = TemporalCorrelator::new(300, 100);
+
+        correlator.observe(&incident(
+            0,
+            "port_scan:1.2.3.4:a",
+            vec![EntityRef::ip("1.2.3.4")],
+        ));
+        correlator.observe(&incident(
+            15,
+            "ssh_bruteforce:1.2.3.4:b",
+            vec![EntityRef::ip("1.2.3.4")],
+        ));
+
+        let third = incident(
+            30,
+            "credential_stuffing:1.2.3.4:c",
+            vec![EntityRef::ip("1.2.3.4")],
+        );
+        let (boosted, detectors) = cross_detector_boost(&mut correlator, &third, 0.7);
+
+        // 3 detectors → 1.30x boost: 0.7 * 1.30 = 0.91
+        assert!(boosted > 0.9);
+        assert_eq!(detectors.len(), 3);
+    }
+
+    #[test]
+    fn cross_detector_boost_clamps_to_one() {
+        let mut correlator = TemporalCorrelator::new(300, 100);
+
+        correlator.observe(&incident(
+            0,
+            "port_scan:1.2.3.4:a",
+            vec![EntityRef::ip("1.2.3.4")],
+        ));
+        correlator.observe(&incident(
+            10,
+            "ssh_bruteforce:1.2.3.4:b",
+            vec![EntityRef::ip("1.2.3.4")],
+        ));
+        correlator.observe(&incident(
+            20,
+            "credential_stuffing:1.2.3.4:c",
+            vec![EntityRef::ip("1.2.3.4")],
+        ));
+
+        let fourth = incident(30, "c2_callback:1.2.3.4:d", vec![EntityRef::ip("1.2.3.4")]);
+        let (boosted, _) = cross_detector_boost(&mut correlator, &fourth, 0.95);
+
+        // 4 detectors → 1.50x, but 0.95 * 1.50 = 1.425 → clamped to 1.0
+        assert_eq!(boosted, 1.0);
+    }
+
+    #[test]
+    fn cross_detector_boost_same_detector_no_boost() {
+        let mut correlator = TemporalCorrelator::new(300, 100);
+
+        correlator.observe(&incident(
+            0,
+            "ssh_bruteforce:1.2.3.4:a",
+            vec![EntityRef::ip("1.2.3.4")],
+        ));
+
+        let second = incident(
+            30,
+            "ssh_bruteforce:1.2.3.4:b",
+            vec![EntityRef::ip("1.2.3.4")],
+        );
+        let (boosted, _) = cross_detector_boost(&mut correlator, &second, 0.7);
+
+        // Same detector twice → only 1 distinct kind → no boost
+        assert_eq!(boosted, 0.7);
     }
 }

@@ -531,7 +531,6 @@ fn default_suricata_event_types() -> Vec<String> {
         .collect()
 }
 
-
 fn default_wazuh_alerts_path() -> String {
     "/var/ossec/logs/alerts/alerts.json".to_string()
 }

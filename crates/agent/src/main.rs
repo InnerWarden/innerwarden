@@ -2381,6 +2381,38 @@ async fn process_incidents(
             }
         }
 
+        // ── Cross-detector correlation boost ──────────────────────────
+        // If the same IP triggered multiple distinct detectors within the
+        // correlation window, boost the confidence. This turns near-misses
+        // into auto-executions: an IP seen by ssh_bruteforce + port_scan +
+        // c2_callback is almost certainly malicious.
+        let (boosted_confidence, correlated_detectors) = if cfg.correlation.enabled {
+            let (b, k) = correlation::cross_detector_boost(
+                &mut state.correlator,
+                incident,
+                decision.confidence as f64,
+            );
+            (b as f32, k)
+        } else {
+            (decision.confidence, vec![])
+        };
+
+        if boosted_confidence > decision.confidence {
+            info!(
+                incident_id = %incident.incident_id,
+                base_confidence = decision.confidence,
+                boosted_confidence,
+                correlated_detectors = ?correlated_detectors,
+                "cross-detector correlation boost applied"
+            );
+            decision.confidence = boosted_confidence;
+            decision.reason = format!(
+                "{} [correlated: {}]",
+                decision.reason,
+                correlated_detectors.join(", ")
+            );
+        }
+
         info!(
             incident_id = %incident.incident_id,
             action = ?decision.action,
@@ -2676,8 +2708,7 @@ async fn execute_decision(
             // Layer 4: AbuseIPDB community report
             if any_success && cfg.abuseipdb.enabled && cfg.abuseipdb.report_blocks {
                 if let Some(ref client) = state.abuseipdb {
-                    let detector =
-                        incident.incident_id.split(':').next().unwrap_or("unknown");
+                    let detector = incident.incident_id.split(':').next().unwrap_or("unknown");
                     let categories = abuseipdb::detector_to_categories(detector);
                     let comment = format!(
                         "InnerWarden auto-block: {} (confidence {:.0}%)",
