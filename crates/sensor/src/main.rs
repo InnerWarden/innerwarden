@@ -29,6 +29,7 @@ use detectors::search_abuse::SearchAbuseDetector;
 use detectors::ssh_bruteforce::SshBruteforceDetector;
 use detectors::sudo_abuse::SudoAbuseDetector;
 use detectors::suricata_alert::SuricataAlertDetector;
+use detectors::suspicious_login::SuspiciousLoginDetector;
 use detectors::user_agent_scanner::UserAgentScannerDetector;
 use detectors::web_scan::WebScanDetector;
 use sinks::{jsonl::JsonlWriter, state::State};
@@ -61,6 +62,7 @@ struct DetectorSet {
     integrity_alert: Option<IntegrityAlertDetector>,
     osquery_anomaly: Option<OsqueryAnomalyDetector>,
     distributed_ssh: Option<DistributedSshDetector>,
+    suspicious_login: Option<SuspiciousLoginDetector>,
 }
 
 #[derive(Default)]
@@ -247,6 +249,10 @@ async fn main() -> Result<()> {
         integrity_alert: integrity_alert_detector,
         osquery_anomaly: osquery_anomaly_detector,
         distributed_ssh: distributed_ssh_detector,
+        suspicious_login: cfg.detectors.ssh_bruteforce.enabled.then(|| {
+            info!("suspicious_login detector enabled");
+            SuspiciousLoginDetector::new(&cfg.agent.host_id, 300)
+        }),
     };
 
     // Spawn auth_log collector
@@ -799,6 +805,12 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.distributed_ssh {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.suspicious_login {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }
