@@ -546,6 +546,15 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Spawn eBPF collector (optional — requires Linux 5.8+, CAP_BPF)
+    {
+        let tx_ebpf = tx.clone();
+        let host_id = cfg.agent.host_id.clone();
+        tokio::spawn(async move {
+            collectors::ebpf_syscall::run(tx_ebpf, host_id).await;
+        });
+    }
+
     // Drop the original tx — each collector holds its own clone.
     // When all collector tasks finish, all senders drop and rx.recv() returns None.
     drop(tx);
