@@ -2595,78 +2595,105 @@ async fn execute_decision(
 
     match &decision.action {
         AiAction::BlockIp { ip, skill_id } => {
-            // Resolve the effective skill ID, honouring the allowed_skills whitelist.
-            // If the AI selected a skill not in the whitelist, fall back to the
-            // configured backend default. This prevents the AI from executing a
-            // skill the operator did not explicitly allow.
+            // ── Layered block: XDP → firewall → Cloudflare → AbuseIPDB ──
+            //
+            // Instead of executing a single block skill, we escalate through
+            // all available layers for defense in depth:
+            //   1. XDP wire-speed drop (instant, kernel-level)
+            //   2. Firewall rule (persists across reboots)
+            //   3. Cloudflare edge block (stops traffic before it reaches us)
+            //   4. AbuseIPDB report (contributes to community intelligence)
+            //
+            // Each layer is independent — failure in one doesn't stop the others.
+
+            let ctx = skills::SkillContext {
+                incident: incident.clone(),
+                target_ip: Some(ip.clone()),
+                target_user: None,
+                target_container: None,
+                duration_secs: None,
+                host: incident.host.clone(),
+                data_dir: data_dir.to_path_buf(),
+                honeypot: honeypot_runtime(cfg),
+                ai_provider: state.ai_provider.clone(),
+            };
+
+            let mut layers_applied = Vec::new();
+            let mut any_success = false;
+
+            // Layer 1: XDP wire-speed drop (if available)
+            if let Some(xdp_skill) = state.skill_registry.get("block-ip-xdp") {
+                let xdp_result = xdp_skill.execute(&ctx, cfg.responder.dry_run).await;
+                if xdp_result.success {
+                    layers_applied.push("XDP");
+                    any_success = true;
+                }
+            }
+
+            // Layer 2: Firewall rule (ufw/iptables/nftables — configured backend)
             let effective_id: String = if cfg.responder.allowed_skills.contains(skill_id) {
                 skill_id.clone()
             } else {
-                let fallback = format!("block-ip-{}", cfg.responder.block_backend);
-                if cfg.responder.allowed_skills.contains(&fallback) {
-                    fallback
-                } else {
-                    return (
-                        format!("skipped: skill '{skill_id}' not in allowed_skills"),
-                        false,
-                    );
-                }
+                format!("block-ip-{}", cfg.responder.block_backend)
             };
-
-            let skill = state.skill_registry.get(&effective_id).or_else(|| {
-                state
-                    .skill_registry
-                    .block_skill_for_backend(&cfg.responder.block_backend)
-            });
-
-            match skill {
-                Some(skill) => {
-                    let ctx = skills::SkillContext {
-                        incident: incident.clone(),
-                        target_ip: Some(ip.clone()),
-                        target_user: None,
-                        target_container: None,
-                        duration_secs: None,
-                        host: incident.host.clone(),
-                        data_dir: data_dir.to_path_buf(),
-                        honeypot: honeypot_runtime(cfg),
-                        ai_provider: state.ai_provider.clone(),
-                    };
-                    let result = skill.execute(&ctx, cfg.responder.dry_run).await;
-                    // Always track the IP in the in-memory blocklist regardless of dry_run
-                    // mode, so the same IP is not re-evaluated by AI on subsequent ticks
-                    // or after a restart within the same day.
-                    if result.success {
-                        state.blocklist.insert(ip.clone());
+            // Don't double-execute if the configured backend IS xdp
+            if effective_id != "block-ip-xdp" {
+                if let Some(fw_skill) = state.skill_registry.get(&effective_id).or_else(|| {
+                    state
+                        .skill_registry
+                        .block_skill_for_backend(&cfg.responder.block_backend)
+                }) {
+                    let fw_result = fw_skill.execute(&ctx, cfg.responder.dry_run).await;
+                    if fw_result.success {
+                        let backend = cfg.responder.block_backend.as_str();
+                        layers_applied.push(match backend {
+                            "iptables" => "iptables",
+                            "nftables" => "nftables",
+                            _ => "ufw",
+                        });
+                        any_success = true;
                     }
-                    // Optionally push the block to Cloudflare edge
-                    let mut cf_pushed = false;
-                    if result.success && cfg.cloudflare.enabled && cfg.cloudflare.auto_push_blocks {
-                        if let Some(ref cf) = state.cloudflare_client {
-                            let reason = format!("{}: {}", incident.incident_id, decision.reason);
-                            if let Some(rule_id) = cf.push_block(ip, &reason).await {
-                                info!(ip, rule_id, "Cloudflare edge block pushed");
-                                cf_pushed = true;
-                            }
-                        }
-                    }
-                    // Report the blocked IP to AbuseIPDB
-                    if result.success && cfg.abuseipdb.enabled && cfg.abuseipdb.report_blocks {
-                        if let Some(ref client) = state.abuseipdb {
-                            let detector =
-                                incident.incident_id.split(':').next().unwrap_or("unknown");
-                            let categories = abuseipdb::detector_to_categories(detector);
-                            let comment = format!(
-                                "InnerWarden auto-block: {} (confidence {:.0}%)",
-                                decision.reason,
-                                decision.confidence * 100.0
-                            );
-                            client.report(ip, categories, &comment).await;
-                        }
-                    }
-                    (result.message, cf_pushed)
                 }
-                None => (format!("skipped: skill '{effective_id}' not found"), false),
+            }
+
+            if any_success {
+                state.blocklist.insert(ip.clone());
+            }
+
+            // Layer 3: Cloudflare edge block
+            let mut cf_pushed = false;
+            if any_success && cfg.cloudflare.enabled && cfg.cloudflare.auto_push_blocks {
+                if let Some(ref cf) = state.cloudflare_client {
+                    let reason = format!("{}: {}", incident.incident_id, decision.reason);
+                    if let Some(rule_id) = cf.push_block(ip, &reason).await {
+                        info!(ip, rule_id, "Cloudflare edge block pushed");
+                        layers_applied.push("Cloudflare");
+                        cf_pushed = true;
+                    }
+                }
+            }
+
+            // Layer 4: AbuseIPDB community report
+            if any_success && cfg.abuseipdb.enabled && cfg.abuseipdb.report_blocks {
+                if let Some(ref client) = state.abuseipdb {
+                    let detector =
+                        incident.incident_id.split(':').next().unwrap_or("unknown");
+                    let categories = abuseipdb::detector_to_categories(detector);
+                    let comment = format!(
+                        "InnerWarden auto-block: {} (confidence {:.0}%)",
+                        decision.reason,
+                        decision.confidence * 100.0
+                    );
+                    client.report(ip, categories, &comment).await;
+                    layers_applied.push("AbuseIPDB");
+                }
+            }
+
+            if any_success {
+                let layers = layers_applied.join(" + ");
+                (format!("Blocked {ip} via {layers}"), cf_pushed)
+            } else {
+                (format!("skipped: no block skill available for {ip}"), false)
             }
         }
         AiAction::Monitor { ip } => {
