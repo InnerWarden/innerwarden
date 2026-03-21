@@ -12,8 +12,8 @@ use anyhow::Result;
 use clap::Parser;
 use collectors::{
     auth_log::AuthLogCollector, cloudtrail::CloudTrailCollector, docker::DockerCollector,
-    exec_audit::ExecAuditCollector, integrity::IntegrityCollector,
-    journald::JournaldCollector, macos_log::MacosLogCollector, nginx_access::NginxAccessCollector,
+    exec_audit::ExecAuditCollector, integrity::IntegrityCollector, journald::JournaldCollector,
+    macos_log::MacosLogCollector, nginx_access::NginxAccessCollector,
     nginx_error::NginxErrorCollector, osquery_log::OsqueryLogCollector,
     suricata_eve::SuricataEveCollector, syslog_firewall::SyslogFirewallCollector,
     wazuh_alerts::WazuhAlertsCollector,
@@ -688,7 +688,6 @@ async fn main() -> Result<()> {
 
     let nginx_error_offset = shared_nginx_error_offset.load(Ordering::Relaxed);
     state.set_cursor("nginx_error", serde_json::json!(nginx_error_offset));
-
 
     let suricata_offset = shared_suricata_offset.load(Ordering::Relaxed);
     state.set_cursor("suricata_eve", serde_json::json!(suricata_offset));
