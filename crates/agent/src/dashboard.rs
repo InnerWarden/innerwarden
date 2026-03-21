@@ -720,6 +720,8 @@ pub async fn serve(
         .route("/api/report", get(api_report))
         .route("/api/report/dates", get(api_report_dates))
         .route("/api/quickwins", get(api_quickwins))
+        // Sensors activity
+        .route("/api/sensors", get(api_sensors))
         // E6 — system status
         .route("/api/status", get(api_status))
         .route("/api/collectors", get(api_collectors))
@@ -1747,6 +1749,126 @@ async fn api_honeypot_sessions(State(state): State<DashboardState>) -> Json<serd
     });
 
     Json(serde_json::json!({ "sessions": sessions }))
+}
+
+/// GET /api/sensors — sensor activity time-series for dashboard graphs.
+/// Returns event counts bucketed by 5-minute intervals, grouped by source.
+async fn api_sensors(State(state): State<DashboardState>) -> Json<serde_json::Value> {
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let events_path = state.data_dir.join(format!("events-{today}.jsonl"));
+    let incidents_path = state.data_dir.join(format!("incidents-{today}.jsonl"));
+
+    // Read last 256KB of events for time-series (same tail-read pattern as overview)
+    let mut source_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut kind_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut timeline: std::collections::BTreeMap<String, std::collections::HashMap<String, usize>> =
+        std::collections::BTreeMap::new();
+    let mut total_events = 0usize;
+
+    if let Some(content) = tokio::task::spawn_blocking({
+        let path = events_path.clone();
+        move || -> Option<String> {
+            let file = std::fs::File::open(&path).ok()?;
+            let len = file.metadata().ok()?.len();
+            let skip = len.saturating_sub(256 * 1024);
+            let mut reader = std::io::BufReader::new(file);
+            std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(skip)).ok()?;
+            let mut buf = String::new();
+            std::io::Read::read_to_string(&mut reader, &mut buf).ok()?;
+            Some(buf)
+        }
+    })
+    .await
+    .unwrap_or(None)
+    {
+        for line in content.lines() {
+            if line.is_empty() || !line.starts_with('{') {
+                continue;
+            }
+            if let Ok(ev) = serde_json::from_str::<serde_json::Value>(line) {
+                total_events += 1;
+                let source = ev["source"].as_str().unwrap_or("unknown").to_string();
+                let kind = ev["kind"].as_str().unwrap_or("unknown").to_string();
+                *source_counts.entry(source.clone()).or_insert(0) += 1;
+                *kind_counts.entry(kind).or_insert(0) += 1;
+
+                // Bucket by 5-minute intervals: "HH:MM" where MM is rounded to 0/5/10/.../55
+                if let Some(ts) = ev["ts"].as_str() {
+                    if ts.len() >= 16 {
+                        let hour = &ts[11..13];
+                        let min: usize = ts[14..16].parse().unwrap_or(0);
+                        let bucket = format!("{hour}:{:02}", (min / 5) * 5);
+                        *timeline
+                            .entry(bucket)
+                            .or_default()
+                            .entry(source)
+                            .or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // Read incidents for detector activity
+    let mut detector_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut detector_timeline: std::collections::BTreeMap<String, std::collections::HashMap<String, usize>> =
+        std::collections::BTreeMap::new();
+    let mut total_incidents = 0usize;
+
+    if let Some(content) = tokio::task::spawn_blocking({
+        let path = incidents_path.clone();
+        move || -> Option<String> { std::fs::read_to_string(&path).ok() }
+    })
+    .await
+    .unwrap_or(None)
+    {
+        for line in content.lines() {
+            if line.is_empty() || !line.starts_with('{') {
+                continue;
+            }
+            if let Ok(inc) = serde_json::from_str::<serde_json::Value>(line) {
+                total_incidents += 1;
+                let id = inc["incident_id"].as_str().unwrap_or("unknown");
+                let detector = id.split(':').next().unwrap_or("unknown").to_string();
+                *detector_counts.entry(detector.clone()).or_insert(0) += 1;
+
+                if let Some(ts) = inc["ts"].as_str() {
+                    if ts.len() >= 16 {
+                        let hour = &ts[11..13];
+                        let min: usize = ts[14..16].parse().unwrap_or(0);
+                        let bucket = format!("{hour}:{:02}", (min / 5) * 5);
+                        *detector_timeline
+                            .entry(bucket)
+                            .or_default()
+                            .entry(detector)
+                            .or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort source_counts by count descending
+    let mut sources: Vec<_> = source_counts.into_iter().collect();
+    sources.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let mut kinds: Vec<_> = kind_counts.into_iter().collect();
+    kinds.sort_by(|a, b| b.1.cmp(&a.1));
+    kinds.truncate(15);
+
+    let mut detectors: Vec<_> = detector_counts.into_iter().collect();
+    detectors.sort_by(|a, b| b.1.cmp(&a.1));
+
+    Json(serde_json::json!({
+        "date": today,
+        "total_events": total_events,
+        "total_incidents": total_incidents,
+        "sources": sources.iter().map(|(s, c)| serde_json::json!({"name": s, "count": c})).collect::<Vec<_>>(),
+        "top_kinds": kinds.iter().map(|(k, c)| serde_json::json!({"name": k, "count": c})).collect::<Vec<_>>(),
+        "detectors": detectors.iter().map(|(d, c)| serde_json::json!({"name": d, "count": c})).collect::<Vec<_>>(),
+        "event_timeline": timeline,
+        "detector_timeline": detector_timeline,
+    }))
 }
 
 /// GET /api/status — E6: system status including data files and responder config.
@@ -5645,7 +5767,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
     </div>
     <span id="refreshStatus"></span>
     <div class="main-nav">
-      <button type="button" class="main-nav-btn active" id="navInvestigate" onclick="showView('investigate')">Threats</button>
+      <button type="button" class="main-nav-btn active" id="navSensors" onclick="showView('sensors')">Sensors</button>
+      <button type="button" class="main-nav-btn" id="navInvestigate" onclick="showView('investigate')">Threats</button>
       <button type="button" class="main-nav-btn" id="navReport" onclick="showView('report')">Report</button>
       <button type="button" class="main-nav-btn" id="navStatus" onclick="showView('status')">Health</button>
       <button type="button" class="main-nav-btn" id="navHoneypot" onclick="showView('honeypot')">🍯 Honeypot</button>
@@ -5655,7 +5778,45 @@ const INDEX_HTML: &str = r##"<!doctype html>
     </button>
   </header>
 
-  <div class="app-body" id="viewInvestigate">
+  <!-- ── Sensors view (default home — hacker HUD) ── -->
+  <style>
+    @keyframes pulse-glow { 0%,100% { box-shadow: 0 0 8px rgba(120,229,255,0.15); } 50% { box-shadow: 0 0 20px rgba(120,229,255,0.35); } }
+    @keyframes scan-line { 0% { top: 0; } 100% { top: 100%; } }
+    .sensor-hud { display:flex; flex-direction:column; gap:14px; padding:14px; position:relative; overflow:hidden; }
+    .sensor-hud::before { content:''; position:absolute; top:0; left:0; right:0; height:1px; background:linear-gradient(90deg,transparent,rgba(120,229,255,0.4),transparent); animation:scan-line 4s linear infinite; pointer-events:none; z-index:1; }
+    .hud-stats { display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:10px; }
+    .hud-card { background:rgba(10,20,30,0.8); border:1px solid rgba(120,229,255,0.15); border-radius:6px; padding:12px; text-align:center; animation:pulse-glow 3s ease-in-out infinite; position:relative; overflow:hidden; }
+    .hud-card::after { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:linear-gradient(90deg,transparent,var(--accent),transparent); }
+    .hud-val { font-size:1.6rem; font-weight:800; font-family:'Courier New',monospace; letter-spacing:2px; }
+    .hud-label { font-size:0.65rem; color:var(--muted); text-transform:uppercase; letter-spacing:1px; margin-top:2px; }
+    .hud-source { background:rgba(10,20,30,0.8); border:1px solid rgba(120,229,255,0.1); border-radius:4px; padding:8px 10px; display:flex; align-items:center; gap:8px; }
+    .hud-source-dot { width:8px; height:8px; border-radius:50%; animation:pulse-glow 2s ease-in-out infinite; }
+    .hud-source-name { font-size:0.75rem; font-family:'Courier New',monospace; color:var(--fg); flex:1; }
+    .hud-source-count { font-size:0.85rem; font-weight:700; font-family:'Courier New',monospace; }
+    .hud-panel { background:rgba(10,20,30,0.8); border:1px solid rgba(120,229,255,0.12); border-radius:6px; padding:14px; position:relative; }
+    .hud-panel-title { margin:0 0 10px 0; color:var(--accent); font-size:0.8rem; font-family:'Courier New',monospace; text-transform:uppercase; letter-spacing:2px; }
+    .hud-panel-title::before { content:'> '; color:rgba(120,229,255,0.5); }
+  </style>
+  <div class="report-view sensor-hud" id="viewSensors" style="display:flex;">
+    <div class="hud-stats" id="sensorCards"></div>
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:6px;" id="sensorSources"></div>
+    <div class="hud-panel">
+      <h3 class="hud-panel-title">Event Timeline</h3>
+      <canvas id="sensorChart" height="200" style="width:100%;"></canvas>
+    </div>
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+      <div class="hud-panel">
+        <h3 class="hud-panel-title">Event Types</h3>
+        <div id="sensorKinds" style="font-size:0.8rem;"></div>
+      </div>
+      <div class="hud-panel">
+        <h3 class="hud-panel-title">Detector Activity</h3>
+        <canvas id="detectorChart" height="180" style="width:100%;"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="app-body" id="viewInvestigate" style="display:none">
 
     <!-- Left panel: summary + threat list -->
     <aside class="left-panel">
@@ -5842,8 +6003,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
   // ── D10 — View switcher ──────────────────────────────────────────────────
   function showView(name) {
-    const views = { investigate: 'viewInvestigate', report: 'viewReport', status: 'viewStatus', honeypot: 'viewHoneypot' };
-    const btns  = { investigate: 'navInvestigate', report: 'navReport', status: 'navStatus', honeypot: 'navHoneypot' };
+    const views = { sensors: 'viewSensors', investigate: 'viewInvestigate', report: 'viewReport', status: 'viewStatus', honeypot: 'viewHoneypot' };
+    const btns  = { sensors: 'navSensors', investigate: 'navInvestigate', report: 'navReport', status: 'navStatus', honeypot: 'navHoneypot' };
     Object.keys(views).forEach(k => {
       const el = document.getElementById(views[k]);
       const btn = document.getElementById(btns[k]);
@@ -5852,6 +6013,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     });
     const toggleBtn = document.getElementById('panelToggleBtn');
     if (toggleBtn) toggleBtn.classList.toggle('hidden', name !== 'investigate');
+    if (name === 'sensors') loadSensors();
     if (name === 'report') loadReport();
     if (name === 'status') loadStatus();
     if (name === 'honeypot') loadHoneypot();
@@ -6047,6 +6209,172 @@ const INDEX_HTML: &str = r##"<!doctype html>
         sel.appendChild(opt);
       });
     } catch (_) {}
+  }
+
+  // ── Sensors view ─────────────────────────────────────────────────────
+  const SENSOR_COLORS = {
+    ebpf: '#78e5ff', auditd: '#ff6b6b', auth_log: '#ffd93d', journald: '#6bcb77',
+    docker: '#4d96ff', nginx: '#ff922b', suricata: '#cc5de8', osquery: '#20c997',
+    syslog: '#868e96', wazuh: '#f06595', integrity: '#a9e34b', cloudtrail: '#339af0',
+  };
+  function sensorColor(name) { return SENSOR_COLORS[name] || '#78e5ff'; }
+
+  async function loadSensors() {
+    try {
+      const data = await loadJson('/api/sensors');
+      const cards = document.getElementById('sensorCards');
+      if (!cards) return;
+
+      // HUD stat cards
+      let html = '';
+      html += '<div class="hud-card"><div class="hud-val" style="color:var(--accent);">' + (data.total_events||0).toLocaleString() + '</div><div class="hud-label">Events Today</div></div>';
+      html += '<div class="hud-card"><div class="hud-val" style="color:' + (data.total_incidents > 0 ? 'var(--danger)' : 'var(--ok)') + ';">' + (data.total_incidents||0) + '</div><div class="hud-label">Incidents</div></div>';
+      html += '<div class="hud-card"><div class="hud-val" style="color:#6bcb77;">' + (data.sources||[]).length + '</div><div class="hud-label">Sources Active</div></div>';
+      html += '<div class="hud-card"><div class="hud-val" style="color:#ffd93d;">' + (data.detectors||[]).length + '</div><div class="hud-label">Detectors Firing</div></div>';
+      cards.innerHTML = html;
+
+      // Per-source rows
+      const srcEl = document.getElementById('sensorSources');
+      if (srcEl) {
+        let shtml = '';
+        for (const s of (data.sources || [])) {
+          const c = sensorColor(s.name);
+          shtml += '<div class="hud-source">' +
+            '<div class="hud-source-dot" style="background:' + c + ';box-shadow:0 0 6px ' + c + ';"></div>' +
+            '<span class="hud-source-name">' + s.name + '</span>' +
+            '<span class="hud-source-count" style="color:' + c + ';">' + s.count.toLocaleString() + '</span></div>';
+        }
+        srcEl.innerHTML = shtml;
+      }
+
+      // Event timeline chart
+      drawTimelineChart(data.event_timeline || {}, data.sources || []);
+
+      // Top kinds list
+      const kindsEl = document.getElementById('sensorKinds');
+      if (kindsEl) {
+        let khtml = '';
+        for (const k of (data.top_kinds || []).slice(0, 10)) {
+          const pct = data.total_events > 0 ? ((k.count / data.total_events) * 100).toFixed(1) : '0';
+          khtml += '<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05);">' +
+            '<span style="color:var(--fg);">' + k.name + '</span>' +
+            '<span style="color:var(--muted);">' + k.count.toLocaleString() + ' (' + pct + '%)</span></div>';
+        }
+        kindsEl.innerHTML = khtml || '<span style="color:var(--muted);">No events yet</span>';
+      }
+
+      // Detector activity chart
+      drawDetectorChart(data.detectors || []);
+    } catch(e) { console.error('loadSensors', e); }
+  }
+
+  function drawTimelineChart(timeline, sources) {
+    const canvas = document.getElementById('sensorChart');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width = canvas.offsetWidth * (window.devicePixelRatio || 1);
+    const H = canvas.height = 200 * (window.devicePixelRatio || 1);
+    ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+    const w = canvas.offsetWidth, h = 200;
+    ctx.clearRect(0, 0, W, H);
+
+    const buckets = Object.keys(timeline).sort();
+    if (buckets.length === 0) {
+      ctx.fillStyle = '#666'; ctx.font = '14px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('No event data yet', w/2, h/2); return;
+    }
+
+    const sourceNames = sources.map(s => s.name);
+    // Stack data
+    const stacks = buckets.map(b => {
+      const row = timeline[b] || {};
+      return sourceNames.map(s => row[s] || 0);
+    });
+    const maxTotal = Math.max(...stacks.map(s => s.reduce((a,b) => a+b, 0)), 1);
+
+    const pad = { l: 40, r: 10, t: 10, b: 25 };
+    const cw = w - pad.l - pad.r;
+    const ch = h - pad.t - pad.b;
+    const barW = Math.max(2, cw / buckets.length - 1);
+
+    // Y axis
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)'; ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.t + ch - (ch * i / 4);
+      ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
+      ctx.fillStyle = '#666'; ctx.font = '10px monospace'; ctx.textAlign = 'right';
+      ctx.fillText(Math.round(maxTotal * i / 4).toString(), pad.l - 4, y + 3);
+    }
+
+    // Bars
+    for (let bi = 0; bi < buckets.length; bi++) {
+      const x = pad.l + (bi / buckets.length) * cw;
+      let yOff = 0;
+      for (let si = 0; si < sourceNames.length; si++) {
+        const val = stacks[bi][si];
+        if (val === 0) continue;
+        const barH = (val / maxTotal) * ch;
+        ctx.fillStyle = sensorColor(sourceNames[si]);
+        ctx.globalAlpha = 0.85;
+        ctx.fillRect(x, pad.t + ch - yOff - barH, barW, barH);
+        yOff += barH;
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // X labels (every ~6th bucket)
+    ctx.fillStyle = '#666'; ctx.font = '9px monospace'; ctx.textAlign = 'center';
+    const step = Math.max(1, Math.floor(buckets.length / 8));
+    for (let i = 0; i < buckets.length; i += step) {
+      const x = pad.l + (i / buckets.length) * cw + barW / 2;
+      ctx.fillText(buckets[i], x, h - 4);
+    }
+
+    // Legend
+    ctx.font = '9px monospace'; ctx.textAlign = 'left';
+    let lx = pad.l;
+    for (const s of sourceNames.slice(0, 6)) {
+      ctx.fillStyle = sensorColor(s); ctx.fillRect(lx, 2, 8, 8);
+      ctx.fillStyle = '#aaa'; ctx.fillText(s, lx + 10, 10);
+      lx += ctx.measureText(s).width + 20;
+    }
+  }
+
+  function drawDetectorChart(detectors) {
+    const canvas = document.getElementById('detectorChart');
+    if (!canvas || detectors.length === 0) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width = canvas.offsetWidth * (window.devicePixelRatio || 1);
+    const H = canvas.height = 180 * (window.devicePixelRatio || 1);
+    ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+    const w = canvas.offsetWidth, h = 180;
+    ctx.clearRect(0, 0, W, H);
+
+    const top = detectors.slice(0, 8);
+    const max = Math.max(...top.map(d => d.count), 1);
+    const barH = Math.min(18, (h - 10) / top.length - 4);
+    const pad = { l: 120, r: 10, t: 5 };
+    const cw = w - pad.l - pad.r;
+
+    const colors = ['#ff6b6b','#78e5ff','#ffd93d','#6bcb77','#cc5de8','#ff922b','#4d96ff','#20c997'];
+
+    for (let i = 0; i < top.length; i++) {
+      const d = top[i];
+      const y = pad.t + i * (barH + 4);
+      const bw = (d.count / max) * cw;
+
+      ctx.fillStyle = colors[i % colors.length];
+      ctx.globalAlpha = 0.8;
+      ctx.fillRect(pad.l, y, bw, barH);
+      ctx.globalAlpha = 1;
+
+      ctx.fillStyle = '#ccc'; ctx.font = '10px monospace'; ctx.textAlign = 'right';
+      ctx.fillText(d.name, pad.l - 6, y + barH - 3);
+
+      ctx.fillStyle = '#fff'; ctx.font = '10px monospace'; ctx.textAlign = 'left';
+      if (bw > 30) ctx.fillText(d.count.toString(), pad.l + 4, y + barH - 3);
+      else { ctx.fillStyle = '#aaa'; ctx.fillText(d.count.toString(), pad.l + bw + 4, y + barH - 3); }
+    }
   }
 
   async function loadReport() {
@@ -7673,6 +8001,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
   loadActionConfig();
   loadReportDates();
   loadHomeState();
+  showView('sensors'); // Sensors is the default home page
 
   // Close modal on Escape key
   document.addEventListener('keydown', (ev) => {
