@@ -41,8 +41,6 @@ pub struct CollectorsConfig {
     #[serde(default)]
     pub nginx_error: NginxErrorConfig,
     #[serde(default)]
-    pub falco_log: FalcoLogConfig,
-    #[serde(default)]
     pub suricata_eve: SuricataEveConfig,
     #[serde(default)]
     pub osquery_log: OsqueryLogConfig,
@@ -114,23 +112,6 @@ impl Default for SuricataEveConfig {
             enabled: false,
             path: default_suricata_eve_path(),
             event_types: default_suricata_event_types(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct FalcoLogConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default = "default_falco_log_path")]
-    pub path: String,
-}
-
-impl Default for FalcoLogConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            path: default_falco_log_path(),
         }
     }
 }
@@ -550,9 +531,6 @@ fn default_suricata_event_types() -> Vec<String> {
         .collect()
 }
 
-fn default_falco_log_path() -> String {
-    "/var/log/falco/falco.log".to_string()
-}
 
 fn default_wazuh_alerts_path() -> String {
     "/var/ossec/logs/alerts/alerts.json".to_string()

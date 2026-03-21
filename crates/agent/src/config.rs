@@ -1371,7 +1371,10 @@ fn default_abuseipdb_max_age_days() -> u32 {
 // Fail2ban
 // ---------------------------------------------------------------------------
 
+/// Deprecated — InnerWarden's native detectors + XDP firewall supersede fail2ban.
+/// Kept for config compatibility (existing agent.toml files won't break).
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct Fail2BanConfig {
     /// Enable fail2ban polling (default: false)
     #[serde(default)]
