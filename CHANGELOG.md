@@ -11,6 +11,21 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.2.0] — 2026-03-21
+
+### Phase 2 — eBPF Deep Visibility
+
+- **eBPF kernel tracing** — 3 tracepoints running in production (execve, connect, openat) via Aya framework on kernel 6.8
+- **Container awareness** — `cgroup_id` captured in kernel space via `bpf_get_current_cgroup_id()`, container IDs resolved from `/proc/<pid>/cgroup` (Docker, Podman, k8s)
+- **Process tree tracking** — ppid resolved via `/proc/<pid>/status`, full parent-child chain in event details
+- **C2 callback detector** — beaconing analysis (coefficient of variation), C2 port monitoring, data exfiltration detection (10+ unique IPs from one process)
+- **Process tree detector** — 26 suspicious lineage patterns: web server → shell, database → shell, Java/Node.js RCE, container runtime escape
+- **Container escape detector** — nsenter, chroot, mount, modprobe from containers; Docker socket access, /proc/kcore reads, host sensitive file access
+- **File access monitoring** — real-time sensitive path monitoring via openat tracepoint with kernel-space filtering (/etc/, /root/.ssh/, /home/*/.ssh/)
+- **18 detectors** total (up from 14), 699 tests passing, sensor at 29MB RAM with all tracepoints active
+
+---
+
 ## [0.1.6] — 2026-03-20
 
 ### Telegram personality overhaul
