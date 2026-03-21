@@ -279,6 +279,9 @@ struct AgentState {
     /// Tracks how many times each IP has been blocked. When count > 1 the IP is
     /// flagged as a repeat offender in the decision reason.
     block_counts: HashMap<String, u32>,
+    /// Whether LSM enforcement has been auto-enabled this session.
+    /// Once enabled, stays on until sensor restarts.
+    lsm_enabled: bool,
     /// Incremental narrative accumulator — avoids re-reading events file.
     narrative_acc: NarrativeAccumulator,
     /// Byte offset for incremental incident reading (narrative accumulator).
@@ -1284,6 +1287,7 @@ async fn main() -> Result<()> {
         circuit_breaker_until: None,
         pending_honeypot_choices: HashMap::new(),
         block_counts: HashMap::new(),
+        lsm_enabled: false,
         narrative_acc: NarrativeAccumulator::default(),
         narrative_incidents_offset: 0,
     };
@@ -1800,6 +1804,26 @@ async fn process_incidents(
             // Observe early so correlation history stays consistent even when this
             // incident is later skipped by gate or AI call fails.
             state.correlator.observe(incident);
+        }
+
+        // 0. LSM auto-enable — when we see a high-severity execution incident
+        //    (download+execute, reverse shell, /tmp execution), automatically enable
+        //    LSM enforcement to block future execution from dangerous paths.
+        //    This is a one-way escalation: once enabled, stays on until reboot.
+        if should_auto_enable_lsm(incident) && !state.lsm_enabled {
+            info!(
+                incident_id = %incident.incident_id,
+                "LSM auto-enable: high-severity execution threat detected — activating kernel enforcement"
+            );
+            match enable_lsm_enforcement().await {
+                Ok(()) => {
+                    state.lsm_enabled = true;
+                    info!("LSM enforcement activated — /tmp, /dev/shm, /var/tmp execution now blocked at kernel level");
+                }
+                Err(e) => {
+                    warn!(error = %e, "LSM auto-enable failed (BPF LSM may not be available)");
+                }
+            }
         }
 
         // 1. Notification cooldown — suppress duplicate alerts for the same entity
@@ -5173,6 +5197,73 @@ async fn always_on_abuseipdb_block(
 }
 
 // ---------------------------------------------------------------------------
+// LSM auto-enable helpers
+// ---------------------------------------------------------------------------
+
+/// Returns true if an incident represents a high-severity execution threat
+/// that warrants automatic LSM enforcement (blocking /tmp, /dev/shm execution).
+fn should_auto_enable_lsm(incident: &innerwarden_core::incident::Incident) -> bool {
+    use innerwarden_core::event::Severity;
+
+    // Only trigger on high/critical execution-related incidents
+    if !matches!(incident.severity, Severity::High | Severity::Critical) {
+        return false;
+    }
+
+    let detector = incident.incident_id.split(':').next().unwrap_or("");
+    let title_lower = incident.title.to_lowercase();
+    let summary_lower = incident.summary.to_lowercase();
+
+    // execution_guard detecting download+execute, reverse shells, /tmp execution
+    if detector == "suspicious_execution" || detector == "execution_guard" {
+        return title_lower.contains("reverse shell")
+            || title_lower.contains("download")
+            || summary_lower.contains("/tmp/")
+            || summary_lower.contains("/dev/shm/")
+            || summary_lower.contains("curl")
+            || summary_lower.contains("wget");
+    }
+
+    // LSM blocked event (kind=6) means someone already tried — keep enforcement on
+    if detector == "lsm" {
+        return true;
+    }
+
+    // Container escape attempting to execute from temp paths
+    if detector == "container_escape" {
+        return summary_lower.contains("/tmp") || summary_lower.contains("/dev/shm");
+    }
+
+    false
+}
+
+/// Enable LSM enforcement by setting key 0 = 1 in the pinned policy map.
+async fn enable_lsm_enforcement() -> Result<(), String> {
+    const LSM_POLICY_PIN: &str = "/sys/fs/bpf/innerwarden/lsm_policy";
+
+    if !std::path::Path::new(LSM_POLICY_PIN).exists() {
+        return Err("LSM policy map not found (BPF LSM not loaded)".to_string());
+    }
+
+    let output = tokio::process::Command::new("sudo")
+        .args([
+            "bpftool", "map", "update", "pinned", LSM_POLICY_PIN,
+            "key", "0", "0", "0", "0",
+            "value", "1", "0", "0", "0",
+            "any",
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("failed to run bpftool: {e}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -5359,6 +5450,7 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            lsm_enabled: false,
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
         };
@@ -5476,6 +5568,7 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            lsm_enabled: false,
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
         };
@@ -5568,6 +5661,7 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            lsm_enabled: false,
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
         };
@@ -5672,6 +5766,7 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            lsm_enabled: false,
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
         };
@@ -5753,6 +5848,7 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            lsm_enabled: false,
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
         };
@@ -5846,6 +5942,7 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            lsm_enabled: false,
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
         };
