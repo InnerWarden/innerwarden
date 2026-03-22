@@ -11,6 +11,16 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.3.1] — 2026-03-22
+
+### Hardening advisor + live threat feed
+
+- **`innerwarden harden`** — security hardening advisor that scans SSH, firewall, kernel params, file permissions, pending updates, Docker config, and exposed services. Prints actionable fix commands with severity scoring (0-100). Advisory only — never applies changes.
+- **Live threat feed API** — public `/api/live-feed` and `/api/live-feed/stream` (SSE) endpoints with CORS for real-time incident display on external sites. Includes `/api/live-feed/geoip` proxy for server-side GeoIP batch lookups.
+- **Dashboard bind fix** — `tower-http` CORS layer added to agent for cross-origin live feed access.
+
+---
+
 ## [0.3.0] — 2026-03-21
 
 ### Deep kernel security + intelligent response
