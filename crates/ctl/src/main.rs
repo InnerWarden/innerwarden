@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 mod capabilities;
 mod capability;
 mod config_editor;
+mod harden;
 mod module_manifest;
 mod module_package;
 mod module_validator;
@@ -103,6 +104,20 @@ enum Command {
         /// How many days back to search when looking up an entity (default: 3)
         #[arg(long, default_value = "3")]
         days: u64,
+    },
+
+    /// Scan system configuration and suggest security hardening improvements.
+    ///
+    /// Checks SSH, firewall, kernel, permissions, updates, Docker, and
+    /// services. Prints actionable recommendations — never applies changes.
+    ///
+    /// Examples:
+    ///   innerwarden harden
+    ///   innerwarden harden --verbose
+    Harden {
+        /// Show all passed checks in addition to findings
+        #[arg(long)]
+        verbose: bool,
     },
 
     /// Run system diagnostics and print fix hints for any issues found
@@ -963,6 +978,7 @@ fn main() -> Result<()> {
     let registry = CapabilityRegistry::default_all();
 
     match cli.command {
+        Command::Harden { verbose } => harden::cmd_harden(verbose),
         Command::Doctor => cmd_doctor(&cli, &registry),
         Command::Setup => cmd_setup(&cli),
         Command::Scan { ref modules_dir } => scan::cmd_scan(modules_dir),
