@@ -206,22 +206,20 @@ impl DnsTunnelingDetector {
         let nonstandard_key = format!("ebpf_nonstandard:{}:{}", comm, dst_ip);
         let is_standard = is_standard_resolver(dst_ip);
 
-        if !is_standard {
-            if !self.is_in_cooldown(&nonstandard_key, now) {
-                self.alerted.insert(nonstandard_key, now);
-                return Some(self.build_ebpf_incident(
-                    dst_ip,
-                    comm,
-                    pid,
-                    now,
-                    "nonstandard_dns",
-                    Severity::Medium,
-                    format!(
-                        "Non-standard DNS server: {} connecting to {}:53",
-                        comm, dst_ip
-                    ),
-                ));
-            }
+        if !is_standard && !self.is_in_cooldown(&nonstandard_key, now) {
+            self.alerted.insert(nonstandard_key, now);
+            return Some(self.build_ebpf_incident(
+                dst_ip,
+                comm,
+                pid,
+                now,
+                "nonstandard_dns",
+                Severity::Medium,
+                format!(
+                    "Non-standard DNS server: {} connecting to {}:53",
+                    comm, dst_ip
+                ),
+            ));
         }
 
         // ── Update beaconing state (per comm+dst_ip) ────────────────────

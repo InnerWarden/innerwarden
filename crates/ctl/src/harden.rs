@@ -1285,7 +1285,7 @@ fn check_tls_openssl_content(content: &str, passed: &mut Vec<String>, findings: 
             continue;
         }
         if trimmed.starts_with("MinProtocol") {
-            let value = trimmed.splitn(2, '=').nth(1).unwrap_or("").trim();
+            let value = trimmed.split_once('=').map(|x| x.1).unwrap_or("").trim();
             let lower = value.to_lowercase();
             // Anything below TLSv1.2 is flagged.
             if lower.contains("tlsv1.1")
