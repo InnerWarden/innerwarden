@@ -9,7 +9,6 @@ use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderValue, Method, Request, StatusCode};
-use tower_http::cors::CorsLayer;
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
@@ -23,6 +22,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
+use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 
 use crate::correlation::build_clusters;
@@ -1130,8 +1130,10 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<Vec<LiveFeed
     let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let incidents = read_jsonl::<Incident>(&dated_path(&state.data_dir, "incidents", &date));
     let decisions = read_jsonl::<DecisionEntry>(&dated_path(&state.data_dir, "decisions", &date));
-    let decision_map: HashMap<String, &DecisionEntry> =
-        decisions.iter().map(|d| (d.incident_id.clone(), d)).collect();
+    let decision_map: HashMap<String, &DecisionEntry> = decisions
+        .iter()
+        .map(|d| (d.incident_id.clone(), d))
+        .collect();
 
     let mut items: Vec<LiveFeedItem> = incidents
         .iter()
@@ -1178,7 +1180,12 @@ async fn api_live_feed_stream(
 
 /// `GET /api/live-feed/geoip?ips=1.2.3.4,5.6.7.8` — batch GeoIP lookup (public proxy).
 async fn api_live_feed_geoip(Query(query): Query<GeoIpQuery>) -> Json<Vec<GeoIpResult>> {
-    let ips: Vec<&str> = query.ips.split(',').filter(|s| !s.is_empty()).take(30).collect();
+    let ips: Vec<&str> = query
+        .ips
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .take(30)
+        .collect();
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
@@ -1187,7 +1194,10 @@ async fn api_live_feed_geoip(Query(query): Query<GeoIpQuery>) -> Json<Vec<GeoIpR
     let mut results = Vec::new();
     for ip in ips {
         let ip = ip.trim();
-        let url = format!("http://ip-api.com/json/{}?fields=status,lat,lon,country", ip);
+        let url = format!(
+            "http://ip-api.com/json/{}?fields=status,lat,lon,country",
+            ip
+        );
         if let Ok(resp) = client.get(&url).send().await {
             if let Ok(data) = resp.json::<serde_json::Value>().await {
                 if data.get("status").and_then(|s| s.as_str()) == Some("success") {
@@ -1195,7 +1205,11 @@ async fn api_live_feed_geoip(Query(query): Query<GeoIpQuery>) -> Json<Vec<GeoIpR
                         ip: ip.to_string(),
                         lat: data.get("lat").and_then(|v| v.as_f64()).unwrap_or(0.0),
                         lon: data.get("lon").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                        country: data.get("country").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        country: data
+                            .get("country")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
                     });
                 }
             }
