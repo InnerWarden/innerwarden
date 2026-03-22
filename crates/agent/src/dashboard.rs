@@ -22,7 +22,6 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
-use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 
 use crate::correlation::build_clusters;
@@ -749,16 +748,11 @@ pub async fn serve(
         .with_state(state.clone());
 
     // Public live-feed routes — CORS-enabled, no auth, read-only
-    let cors = CorsLayer::new()
-        .allow_origin(tower_http::cors::Any)
-        .allow_methods([Method::GET])
-        .allow_headers([header::CONTENT_TYPE, header::ACCEPT]);
-
     let live_api = Router::new()
         .route("/api/live-feed", get(api_live_feed))
         .route("/api/live-feed/stream", get(api_live_feed_stream))
         .route("/api/live-feed/geoip", get(api_live_feed_geoip))
-        .layer(cors)
+        .layer(middleware::from_fn(cors_middleware))
         .with_state(state);
 
     let app = agent_api
@@ -1107,6 +1101,24 @@ async fn watch_for_new_entries(data_dir: PathBuf, tx: EventTx) {
             }
         }
     }
+}
+
+/// CORS middleware — injects headers on every response for live-feed routes.
+async fn cors_middleware(req: Request<Body>, next: Next) -> Response {
+    if req.method() == Method::OPTIONS {
+        return axum::http::Response::builder()
+            .status(204)
+            .header("access-control-allow-origin", "*")
+            .header("access-control-allow-methods", "GET, OPTIONS")
+            .header("access-control-allow-headers", "content-type, accept")
+            .body(Body::empty())
+            .unwrap()
+            .into_response();
+    }
+    let mut resp = next.run(req).await;
+    resp.headers_mut()
+        .insert("access-control-allow-origin", HeaderValue::from_static("*"));
+    resp
 }
 
 // ---------------------------------------------------------------------------
