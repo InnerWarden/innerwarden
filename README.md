@@ -11,7 +11,8 @@
 ![Memory](https://img.shields.io/badge/memory-under%2050MB-green)
 ![AI Optional](https://img.shields.io/badge/AI-optional-lightgrey)
 
-**Your server should defend itself.**
+> **Warning**
+> Inner Warden is an **experimental** security agent that can **block IP addresses, kill processes, suspend user privileges, pause containers, and modify firewall rules** on your system. These are powerful, potentially disruptive actions. Read this document carefully before deploying. Always start in observe-only mode and review behavior before enabling automatic responses.
 
 Inner Warden is an autonomous security agent for Linux and macOS. It detects attacks, alerts you, and — when you allow it — responds automatically. No cloud. No dependencies. Just two Rust daemons and a CLI.
 
@@ -20,6 +21,20 @@ curl -fsSL https://innerwarden.com/install | sudo bash
 ```
 
 Installs in 10 seconds. Starts in observe-only mode. You decide when to go live.
+
+---
+
+## Who this is for
+
+Inner Warden is built for **system administrators, DevOps engineers, and security professionals** who manage Linux or macOS servers and want host-level threat detection and response.
+
+You should be comfortable with:
+- Managing firewall rules (ufw, iptables, nftables, or pf)
+- Reading system logs and understanding security events
+- Configuring services via TOML files and systemd/launchd
+- Evaluating whether automated responses are appropriate for your environment
+
+This is **not** a plug-and-play consumer security product. Misconfigured response skills can lock out legitimate users or disrupt services. If you are unfamiliar with Linux system administration, start with the observe-only mode and study the logs before enabling any response capabilities.
 
 <p align="center">
   <img src="docs/images/flow.jpg" alt="Inner Warden — distributed network security flow: threats → eBPF detection → enrichment → AI triage → response" width="820">
@@ -175,9 +190,9 @@ Not everything should be automatic.
 
 ---
 
-## Safety model
+## Safe defaults
 
-Inner Warden starts in the safest possible posture.
+Inner Warden ships with the safest possible posture. On first run, **nothing is blocked, killed, or modified**. The system only observes and logs.
 
 | Default | Meaning |
 |---------|---------|
@@ -188,12 +203,29 @@ Inner Warden starts in the safest possible posture.
 | AI optional | Detection and logging work without any provider. |
 | Append-only audit trail | Every decision in `decisions-YYYY-MM-DD.jsonl`. |
 
-Go live when you trust what you see:
+You must explicitly change **two settings** before any response action can fire: enable the responder and disable dry-run. Neither happens automatically.
 
-```toml
-[responder]
-dry_run = false
-```
+## Start in observe mode — always
+
+Before enabling automatic responses, run Inner Warden in observe-only mode for a period that makes sense for your environment (days to weeks). During this time:
+
+1. **Review the logs** — check `events-*.jsonl` and `incidents-*.jsonl` in your data directory to understand what the detectors are flagging.
+2. **Check for false positives** — make sure legitimate traffic (CI/CD systems, monitoring probes, your own scripts) is not being misidentified.
+3. **Configure your allowlist** — add trusted IPs and users so they are never acted upon:
+   ```bash
+   innerwarden allowlist add --ip 10.0.0.0/8
+   innerwarden allowlist add --user deploy
+   ```
+4. **Enable dry-run first** — when you enable the responder, keep `dry_run = true` so you can see what *would* happen without any actual effect:
+   ```bash
+   innerwarden configure responder --enable
+   ```
+5. **Go live only when you trust what you see**:
+   ```bash
+   innerwarden configure responder --enable --dry-run false
+   ```
+
+There is no rush. The system is designed to be useful in observe-only mode indefinitely.
 
 ---
 
@@ -468,6 +500,20 @@ Fail2ban blocks IPs based on regex patterns. Inner Warden has nineteen detectors
 
 **Can I add custom detectors or skills?**
 Yes. See [module authoring guide](docs/module-authoring.md).
+
+---
+
+## Disclaimer
+
+Inner Warden is provided as-is, without warranty. It is experimental software that interacts with your system's firewall, process table, and user permissions. Automated security responses carry inherent risk — a false positive can block a legitimate user or disrupt a production service.
+
+**You are responsible for:**
+- Testing thoroughly in observe/dry-run mode before enabling responses
+- Configuring allowlists to protect trusted IPs, users, and services
+- Monitoring the audit trail and adjusting thresholds for your environment
+- Understanding the response skills you enable and their effects
+
+The authors are not responsible for downtime, data loss, or service disruption caused by misconfiguration or false positives. Use good judgment and test in a staging environment first.
 
 ---
 
