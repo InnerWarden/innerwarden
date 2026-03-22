@@ -305,6 +305,63 @@ See [AI Agent Protection docs](modules/openclaw-protection/docs/README.md) for f
 
 ---
 
+## Hardening advisor
+
+Scan your system and get actionable security recommendations — without changing anything.
+
+```
+$ innerwarden harden
+
+  ✓ SSH
+    ⚠  Password authentication is enabled [high]
+       → Set 'PasswordAuthentication no' in /etc/ssh/sshd_config
+    ⚠  Root login via SSH is permitted [high]
+       → Set 'PermitRootLogin no' in /etc/ssh/sshd_config
+
+  ✓ Firewall
+    ✓ 2 check(s) passed
+
+  ! Kernel
+    ⚠  ICMP redirects accepted (MITM risk) [medium]
+       → Run: sudo sysctl -w net.ipv4.conf.all.accept_redirects=0
+
+  ✓ Permissions
+    ✓ 3 check(s) passed
+
+  ! Updates
+    ⚠  3 security update(s) pending (8 total) [high]
+       → Run: sudo apt update && sudo apt upgrade -y
+
+  ✓ Docker
+    ✓ 3 check(s) passed
+
+  ✓ Services
+    ✓ 2 check(s) passed
+
+  Score: 68/100 — Fair
+  ██████████████████████░░░░░░░░░
+```
+
+Checks SSH config, firewall, kernel params (ASLR, SYN cookies, IP forwarding), file permissions (SUID, world-writable), pending updates, Docker (privileged containers, socket), and exposed services. Advisory only — never applies changes.
+
+---
+
+## Live threat feed
+
+See Inner Warden responding to real attacks in real time: [innerwarden.com/live](https://innerwarden.com/live)
+
+The agent exposes public read-only endpoints for live monitoring:
+
+```bash
+# Last 20 incidents with decisions
+curl https://live.innerwarden.com/api/live-feed
+
+# Real-time SSE stream
+curl https://live.innerwarden.com/api/live-feed/stream
+```
+
+---
+
 ## Scan advisor
 
 Let your server tell you what it needs.
@@ -448,6 +505,8 @@ innerwarden enable block-ip --param backend=iptables
 innerwarden disable block-ip                        # deactivate and clean up
 innerwarden --dry-run enable block-ip               # preview
 innerwarden scan                                    # detect + recommend
+innerwarden harden                                  # security hardening advisor
+innerwarden harden --verbose                        # show all passed checks too
 innerwarden allowlist add --ip 10.0.0.0/8           # skip AI for trusted ranges
 innerwarden allowlist add --user deploy             # skip AI for trusted users
 innerwarden configure ai                            # interactive AI provider setup (12 providers)
@@ -471,7 +530,7 @@ Pre-built binaries: `x86_64` and `aarch64` for both platforms.
 ## Build and test
 
 ```bash
-make test       # 692 tests
+make test       # 741+ tests
 make build      # debug build (sensor + agent + ctl)
 make replay-qa  # end-to-end integration test
 ```
