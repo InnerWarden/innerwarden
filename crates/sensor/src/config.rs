@@ -225,6 +225,8 @@ pub struct DetectorsConfig {
     pub log_tampering: LogTamperingConfig,
     #[serde(default)]
     pub osquery_anomaly: OsqueryAnomalyConfig,
+    #[serde(default)]
+    pub dns_tunneling: DnsTunnelingConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -461,6 +463,48 @@ impl Default for OsqueryAnomalyConfig {
             cooldown_seconds: default_osquery_anomaly_cooldown_seconds(),
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DnsTunnelingConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_dns_tunneling_entropy_threshold")]
+    pub entropy_threshold: f64,
+    #[serde(default = "default_dns_tunneling_volume_threshold")]
+    pub volume_threshold: usize,
+    #[serde(default = "default_dns_tunneling_length_threshold")]
+    pub length_threshold: usize,
+    #[serde(default = "default_dns_tunneling_window_seconds")]
+    pub window_seconds: u64,
+}
+
+impl Default for DnsTunnelingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            entropy_threshold: default_dns_tunneling_entropy_threshold(),
+            volume_threshold: default_dns_tunneling_volume_threshold(),
+            length_threshold: default_dns_tunneling_length_threshold(),
+            window_seconds: default_dns_tunneling_window_seconds(),
+        }
+    }
+}
+
+fn default_dns_tunneling_entropy_threshold() -> f64 {
+    4.0
+}
+
+fn default_dns_tunneling_volume_threshold() -> usize {
+    15
+}
+
+fn default_dns_tunneling_length_threshold() -> usize {
+    100
+}
+
+fn default_dns_tunneling_window_seconds() -> u64 {
+    60
 }
 
 fn default_osquery_anomaly_cooldown_seconds() -> u64 {

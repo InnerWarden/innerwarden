@@ -22,6 +22,7 @@ pub fn is_internal_ip(ip: &str) -> bool {
         std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
     }
 }
+pub mod dns_tunneling;
 pub mod docker_anomaly;
 pub mod execution_guard;
 pub mod fileless;

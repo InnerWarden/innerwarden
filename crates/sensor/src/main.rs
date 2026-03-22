@@ -22,6 +22,7 @@ use detectors::c2_callback::C2CallbackDetector;
 use detectors::container_escape::ContainerEscapeDetector;
 use detectors::credential_stuffing::CredentialStuffingDetector;
 use detectors::distributed_ssh::DistributedSshDetector;
+use detectors::dns_tunneling::DnsTunnelingDetector;
 use detectors::docker_anomaly::DockerAnomalyDetector;
 use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
 use detectors::fileless::FilelessDetector;
@@ -75,6 +76,7 @@ struct DetectorSet {
     container_escape: Option<ContainerEscapeDetector>,
     privesc: Option<PrivescDetector>,
     fileless: Option<FilelessDetector>,
+    dns_tunneling: Option<DnsTunnelingDetector>,
 }
 
 #[derive(Default)]
@@ -292,6 +294,23 @@ async fn main() -> Result<()> {
         fileless: Some({
             info!("fileless detector enabled (eBPF memfd/fd/deleted binary detection)");
             FilelessDetector::new(&cfg.agent.host_id, 600)
+        }),
+        dns_tunneling: cfg.detectors.dns_tunneling.enabled.then(|| {
+            let d = &cfg.detectors.dns_tunneling;
+            info!(
+                entropy_threshold = d.entropy_threshold,
+                volume_threshold = d.volume_threshold,
+                length_threshold = d.length_threshold,
+                window_seconds = d.window_seconds,
+                "dns_tunneling detector enabled"
+            );
+            DnsTunnelingDetector::new(
+                &cfg.agent.host_id,
+                d.entropy_threshold,
+                d.volume_threshold,
+                d.length_threshold,
+                d.window_seconds,
+            )
         }),
     };
 
@@ -874,6 +893,12 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.fileless {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.dns_tunneling {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }
