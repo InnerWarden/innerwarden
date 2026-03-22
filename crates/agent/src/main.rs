@@ -16,6 +16,7 @@ mod dashboard;
 mod data_retention;
 mod decisions;
 mod fail2ban;
+mod forensics;
 mod geoip;
 mod ioc;
 mod mesh;
@@ -300,6 +301,8 @@ struct AgentState {
     narrative_acc: NarrativeAccumulator,
     /// Byte offset for incremental incident reading (narrative accumulator).
     narrative_incidents_offset: u64,
+    /// Forensics capture — grabs /proc state for High/Critical process incidents.
+    forensics: forensics::ForensicsCapture,
 }
 
 /// Tracks a deferred honeypot-or-block decision waiting for operator input via Telegram.
@@ -1414,6 +1417,7 @@ async fn main() -> Result<()> {
         abuseipdb_report_queue: Vec::new(),
         narrative_acc: NarrativeAccumulator::default(),
         narrative_incidents_offset: 0,
+        forensics: forensics::ForensicsCapture::new(&cli.data_dir),
     };
 
     if !state.ip_reputations.is_empty() {
@@ -2066,6 +2070,26 @@ async fn process_incidents(
                     .entry(entity.value.clone())
                     .or_insert_with(LocalIpReputation::new)
                     .record_incident();
+            }
+        }
+
+        // Forensics capture: for High/Critical incidents with a PID in evidence,
+        // grab /proc state before the process disappears. Best-effort — the
+        // process may have already exited by the time we read.
+        if matches!(
+            incident.severity,
+            innerwarden_core::event::Severity::High | innerwarden_core::event::Severity::Critical
+        ) {
+            if let Some(pid) = incident.evidence.get("pid").and_then(|v| v.as_u64()) {
+                let pid = pid as u32;
+                if let Some(report) = state.forensics.try_capture(pid, &incident.incident_id) {
+                    info!(
+                        pid = report.pid,
+                        incident_id = %incident.incident_id,
+                        exe = ?report.exe,
+                        "forensics: process state captured"
+                    );
+                }
             }
         }
 
@@ -5913,6 +5937,7 @@ mod tests {
             abuseipdb_report_queue: Vec::new(),
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
+            forensics: forensics::ForensicsCapture::new(dir.path()),
         };
 
         // 4. Run the incident tick
@@ -6036,6 +6061,7 @@ mod tests {
             abuseipdb_report_queue: Vec::new(),
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
+            forensics: forensics::ForensicsCapture::new(dir.path()),
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -6134,6 +6160,7 @@ mod tests {
             abuseipdb_report_queue: Vec::new(),
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
+            forensics: forensics::ForensicsCapture::new(dir.path()),
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -6244,6 +6271,7 @@ mod tests {
             abuseipdb_report_queue: Vec::new(),
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
+            forensics: forensics::ForensicsCapture::new(dir.path()),
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -6331,6 +6359,7 @@ mod tests {
             abuseipdb_report_queue: Vec::new(),
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
+            forensics: forensics::ForensicsCapture::new(dir.path()),
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -6430,6 +6459,7 @@ mod tests {
             abuseipdb_report_queue: Vec::new(),
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
+            forensics: forensics::ForensicsCapture::new(dir.path()),
         };
 
         let mut cursor = reader::AgentCursor::default();

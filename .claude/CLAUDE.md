@@ -60,6 +60,7 @@ correlation.rs telemetry.rs     narrative.rs
 webhook.rs     decisions.rs     reader.rs
 telegram.rs    slack.rs         cloudflare.rs
 abuseipdb.rs   geoip.rs         fail2ban.rs
+forensics.rs
 ```
 
 ### CTL source layout (`crates/ctl/src/`)
