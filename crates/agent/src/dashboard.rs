@@ -8,7 +8,8 @@ use argon2::password_hash::{PasswordHashString, SaltString};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::body::Body;
 use axum::extract::{Query, State};
-use axum::http::{header, HeaderValue, Request, StatusCode};
+use axum::http::{header, HeaderValue, Method, Request, StatusCode};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
@@ -745,9 +746,25 @@ pub async fn serve(
             post(api_push_subscribe).delete(api_push_unsubscribe),
         )
         .layer(auth_layer)
-        .with_state(state);
+        .with_state(state.clone());
+
+    // Public live-feed routes — CORS-enabled, no auth, read-only
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _| {
+            let o = origin.to_str().unwrap_or_default();
+            o.ends_with("innerwarden.com") || o.contains("localhost") || o.contains("127.0.0.1")
+        }))
+        .allow_methods([Method::GET])
+        .allow_headers([header::CONTENT_TYPE, header::ACCEPT]);
+
+    let live_api = Router::new()
+        .route("/api/live-feed", get(api_live_feed))
+        .route("/api/live-feed/stream", get(api_live_feed_stream))
+        .layer(cors)
+        .with_state(state.clone());
 
     let app = agent_api
+        .merge(live_api)
         .merge(dashboard)
         .layer(activity_layer)
         .layer(rate_limit_layer);
@@ -1092,6 +1109,73 @@ async fn watch_for_new_entries(data_dir: PathBuf, tx: EventTx) {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Public live-feed endpoints (CORS-enabled, no auth)
+// ---------------------------------------------------------------------------
+
+/// Item returned by the public live feed.
+#[derive(Serialize)]
+struct LiveFeedItem {
+    ts: String,
+    severity: String,
+    title: String,
+    ip: Option<String>,
+    action: Option<String>,
+    confidence: Option<f32>,
+    reason: Option<String>,
+}
+
+/// `GET /api/live-feed` — last 20 incidents with their decisions (public).
+async fn api_live_feed(State(state): State<DashboardState>) -> Json<Vec<LiveFeedItem>> {
+    let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let incidents = read_jsonl::<Incident>(&dated_path(&state.data_dir, "incidents", &date));
+    let decisions = read_jsonl::<DecisionEntry>(&dated_path(&state.data_dir, "decisions", &date));
+    let decision_map: HashMap<String, &DecisionEntry> =
+        decisions.iter().map(|d| (d.incident_id.clone(), d)).collect();
+
+    let mut items: Vec<LiveFeedItem> = incidents
+        .iter()
+        .rev()
+        .take(20)
+        .map(|inc| {
+            let ip = inc
+                .entities
+                .iter()
+                .find(|e| e.r#type == EntityType::Ip)
+                .map(|e| e.value.clone());
+            let dec = decision_map.get(&inc.incident_id);
+            LiveFeedItem {
+                ts: inc.ts.to_rfc3339(),
+                severity: format!("{:?}", inc.severity).to_lowercase(),
+                title: inc.title.clone(),
+                ip,
+                action: dec.map(|d| d.action_type.clone()),
+                confidence: dec.map(|d| d.confidence),
+                reason: dec.map(|d| d.reason.clone()),
+            }
+        })
+        .collect();
+    items.reverse();
+    Json(items)
+}
+
+/// `GET /api/live-feed/stream` — SSE stream of alerts for public live page.
+async fn api_live_feed_stream(
+    State(state): State<DashboardState>,
+) -> Sse<impl futures_core::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
+    let rx = state.event_tx.subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(|msg: Result<SsePayload, _>| {
+        let payload = msg.ok()?;
+        // Only forward alert and heartbeat events to the public feed
+        if payload.kind != "alert" && payload.kind != "heartbeat" {
+            return None;
+        }
+        let data = serde_json::to_string(&payload).unwrap_or_default();
+        Some(Ok(SseEvent::default().event(&payload.kind).data(data)))
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 /// `GET /api/events/stream` — SSE live event stream (D6).
