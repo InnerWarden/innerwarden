@@ -1138,7 +1138,7 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<Vec<LiveFeed
     let mut items: Vec<LiveFeedItem> = incidents
         .iter()
         .rev()
-        .take(20)
+        .take(30)
         .map(|inc| {
             let ip = inc
                 .entities
