@@ -41,7 +41,7 @@ Installs in 10 seconds. Starts in observe-only mode. You decide when to go live.
 
 1. **Watches** — collects signals from your host: SSH, Docker, nginx, sudo, shell audit, firewall logs, **eBPF kernel tracing** (every process, connection, and file access)
 2. **Detects** — nineteen stateful detectors identify brute-force, credential stuffing, port scans, C2 callbacks, privilege escalation, container escapes, suspicious process trees, and more
-3. **Alerts you** — Telegram, Slack, browser push, webhook — real time, on your phone
+3. **Alerts you** — Telegram, Slack, webhook (PagerDuty, Discord, Teams, DingTalk, and more) — real time, on your phone
 4. **Decides** — optionally asks AI for a confidence-scored recommendation (not required)
 5. **Acts** — blocks the IP, suspends sudo, deploys a honeypot, captures traffic. Or does nothing — your call.
 
@@ -168,11 +168,10 @@ AI is advisory unless you explicitly enable auto-execution. You set the confiden
 
 Not everything should be automatic.
 
-- **Telegram** — every High/Critical incident pushed to your phone. Approve or deny with inline buttons.
+- **Telegram** — every High/Critical incident pushed to your phone. Approve or deny with inline buttons. Sensitivity control: quiet/normal/verbose.
 - **Slack** — incident notifications via incoming webhook
-- **Browser push** — native Web Push (VAPID), no relay service
-- **Webhook** — HTTP POST to any endpoint with severity filter
-- **Dashboard** — local authenticated UI: investigation, entity search, operator actions, live SSE, attacker path viewer
+- **Webhook** — HTTP POST to any endpoint. Works with PagerDuty, Opsgenie, Discord, Microsoft Teams, Google Chat, DingTalk, Feishu/Lark, WeCom, n8n, Zapier, Make, Home Assistant.
+- **Dashboard** — local authenticated UI: sensor HUD, investigation timeline, entity search, operator actions, live SSE, attacker path viewer
 
 ---
 
