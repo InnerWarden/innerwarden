@@ -1929,7 +1929,7 @@ async fn api_sensors_inner(state: &DashboardState) -> serde_json::Value {
         .filter(|c| c.is_ascii_digit() || *c == '-')
         .collect::<String>();
     // Validate date format strictly to prevent path traversal (CodeQL CWE-22)
-    if safe_today.len() != 10 || !safe_today.chars().nth(4).is_some_and(|c| c == '-') {
+    if safe_today.len() != 10 || safe_today.chars().nth(4).is_none_or(|c| c != '-') {
         return serde_json::json!({ "error": "invalid date" });
     }
     let events_path = state.data_dir.join(format!("events-{safe_today}.jsonl"));
