@@ -9,7 +9,7 @@ use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderValue, Method, Request, StatusCode};
-use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::cors::CorsLayer;
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
@@ -750,10 +750,7 @@ pub async fn serve(
 
     // Public live-feed routes — CORS-enabled, no auth, read-only
     let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _| {
-            let o = origin.to_str().unwrap_or_default();
-            o.ends_with("innerwarden.com") || o.contains("localhost") || o.contains("127.0.0.1")
-        }))
+        .allow_origin(tower_http::cors::Any)
         .allow_methods([Method::GET])
         .allow_headers([header::CONTENT_TYPE, header::ACCEPT]);
 
@@ -761,7 +758,7 @@ pub async fn serve(
         .route("/api/live-feed", get(api_live_feed))
         .route("/api/live-feed/stream", get(api_live_feed_stream))
         .layer(cors)
-        .with_state(state.clone());
+        .with_state(state);
 
     let app = agent_api
         .merge(live_api)
