@@ -1336,6 +1336,15 @@ async fn main() -> Result<()> {
     let state_path = cli.data_dir.join("agent-state.json");
     let mut cursor = reader::AgentCursor::load(&state_path)?;
 
+    // Initialize narrative offset from cursor so we don't re-read all incidents on restart
+    {
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+        state.narrative_incidents_offset = cursor.incidents_offset(&today);
+    }
+
     if cli.once {
         let handled = process_incidents(&cli.data_dir, &mut cursor, &cfg, &mut state).await;
         let new_events =

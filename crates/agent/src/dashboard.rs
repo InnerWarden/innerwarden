@@ -137,6 +137,8 @@ struct DashboardState {
     /// the dashboard returns a lightweight "sleeping" page instead of
     /// reading JSONL files.
     last_activity: Arc<std::sync::atomic::AtomicU64>,
+    /// Cached sensor API response (30s TTL) to avoid re-reading events file on every request.
+    sensor_cache: Arc<tokio::sync::Mutex<(u64, serde_json::Value)>>,
 }
 
 #[derive(Clone)]
@@ -665,6 +667,7 @@ pub async fn serve(
         web_push_vapid_public_key,
         insecure_http,
         last_activity: Arc::new(std::sync::atomic::AtomicU64::new(now_secs)),
+        sensor_cache: Arc::new(tokio::sync::Mutex::new((0, serde_json::json!({})))),
     };
     let auth_layer = middleware::from_fn_with_state(auth, require_basic_auth);
     let activity_state = state.last_activity.clone();
@@ -1753,10 +1756,37 @@ async fn api_honeypot_sessions(State(state): State<DashboardState>) -> Json<serd
 
 /// GET /api/sensors — sensor activity time-series for dashboard graphs.
 /// Returns event counts bucketed by 5-minute intervals, grouped by source.
+/// Cached for 30 seconds to avoid re-reading the events file on every request.
 async fn api_sensors(State(state): State<DashboardState>) -> Json<serde_json::Value> {
-    // Date is generated server-side (not user input) — safe for path construction.
+    // Check cache (30s TTL)
+    {
+        let cache = state.sensor_cache.lock().await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if now - cache.0 < 30 && cache.0 > 0 {
+            return Json(cache.1.clone());
+        }
+    }
+
+    let result = api_sensors_inner(&state).await;
+
+    // Update cache
+    {
+        let mut cache = state.sensor_cache.lock().await;
+        cache.0 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        cache.1 = result.clone();
+    }
+
+    Json(result)
+}
+
+async fn api_sensors_inner(state: &DashboardState) -> serde_json::Value {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    // Validate date format to prevent any injection (defense-in-depth).
     let safe_today = today
         .chars()
         .filter(|c| c.is_ascii_digit() || *c == '-')
@@ -1895,7 +1925,7 @@ async fn api_sensors(State(state): State<DashboardState>) -> Json<serde_json::Va
     let mut detectors: Vec<_> = detector_counts.into_iter().collect();
     detectors.sort_by(|a, b| b.1.cmp(&a.1));
 
-    Json(serde_json::json!({
+    serde_json::json!({
         "date": today,
         "total_events": total_events,
         "total_incidents": total_incidents,
@@ -1904,7 +1934,7 @@ async fn api_sensors(State(state): State<DashboardState>) -> Json<serde_json::Va
         "detectors": detectors.iter().map(|(d, c)| serde_json::json!({"name": d, "count": c})).collect::<Vec<_>>(),
         "event_timeline": timeline,
         "detector_timeline": detector_timeline,
-    }))
+    })
 }
 
 /// GET /api/status — E6: system status including data files and responder config.
