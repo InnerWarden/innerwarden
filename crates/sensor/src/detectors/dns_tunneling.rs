@@ -3,12 +3,27 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use chrono::{DateTime, Duration, Utc};
 use innerwarden_core::{entities::EntityRef, event::Event, event::Severity, incident::Incident};
 
-/// Detects DNS tunneling patterns from Suricata DNS query logs.
+/// Well-known public DNS resolvers that should NOT trigger non-standard DNS alerts.
+const STANDARD_RESOLVERS: &[&str] = &[
+    "127.0.0.53", // systemd-resolved
+    "8.8.8.8",    // Google
+    "8.8.4.4",    // Google
+    "1.1.1.1",    // Cloudflare
+    "1.0.0.1",    // Cloudflare
+    "9.9.9.9",    // Quad9
+];
+
+/// Detects DNS tunneling patterns from Suricata DNS query logs AND eBPF connect events.
 ///
-/// Patterns detected:
+/// Suricata path (deep inspection):
 /// 1. High Shannon entropy in subdomain labels (encoded/encrypted data)
 /// 2. Volume of unique subdomains to same base domain in window (C2 channel)
 /// 3. Unusually long domain names (data exfiltration payload)
+///
+/// eBPF fallback (port 53 connect() analysis — works WITHOUT Suricata):
+/// 4. DNS beaconing — same process connects to same DNS server > 20 times in 60s
+/// 5. Non-standard DNS server — connect to port 53 on a non-common resolver
+/// 6. DNS burst — > 50 port 53 connections in 30s from any process
 pub struct DnsTunnelingDetector {
     entropy_threshold: f64,
     volume_threshold: usize,
@@ -21,6 +36,11 @@ pub struct DnsTunnelingDetector {
     /// Cooldown per alert key to suppress re-alerts
     alerted: HashMap<String, DateTime<Utc>>,
     host: String,
+    // ── eBPF fallback state ─────────────────────────────────────────────
+    /// Per (comm, dst_ip) -> timestamps for DNS beaconing detection (60s window)
+    ebpf_beacon: HashMap<(String, String), VecDeque<DateTime<Utc>>>,
+    /// Per comm -> timestamps for DNS burst detection (30s window)
+    ebpf_burst: HashMap<String, VecDeque<DateTime<Utc>>>,
 }
 
 impl DnsTunnelingDetector {
@@ -40,11 +60,22 @@ impl DnsTunnelingDetector {
             timestamps: HashMap::new(),
             alerted: HashMap::new(),
             host: host.into(),
+            ebpf_beacon: HashMap::new(),
+            ebpf_burst: HashMap::new(),
         }
     }
 
     pub fn process(&mut self, event: &Event) -> Option<Incident> {
-        // Filter: only Suricata DNS query events
+        // ── eBPF path: connect() to port 53 ─────────────────────────────
+        if event.kind == "network.outbound_connect" {
+            let dst_port = event.details.get("dst_port")?.as_u64()? as u16;
+            if dst_port == 53 {
+                return self.process_ebpf_dns(event);
+            }
+            return None;
+        }
+
+        // ── Suricata path: DNS query events ──────────────────────────────
         let is_dns = event.kind == "suricata.dns.query"
             || (event.source == "suricata" && event.kind.contains("dns"));
         if !is_dns {
@@ -148,6 +179,140 @@ impl DnsTunnelingDetector {
         None
     }
 
+    /// Process eBPF connect() events targeting port 53.
+    /// Provides DNS tunneling detection without Suricata.
+    fn process_ebpf_dns(&mut self, event: &Event) -> Option<Incident> {
+        let dst_ip = event.details.get("dst_ip")?.as_str()?;
+        let comm = event
+            .details
+            .get("comm")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let pid = event
+            .details
+            .get("pid")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        let now = event.ts;
+
+        let beacon_window = Duration::seconds(60);
+        let burst_window = Duration::seconds(30);
+        let beacon_cutoff = now - beacon_window;
+        let burst_cutoff = now - burst_window;
+
+        // ── Check 4: Non-standard DNS server ────────────────────────────
+        // Check before beaconing/burst so a single connection to a rogue
+        // DNS server is caught immediately.
+        let nonstandard_key = format!("ebpf_nonstandard:{}:{}", comm, dst_ip);
+        let is_standard = is_standard_resolver(dst_ip);
+
+        if !is_standard {
+            if !self.is_in_cooldown(&nonstandard_key, now) {
+                self.alerted.insert(nonstandard_key, now);
+                return Some(self.build_ebpf_incident(
+                    dst_ip,
+                    comm,
+                    pid,
+                    now,
+                    "nonstandard_dns",
+                    Severity::Medium,
+                    format!(
+                        "Non-standard DNS server: {} connecting to {}:53",
+                        comm, dst_ip
+                    ),
+                ));
+            }
+        }
+
+        // ── Update beaconing state (per comm+dst_ip) ────────────────────
+        let beacon_key = (comm.to_string(), dst_ip.to_string());
+        let beacon_ring = self.ebpf_beacon.entry(beacon_key.clone()).or_default();
+        while beacon_ring.front().is_some_and(|t| *t < beacon_cutoff) {
+            beacon_ring.pop_front();
+        }
+        beacon_ring.push_back(now);
+
+        // ── Check 5: DNS beaconing (> 20 queries to same server in 60s) ─
+        let beacon_count = beacon_ring.len();
+        if beacon_count > 20 {
+            let alert_key = format!("ebpf_beacon:{}:{}", comm, dst_ip);
+            if !self.is_in_cooldown(&alert_key, now) {
+                self.alerted.insert(alert_key, now);
+                return Some(self.build_ebpf_incident(
+                    dst_ip,
+                    comm,
+                    pid,
+                    now,
+                    "dns_beaconing",
+                    Severity::High,
+                    format!(
+                        "DNS beaconing: {} made {} DNS queries in {}s",
+                        comm,
+                        beacon_count,
+                        beacon_window.num_seconds()
+                    ),
+                ));
+            }
+        }
+
+        // ── Update burst state (per comm, any destination) ──────────────
+        let burst_ring = self.ebpf_burst.entry(comm.to_string()).or_default();
+        while burst_ring.front().is_some_and(|t| *t < burst_cutoff) {
+            burst_ring.pop_front();
+        }
+        burst_ring.push_back(now);
+
+        // ── Check 6: DNS burst (> 50 queries in 30s) ────────────────────
+        let burst_count = burst_ring.len();
+        if burst_count > 50 {
+            let alert_key = format!("ebpf_burst:{}", comm);
+            if !self.is_in_cooldown(&alert_key, now) {
+                self.alerted.insert(alert_key, now);
+                return Some(self.build_ebpf_incident(
+                    dst_ip,
+                    comm,
+                    pid,
+                    now,
+                    "dns_burst",
+                    Severity::High,
+                    format!(
+                        "DNS query burst: {} queries in 30s from {}",
+                        burst_count, comm
+                    ),
+                ));
+            }
+        }
+
+        // Prune eBPF state
+        if self.ebpf_beacon.len() > 5000 {
+            self.ebpf_beacon.retain(|_, v| {
+                v.retain(|t| *t > beacon_cutoff);
+                !v.is_empty()
+            });
+        }
+        if self.ebpf_burst.len() > 2000 {
+            self.ebpf_burst.retain(|_, v| {
+                v.retain(|t| *t > burst_cutoff);
+                !v.is_empty()
+            });
+        }
+        if self.alerted.len() > 500 {
+            let cutoff = now - Duration::seconds(300);
+            self.alerted.retain(|_, ts| *ts > cutoff);
+        }
+
+        None
+    }
+
+    /// Check if an alert key is within the 300s cooldown period.
+    fn is_in_cooldown(&self, key: &str, now: DateTime<Utc>) -> bool {
+        if let Some(&last) = self.alerted.get(key) {
+            now - last < Duration::seconds(300)
+        } else {
+            false
+        }
+    }
+
     fn build_incident(
         &self,
         src_ip: &str,
@@ -186,6 +351,80 @@ impl DnsTunnelingDetector {
             entities: vec![EntityRef::ip(src_ip)],
         }
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_ebpf_incident(
+        &self,
+        dst_ip: &str,
+        comm: &str,
+        pid: u32,
+        ts: DateTime<Utc>,
+        pattern: &str,
+        severity: Severity,
+        summary: String,
+    ) -> Incident {
+        Incident {
+            ts,
+            host: self.host.clone(),
+            incident_id: format!(
+                "dns_tunneling_ebpf:{}:{}:{}",
+                comm,
+                dst_ip,
+                ts.format("%Y-%m-%dT%H:%MZ")
+            ),
+            severity,
+            title: format!("DNS tunneling detected (eBPF): {} to {}:53", comm, dst_ip),
+            summary,
+            evidence: serde_json::json!([{
+                "kind": "dns_tunneling_ebpf",
+                "pattern": pattern,
+                "dst_ip": dst_ip,
+                "comm": comm,
+                "pid": pid,
+                "dst_port": 53,
+            }]),
+            recommended_checks: vec![
+                format!(
+                    "Investigate process {} (pid={}) — why is it making DNS queries?",
+                    comm, pid
+                ),
+                format!("Check if {} is a legitimate DNS server", dst_ip),
+                "Review /etc/resolv.conf for expected nameservers".to_string(),
+                "Consider blocking the process or the destination IP".to_string(),
+            ],
+            tags: vec![
+                "dns-tunneling".to_string(),
+                "ebpf".to_string(),
+                "exfiltration".to_string(),
+            ],
+            entities: vec![EntityRef::ip(dst_ip)],
+        }
+    }
+}
+
+/// Returns true if the IP is a well-known public resolver or a private/local address
+/// that should NOT trigger the non-standard DNS server alert.
+fn is_standard_resolver(ip: &str) -> bool {
+    if STANDARD_RESOLVERS.contains(&ip) {
+        return true;
+    }
+    // Private ranges: 10.x.x.x, 172.16-31.x.x, 192.168.x.x
+    if let Ok(addr) = ip.parse::<std::net::Ipv4Addr>() {
+        let octets = addr.octets();
+        // 10.0.0.0/8
+        if octets[0] == 10 {
+            return true;
+        }
+        // 172.16.0.0/12
+        if octets[0] == 172 && (16..=31).contains(&octets[1]) {
+            return true;
+        }
+        // 192.168.0.0/16
+        if octets[0] == 192 && octets[1] == 168 {
+            return true;
+        }
+    }
+    false
 }
 
 /// Parse a domain into (base_domain, subdomain).
@@ -245,6 +484,28 @@ mod tests {
             entities: vec![EntityRef::ip(src_ip)],
         }
     }
+
+    fn ebpf_connect_event(comm: &str, dst_ip: &str, dst_port: u16, ts: DateTime<Utc>) -> Event {
+        Event {
+            ts,
+            host: "test".to_string(),
+            source: "ebpf".to_string(),
+            kind: "network.outbound_connect".to_string(),
+            severity: Severity::Info,
+            summary: format!("{comm} connecting to {dst_ip}:{dst_port}"),
+            details: serde_json::json!({
+                "pid": 1234,
+                "uid": 1000,
+                "comm": comm,
+                "dst_ip": dst_ip,
+                "dst_port": dst_port,
+            }),
+            tags: vec!["ebpf".to_string(), "network".to_string()],
+            entities: vec![EntityRef::ip(dst_ip)],
+        }
+    }
+
+    // ── Suricata path tests ─────────────────────────────────────────────
 
     #[test]
     fn high_entropy_subdomain_triggers() {
@@ -415,9 +676,22 @@ mod tests {
         let mut det = DnsTunnelingDetector::new("test", 4.0, 15, 100, 60);
         let now = Utc::now();
 
-        let mut ev = dns_event("10.0.0.5", "a1b2c3d4e5f6g7h8i9j0.evil.com", now);
-        ev.kind = "network.outbound_connect".to_string();
-        ev.source = "ebpf".to_string();
+        // A network.outbound_connect to a non-53 port should be ignored
+        let ev = ebpf_connect_event("curl", "1.2.3.4", 443, now);
+        assert!(det.process(&ev).is_none());
+
+        // A completely unrelated event kind should be ignored
+        let ev = Event {
+            ts: now,
+            host: "test".to_string(),
+            source: "auth_log".to_string(),
+            kind: "auth.login".to_string(),
+            severity: Severity::Info,
+            summary: "login".to_string(),
+            details: serde_json::json!({}),
+            tags: vec![],
+            entities: vec![],
+        };
         assert!(det.process(&ev).is_none());
     }
 
@@ -428,5 +702,232 @@ mod tests {
         // Only 2 labels — no subdomain to analyze
         let inc = det.process(&dns_event("10.0.0.5", "example.com", now));
         assert!(inc.is_none());
+    }
+
+    // ── eBPF fallback tests ─────────────────────────────────────────────
+
+    #[test]
+    fn ebpf_port53_beaconing_triggers() {
+        let mut det = DnsTunnelingDetector::new("test", 4.0, 15, 100, 60);
+        let now = Utc::now();
+
+        // Send 21 connect() to same DNS server from same process in 60s.
+        // Use a standard resolver so nonstandard_dns doesn't fire.
+        // Beaconing threshold is > 20, so the 21st event (i=20) triggers.
+        let mut triggered = false;
+        for i in 0..=20 {
+            let result = det.process(&ebpf_connect_event(
+                "malware",
+                "8.8.8.8",
+                53,
+                now + Duration::seconds(i),
+            ));
+            if i <= 19 {
+                assert!(
+                    result.is_none(),
+                    "should not trigger at {} connections",
+                    i + 1
+                );
+            }
+            if i == 20 {
+                assert!(
+                    result.is_some(),
+                    "expected beaconing trigger at 21 connections"
+                );
+                let inc = result.unwrap();
+                assert_eq!(inc.severity, Severity::High);
+                assert!(inc.summary.contains("DNS beaconing"));
+                assert!(inc.summary.contains("malware"));
+                assert!(inc.tags.contains(&"ebpf".to_string()));
+                triggered = true;
+            }
+        }
+        assert!(triggered, "beaconing should have triggered");
+    }
+
+    #[test]
+    fn ebpf_normal_dns_volume_does_not_trigger() {
+        let mut det = DnsTunnelingDetector::new("test", 4.0, 15, 100, 60);
+        let now = Utc::now();
+
+        // Send 10 connects to standard resolver — well below thresholds
+        for i in 0..10 {
+            let result = det.process(&ebpf_connect_event(
+                "systemd-resolved",
+                "1.1.1.1",
+                53,
+                now + Duration::seconds(i * 3),
+            ));
+            assert!(
+                result.is_none(),
+                "normal DNS volume should not trigger at {} connections",
+                i + 1
+            );
+        }
+    }
+
+    #[test]
+    fn ebpf_nonstandard_dns_server_triggers() {
+        let mut det = DnsTunnelingDetector::new("test", 4.0, 15, 100, 60);
+        let now = Utc::now();
+
+        // Connect to a suspicious external DNS server
+        let inc = det.process(&ebpf_connect_event("curl", "45.33.32.156", 53, now));
+        assert!(inc.is_some());
+        let inc = inc.unwrap();
+        assert_eq!(inc.severity, Severity::Medium);
+        assert!(inc.summary.contains("Non-standard DNS server"));
+        assert!(inc.summary.contains("45.33.32.156"));
+        assert!(inc.tags.contains(&"ebpf".to_string()));
+    }
+
+    #[test]
+    fn ebpf_standard_resolvers_do_not_trigger_nonstandard() {
+        let mut det = DnsTunnelingDetector::new("test", 4.0, 15, 100, 60);
+        let now = Utc::now();
+
+        // Standard public resolvers should not trigger
+        for (i, resolver) in [
+            "8.8.8.8",
+            "8.8.4.4",
+            "1.1.1.1",
+            "1.0.0.1",
+            "9.9.9.9",
+            "127.0.0.53",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let result = det.process(&ebpf_connect_event(
+                "systemd-resolved",
+                resolver,
+                53,
+                now + Duration::seconds(i as i64),
+            ));
+            assert!(
+                result.is_none(),
+                "standard resolver {} should not trigger",
+                resolver
+            );
+        }
+
+        // Private network DNS servers should not trigger
+        for (i, resolver) in ["10.0.0.1", "172.16.0.1", "192.168.1.1"].iter().enumerate() {
+            let result = det.process(&ebpf_connect_event(
+                "systemd-resolved",
+                resolver,
+                53,
+                now + Duration::seconds(10 + i as i64),
+            ));
+            assert!(
+                result.is_none(),
+                "private DNS {} should not trigger nonstandard alert",
+                resolver
+            );
+        }
+    }
+
+    #[test]
+    fn ebpf_dns_burst_triggers() {
+        let mut det = DnsTunnelingDetector::new("test", 4.0, 15, 100, 60);
+        let now = Utc::now();
+
+        // Send 51 connects to port 53 within 30s from same process.
+        // Rotate across 3 standard resolvers so beaconing (per dst_ip) stays
+        // at ~17 each — below the >20 threshold — while burst (per comm)
+        // accumulates across all destinations.
+        let resolvers = ["8.8.8.8", "1.1.1.1", "9.9.9.9"];
+        let mut triggered = false;
+        for i in 0..=50 {
+            let resolver = resolvers[i as usize % resolvers.len()];
+            let result = det.process(&ebpf_connect_event(
+                "dig",
+                resolver,
+                53,
+                // Spread across < 30s
+                now + Duration::milliseconds(i * 500),
+            ));
+            if i < 50 {
+                assert!(
+                    result.is_none(),
+                    "should not trigger burst at {} connections",
+                    i + 1
+                );
+            }
+            if i == 50 {
+                assert!(result.is_some(), "expected burst trigger at 51 connections");
+                let inc = result.unwrap();
+                assert_eq!(inc.severity, Severity::High);
+                assert!(inc.summary.contains("DNS query burst"));
+                assert!(inc.summary.contains("dig"));
+                triggered = true;
+            }
+        }
+        assert!(triggered, "burst should have triggered");
+    }
+
+    #[test]
+    fn ebpf_cooldown_works() {
+        let mut det = DnsTunnelingDetector::new("test", 4.0, 15, 100, 60);
+        let now = Utc::now();
+
+        // First: non-standard DNS triggers
+        let inc = det.process(&ebpf_connect_event("curl", "45.33.32.156", 53, now));
+        assert!(inc.is_some());
+
+        // Same alert within 300s — suppressed
+        let inc = det.process(&ebpf_connect_event(
+            "curl",
+            "45.33.32.156",
+            53,
+            now + Duration::seconds(10),
+        ));
+        assert!(inc.is_none());
+
+        // After 300s cooldown — triggers again
+        let inc = det.process(&ebpf_connect_event(
+            "curl",
+            "45.33.32.156",
+            53,
+            now + Duration::seconds(301),
+        ));
+        assert!(inc.is_some());
+    }
+
+    #[test]
+    fn ebpf_non_port53_ignored() {
+        let mut det = DnsTunnelingDetector::new("test", 4.0, 15, 100, 60);
+        let now = Utc::now();
+
+        // Port 80 connect should be completely ignored
+        let inc = det.process(&ebpf_connect_event("curl", "1.2.3.4", 80, now));
+        assert!(inc.is_none());
+    }
+
+    #[test]
+    fn is_standard_resolver_correctness() {
+        // Standard public resolvers
+        assert!(is_standard_resolver("8.8.8.8"));
+        assert!(is_standard_resolver("8.8.4.4"));
+        assert!(is_standard_resolver("1.1.1.1"));
+        assert!(is_standard_resolver("1.0.0.1"));
+        assert!(is_standard_resolver("9.9.9.9"));
+        assert!(is_standard_resolver("127.0.0.53"));
+
+        // Private ranges
+        assert!(is_standard_resolver("10.0.0.1"));
+        assert!(is_standard_resolver("10.255.255.255"));
+        assert!(is_standard_resolver("172.16.0.1"));
+        assert!(is_standard_resolver("172.31.255.255"));
+        assert!(is_standard_resolver("192.168.1.1"));
+        assert!(is_standard_resolver("192.168.0.1"));
+
+        // Non-standard — external IPs
+        assert!(!is_standard_resolver("45.33.32.156"));
+        assert!(!is_standard_resolver("203.0.113.1"));
+        assert!(!is_standard_resolver("172.32.0.1")); // outside 172.16-31 range
+
+        // Edge cases
+        assert!(!is_standard_resolver("not-an-ip"));
     }
 }
