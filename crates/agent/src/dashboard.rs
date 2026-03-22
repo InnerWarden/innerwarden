@@ -757,6 +757,7 @@ pub async fn serve(
     let live_api = Router::new()
         .route("/api/live-feed", get(api_live_feed))
         .route("/api/live-feed/stream", get(api_live_feed_stream))
+        .route("/api/live-feed/geoip", get(api_live_feed_geoip))
         .layer(cors)
         .with_state(state);
 
@@ -1173,6 +1174,47 @@ async fn api_live_feed_stream(
         Some(Ok(SseEvent::default().event(&payload.kind).data(data)))
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// `GET /api/live-feed/geoip?ips=1.2.3.4,5.6.7.8` — batch GeoIP lookup (public proxy).
+async fn api_live_feed_geoip(Query(query): Query<GeoIpQuery>) -> Json<Vec<GeoIpResult>> {
+    let ips: Vec<&str> = query.ips.split(',').filter(|s| !s.is_empty()).take(30).collect();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    let mut results = Vec::new();
+    for ip in ips {
+        let ip = ip.trim();
+        let url = format!("http://ip-api.com/json/{}?fields=status,lat,lon,country", ip);
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(data) = resp.json::<serde_json::Value>().await {
+                if data.get("status").and_then(|s| s.as_str()) == Some("success") {
+                    results.push(GeoIpResult {
+                        ip: ip.to_string(),
+                        lat: data.get("lat").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                        lon: data.get("lon").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                        country: data.get("country").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    });
+                }
+            }
+        }
+    }
+    Json(results)
+}
+
+#[derive(Deserialize)]
+struct GeoIpQuery {
+    ips: String,
+}
+
+#[derive(Serialize)]
+struct GeoIpResult {
+    ip: String,
+    lat: f64,
+    lon: f64,
+    country: String,
 }
 
 /// `GET /api/events/stream` — SSE live event stream (D6).
