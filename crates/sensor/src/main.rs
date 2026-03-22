@@ -27,6 +27,7 @@ use detectors::docker_anomaly::DockerAnomalyDetector;
 use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
 use detectors::fileless::FilelessDetector;
 use detectors::integrity_alert::IntegrityAlertDetector;
+use detectors::lateral_movement::LateralMovementDetector;
 use detectors::log_tampering::LogTamperingDetector;
 use detectors::osquery_anomaly::OsqueryAnomalyDetector;
 use detectors::port_scan::PortScanDetector;
@@ -77,6 +78,7 @@ struct DetectorSet {
     privesc: Option<PrivescDetector>,
     fileless: Option<FilelessDetector>,
     dns_tunneling: Option<DnsTunnelingDetector>,
+    lateral_movement: Option<LateralMovementDetector>,
 }
 
 #[derive(Default)]
@@ -309,6 +311,21 @@ async fn main() -> Result<()> {
                 d.entropy_threshold,
                 d.volume_threshold,
                 d.length_threshold,
+                d.window_seconds,
+            )
+        }),
+        lateral_movement: cfg.detectors.lateral_movement.enabled.then(|| {
+            let d = &cfg.detectors.lateral_movement;
+            info!(
+                ssh_threshold = d.ssh_threshold,
+                scan_threshold = d.scan_threshold,
+                window_seconds = d.window_seconds,
+                "lateral_movement detector enabled"
+            );
+            LateralMovementDetector::new(
+                &cfg.agent.host_id,
+                d.ssh_threshold,
+                d.scan_threshold,
                 d.window_seconds,
             )
         }),
@@ -899,6 +916,12 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.dns_tunneling {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.lateral_movement {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }

@@ -227,6 +227,8 @@ pub struct DetectorsConfig {
     pub osquery_anomaly: OsqueryAnomalyConfig,
     #[serde(default)]
     pub dns_tunneling: DnsTunnelingConfig,
+    #[serde(default)]
+    pub lateral_movement: LateralMovementConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -489,6 +491,41 @@ impl Default for DnsTunnelingConfig {
             window_seconds: default_dns_tunneling_window_seconds(),
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LateralMovementConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_lateral_movement_ssh_threshold")]
+    pub ssh_threshold: usize,
+    #[serde(default = "default_lateral_movement_scan_threshold")]
+    pub scan_threshold: usize,
+    #[serde(default = "default_lateral_movement_window_seconds")]
+    pub window_seconds: u64,
+}
+
+impl Default for LateralMovementConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ssh_threshold: default_lateral_movement_ssh_threshold(),
+            scan_threshold: default_lateral_movement_scan_threshold(),
+            window_seconds: default_lateral_movement_window_seconds(),
+        }
+    }
+}
+
+fn default_lateral_movement_ssh_threshold() -> usize {
+    3
+}
+
+fn default_lateral_movement_scan_threshold() -> usize {
+    5
+}
+
+fn default_lateral_movement_window_seconds() -> u64 {
+    300
 }
 
 fn default_dns_tunneling_entropy_threshold() -> f64 {
