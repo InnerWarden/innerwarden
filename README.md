@@ -583,12 +583,13 @@ The authors are not responsible for downtime, data loss, or service disruption c
 ## Links
 
 - [Website](https://www.innerwarden.com)
+- [Live attack feed](https://innerwarden.com/live)
+- [Blog](https://innerwarden.com/blog)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 - [Documentation](docs/index.md)
 - [Module authoring](docs/module-authoring.md)
-- [Integrated setup guide](docs/integrated-setup.md) (Falco + Suricata + osquery + Telegram on Ubuntu 22.04)
 
 ## License
 
