@@ -24,7 +24,9 @@ pub fn is_internal_ip(ip: &str) -> bool {
 }
 pub mod docker_anomaly;
 pub mod execution_guard;
+pub mod fileless;
 pub mod integrity_alert;
+pub mod log_tampering;
 pub mod osquery_anomaly;
 pub mod port_scan;
 pub mod privesc;

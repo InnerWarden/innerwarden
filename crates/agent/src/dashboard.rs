@@ -1125,6 +1125,16 @@ async fn cors_middleware(req: Request<Body>, next: Next) -> Response {
 // Public live-feed endpoints (CORS-enabled, no auth)
 // ---------------------------------------------------------------------------
 
+/// Per-IP local reputation summary included in live-feed responses.
+#[derive(Serialize, Deserialize, Clone)]
+struct LiveFeedReputation {
+    total_incidents: u32,
+    total_blocks: u32,
+    reputation_score: f32,
+    first_seen: String,
+    last_seen: String,
+}
+
 /// Item returned by the public live feed.
 #[derive(Serialize)]
 struct LiveFeedItem {
@@ -1135,6 +1145,28 @@ struct LiveFeedItem {
     action: Option<String>,
     confidence: Option<f32>,
     reason: Option<String>,
+    /// Local IP reputation data (present when the IP has been seen before).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reputation: Option<LiveFeedReputation>,
+}
+
+/// On-disk representation of LocalIpReputation (written by agent main loop).
+#[derive(Deserialize)]
+struct StoredIpReputation {
+    total_incidents: u32,
+    total_blocks: u32,
+    first_seen: DateTime<Utc>,
+    last_seen: DateTime<Utc>,
+    reputation_score: f32,
+}
+
+/// Load the `ip-reputation.json` file written by the agent's slow loop.
+fn load_ip_reputation_map(data_dir: &Path) -> HashMap<String, StoredIpReputation> {
+    let path = data_dir.join("ip-reputation.json");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+    serde_json::from_str(&content).unwrap_or_default()
 }
 
 /// `GET /api/live-feed` — last 20 incidents with their decisions (public).
@@ -1146,6 +1178,7 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<Vec<LiveFeed
         .iter()
         .map(|d| (d.incident_id.clone(), d))
         .collect();
+    let reputation_map = load_ip_reputation_map(&state.data_dir);
 
     let mut items: Vec<LiveFeedItem> = incidents
         .iter()
@@ -1158,6 +1191,15 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<Vec<LiveFeed
                 .find(|e| e.r#type == EntityType::Ip)
                 .map(|e| e.value.clone());
             let dec = decision_map.get(&inc.incident_id);
+            let reputation = ip.as_ref().and_then(|ip_val| {
+                reputation_map.get(ip_val).map(|r| LiveFeedReputation {
+                    total_incidents: r.total_incidents,
+                    total_blocks: r.total_blocks,
+                    reputation_score: r.reputation_score,
+                    first_seen: r.first_seen.to_rfc3339(),
+                    last_seen: r.last_seen.to_rfc3339(),
+                })
+            });
             LiveFeedItem {
                 ts: inc.ts.to_rfc3339(),
                 severity: format!("{:?}", inc.severity).to_lowercase(),
@@ -1166,6 +1208,7 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<Vec<LiveFeed
                 action: dec.map(|d| d.action_type.clone()),
                 confidence: dec.map(|d| d.confidence),
                 reason: dec.map(|d| d.reason.clone()),
+                reputation,
             }
         })
         .collect();

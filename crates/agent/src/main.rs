@@ -280,6 +280,9 @@ struct AgentState {
     /// Tracks how many times each IP has been blocked. When count > 1 the IP is
     /// flagged as a repeat offender in the decision reason.
     block_counts: HashMap<String, u32>,
+    /// Local IP reputation: per-IP history used for adaptive block TTL.
+    /// Persisted to `ip-reputation.json` every slow-loop tick.
+    ip_reputations: HashMap<String, LocalIpReputation>,
     /// Whether LSM enforcement has been auto-enabled this session.
     lsm_enabled: bool,
     /// Mesh collaborative defense network (None when mesh.enabled = false).
@@ -287,9 +290,9 @@ struct AgentState {
     /// Rate limiter: timestamps of recent block actions (rolling 1-minute window).
     /// Prevents false-positive cascades from blocking too many IPs at once.
     recent_blocks: std::collections::VecDeque<chrono::DateTime<chrono::Utc>>,
-    /// XDP blocklist entries with timestamps for TTL-based expiration.
-    /// Periodically cleaned: IPs older than XDP_BLOCK_TTL_SECS are removed.
-    xdp_block_times: HashMap<String, chrono::DateTime<chrono::Utc>>,
+    /// XDP blocklist entries with timestamps and per-IP TTL for adaptive expiration.
+    /// Periodically cleaned: IPs older than their individual TTL are removed.
+    xdp_block_times: HashMap<String, (chrono::DateTime<chrono::Utc>, i64)>,
     /// AbuseIPDB report queue — IPs are held for ABUSEIPDB_REPORT_DELAY_SECS
     /// before reporting, giving time for false-positive correction.
     abuseipdb_report_queue: Vec<(String, String, String, chrono::DateTime<chrono::Utc>)>,
@@ -308,6 +311,91 @@ struct PendingHoneypotChoice {
     expires_at: chrono::DateTime<chrono::Utc>,
 }
 
+// ---------------------------------------------------------------------------
+// Local IP reputation — adaptive blocking
+// ---------------------------------------------------------------------------
+
+/// Per-IP reputation tracking for adaptive block TTL.
+/// Starts neutral (score 0.0); each incident and block increases the score.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct LocalIpReputation {
+    /// Total incidents involving this IP.
+    total_incidents: u32,
+    /// Total times this IP has been blocked.
+    total_blocks: u32,
+    /// When this IP was first seen by the agent.
+    first_seen: chrono::DateTime<chrono::Utc>,
+    /// When this IP was last seen by the agent.
+    last_seen: chrono::DateTime<chrono::Utc>,
+    /// Reputation score: 0.0 = neutral, higher = worse.
+    /// Incremented by 1.0 per incident, 2.0 per block.
+    reputation_score: f32,
+}
+
+impl LocalIpReputation {
+    fn new() -> Self {
+        let now = chrono::Utc::now();
+        Self {
+            total_incidents: 0,
+            total_blocks: 0,
+            first_seen: now,
+            last_seen: now,
+            reputation_score: 0.0,
+        }
+    }
+
+    /// Record an incident for this IP.
+    fn record_incident(&mut self) {
+        self.total_incidents += 1;
+        self.last_seen = chrono::Utc::now();
+        self.reputation_score += 1.0;
+    }
+
+    /// Record a block action for this IP.
+    fn record_block(&mut self) {
+        self.total_blocks += 1;
+        self.last_seen = chrono::Utc::now();
+        self.reputation_score += 2.0;
+    }
+}
+
+/// Adaptive block TTL based on total_blocks count.
+///   1st block  → 1 hour
+///   2nd block  → 4 hours
+///   3rd block  → 24 hours
+///   4+ blocks  → 7 days
+fn adaptive_block_ttl_secs(total_blocks: u32) -> i64 {
+    match total_blocks {
+        0 | 1 => 3600, // 1 hour
+        2 => 14400,    // 4 hours
+        3 => 86400,    // 24 hours
+        _ => 604800,   // 7 days
+    }
+}
+
+/// Write the in-memory reputation map to `ip-reputation.json` so the dashboard
+/// (which runs in a separate task) can read it without shared state.
+fn persist_ip_reputations(data_dir: &Path, reputations: &HashMap<String, LocalIpReputation>) {
+    let path = data_dir.join("ip-reputation.json");
+    match serde_json::to_string(reputations) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                warn!("failed to write ip-reputation.json: {e}");
+            }
+        }
+        Err(e) => warn!("failed to serialize ip reputations: {e}"),
+    }
+}
+
+/// Load the reputation map from `ip-reputation.json` at startup.
+fn load_ip_reputations(data_dir: &Path) -> HashMap<String, LocalIpReputation> {
+    let path = data_dir.join("ip-reputation.json");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+    serde_json::from_str(&content).unwrap_or_default()
+}
+
 const DECISION_COOLDOWN_SECS: i64 = 3600;
 /// Notification cooldown: suppress duplicate Telegram/Slack/webhook alerts for the
 /// same detector+entity within this window. Prevents alert spam when the same attacker
@@ -315,7 +403,8 @@ const DECISION_COOLDOWN_SECS: i64 = 3600;
 const NOTIFICATION_COOLDOWN_SECS: i64 = 600;
 /// Max block actions per minute — prevents false-positive cascades.
 const MAX_BLOCKS_PER_MINUTE: usize = 20;
-/// XDP blocklist entries expire after this many seconds (default: 24 hours).
+/// Default XDP blocklist TTL (24h) — retained as reference; adaptive TTL now per-IP.
+#[allow(dead_code)]
 const XDP_BLOCK_TTL_SECS: i64 = 86400;
 /// AbuseIPDB reports are delayed by this many seconds to allow false-positive correction.
 const ABUSEIPDB_REPORT_DELAY_SECS: i64 = 300;
@@ -1304,6 +1393,7 @@ async fn main() -> Result<()> {
         circuit_breaker_until: None,
         pending_honeypot_choices: HashMap::new(),
         block_counts: HashMap::new(),
+        ip_reputations: load_ip_reputations(&cli.data_dir),
         lsm_enabled: false,
         mesh: if cfg.mesh.enabled {
             match mesh::MeshIntegration::new(&cfg.mesh, &cli.data_dir) {
@@ -1325,6 +1415,13 @@ async fn main() -> Result<()> {
         narrative_acc: NarrativeAccumulator::default(),
         narrative_incidents_offset: 0,
     };
+
+    if !state.ip_reputations.is_empty() {
+        info!(
+            count = state.ip_reputations.len(),
+            "loaded local IP reputations from disk"
+        );
+    }
 
     if let Some(ref mesh_node) = state.mesh {
         match mesh_node.start_listener().await {
@@ -1493,13 +1590,25 @@ async fn main() -> Result<()> {
                     if state.block_counts.len() > 5000 {
                         state.block_counts.clear();
                     }
+                    // Cap ip_reputations and persist to disk for dashboard
+                    if state.ip_reputations.len() > 10000 {
+                        // Keep only the top 5000 by reputation_score
+                        let mut entries: Vec<_> = state.ip_reputations.drain().collect();
+                        entries.sort_by(|a, b| b.1.reputation_score.partial_cmp(&a.1.reputation_score).unwrap_or(std::cmp::Ordering::Equal));
+                        entries.truncate(5000);
+                        state.ip_reputations = entries.into_iter().collect();
+                    }
+                    persist_ip_reputations(&cli.data_dir, &state.ip_reputations);
 
                     // ── Safeguard: XDP TTL — expire old blocklist entries ──
                     {
-                        let xdp_cutoff = chrono::Utc::now() - chrono::Duration::seconds(XDP_BLOCK_TTL_SECS);
+                        let now_utc = chrono::Utc::now();
                         let expired_ips: Vec<String> = state.xdp_block_times
                             .iter()
-                            .filter(|(_, ts)| **ts < xdp_cutoff)
+                            .filter(|(_, (ts, ttl))| {
+                                let cutoff = *ts + chrono::Duration::seconds(*ttl);
+                                now_utc > cutoff
+                            })
                             .map(|(ip, _)| ip.clone())
                             .collect();
                         for ip in &expired_ips {
@@ -1512,7 +1621,8 @@ async fn main() -> Result<()> {
                                         "key", &b[0].to_string(), &b[1].to_string(),
                                         &b[2].to_string(), &b[3].to_string()])
                                     .output().await;
-                                info!(ip, "XDP TTL expired — removed from blocklist");
+                                let ttl_secs = state.xdp_block_times.get(ip).map(|(_, t)| *t).unwrap_or(0);
+                                info!(ip, ttl_secs, "XDP adaptive TTL expired — removed from blocklist");
                             }
                             state.xdp_block_times.remove(ip);
                         }
@@ -1640,6 +1750,14 @@ async fn main() -> Result<()> {
                     if state.block_counts.len() > 5000 {
                         state.block_counts.clear();
                     }
+                    // Cap ip_reputations and persist to disk for dashboard
+                    if state.ip_reputations.len() > 10000 {
+                        let mut entries: Vec<_> = state.ip_reputations.drain().collect();
+                        entries.sort_by(|a, b| b.1.reputation_score.partial_cmp(&a.1.reputation_score).unwrap_or(std::cmp::Ordering::Equal));
+                        entries.truncate(5000);
+                        state.ip_reputations = entries.into_iter().collect();
+                    }
+                    persist_ip_reputations(&cli.data_dir, &state.ip_reputations);
                     let removed = data_retention::cleanup(&cli.data_dir, &cfg.data);
                     if removed > 0 {
                         info!(removed, "data_retention: cleaned up old files");
@@ -1939,6 +2057,17 @@ async fn process_incidents(
 
     for incident in &new_incidents.entries {
         state.telemetry.observe_incident(incident);
+
+        // Update local IP reputation for every incident that mentions an IP.
+        for entity in &incident.entities {
+            if entity.r#type == innerwarden_core::entities::EntityType::Ip {
+                state
+                    .ip_reputations
+                    .entry(entity.value.clone())
+                    .or_insert_with(LocalIpReputation::new)
+                    .record_incident();
+            }
+        }
 
         let related_incidents = if cfg.correlation.enabled {
             state
@@ -2624,6 +2753,28 @@ async fn process_incidents(
             // reason so it surfaces in the audit trail and notifications.
             let count = state.block_counts.entry(ip.clone()).or_insert(0);
             *count += 1;
+
+            // Update local IP reputation — record incident + block.
+            let rep = state
+                .ip_reputations
+                .entry(ip.clone())
+                .or_insert_with(LocalIpReputation::new);
+            rep.record_incident();
+            rep.record_block();
+            let ttl_secs = adaptive_block_ttl_secs(rep.total_blocks);
+            let ttl_label = match ttl_secs {
+                t if t >= 604800 => format!("{} days", t / 86400),
+                t if t >= 86400 => format!("{} hours", t / 3600),
+                t => format!("{} hours", t / 3600),
+            };
+            info!(
+                ip = %ip,
+                total_blocks = rep.total_blocks,
+                reputation_score = rep.reputation_score,
+                ttl = ttl_label,
+                "adaptive TTL applied"
+            );
+
             if *count > 1 {
                 warn!(
                     ip = %ip,
@@ -2631,8 +2782,8 @@ async fn process_incidents(
                     "repeat offender detected"
                 );
                 decision.reason = format!(
-                    "{} [repeat offender — blocked {} times]",
-                    decision.reason, *count
+                    "{} [repeat offender — blocked {} times, TTL {}]",
+                    decision.reason, *count, ttl_label
                 );
             }
         }
@@ -2912,12 +3063,22 @@ async fn execute_decision(
             }
             state.recent_blocks.push_back(now_utc);
 
+            // ── Adaptive TTL: use local IP reputation to escalate block duration ──
+            let block_ttl_secs = {
+                let total_blocks = state
+                    .ip_reputations
+                    .get(ip.as_str())
+                    .map(|r| r.total_blocks)
+                    .unwrap_or(0);
+                adaptive_block_ttl_secs(total_blocks)
+            };
+
             let ctx = skills::SkillContext {
                 incident: incident.clone(),
                 target_ip: Some(ip.clone()),
                 target_user: None,
                 target_container: None,
-                duration_secs: None,
+                duration_secs: Some(block_ttl_secs as u64),
                 host: incident.host.clone(),
                 data_dir: data_dir.to_path_buf(),
                 honeypot: honeypot_runtime(cfg),
@@ -2933,8 +3094,10 @@ async fn execute_decision(
                 if xdp_result.success {
                     layers_applied.push("XDP");
                     any_success = true;
-                    // Track for TTL expiration
-                    state.xdp_block_times.insert(ip.clone(), chrono::Utc::now());
+                    // Track for TTL expiration (with per-IP adaptive TTL)
+                    state
+                        .xdp_block_times
+                        .insert(ip.clone(), (chrono::Utc::now(), block_ttl_secs));
                 }
             }
 
@@ -5742,6 +5905,7 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            ip_reputations: HashMap::new(),
             lsm_enabled: false,
             mesh: None,
             recent_blocks: std::collections::VecDeque::new(),
@@ -5864,6 +6028,7 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            ip_reputations: HashMap::new(),
             lsm_enabled: false,
             mesh: None,
             recent_blocks: std::collections::VecDeque::new(),
@@ -5961,6 +6126,7 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            ip_reputations: HashMap::new(),
             lsm_enabled: false,
             mesh: None,
             recent_blocks: std::collections::VecDeque::new(),
@@ -6070,6 +6236,7 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            ip_reputations: HashMap::new(),
             lsm_enabled: false,
             mesh: None,
             recent_blocks: std::collections::VecDeque::new(),
@@ -6156,6 +6323,7 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            ip_reputations: HashMap::new(),
             lsm_enabled: false,
             mesh: None,
             recent_blocks: std::collections::VecDeque::new(),
@@ -6254,6 +6422,7 @@ mod tests {
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
+            ip_reputations: HashMap::new(),
             lsm_enabled: false,
             mesh: None,
             recent_blocks: std::collections::VecDeque::new(),

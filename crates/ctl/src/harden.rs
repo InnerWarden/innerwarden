@@ -631,6 +631,451 @@ fn check_services() -> CheckResult {
     }
 }
 
+fn check_crontabs() -> CheckResult {
+    let mut passed = Vec::new();
+    let mut findings = Vec::new();
+    let cat = "Crontabs";
+
+    // Patterns that indicate suspicious crontab entries.
+    let suspicious = |line: &str| -> Option<&'static str> {
+        let lower = line.to_lowercase();
+        // Skip comments and empty lines.
+        let trimmed = lower.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            return None;
+        }
+        // Download + execute: curl/wget piped to sh/bash
+        if (lower.contains("curl") || lower.contains("wget"))
+            && (lower.contains("| sh")
+                || lower.contains("|sh")
+                || lower.contains("| bash")
+                || lower.contains("|bash"))
+        {
+            return Some("download and execute (curl/wget piped to sh/bash)");
+        }
+        // Reverse shell indicators
+        if lower.contains("/dev/tcp") || lower.contains("nc -e") || lower.contains("ncat -e") {
+            return Some("possible reverse shell (nc / /dev/tcp)");
+        }
+        // Base64 decode
+        if lower.contains("base64 -d") || lower.contains("base64 --decode") {
+            return Some("base64 decode (potential obfuscation)");
+        }
+        // Write to /tmp
+        if lower.contains("> /tmp/") || lower.contains(">/tmp/") {
+            return Some("writes to /tmp (common staging directory)");
+        }
+        None
+    };
+
+    let mut scanned: usize = 0;
+
+    // Helper: scan all files in a directory.
+    let mut scan_dir = |dir: &str| {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                if let Ok(contents) = fs::read_to_string(&path) {
+                    scanned += 1;
+                    for (lineno, line) in contents.lines().enumerate() {
+                        if let Some(reason) = suspicious(line) {
+                            findings.push(Finding {
+                                category: cat,
+                                severity: Severity::Medium,
+                                title: format!("{}:{} — {}", path.display(), lineno + 1, reason),
+                                fix: format!(
+                                    "Review the entry in {} and remove it if unexpected",
+                                    path.display()
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    // User crontabs
+    scan_dir("/var/spool/cron/crontabs");
+    // System cron fragments
+    scan_dir("/etc/cron.d");
+
+    // /etc/crontab (single file)
+    if let Ok(contents) = fs::read_to_string("/etc/crontab") {
+        scanned += 1;
+        for (lineno, line) in contents.lines().enumerate() {
+            if let Some(reason) = suspicious(line) {
+                findings.push(Finding {
+                    category: cat,
+                    severity: Severity::Medium,
+                    title: format!("/etc/crontab:{} — {}", lineno + 1, reason),
+                    fix: "Review the entry in /etc/crontab and remove it if unexpected".into(),
+                });
+            }
+        }
+    }
+
+    if findings.is_empty() {
+        if scanned > 0 {
+            passed.push(format!(
+                "Scanned {scanned} crontab file(s) — no suspicious entries"
+            ));
+        } else {
+            passed.push("No crontab files found to scan".into());
+        }
+    }
+
+    CheckResult {
+        category: cat,
+        passed,
+        findings,
+    }
+}
+
+fn check_kernel_modules() -> CheckResult {
+    let mut passed = Vec::new();
+    let mut findings = Vec::new();
+    let cat = "Kernel Modules";
+
+    // Known rootkit modules — always flag as Critical.
+    let rootkit_modules: &[&str] = &[
+        "diamorphine",
+        "reptile",
+        "jynx",
+        "adore",
+        "knark",
+        "suterusu",
+    ];
+
+    // Known-good modules (common, legitimate kernel modules).
+    let known_good: &[&str] = &[
+        // Filesystems
+        "ext4",
+        "xfs",
+        "btrfs",
+        "vfat",
+        "fat",
+        "nfs",
+        "nfsd",
+        "cifs",
+        "fuse",
+        "overlay",
+        "isofs",
+        "squashfs",
+        "udf",
+        "ntfs",
+        "ntfs3",
+        // Networking
+        "ip_tables",
+        "ip6_tables",
+        "iptable_filter",
+        "iptable_nat",
+        "iptable_mangle",
+        "nf_conntrack",
+        "nf_nat",
+        "nf_tables",
+        "nft_chain_nat",
+        "nft_compat",
+        "nf_conntrack_ftp",
+        "nf_nat_ftp",
+        "nf_conntrack_netlink",
+        "nf_defrag_ipv4",
+        "nf_defrag_ipv6",
+        "nf_reject_ipv4",
+        "nf_reject_ipv6",
+        "nft_reject",
+        "br_netfilter",
+        "bridge",
+        "stp",
+        "llc",
+        "veth",
+        "tun",
+        "tap",
+        "bonding",
+        "8021q",
+        "vxlan",
+        "geneve",
+        "wireguard",
+        "openvswitch",
+        "tcp_bbr",
+        "tcp_cubic",
+        // Block / storage
+        "dm_mod",
+        "dm_crypt",
+        "dm_mirror",
+        "dm_snapshot",
+        "dm_thin_pool",
+        "dm_zero",
+        "dm_log",
+        "dm_region_hash",
+        "raid0",
+        "raid1",
+        "raid10",
+        "raid456",
+        "md_mod",
+        "loop",
+        "nbd",
+        "scsi_mod",
+        "sd_mod",
+        "sr_mod",
+        "sg",
+        "ahci",
+        "libahci",
+        "libata",
+        "virtio_blk",
+        "virtio_scsi",
+        "nvme",
+        "nvme_core",
+        // Virtio / KVM / hypervisor
+        "virtio",
+        "virtio_pci",
+        "virtio_net",
+        "virtio_ring",
+        "virtio_balloon",
+        "virtio_console",
+        "virtio_gpu",
+        "virtio_mmio",
+        "virtio_rng",
+        "kvm",
+        "kvm_intel",
+        "kvm_amd",
+        "vhost",
+        "vhost_net",
+        "vhost_vsock",
+        "vmw_balloon",
+        "vmw_vmci",
+        "vmw_vsock_vmci_transport",
+        "vmxnet3",
+        "hv_vmbus",
+        "hv_storvsc",
+        "hv_netvsc",
+        "hv_utils",
+        "hv_balloon",
+        "xen_blkfront",
+        "xen_netfront",
+        "xen_pcifront",
+        // Input / HID
+        "hid",
+        "hid_generic",
+        "usbhid",
+        "evdev",
+        "input_leds",
+        "psmouse",
+        "i2c_hid",
+        "i2c_core",
+        // USB
+        "usbcore",
+        "usb_common",
+        "ehci_hcd",
+        "ehci_pci",
+        "ohci_hcd",
+        "ohci_pci",
+        "uhci_hcd",
+        "xhci_hcd",
+        "xhci_pci",
+        // Graphics / DRM
+        "drm",
+        "drm_kms_helper",
+        "fb_sys_fops",
+        "syscopyarea",
+        "sysfillrect",
+        "sysimgblt",
+        "i915",
+        "amdgpu",
+        "nouveau",
+        "bochs",
+        "cirrus",
+        "qxl",
+        // Sound
+        "snd",
+        "snd_pcm",
+        "snd_timer",
+        "snd_hda_intel",
+        "snd_hda_core",
+        "snd_hda_codec",
+        "snd_hda_codec_generic",
+        "snd_hda_codec_hdmi",
+        "snd_hda_codec_realtek",
+        "snd_hwdep",
+        "soundcore",
+        // Crypto
+        "aes_x86_64",
+        "aesni_intel",
+        "aes_generic",
+        "sha256_generic",
+        "sha256_ssse3",
+        "sha512_generic",
+        "sha512_ssse3",
+        "sha1_generic",
+        "sha1_ssse3",
+        "crc32c_intel",
+        "crc32_pclmul",
+        "crct10dif_pclmul",
+        "ghash_clmulni_intel",
+        "poly1305_x86_64",
+        "chacha20_x86_64",
+        "cryptd",
+        "crypto_simd",
+        "authenc",
+        "echainiv",
+        // ACPI / power / platform
+        "acpi_cpufreq",
+        "battery",
+        "button",
+        "thermal",
+        "processor",
+        "intel_rapl_msr",
+        "intel_rapl_common",
+        "intel_pstate",
+        // Misc common
+        "joydev",
+        "serio_raw",
+        "pcspkr",
+        "lp",
+        "ppdev",
+        "parport",
+        "parport_pc",
+        "nls_utf8",
+        "nls_iso8859_1",
+        "nls_cp437",
+        "configfs",
+        "efivarfs",
+        "autofs4",
+        "sunrpc",
+        "rpcsec_gss_krb5",
+        "cuse",
+        "vboxguest",
+        "vboxsf",
+        "vboxvideo",
+        "ip_vs",
+        "ip_vs_rr",
+        "ip_vs_wrr",
+        "ip_vs_sh",
+        "xt_conntrack",
+        "xt_MASQUERADE",
+        "xt_addrtype",
+        "xt_comment",
+        "xt_mark",
+        "xt_nat",
+        "xt_tcpudp",
+        "xt_multiport",
+        "xt_state",
+        "xt_LOG",
+        "xt_limit",
+        "xt_recent",
+        "xt_set",
+        "ip_set",
+        "ip_set_hash_ip",
+        "ip_set_hash_net",
+        "cls_cgroup",
+        "sch_fq_codel",
+        "sch_htb",
+        "rng_core",
+        "tpm",
+        "tpm_crb",
+        "tpm_tis",
+        "tpm_tis_core",
+        "lz4",
+        "lz4_compress",
+        "lzo",
+        "lzo_compress",
+        "lzo_decompress",
+        "zstd_compress",
+        "zstd_decompress",
+        "deflate",
+        "zlib_deflate",
+        "zlib_inflate",
+        "af_packet",
+        "unix",
+        "ipv6",
+        "mousedev",
+        "mac_hid",
+        "msr",
+        "cpuid",
+        "iscsi_tcp",
+        "libiscsi",
+        "libiscsi_tcp",
+        "scsi_transport_iscsi",
+        "ceph",
+        "libceph",
+        "rbd",
+        // Docker / containerd common
+        "xt_connmark",
+        "xt_REDIRECT",
+        "nf_log_syslog",
+        "nf_log_ipv4",
+    ];
+
+    match Command::new("lsmod").output() {
+        Ok(out) => {
+            let output = String::from_utf8_lossy(&out.stdout);
+            let mut unknown_modules: Vec<String> = Vec::new();
+
+            for line in output.lines().skip(1) {
+                // lsmod format: module_name  size  used_by
+                let module = match line.split_whitespace().next() {
+                    Some(m) => m,
+                    None => continue,
+                };
+
+                // Check rootkit modules first (Critical).
+                if rootkit_modules
+                    .iter()
+                    .any(|r| module.eq_ignore_ascii_case(r))
+                {
+                    findings.push(Finding {
+                        category: cat,
+                        severity: Severity::Critical,
+                        title: format!("Known rootkit module loaded: {module}"),
+                        fix: format!(
+                            "Investigate immediately — remove with: sudo rmmod {module} && audit the system"
+                        ),
+                    });
+                    continue;
+                }
+
+                // Flag unknown modules as Low.
+                if !known_good.contains(&module) {
+                    unknown_modules.push(module.to_string());
+                }
+            }
+
+            if !unknown_modules.is_empty() {
+                findings.push(Finding {
+                    category: cat,
+                    severity: Severity::Low,
+                    title: format!("{} unusual kernel module(s) loaded", unknown_modules.len()),
+                    fix: format!(
+                        "Review if expected: {}",
+                        unknown_modules
+                            .iter()
+                            .take(10)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                });
+            }
+
+            if findings.is_empty() {
+                passed.push("All loaded kernel modules are known-good".into());
+            }
+        }
+        Err(_) => {
+            passed.push("lsmod not available (skipped)".into());
+        }
+    }
+
+    CheckResult {
+        category: cat,
+        passed,
+        findings,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Main command
 // ---------------------------------------------------------------------------
@@ -649,6 +1094,8 @@ pub fn cmd_harden(verbose: bool) -> Result<()> {
         check_updates(),
         check_docker(),
         check_services(),
+        check_crontabs(),
+        check_kernel_modules(),
     ];
 
     let mut total_findings = 0;

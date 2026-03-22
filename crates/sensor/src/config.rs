@@ -222,6 +222,8 @@ pub struct DetectorsConfig {
     #[serde(default)]
     pub integrity_alert: IntegrityAlertConfig,
     #[serde(default)]
+    pub log_tampering: LogTamperingConfig,
+    #[serde(default)]
     pub osquery_anomaly: OsqueryAnomalyConfig,
 }
 
@@ -423,6 +425,23 @@ impl Default for IntegrityAlertConfig {
         Self {
             enabled: false,
             cooldown_seconds: default_integrity_alert_cooldown_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LogTamperingConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_log_tampering_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for LogTamperingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_log_tampering_cooldown_seconds(),
         }
     }
 }
@@ -661,6 +680,10 @@ fn default_docker_anomaly_window_seconds() -> u64 {
 
 fn default_integrity_alert_cooldown_seconds() -> u64 {
     3600
+}
+
+fn default_log_tampering_cooldown_seconds() -> u64 {
+    600
 }
 
 pub fn load(path: &str) -> Result<Config> {

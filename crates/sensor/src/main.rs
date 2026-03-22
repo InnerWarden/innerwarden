@@ -24,7 +24,9 @@ use detectors::credential_stuffing::CredentialStuffingDetector;
 use detectors::distributed_ssh::DistributedSshDetector;
 use detectors::docker_anomaly::DockerAnomalyDetector;
 use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
+use detectors::fileless::FilelessDetector;
 use detectors::integrity_alert::IntegrityAlertDetector;
+use detectors::log_tampering::LogTamperingDetector;
 use detectors::osquery_anomaly::OsqueryAnomalyDetector;
 use detectors::port_scan::PortScanDetector;
 use detectors::privesc::PrivescDetector;
@@ -64,6 +66,7 @@ struct DetectorSet {
     suricata_alert: Option<SuricataAlertDetector>,
     docker_anomaly: Option<DockerAnomalyDetector>,
     integrity_alert: Option<IntegrityAlertDetector>,
+    log_tampering: Option<LogTamperingDetector>,
     osquery_anomaly: Option<OsqueryAnomalyDetector>,
     distributed_ssh: Option<DistributedSshDetector>,
     suspicious_login: Option<SuspiciousLoginDetector>,
@@ -71,6 +74,7 @@ struct DetectorSet {
     process_tree: Option<ProcessTreeDetector>,
     container_escape: Option<ContainerEscapeDetector>,
     privesc: Option<PrivescDetector>,
+    fileless: Option<FilelessDetector>,
 }
 
 #[derive(Default)]
@@ -225,6 +229,14 @@ async fn main() -> Result<()> {
         );
         IntegrityAlertDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
     });
+    let log_tampering_detector = cfg.detectors.log_tampering.enabled.then(|| {
+        let d = &cfg.detectors.log_tampering;
+        info!(
+            cooldown_seconds = d.cooldown_seconds,
+            "log_tampering detector enabled (eBPF openat log file monitoring)"
+        );
+        LogTamperingDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+    });
     let osquery_anomaly_detector = cfg.detectors.osquery_anomaly.enabled.then(|| {
         let d = &cfg.detectors.osquery_anomaly;
         info!(
@@ -254,6 +266,7 @@ async fn main() -> Result<()> {
         suricata_alert: suricata_alert_detector,
         docker_anomaly: docker_anomaly_detector,
         integrity_alert: integrity_alert_detector,
+        log_tampering: log_tampering_detector,
         osquery_anomaly: osquery_anomaly_detector,
         distributed_ssh: distributed_ssh_detector,
         suspicious_login: cfg.detectors.ssh_bruteforce.enabled.then(|| {
@@ -275,6 +288,10 @@ async fn main() -> Result<()> {
         privesc: Some({
             info!("privesc detector enabled (eBPF commit_creds kprobe)");
             PrivescDetector::new(&cfg.agent.host_id, 600)
+        }),
+        fileless: Some({
+            info!("fileless detector enabled (eBPF memfd/fd/deleted binary detection)");
+            FilelessDetector::new(&cfg.agent.host_id, 600)
         }),
     };
 
@@ -808,6 +825,12 @@ fn process_event(
         }
     }
 
+    if let Some(ref mut det) = detectors.log_tampering {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
     if let Some(ref mut det) = detectors.osquery_anomaly {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
@@ -845,6 +868,12 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.privesc {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.fileless {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }
