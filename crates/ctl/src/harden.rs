@@ -637,11 +637,8 @@ fn check_services() -> CheckResult {
 
 pub fn cmd_harden(verbose: bool) -> Result<()> {
     println!();
-    println!(
-        "  \x1b[1m\x1b[36m{}\x1b[0m",
-        "Inner Warden — Security Hardening Advisor"
-    );
-    println!("  \x1b[90m{}\x1b[0m", "Scanning system configuration...");
+    println!("  \x1b[1m\x1b[36mInner Warden — Security Hardening Advisor\x1b[0m");
+    println!("  \x1b[90mScanning system configuration...\x1b[0m");
     println!();
 
     let checks = vec![
