@@ -37,9 +37,11 @@ You should be comfortable with:
 This is **not** a plug-and-play consumer security product. Misconfigured response skills can lock out legitimate users or disrupt services. If you are unfamiliar with Linux system administration, start with the observe-only mode and study the logs before enabling any response capabilities.
 
 <p align="center">
-  <a href="https://vimeo.com/1175992244">▶ Watch the 3-minute explainer video</a>
-  &nbsp;·&nbsp;
-  <a href="https://innerwarden.com/live">Live attack feed</a>
+  <a href="https://vimeo.com/1175992244">
+    <img src="docs/images/video-thumb.jpg" alt="▶ Watch the 3-minute explainer video" width="820">
+  </a>
+  <br>
+  <sub>▶ Watch the explainer video &nbsp;·&nbsp; <a href="https://innerwarden.com/live">Live attack feed</a></sub>
 </p>
 
 <p align="center">
