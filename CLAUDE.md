@@ -67,7 +67,8 @@ abuseipdb.rs   geoip.rs         fail2ban.rs
 ```
 main.rs              capability.rs        config_editor.rs
 preflight.rs         sudoers.rs           systemd.rs
-scan.rs              module_manifest.rs   module_validator.rs
+scan.rs              harden.rs            module_manifest.rs
+module_validator.rs
 capabilities/
   ai.rs   block_ip.rs   sudo_protection.rs   shell_audit.rs   search_protection.rs
 ```
