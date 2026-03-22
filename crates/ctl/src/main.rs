@@ -553,6 +553,21 @@ enum ConfigureCommand {
         #[arg(long)]
         dry_run: Option<String>,
     },
+
+    /// Set notification sensitivity level.
+    ///
+    /// Controls how often you get alerts:
+    ///   quiet   — only Critical (server compromised, privesc)
+    ///   normal  — High + Critical (confirmed attacks, blocks)
+    ///   verbose — everything Medium+ (includes mesh signals, watchlist)
+    ///
+    /// Examples:
+    ///   innerwarden configure sensitivity quiet
+    ///   innerwarden configure sensitivity normal
+    Sensitivity {
+        /// Level: quiet, normal, or verbose
+        level: String,
+    },
 }
 
 /// Notification channel setup sub-commands.
@@ -1028,6 +1043,48 @@ fn main() -> Result<()> {
                 println!("  [ok] innerwarden-agent restarted");
                 Ok(())
             }
+            Some(ConfigureCommand::Sensitivity { ref level }) => {
+                if !cli.dry_run {
+                    require_sudo(&cli);
+                }
+                let min_severity = match level.to_lowercase().as_str() {
+                    "quiet" => "critical",
+                    "normal" => "high",
+                    "verbose" => "medium",
+                    _ => {
+                        println!(
+                            "Unknown level '{}'. Choose: quiet, normal, or verbose",
+                            level
+                        );
+                        return Ok(());
+                    }
+                };
+                config_editor::write_str(
+                    &cli.agent_config,
+                    "telegram",
+                    "min_severity",
+                    min_severity,
+                )?;
+                config_editor::write_str(
+                    &cli.agent_config,
+                    "webhook",
+                    "min_severity",
+                    min_severity,
+                )?;
+                println!("✅ Notification sensitivity: {level}");
+                println!("   Telegram + webhook min_severity = \"{min_severity}\"");
+                match level.to_lowercase().as_str() {
+                    "quiet" => println!("   You'll only be notified for Critical events."),
+                    "normal" => println!("   You'll be notified for High and Critical events."),
+                    "verbose" => {
+                        println!("   You'll be notified for Medium, High, and Critical events.")
+                    }
+                    _ => {}
+                }
+                systemd::restart_service("innerwarden-agent", false)?;
+                println!("   Agent restarted.");
+                Ok(())
+            }
         },
         Command::Notify { ref command } => match command {
             None => cmd_configure_menu(&cli),
@@ -1405,13 +1462,27 @@ fn read_last_incident_summary(path: &std::path::Path) -> Option<(String, String)
     let v: serde_json::Value = serde_json::from_str(last_line).ok()?;
     let title = v["title"].as_str()?.to_string();
     let ts = v["ts"].as_str()?;
-    // Parse ISO8601 and format as HH:MM
-    let time_str = if ts.len() >= 16 {
-        ts[11..16].to_string()
+
+    // Calculate "time ago"
+    let time_ago = if let Ok(incident_time) = chrono::DateTime::parse_from_rfc3339(ts) {
+        let diff = chrono::Utc::now() - incident_time.with_timezone(&chrono::Utc);
+        let mins = diff.num_minutes();
+        if mins < 1 {
+            "just now".to_string()
+        } else if mins < 60 {
+            format!("{mins}m ago")
+        } else if mins < 1440 {
+            format!("{}h ago", mins / 60)
+        } else {
+            format!("{}d ago", mins / 1440)
+        }
+    } else if ts.len() >= 16 {
+        format!("{} UTC", &ts[11..16])
     } else {
         ts.to_string()
     };
-    Some((title, format!("{time_str} UTC")))
+
+    Some((title, time_ago))
 }
 
 fn cmd_enable(
