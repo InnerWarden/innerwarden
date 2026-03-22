@@ -201,7 +201,7 @@ impl TelegramClient {
         target: &str,
         incident_title: &str,
         confidence: f32,
-        host: &str,
+        _host: &str,
         dry_run: bool,
         reputation: Option<&crate::abuseipdb::IpReputation>,
         geo: Option<&crate::geoip::GeoInfo>,
@@ -236,13 +236,19 @@ impl TelegramClient {
 
         let text = if dry_run {
             format!(
-                "🧪 <b>Simulation</b> — <b>{host}</b>\n\
+                "🧪 <b>Simulation</b>\n\
                  Would've {action_label} <code>{target}</code>{enrichment}\n\
                  <i>{incident_title}</i>\n\
                  Confidence: {pct}% — dry-run, no real action.\n\
                  <i>Want me to start dropping these for real? Enable live mode.</i>{cf_line}",
-                host = escape_html(host),
                 target = escape_html(target),
+                incident_title = escape_html(incident_title),
+            )
+        } else if action_label.to_lowercase().contains("ignore") {
+            format!(
+                "📝 <b>Analyzed &amp; dismissed</b>\n\
+                 <i>{incident_title}</i>\n\
+                 Confidence: {pct}% — No action needed.{enrichment}",
                 incident_title = escape_html(incident_title),
             )
         } else {
@@ -253,11 +259,10 @@ impl TelegramClient {
                 _ => "Contained — keeping eyes on it.",
             };
             format!(
-                "🔥 <b>Target eliminated</b> — <b>{host}</b>\n\
+                "🔥 <b>Threat neutralized</b>\n\
                  {action_label} <code>{target}</code>{enrichment}\n\
                  <i>{incident_title}</i>\n\
                  Confidence: {pct}% — {kill_quip}{cf_line}",
-                host = escape_html(host),
                 target = escape_html(target),
                 incident_title = escape_html(incident_title),
             )
@@ -374,7 +379,7 @@ impl TelegramClient {
         };
 
         let text = format!(
-            "{source_icon} {sev} — <b>{host}</b>\n\
+            "{source_icon} {sev}\n\
              <b>{title}</b>\n\
              {entity_line}\n\
              \n\
@@ -382,7 +387,6 @@ impl TelegramClient {
              <code>{action_plain}</code>\n\
              \n\
              Your call, operator — {expires_label} to respond.",
-            host = escape_html(&incident.host),
             title = escape_html(&incident.title),
             action_plain = escape_html(&action_plain),
             entity_line = entity_line,
@@ -1216,13 +1220,12 @@ fn format_incident_message(
     };
 
     format!(
-        "{source_icon} {prefix_line}{sev} — <b>{host}</b>\n\
+        "{source_icon} {prefix_line}{sev}\n\
          <b>{title}</b>\n\
          {entity_line}\n\
          <i>{summary}</i>\n\
          \n\
          {cta}{link_line}",
-        host = escape_html(&incident.host),
         title = escape_html(&incident.title),
         summary = escape_html(&summary_trunc),
         entity_line = entity_line,
