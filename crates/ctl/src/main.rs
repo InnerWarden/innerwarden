@@ -4465,9 +4465,13 @@ fn cmd_configure_webhook(
         u.to_string()
     } else {
         println!("InnerWarden — Webhook setup\n");
-        println!("Webhooks send a JSON POST to your endpoint for every alert.");
-        println!("Works with Zapier, Make (Integromat), n8n, custom APIs, and more.\n");
-        let u = prompt("Webhook URL (e.g. https://hooks.example.com/notify)")?;
+        println!("Sends a JSON POST to your endpoint for every alert.\n");
+        println!("Works with:");
+        println!("  PagerDuty, Opsgenie, Discord, Microsoft Teams, Google Chat,");
+        println!("  DingTalk, Feishu/Lark, WeCom, n8n, Zapier, Make, Home Assistant\n");
+        println!("Tip: for PagerDuty, set format later with:");
+        println!("  innerwarden configure webhook --format pagerduty\n");
+        let u = prompt("Webhook URL")?;
         if u.is_empty() {
             anyhow::bail!("URL cannot be empty");
         }
