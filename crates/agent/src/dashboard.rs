@@ -26,6 +26,7 @@ use tracing::{info, warn};
 
 use crate::correlation::build_clusters;
 use crate::decisions::DecisionEntry;
+use crate::mitre;
 use crate::report::{self as report_mod, TrialReport};
 use crate::telemetry::TelemetrySnapshot;
 use innerwarden_core::entities::{EntityRef, EntityType};
@@ -753,6 +754,7 @@ pub async fn serve(
         .route("/api/live-feed/stream", get(api_live_feed_stream))
         .route("/api/live-feed/geoip", get(api_live_feed_geoip))
         .route("/api/live-feed/honeypot", get(api_live_feed_honeypot))
+        .route("/api/live-feed/mitre", get(api_live_feed_mitre))
         .layer(middleware::from_fn(cors_middleware))
         .with_state(state);
 
@@ -1136,6 +1138,14 @@ struct LiveFeedReputation {
     last_seen: String,
 }
 
+/// MITRE ATT&CK annotation attached to live-feed items.
+#[derive(Serialize, Clone)]
+struct LiveFeedMitre {
+    tactic: String,
+    technique_id: String,
+    technique_name: String,
+}
+
 /// Item returned by the public live feed.
 #[derive(Serialize)]
 struct LiveFeedItem {
@@ -1149,6 +1159,9 @@ struct LiveFeedItem {
     /// Local IP reputation data (present when the IP has been seen before).
     #[serde(skip_serializing_if = "Option::is_none")]
     reputation: Option<LiveFeedReputation>,
+    /// MITRE ATT&CK mapping derived from the detector name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mitre: Option<LiveFeedMitre>,
 }
 
 /// On-disk representation of LocalIpReputation (written by agent main loop).
@@ -1232,6 +1245,12 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResp
                     last_seen: r.last_seen.to_rfc3339(),
                 })
             });
+            let detector = mitre::detector_from_incident_id(&inc.incident_id);
+            let mitre_info = mitre::map_detector(detector).map(|m| LiveFeedMitre {
+                tactic: m.tactic.to_string(),
+                technique_id: m.technique_id.to_string(),
+                technique_name: m.technique_name.to_string(),
+            });
             LiveFeedItem {
                 ts: inc.ts.to_rfc3339(),
                 severity: format!("{:?}", inc.severity).to_lowercase(),
@@ -1241,6 +1260,7 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResp
                 confidence: dec.map(|d| d.confidence),
                 reason: dec.map(|d| d.reason.clone()),
                 reputation,
+                mitre: mitre_info,
             }
         })
         .collect();
@@ -1387,6 +1407,68 @@ async fn api_live_feed_honeypot(State(state): State<DashboardState>) -> Json<Vec
     }
 
     Json(sessions)
+}
+
+// ─── MITRE ATT&CK summary endpoint ─────────────────────────────────────────
+
+/// A single technique entry inside a tactic summary.
+#[derive(Serialize)]
+struct MitreTechniqueSummary {
+    id: String,
+    name: String,
+    count: usize,
+}
+
+/// A tactic summary with aggregated technique counts.
+#[derive(Serialize)]
+struct MitreTacticSummary {
+    tactic: String,
+    count: usize,
+    techniques: Vec<MitreTechniqueSummary>,
+}
+
+/// Top-level response for `/api/live-feed/mitre`.
+#[derive(Serialize)]
+struct MitreSummaryResponse {
+    tactics: Vec<MitreTacticSummary>,
+}
+
+/// `GET /api/live-feed/mitre` — MITRE ATT&CK tactic/technique summary for today.
+async fn api_live_feed_mitre(State(state): State<DashboardState>) -> Json<MitreSummaryResponse> {
+    let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let incidents = read_jsonl::<Incident>(&dated_path(&state.data_dir, "incidents", &date));
+
+    // tactic -> (technique_id, technique_name) -> count
+    let mut tactic_map: BTreeMap<String, BTreeMap<(String, String), usize>> = BTreeMap::new();
+
+    for inc in &incidents {
+        let detector = mitre::detector_from_incident_id(&inc.incident_id);
+        if let Some(m) = mitre::map_detector(detector) {
+            let techniques = tactic_map.entry(m.tactic.to_string()).or_default();
+            *techniques
+                .entry((m.technique_id.to_string(), m.technique_name.to_string()))
+                .or_insert(0) += 1;
+        }
+    }
+
+    let tactics: Vec<MitreTacticSummary> = tactic_map
+        .into_iter()
+        .map(|(tactic, techniques_map)| {
+            let mut techniques: Vec<MitreTechniqueSummary> = techniques_map
+                .into_iter()
+                .map(|((id, name), count)| MitreTechniqueSummary { id, name, count })
+                .collect();
+            techniques.sort_by(|a, b| b.count.cmp(&a.count));
+            let count = techniques.iter().map(|t| t.count).sum();
+            MitreTacticSummary {
+                tactic,
+                count,
+                techniques,
+            }
+        })
+        .collect();
+
+    Json(MitreSummaryResponse { tactics })
 }
 
 #[derive(Deserialize)]
