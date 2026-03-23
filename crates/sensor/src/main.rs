@@ -20,27 +20,40 @@ use collectors::{
 };
 use detectors::c2_callback::C2CallbackDetector;
 use detectors::container_escape::ContainerEscapeDetector;
+use detectors::credential_harvest::CredentialHarvestDetector;
 use detectors::credential_stuffing::CredentialStuffingDetector;
+use detectors::crontab_persistence::CrontabPersistenceDetector;
 use detectors::crypto_miner::CryptoMinerDetector;
+use detectors::data_exfiltration::DataExfiltrationDetector;
 use detectors::distributed_ssh::DistributedSshDetector;
 use detectors::dns_tunneling::DnsTunnelingDetector;
 use detectors::docker_anomaly::DockerAnomalyDetector;
 use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
 use detectors::fileless::FilelessDetector;
 use detectors::integrity_alert::IntegrityAlertDetector;
+use detectors::kernel_module_load::KernelModuleLoadDetector;
 use detectors::lateral_movement::LateralMovementDetector;
 use detectors::log_tampering::LogTamperingDetector;
 use detectors::osquery_anomaly::OsqueryAnomalyDetector;
+use detectors::outbound_anomaly::OutboundAnomalyDetector;
 use detectors::port_scan::PortScanDetector;
 use detectors::privesc::PrivescDetector;
+use detectors::process_injection::ProcessInjectionDetector;
 use detectors::process_tree::ProcessTreeDetector;
+use detectors::ransomware::RansomwareDetector;
+use detectors::reverse_shell::ReverseShellDetector;
+use detectors::rootkit::RootkitDetector;
 use detectors::search_abuse::SearchAbuseDetector;
 use detectors::ssh_bruteforce::SshBruteforceDetector;
+use detectors::ssh_key_injection::SshKeyInjectionDetector;
 use detectors::sudo_abuse::SudoAbuseDetector;
 use detectors::suricata_alert::SuricataAlertDetector;
 use detectors::suspicious_login::SuspiciousLoginDetector;
+use detectors::systemd_persistence::SystemdPersistenceDetector;
 use detectors::user_agent_scanner::UserAgentScannerDetector;
+use detectors::user_creation::UserCreationDetector;
 use detectors::web_scan::WebScanDetector;
+use detectors::web_shell::WebShellDetector;
 use sinks::{jsonl::JsonlWriter, state::State};
 use tokio::sync::mpsc;
 use tokio::time;
@@ -81,6 +94,19 @@ struct DetectorSet {
     dns_tunneling: Option<DnsTunnelingDetector>,
     lateral_movement: Option<LateralMovementDetector>,
     crypto_miner: Option<CryptoMinerDetector>,
+    outbound_anomaly: Option<OutboundAnomalyDetector>,
+    rootkit: Option<RootkitDetector>,
+    reverse_shell: Option<ReverseShellDetector>,
+    ssh_key_injection: Option<SshKeyInjectionDetector>,
+    web_shell: Option<WebShellDetector>,
+    kernel_module_load: Option<KernelModuleLoadDetector>,
+    crontab_persistence: Option<CrontabPersistenceDetector>,
+    data_exfiltration: Option<DataExfiltrationDetector>,
+    process_injection: Option<ProcessInjectionDetector>,
+    user_creation: Option<UserCreationDetector>,
+    systemd_persistence: Option<SystemdPersistenceDetector>,
+    ransomware: Option<RansomwareDetector>,
+    credential_harvest: Option<CredentialHarvestDetector>,
 }
 
 #[derive(Default)]
@@ -338,6 +364,140 @@ async fn main() -> Result<()> {
                 "crypto_miner detector enabled"
             );
             CryptoMinerDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        outbound_anomaly: cfg.detectors.outbound_anomaly.enabled.then(|| {
+            let d = &cfg.detectors.outbound_anomaly;
+            info!(
+                connection_flood_threshold = d.connection_flood_threshold,
+                port_spray_threshold = d.port_spray_threshold,
+                udp_flood_threshold = d.udp_flood_threshold,
+                fanout_threshold = d.fanout_threshold,
+                window_seconds = d.window_seconds,
+                cooldown_seconds = d.cooldown_seconds,
+                "outbound_anomaly detector enabled"
+            );
+            OutboundAnomalyDetector::new(
+                &cfg.agent.host_id,
+                d.connection_flood_threshold,
+                d.port_spray_threshold,
+                d.udp_flood_threshold,
+                d.fanout_threshold,
+                d.window_seconds,
+                d.cooldown_seconds,
+            )
+        }),
+        rootkit: cfg.detectors.rootkit.enabled.then(|| {
+            let d = &cfg.detectors.rootkit;
+            info!(
+                check_interval_seconds = d.check_interval_seconds,
+                cooldown_seconds = d.cooldown_seconds,
+                "rootkit detector enabled"
+            );
+            RootkitDetector::new(
+                &cfg.agent.host_id,
+                d.check_interval_seconds,
+                d.cooldown_seconds,
+            )
+        }),
+        reverse_shell: cfg.detectors.reverse_shell.enabled.then(|| {
+            let d = &cfg.detectors.reverse_shell;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "reverse_shell detector enabled"
+            );
+            ReverseShellDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        ssh_key_injection: cfg.detectors.ssh_key_injection.enabled.then(|| {
+            let d = &cfg.detectors.ssh_key_injection;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "ssh_key_injection detector enabled"
+            );
+            SshKeyInjectionDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        web_shell: cfg.detectors.web_shell.enabled.then(|| {
+            let d = &cfg.detectors.web_shell;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "web_shell detector enabled"
+            );
+            WebShellDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        kernel_module_load: cfg.detectors.kernel_module_load.enabled.then(|| {
+            let d = &cfg.detectors.kernel_module_load;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "kernel_module_load detector enabled"
+            );
+            KernelModuleLoadDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        crontab_persistence: cfg.detectors.crontab_persistence.enabled.then(|| {
+            let d = &cfg.detectors.crontab_persistence;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "crontab_persistence detector enabled"
+            );
+            CrontabPersistenceDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        data_exfiltration: cfg.detectors.data_exfiltration.enabled.then(|| {
+            let d = &cfg.detectors.data_exfiltration;
+            info!(
+                correlation_window_seconds = d.correlation_window_seconds,
+                cooldown_seconds = d.cooldown_seconds,
+                "data_exfiltration detector enabled"
+            );
+            DataExfiltrationDetector::new(
+                &cfg.agent.host_id,
+                d.correlation_window_seconds,
+                d.cooldown_seconds,
+            )
+        }),
+        process_injection: cfg.detectors.process_injection.enabled.then(|| {
+            let d = &cfg.detectors.process_injection;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "process_injection detector enabled"
+            );
+            ProcessInjectionDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        user_creation: cfg.detectors.user_creation.enabled.then(|| {
+            let d = &cfg.detectors.user_creation;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "user_creation detector enabled"
+            );
+            UserCreationDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        systemd_persistence: cfg.detectors.systemd_persistence.enabled.then(|| {
+            let d = &cfg.detectors.systemd_persistence;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "systemd_persistence detector enabled"
+            );
+            SystemdPersistenceDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        ransomware: cfg.detectors.ransomware.enabled.then(|| {
+            let d = &cfg.detectors.ransomware;
+            info!(
+                file_threshold = d.file_threshold,
+                window_seconds = d.window_seconds,
+                cooldown_seconds = d.cooldown_seconds,
+                "ransomware detector enabled"
+            );
+            RansomwareDetector::new(
+                &cfg.agent.host_id,
+                d.file_threshold,
+                d.window_seconds,
+                d.cooldown_seconds,
+            )
+        }),
+        credential_harvest: cfg.detectors.credential_harvest.enabled.then(|| {
+            let d = &cfg.detectors.credential_harvest;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "credential_harvest detector enabled"
+            );
+            CredentialHarvestDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
         }),
     };
 
@@ -938,6 +1098,84 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.crypto_miner {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.outbound_anomaly {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.rootkit {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.reverse_shell {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.ssh_key_injection {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.web_shell {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.kernel_module_load {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.crontab_persistence {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.data_exfiltration {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.process_injection {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.user_creation {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.systemd_persistence {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.ransomware {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.credential_harvest {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }

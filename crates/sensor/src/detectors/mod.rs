@@ -40,3 +40,18 @@ pub mod sudo_abuse;
 pub mod suricata_alert;
 pub mod user_agent_scanner;
 pub mod web_scan;
+
+// v0.5.0 detectors
+pub mod credential_harvest;
+pub mod crontab_persistence;
+pub mod data_exfiltration;
+pub mod kernel_module_load;
+pub mod outbound_anomaly;
+pub mod process_injection;
+pub mod ransomware;
+pub mod reverse_shell;
+pub mod rootkit;
+pub mod ssh_key_injection;
+pub mod systemd_persistence;
+pub mod user_creation;
+pub mod web_shell;

@@ -231,6 +231,32 @@ pub struct DetectorsConfig {
     pub lateral_movement: LateralMovementConfig,
     #[serde(default)]
     pub crypto_miner: CryptoMinerConfig,
+    #[serde(default)]
+    pub outbound_anomaly: OutboundAnomalyConfig,
+    #[serde(default)]
+    pub rootkit: RootkitConfig,
+    #[serde(default)]
+    pub reverse_shell: ReverseShellConfig,
+    #[serde(default)]
+    pub ssh_key_injection: SshKeyInjectionConfig,
+    #[serde(default)]
+    pub web_shell: WebShellConfig,
+    #[serde(default)]
+    pub kernel_module_load: KernelModuleLoadConfig,
+    #[serde(default)]
+    pub crontab_persistence: CrontabPersistenceConfig,
+    #[serde(default)]
+    pub data_exfiltration: DataExfiltrationConfig,
+    #[serde(default)]
+    pub process_injection: ProcessInjectionConfig,
+    #[serde(default)]
+    pub user_creation: UserCreationConfig,
+    #[serde(default)]
+    pub systemd_persistence: SystemdPersistenceConfig,
+    #[serde(default)]
+    pub ransomware: RansomwareConfig,
+    #[serde(default)]
+    pub credential_harvest: CredentialHarvestConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -537,6 +563,342 @@ impl Default for CryptoMinerConfig {
 
 fn default_crypto_miner_cooldown_seconds() -> u64 {
     300
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OutboundAnomalyConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_outbound_anomaly_connection_flood_threshold")]
+    pub connection_flood_threshold: usize,
+    #[serde(default = "default_outbound_anomaly_port_spray_threshold")]
+    pub port_spray_threshold: usize,
+    #[serde(default = "default_outbound_anomaly_udp_flood_threshold")]
+    pub udp_flood_threshold: usize,
+    #[serde(default = "default_outbound_anomaly_fanout_threshold")]
+    pub fanout_threshold: usize,
+    #[serde(default = "default_outbound_anomaly_window_seconds")]
+    pub window_seconds: u64,
+    #[serde(default = "default_outbound_anomaly_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for OutboundAnomalyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            connection_flood_threshold: default_outbound_anomaly_connection_flood_threshold(),
+            port_spray_threshold: default_outbound_anomaly_port_spray_threshold(),
+            udp_flood_threshold: default_outbound_anomaly_udp_flood_threshold(),
+            fanout_threshold: default_outbound_anomaly_fanout_threshold(),
+            window_seconds: default_outbound_anomaly_window_seconds(),
+            cooldown_seconds: default_outbound_anomaly_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_outbound_anomaly_connection_flood_threshold() -> usize {
+    50
+}
+
+fn default_outbound_anomaly_port_spray_threshold() -> usize {
+    20
+}
+
+fn default_outbound_anomaly_udp_flood_threshold() -> usize {
+    100
+}
+
+fn default_outbound_anomaly_fanout_threshold() -> usize {
+    10
+}
+
+fn default_outbound_anomaly_window_seconds() -> u64 {
+    60
+}
+
+fn default_outbound_anomaly_cooldown_seconds() -> u64 {
+    300
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RootkitConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_rootkit_check_interval_seconds")]
+    pub check_interval_seconds: u64,
+    #[serde(default = "default_rootkit_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for RootkitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            check_interval_seconds: default_rootkit_check_interval_seconds(),
+            cooldown_seconds: default_rootkit_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_rootkit_check_interval_seconds() -> u64 {
+    60
+}
+
+fn default_rootkit_cooldown_seconds() -> u64 {
+    600
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReverseShellConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_reverse_shell_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for ReverseShellConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_reverse_shell_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_reverse_shell_cooldown_seconds() -> u64 {
+    300
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SshKeyInjectionConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_ssh_key_injection_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for SshKeyInjectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_ssh_key_injection_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_ssh_key_injection_cooldown_seconds() -> u64 {
+    600
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WebShellConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_web_shell_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for WebShellConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_web_shell_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_web_shell_cooldown_seconds() -> u64 {
+    300
+}
+
+#[derive(Debug, Deserialize)]
+pub struct KernelModuleLoadConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_kernel_module_load_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for KernelModuleLoadConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_kernel_module_load_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_kernel_module_load_cooldown_seconds() -> u64 {
+    600
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CrontabPersistenceConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_crontab_persistence_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for CrontabPersistenceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_crontab_persistence_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_crontab_persistence_cooldown_seconds() -> u64 {
+    300
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DataExfiltrationConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_data_exfiltration_correlation_window_seconds")]
+    pub correlation_window_seconds: u64,
+    #[serde(default = "default_data_exfiltration_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for DataExfiltrationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            correlation_window_seconds: default_data_exfiltration_correlation_window_seconds(),
+            cooldown_seconds: default_data_exfiltration_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_data_exfiltration_correlation_window_seconds() -> u64 {
+    60
+}
+
+fn default_data_exfiltration_cooldown_seconds() -> u64 {
+    300
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProcessInjectionConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_process_injection_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for ProcessInjectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_process_injection_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_process_injection_cooldown_seconds() -> u64 {
+    600
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UserCreationConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_user_creation_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for UserCreationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_user_creation_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_user_creation_cooldown_seconds() -> u64 {
+    600
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SystemdPersistenceConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_systemd_persistence_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for SystemdPersistenceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_systemd_persistence_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_systemd_persistence_cooldown_seconds() -> u64 {
+    600
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RansomwareConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_ransomware_file_threshold")]
+    pub file_threshold: usize,
+    #[serde(default = "default_ransomware_window_seconds")]
+    pub window_seconds: u64,
+    #[serde(default = "default_ransomware_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for RansomwareConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            file_threshold: default_ransomware_file_threshold(),
+            window_seconds: default_ransomware_window_seconds(),
+            cooldown_seconds: default_ransomware_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_ransomware_file_threshold() -> usize {
+    50
+}
+
+fn default_ransomware_window_seconds() -> u64 {
+    30
+}
+
+fn default_ransomware_cooldown_seconds() -> u64 {
+    60
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CredentialHarvestConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_credential_harvest_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for CredentialHarvestConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_credential_harvest_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_credential_harvest_cooldown_seconds() -> u64 {
+    600
 }
 
 fn default_lateral_movement_ssh_threshold() -> usize {
