@@ -10,6 +10,7 @@
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange)
 ![Memory](https://img.shields.io/badge/memory-under%2050MB-green)
 ![AI Optional](https://img.shields.io/badge/AI-optional-lightgrey)
+[![Featured on GitHub Awesome](https://img.shields.io/badge/Featured-GitHub%20Awesome-blue)](https://www.youtube.com/watch?v=i9YpWp0hXgg&t=315)
 
 > **Warning**
 > Inner Warden is an **experimental** security agent that can **block IP addresses, kill processes, suspend user privileges, pause containers, and modify firewall rules** on your system. These are powerful, potentially disruptive actions. Read this document carefully before deploying. Always start in observe-only mode and review behavior before enabling automatic responses.
