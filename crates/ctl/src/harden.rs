@@ -3,11 +3,40 @@
 //! `innerwarden harden` reads system files, evaluates security posture,
 //! and prints actionable recommendations. Never applies changes automatically.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::Result;
+use serde::Deserialize;
+
+// ---------------------------------------------------------------------------
+// Ignore file: /etc/innerwarden/harden-ignore.toml
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default, Deserialize)]
+struct HardenIgnore {
+    /// List of finding title substrings to ignore.
+    /// Example: ["IP forwarding", "SUID binary", "kernel module"]
+    #[serde(default)]
+    ignore: Vec<String>,
+}
+
+fn load_ignore_list(path: &Path) -> HashSet<String> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return HashSet::new();
+    };
+    let config: HardenIgnore = toml::from_str(&content).unwrap_or_default();
+    config.ignore.into_iter().collect()
+}
+
+fn is_ignored(title: &str, ignore_list: &HashSet<String>) -> bool {
+    let lower = title.to_lowercase();
+    ignore_list
+        .iter()
+        .any(|pattern| lower.contains(&pattern.to_lowercase()))
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1440,6 +1469,16 @@ pub fn cmd_harden(verbose: bool) -> Result<()> {
     println!();
     println!("  \x1b[1m\x1b[36mInner Warden — Security Hardening Advisor\x1b[0m");
     println!("  \x1b[90mScanning system configuration...\x1b[0m");
+
+    let ignore_path = Path::new("/etc/innerwarden/harden-ignore.toml");
+    let ignore_list = load_ignore_list(ignore_path);
+    if !ignore_list.is_empty() {
+        println!(
+            "  \x1b[90m{} accepted risk(s) loaded from {}\x1b[0m",
+            ignore_list.len(),
+            ignore_path.display()
+        );
+    }
     println!();
 
     let checks = vec![
@@ -1460,13 +1499,17 @@ pub fn cmd_harden(verbose: bool) -> Result<()> {
     let mut score: u32 = 100;
 
     for result in &checks {
-        let n_findings = result.findings.len();
+        let n_findings_real = result
+            .findings
+            .iter()
+            .filter(|f| !is_ignored(&f.title, &ignore_list))
+            .count();
         let n_passed = result.passed.len();
-        total_findings += n_findings;
+        total_findings += n_findings_real;
         total_passed += n_passed;
 
         // Category header
-        let status = if n_findings == 0 {
+        let status = if n_findings_real == 0 {
             "\x1b[32m✓\x1b[0m"
         } else {
             "\x1b[33m!\x1b[0m"
@@ -1481,7 +1524,15 @@ pub fn cmd_harden(verbose: bool) -> Result<()> {
         }
 
         // Findings
+        let mut ignored_count = 0usize;
         for f in &result.findings {
+            if is_ignored(&f.title, &ignore_list) {
+                ignored_count += 1;
+                if verbose {
+                    println!("    \x1b[90m⊘  {} [accepted risk]\x1b[0m", f.title);
+                }
+                continue;
+            }
             score = score.saturating_sub(f.severity.score_penalty());
             println!(
                 "    {}  {} \x1b[90m[{}]\x1b[0m",
@@ -1491,8 +1542,14 @@ pub fn cmd_harden(verbose: bool) -> Result<()> {
             );
             println!("       \x1b[90m→\x1b[0m \x1b[36m{}\x1b[0m", f.fix);
         }
+        if ignored_count > 0 && !verbose {
+            println!(
+                "    \x1b[90m{} accepted risk(s) hidden\x1b[0m",
+                ignored_count
+            );
+        }
 
-        if n_findings == 0 && !verbose {
+        if n_findings_real == 0 && !verbose {
             println!("    \x1b[32m{} check(s) passed\x1b[0m", n_passed);
         }
 
