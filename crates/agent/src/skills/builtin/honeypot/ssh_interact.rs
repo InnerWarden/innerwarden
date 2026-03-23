@@ -161,17 +161,11 @@ impl Handler for HoneypotSshHandler {
                 ..
             } => {
                 *auth_attempt_count += 1;
-                // Reject the first 2 attempts to look like a real server,
-                // then accept on the 3rd to lure the attacker into the shell.
-                if *auth_attempt_count < 3 {
-                    Ok(Auth::Reject {
-                        proceed_with_methods: None,
-                        partial_success: false,
-                    })
-                } else {
-                    *accepted_user = Some(user.to_string());
-                    Ok(Auth::Accept)
-                }
+                // Accept on first password attempt — most real attackers try
+                // one password per connection and reconnect for the next.
+                // Rejecting would just make them disconnect without entering the shell.
+                *accepted_user = Some(user.to_string());
+                Ok(Auth::Accept)
             }
             HandlerMode::RejectAll => Ok(Auth::Reject {
                 proceed_with_methods: None,
@@ -588,22 +582,16 @@ mod tests {
                 history: Vec::new(),
             },
         };
-        // First 2 attempts should be rejected (realistic behavior)
-        let r1 = h.auth_password("attacker", "wrong1").await.unwrap();
-        assert!(matches!(r1, Auth::Reject { .. }), "1st attempt must reject");
-        let r2 = h.auth_password("attacker", "wrong2").await.unwrap();
-        assert!(matches!(r2, Auth::Reject { .. }), "2nd attempt must reject");
-        // 3rd attempt accepted — attacker enters the trap
+        // Accept first password attempt — attackers try one password per connection
         let result = h.auth_password("attacker", "hunter2").await.unwrap();
         assert!(
             matches!(result, Auth::Accept),
-            "3rd attempt must accept to lure attacker into shell"
+            "must accept first password to lure attacker into shell"
         );
-        // Ensure all 3 attempts were recorded.
         let ev = bucket.lock().unwrap();
-        assert_eq!(ev.auth_attempts.len(), 3);
-        assert_eq!(ev.auth_attempts[2].method, "password");
-        assert_eq!(ev.auth_attempts[2].username, "attacker");
+        assert_eq!(ev.auth_attempts.len(), 1);
+        assert_eq!(ev.auth_attempts[0].method, "password");
+        assert_eq!(ev.auth_attempts[0].username, "attacker");
     }
 
     #[tokio::test]
