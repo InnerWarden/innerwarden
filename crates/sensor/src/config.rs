@@ -229,6 +229,18 @@ pub struct DetectorsConfig {
     pub dns_tunneling: DnsTunnelingConfig,
     #[serde(default)]
     pub lateral_movement: LateralMovementConfig,
+    #[serde(default)]
+    pub reverse_shell: ReverseShellConfig,
+    #[serde(default)]
+    pub ssh_key_injection: SshKeyInjectionConfig,
+    #[serde(default)]
+    pub web_shell: WebShellConfig,
+    #[serde(default)]
+    pub kernel_module_load: KernelModuleLoadConfig,
+    #[serde(default)]
+    pub crontab_persistence: CrontabPersistenceConfig,
+    #[serde(default)]
+    pub data_exfiltration: DataExfiltrationConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -514,6 +526,139 @@ impl Default for LateralMovementConfig {
             window_seconds: default_lateral_movement_window_seconds(),
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReverseShellConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_reverse_shell_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for ReverseShellConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_reverse_shell_cooldown_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SshKeyInjectionConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_ssh_key_injection_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for SshKeyInjectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_ssh_key_injection_cooldown_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WebShellConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_web_shell_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for WebShellConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_web_shell_cooldown_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct KernelModuleLoadConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_kernel_module_load_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for KernelModuleLoadConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_kernel_module_load_cooldown_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CrontabPersistenceConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_crontab_persistence_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for CrontabPersistenceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_crontab_persistence_cooldown_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DataExfiltrationConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_data_exfiltration_correlation_window_secs")]
+    pub correlation_window_secs: u64,
+    #[serde(default = "default_data_exfiltration_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for DataExfiltrationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            correlation_window_secs: default_data_exfiltration_correlation_window_secs(),
+            cooldown_seconds: default_data_exfiltration_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_kernel_module_load_cooldown_seconds() -> u64 {
+    600
+}
+
+fn default_crontab_persistence_cooldown_seconds() -> u64 {
+    300
+}
+
+fn default_data_exfiltration_correlation_window_secs() -> u64 {
+    60
+}
+
+fn default_data_exfiltration_cooldown_seconds() -> u64 {
+    300
+}
+
+fn default_reverse_shell_cooldown_seconds() -> u64 {
+    300
+}
+
+fn default_ssh_key_injection_cooldown_seconds() -> u64 {
+    600
+}
+
+fn default_web_shell_cooldown_seconds() -> u64 {
+    300
 }
 
 fn default_lateral_movement_ssh_threshold() -> usize {

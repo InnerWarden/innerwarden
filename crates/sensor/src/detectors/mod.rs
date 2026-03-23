@@ -1,6 +1,8 @@
 pub mod c2_callback;
 pub mod container_escape;
 pub mod credential_stuffing;
+pub mod crontab_persistence;
+pub mod data_exfiltration;
 pub mod distributed_ssh;
 pub mod suspicious_login;
 
@@ -27,15 +29,19 @@ pub mod docker_anomaly;
 pub mod execution_guard;
 pub mod fileless;
 pub mod integrity_alert;
+pub mod kernel_module_load;
 pub mod lateral_movement;
 pub mod log_tampering;
 pub mod osquery_anomaly;
 pub mod port_scan;
 pub mod privesc;
 pub mod process_tree;
+pub mod reverse_shell;
 pub mod search_abuse;
 pub mod ssh_bruteforce;
+pub mod ssh_key_injection;
 pub mod sudo_abuse;
 pub mod suricata_alert;
 pub mod user_agent_scanner;
 pub mod web_scan;
+pub mod web_shell;

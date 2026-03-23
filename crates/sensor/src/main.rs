@@ -21,25 +21,31 @@ use collectors::{
 use detectors::c2_callback::C2CallbackDetector;
 use detectors::container_escape::ContainerEscapeDetector;
 use detectors::credential_stuffing::CredentialStuffingDetector;
+use detectors::crontab_persistence::CrontabPersistenceDetector;
+use detectors::data_exfiltration::DataExfiltrationDetector;
 use detectors::distributed_ssh::DistributedSshDetector;
 use detectors::dns_tunneling::DnsTunnelingDetector;
 use detectors::docker_anomaly::DockerAnomalyDetector;
 use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
 use detectors::fileless::FilelessDetector;
 use detectors::integrity_alert::IntegrityAlertDetector;
+use detectors::kernel_module_load::KernelModuleLoadDetector;
 use detectors::lateral_movement::LateralMovementDetector;
 use detectors::log_tampering::LogTamperingDetector;
 use detectors::osquery_anomaly::OsqueryAnomalyDetector;
 use detectors::port_scan::PortScanDetector;
 use detectors::privesc::PrivescDetector;
 use detectors::process_tree::ProcessTreeDetector;
+use detectors::reverse_shell::ReverseShellDetector;
 use detectors::search_abuse::SearchAbuseDetector;
 use detectors::ssh_bruteforce::SshBruteforceDetector;
+use detectors::ssh_key_injection::SshKeyInjectionDetector;
 use detectors::sudo_abuse::SudoAbuseDetector;
 use detectors::suricata_alert::SuricataAlertDetector;
 use detectors::suspicious_login::SuspiciousLoginDetector;
 use detectors::user_agent_scanner::UserAgentScannerDetector;
 use detectors::web_scan::WebScanDetector;
+use detectors::web_shell::WebShellDetector;
 use sinks::{jsonl::JsonlWriter, state::State};
 use tokio::sync::mpsc;
 use tokio::time;
@@ -79,6 +85,12 @@ struct DetectorSet {
     fileless: Option<FilelessDetector>,
     dns_tunneling: Option<DnsTunnelingDetector>,
     lateral_movement: Option<LateralMovementDetector>,
+    reverse_shell: Option<ReverseShellDetector>,
+    ssh_key_injection: Option<SshKeyInjectionDetector>,
+    web_shell: Option<WebShellDetector>,
+    kernel_module_load: Option<KernelModuleLoadDetector>,
+    crontab_persistence: Option<CrontabPersistenceDetector>,
+    data_exfiltration: Option<DataExfiltrationDetector>,
 }
 
 #[derive(Default)]
@@ -327,6 +339,59 @@ async fn main() -> Result<()> {
                 d.ssh_threshold,
                 d.scan_threshold,
                 d.window_seconds,
+            )
+        }),
+        reverse_shell: cfg.detectors.reverse_shell.enabled.then(|| {
+            let d = &cfg.detectors.reverse_shell;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "reverse_shell detector enabled"
+            );
+            ReverseShellDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        ssh_key_injection: cfg.detectors.ssh_key_injection.enabled.then(|| {
+            let d = &cfg.detectors.ssh_key_injection;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "ssh_key_injection detector enabled"
+            );
+            SshKeyInjectionDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        web_shell: cfg.detectors.web_shell.enabled.then(|| {
+            let d = &cfg.detectors.web_shell;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "web_shell detector enabled"
+            );
+            WebShellDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        kernel_module_load: cfg.detectors.kernel_module_load.enabled.then(|| {
+            let d = &cfg.detectors.kernel_module_load;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "kernel_module_load detector enabled"
+            );
+            KernelModuleLoadDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        crontab_persistence: cfg.detectors.crontab_persistence.enabled.then(|| {
+            let d = &cfg.detectors.crontab_persistence;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "crontab_persistence detector enabled"
+            );
+            CrontabPersistenceDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        data_exfiltration: cfg.detectors.data_exfiltration.enabled.then(|| {
+            let d = &cfg.detectors.data_exfiltration;
+            info!(
+                correlation_window_secs = d.correlation_window_secs,
+                cooldown_seconds = d.cooldown_seconds,
+                "data_exfiltration detector enabled"
+            );
+            DataExfiltrationDetector::new(
+                &cfg.agent.host_id,
+                d.correlation_window_secs,
+                d.cooldown_seconds,
             )
         }),
     };
@@ -922,6 +987,42 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.lateral_movement {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.reverse_shell {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.ssh_key_injection {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.web_shell {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.kernel_module_load {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.crontab_persistence {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.data_exfiltration {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }
