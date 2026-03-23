@@ -1162,7 +1162,17 @@ struct StoredIpReputation {
 
 /// Load the `ip-reputation.json` file written by the agent's slow loop.
 fn load_ip_reputation_map(data_dir: &Path) -> HashMap<String, StoredIpReputation> {
+    // Validate data_dir is an absolute path within expected locations (CWE-22)
+    if !data_dir.is_absolute() {
+        return HashMap::new();
+    }
     let path = data_dir.join("ip-reputation.json");
+    if path
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
+        return HashMap::new();
+    }
     let Ok(content) = std::fs::read_to_string(&path) else {
         return HashMap::new();
     };
@@ -1983,9 +1993,12 @@ async fn api_sensors_inner(state: &DashboardState) -> serde_json::Value {
         .chars()
         .filter(|c| c.is_ascii_digit() || *c == '-')
         .collect::<String>();
-    // Validate date format strictly to prevent path traversal (CodeQL CWE-22)
+    // Validate date format and data_dir to prevent path traversal (CodeQL CWE-22)
     if safe_today.len() != 10 || safe_today.chars().nth(4).is_none_or(|c| c != '-') {
         return serde_json::json!({ "error": "invalid date" });
+    }
+    if !state.data_dir.is_absolute() {
+        return serde_json::json!({ "error": "invalid data directory" });
     }
     let events_path = state.data_dir.join(format!("events-{safe_today}.jsonl"));
     let incidents_path = state.data_dir.join(format!("incidents-{safe_today}.jsonl"));
