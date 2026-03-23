@@ -170,8 +170,11 @@ pub trait AiProvider: Send + Sync {
 pub fn should_invoke_ai(incident: &Incident, already_blocked: &HashSet<String>) -> bool {
     use innerwarden_core::event::Severity;
 
-    // Only High and Critical incidents warrant real-time AI analysis
-    if !matches!(incident.severity, Severity::High | Severity::Critical) {
+    // Medium, High, and Critical incidents go to AI analysis
+    if !matches!(
+        incident.severity,
+        Severity::Medium | Severity::High | Severity::Critical
+    ) {
         return false;
     }
 
@@ -368,8 +371,13 @@ mod tests {
 
     #[test]
     fn gate_passes_high_severity_external_ip() {
-        // 1.2.3.4 is a routable public IP (not private/loopback/documentation)
         let inc = make_incident(Severity::High, "1.2.3.4");
+        assert!(should_invoke_ai(&inc, &HashSet::new()));
+    }
+
+    #[test]
+    fn gate_passes_medium_severity_external_ip() {
+        let inc = make_incident(Severity::Medium, "1.2.3.4");
         assert!(should_invoke_ai(&inc, &HashSet::new()));
     }
 
