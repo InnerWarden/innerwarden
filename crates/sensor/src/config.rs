@@ -229,6 +229,8 @@ pub struct DetectorsConfig {
     pub dns_tunneling: DnsTunnelingConfig,
     #[serde(default)]
     pub lateral_movement: LateralMovementConfig,
+    #[serde(default)]
+    pub crypto_miner: CryptoMinerConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -514,6 +516,27 @@ impl Default for LateralMovementConfig {
             window_seconds: default_lateral_movement_window_seconds(),
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CryptoMinerConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_crypto_miner_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for CryptoMinerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_crypto_miner_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_crypto_miner_cooldown_seconds() -> u64 {
+    300
 }
 
 fn default_lateral_movement_ssh_threshold() -> usize {
