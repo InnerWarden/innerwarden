@@ -83,6 +83,8 @@ enum HandlerMode {
         ai: Arc<dyn crate::ai::AiProvider>,
         hostname: String,
         accepted_user: Option<String>,
+        /// Number of password attempts so far (reject first N before accepting).
+        auth_attempt_count: usize,
         /// Raw bytes buffered since the last newline.
         input_buf: Vec<u8>,
         /// Rolling history of (command, response) pairs sent to the AI as context.
@@ -153,10 +155,23 @@ impl Handler for HoneypotSshHandler {
         debug!(user, "honeypot SSH auth_password");
         self.record("password", user, Some(password.to_string()), None);
         match &mut self.mode {
-            HandlerMode::LlmShell { accepted_user, .. } => {
-                // Accept the first password attempt — store the username for prompt/context.
-                *accepted_user = Some(user.to_string());
-                Ok(Auth::Accept)
+            HandlerMode::LlmShell {
+                accepted_user,
+                auth_attempt_count,
+                ..
+            } => {
+                *auth_attempt_count += 1;
+                // Reject the first 2 attempts to look like a real server,
+                // then accept on the 3rd to lure the attacker into the shell.
+                if *auth_attempt_count < 3 {
+                    Ok(Auth::Reject {
+                        proceed_with_methods: None,
+                        partial_success: false,
+                    })
+                } else {
+                    *accepted_user = Some(user.to_string());
+                    Ok(Auth::Accept)
+                }
             }
             HandlerMode::RejectAll => Ok(Auth::Reject {
                 proceed_with_methods: None,
@@ -250,6 +265,7 @@ impl Handler for HoneypotSshHandler {
             accepted_user,
             input_buf,
             history,
+            ..
         } = &mut self.mode
         else {
             return Ok(());
@@ -421,6 +437,7 @@ pub(crate) async fn handle_connection(
             ai,
             hostname,
             accepted_user: None,
+            auth_attempt_count: 0,
             input_buf: Vec::new(),
             history: Vec::new(),
         },
@@ -566,20 +583,27 @@ mod tests {
                 ai: Arc::new(NoopAi),
                 hostname: "srv-prod-01".to_string(),
                 accepted_user: None,
+                auth_attempt_count: 0,
                 input_buf: Vec::new(),
                 history: Vec::new(),
             },
         };
+        // First 2 attempts should be rejected (realistic behavior)
+        let r1 = h.auth_password("attacker", "wrong1").await.unwrap();
+        assert!(matches!(r1, Auth::Reject { .. }), "1st attempt must reject");
+        let r2 = h.auth_password("attacker", "wrong2").await.unwrap();
+        assert!(matches!(r2, Auth::Reject { .. }), "2nd attempt must reject");
+        // 3rd attempt accepted — attacker enters the trap
         let result = h.auth_password("attacker", "hunter2").await.unwrap();
         assert!(
             matches!(result, Auth::Accept),
-            "LlmShell mode must accept password auth"
+            "3rd attempt must accept to lure attacker into shell"
         );
-        // Ensure the attempt was still recorded.
+        // Ensure all 3 attempts were recorded.
         let ev = bucket.lock().unwrap();
-        assert_eq!(ev.auth_attempts.len(), 1);
-        assert_eq!(ev.auth_attempts[0].method, "password");
-        assert_eq!(ev.auth_attempts[0].username, "attacker");
+        assert_eq!(ev.auth_attempts.len(), 3);
+        assert_eq!(ev.auth_attempts[2].method, "password");
+        assert_eq!(ev.auth_attempts[2].username, "attacker");
     }
 
     #[tokio::test]
@@ -613,6 +637,7 @@ mod tests {
                 ai: Arc::new(NoopAi),
                 hostname: "srv-prod-01".to_string(),
                 accepted_user: Some("root".to_string()),
+                auth_attempt_count: 3,
                 input_buf: Vec::new(),
                 history: Vec::new(),
             },
