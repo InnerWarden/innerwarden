@@ -752,6 +752,7 @@ pub async fn serve(
         .route("/api/live-feed", get(api_live_feed))
         .route("/api/live-feed/stream", get(api_live_feed_stream))
         .route("/api/live-feed/geoip", get(api_live_feed_geoip))
+        .route("/api/live-feed/honeypot", get(api_live_feed_honeypot))
         .layer(middleware::from_fn(cors_middleware))
         .with_state(state);
 
@@ -1308,6 +1309,79 @@ async fn api_live_feed_geoip(Query(query): Query<GeoIpQuery>) -> Json<Vec<GeoIpR
         }
     }
     Json(results)
+}
+
+/// Honeypot session summary for the live feed.
+#[derive(Serialize)]
+struct HoneypotSession {
+    ts: String,
+    ip: String,
+    session_id: String,
+    auth_attempts: Vec<serde_json::Value>,
+    commands: Vec<String>,
+}
+
+/// `GET /api/live-feed/honeypot` — recent honeypot sessions (public).
+async fn api_live_feed_honeypot(State(state): State<DashboardState>) -> Json<Vec<HoneypotSession>> {
+    let honeypot_dir = state.data_dir.join("honeypot");
+    let mut sessions = Vec::new();
+
+    let entries = match std::fs::read_dir(&honeypot_dir) {
+        Ok(e) => e,
+        Err(_) => return Json(sessions),
+    };
+
+    let mut files: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("listener-session-") && n.ends_with(".jsonl"))
+        })
+        .map(|e| e.path())
+        .collect();
+    files.sort_by(|a, b| {
+        b.metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+            .cmp(
+                &a.metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            )
+    });
+
+    for path in files.into_iter().take(10) {
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in content.lines() {
+            if line.is_empty() || !line.starts_with('{') {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let commands: Vec<String> = v["shell_commands"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|c| c["command"].as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            sessions.push(HoneypotSession {
+                ts: v["ts"].as_str().unwrap_or("").to_string(),
+                ip: v["peer_ip"].as_str().unwrap_or("").to_string(),
+                session_id: v["session_id"].as_str().unwrap_or("").to_string(),
+                auth_attempts: v["auth_attempts"].as_array().cloned().unwrap_or_default(),
+                commands,
+            });
+        }
+    }
+
+    Json(sessions)
 }
 
 #[derive(Deserialize)]
