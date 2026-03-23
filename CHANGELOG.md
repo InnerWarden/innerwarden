@@ -11,6 +11,34 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.0] — 2026-03-23
+
+### New detectors
+- **Fileless malware** — detects execution via memfd_create, /proc/self/fd, deleted binaries
+- **Log tampering** — detects unauthorized access to auth.log, syslog, wtmp, btmp
+- **DNS tunneling** — Shannon entropy analysis on subdomains + eBPF fallback for port 53 beaconing (works without Suricata)
+- **Lateral movement** — detects internal SSH scanning, port scanning, and sensitive service probing on private networks
+
+### Agent improvements
+- **Adaptive blocking** — repeat offenders get escalating TTL (1h → 4h → 24h → 7d)
+- **Local IP reputation** — per-IP scoring persisted to disk, exposed in live-feed API
+- **Automated forensics** — captures /proc/{pid}/ data (cmdline, exe, fds, network, memory maps) on High/Critical incidents with PID
+- **Configurable AI gate** — `ai.min_severity` setting: "high" (default, conservative) or "medium" (aggressive, more API calls)
+- **Honeypot always-on mode** — SSH honeypot with AI-powered fake shell, accepts password auth to lure attackers
+- **Live feed API** — real daily totals (total_today, total_blocked, total_high), honeypot sessions endpoint, server-side GeoIP proxy
+
+### Hardening advisor
+- **TLS/SSL check** — audits nginx, apache, and OpenSSL configs for deprecated protocols, weak ciphers, missing HSTS
+- **Crontab audit** — scans for suspicious entries (download+execute, reverse shells, base64)
+- **Kernel modules** — detects known rootkits (diamorphine, reptile, etc)
+- **Accepted risks** — `/etc/innerwarden/harden-ignore.toml` for environment-specific exceptions
+- **Accuracy fixes** — excludes Inner Warden/Docker services from findings, uses `sudo ufw status verbose`
+
+### Security fixes
+- Path validation for ip-reputation and sensors API (CodeQL CWE-22 #37, #38)
+
+---
+
 ## [0.3.1] — 2026-03-22
 
 ### Hardening advisor + live threat feed
