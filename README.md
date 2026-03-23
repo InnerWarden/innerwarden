@@ -45,8 +45,10 @@ This is **not** a plug-and-play consumer security product. Misconfigured respons
   <sub><a href="https://innerwarden.com/live"><strong>Test the tool in real time</strong></a> &nbsp;·&nbsp; <a href="https://vimeo.com/1175992244">Watch the explainer video</a></sub>
 </p>
 
+https://github.com/user-attachments/assets/e49ea3aa-a3a7-4b4a-8912-8ebe17609a82
+
 <p align="center">
-  <img src="docs/images/dashboard-sensors.png" alt="Dashboard — sensor HUD with eBPF activity, threat gauge, and detector charts" width="820">
+  <img src="docs/images/dashboard-sensors.png" alt="Dashboard—sensor HUD with eBPF activity, threat gauge, and detector charts" width="820">
 </p>
 <p align="center">
   <img src="docs/images/dashboard-threats.png" alt="Dashboard — real-time threat overview" width="820">
