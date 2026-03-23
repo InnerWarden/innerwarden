@@ -33,6 +33,7 @@ pub mod osquery_anomaly;
 pub mod port_scan;
 pub mod privesc;
 pub mod process_tree;
+pub mod rootkit;
 pub mod search_abuse;
 pub mod ssh_bruteforce;
 pub mod sudo_abuse;

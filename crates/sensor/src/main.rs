@@ -33,6 +33,7 @@ use detectors::osquery_anomaly::OsqueryAnomalyDetector;
 use detectors::port_scan::PortScanDetector;
 use detectors::privesc::PrivescDetector;
 use detectors::process_tree::ProcessTreeDetector;
+use detectors::rootkit::RootkitDetector;
 use detectors::search_abuse::SearchAbuseDetector;
 use detectors::ssh_bruteforce::SshBruteforceDetector;
 use detectors::sudo_abuse::SudoAbuseDetector;
@@ -79,6 +80,7 @@ struct DetectorSet {
     fileless: Option<FilelessDetector>,
     dns_tunneling: Option<DnsTunnelingDetector>,
     lateral_movement: Option<LateralMovementDetector>,
+    rootkit: Option<RootkitDetector>,
 }
 
 #[derive(Default)]
@@ -328,6 +330,15 @@ async fn main() -> Result<()> {
                 d.scan_threshold,
                 d.window_seconds,
             )
+        }),
+        rootkit: cfg.detectors.rootkit.enabled.then(|| {
+            let d = &cfg.detectors.rootkit;
+            info!(
+                check_interval_secs = d.check_interval_secs,
+                cooldown_seconds = d.cooldown_seconds,
+                "rootkit detector enabled (eBPF hidden process, kernel module, LD_PRELOAD, artifact detection)"
+            );
+            RootkitDetector::new(&cfg.agent.host_id, d.check_interval_secs, d.cooldown_seconds)
         }),
     };
 
@@ -922,6 +933,12 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.lateral_movement {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.rootkit {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }

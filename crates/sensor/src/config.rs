@@ -229,6 +229,8 @@ pub struct DetectorsConfig {
     pub dns_tunneling: DnsTunnelingConfig,
     #[serde(default)]
     pub lateral_movement: LateralMovementConfig,
+    #[serde(default)]
+    pub rootkit: RootkitConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -514,6 +516,34 @@ impl Default for LateralMovementConfig {
             window_seconds: default_lateral_movement_window_seconds(),
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RootkitConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_rootkit_check_interval_secs")]
+    pub check_interval_secs: u64,
+    #[serde(default = "default_rootkit_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for RootkitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            check_interval_secs: default_rootkit_check_interval_secs(),
+            cooldown_seconds: default_rootkit_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_rootkit_check_interval_secs() -> u64 {
+    10
+}
+
+fn default_rootkit_cooldown_seconds() -> u64 {
+    600
 }
 
 fn default_lateral_movement_ssh_threshold() -> usize {
