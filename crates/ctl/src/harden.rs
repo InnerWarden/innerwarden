@@ -175,8 +175,11 @@ fn check_firewall() -> CheckResult {
     let mut findings = Vec::new();
     let cat = "Firewall";
 
-    // Check UFW
-    let ufw = Command::new("ufw").arg("status").output();
+    // Check UFW (try sudo first, fall back to non-sudo)
+    let ufw = Command::new("sudo")
+        .args(["ufw", "status"])
+        .output()
+        .or_else(|_| Command::new("ufw").arg("status").output());
     match ufw {
         Ok(out) => {
             let status = String::from_utf8_lossy(&out.stdout);
