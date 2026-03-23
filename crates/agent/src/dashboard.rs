@@ -1326,6 +1326,11 @@ async fn api_live_feed_honeypot(State(state): State<DashboardState>) -> Json<Vec
     let honeypot_dir = state.data_dir.join("honeypot");
     let mut sessions = Vec::new();
 
+    // Validate path to prevent traversal (CodeQL CWE-22)
+    if !state.data_dir.is_absolute() {
+        return Json(sessions);
+    }
+
     let entries = match std::fs::read_dir(&honeypot_dir) {
         Ok(e) => e,
         Err(_) => return Json(sessions),
