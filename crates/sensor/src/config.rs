@@ -229,6 +229,16 @@ pub struct DetectorsConfig {
     pub dns_tunneling: DnsTunnelingConfig,
     #[serde(default)]
     pub lateral_movement: LateralMovementConfig,
+    #[serde(default)]
+    pub process_injection: ProcessInjectionConfig,
+    #[serde(default)]
+    pub user_creation: UserCreationConfig,
+    #[serde(default)]
+    pub systemd_persistence: SystemdPersistenceConfig,
+    #[serde(default)]
+    pub ransomware: RansomwareConfig,
+    #[serde(default)]
+    pub credential_harvest: CredentialHarvestConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -764,6 +774,125 @@ fn default_integrity_alert_cooldown_seconds() -> u64 {
 }
 
 fn default_log_tampering_cooldown_seconds() -> u64 {
+    600
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProcessInjectionConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_process_injection_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for ProcessInjectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_process_injection_cooldown_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UserCreationConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_user_creation_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for UserCreationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_user_creation_cooldown_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SystemdPersistenceConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_systemd_persistence_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for SystemdPersistenceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_systemd_persistence_cooldown_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RansomwareConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_ransomware_file_threshold")]
+    pub file_threshold: usize,
+    #[serde(default = "default_ransomware_window_seconds")]
+    pub window_seconds: u64,
+    #[serde(default = "default_ransomware_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for RansomwareConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            file_threshold: default_ransomware_file_threshold(),
+            window_seconds: default_ransomware_window_seconds(),
+            cooldown_seconds: default_ransomware_cooldown_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CredentialHarvestConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_credential_harvest_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for CredentialHarvestConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cooldown_seconds: default_credential_harvest_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_process_injection_cooldown_seconds() -> u64 {
+    600
+}
+
+fn default_user_creation_cooldown_seconds() -> u64 {
+    600
+}
+
+fn default_systemd_persistence_cooldown_seconds() -> u64 {
+    600
+}
+
+fn default_ransomware_file_threshold() -> usize {
+    50
+}
+
+fn default_ransomware_window_seconds() -> u64 {
+    30
+}
+
+fn default_ransomware_cooldown_seconds() -> u64 {
+    60
+}
+
+fn default_credential_harvest_cooldown_seconds() -> u64 {
     600
 }
 

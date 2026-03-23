@@ -20,6 +20,7 @@ use collectors::{
 };
 use detectors::c2_callback::C2CallbackDetector;
 use detectors::container_escape::ContainerEscapeDetector;
+use detectors::credential_harvest::CredentialHarvestDetector;
 use detectors::credential_stuffing::CredentialStuffingDetector;
 use detectors::distributed_ssh::DistributedSshDetector;
 use detectors::dns_tunneling::DnsTunnelingDetector;
@@ -32,13 +33,17 @@ use detectors::log_tampering::LogTamperingDetector;
 use detectors::osquery_anomaly::OsqueryAnomalyDetector;
 use detectors::port_scan::PortScanDetector;
 use detectors::privesc::PrivescDetector;
+use detectors::process_injection::ProcessInjectionDetector;
 use detectors::process_tree::ProcessTreeDetector;
+use detectors::ransomware::RansomwareDetector;
 use detectors::search_abuse::SearchAbuseDetector;
 use detectors::ssh_bruteforce::SshBruteforceDetector;
 use detectors::sudo_abuse::SudoAbuseDetector;
 use detectors::suricata_alert::SuricataAlertDetector;
 use detectors::suspicious_login::SuspiciousLoginDetector;
+use detectors::systemd_persistence::SystemdPersistenceDetector;
 use detectors::user_agent_scanner::UserAgentScannerDetector;
+use detectors::user_creation::UserCreationDetector;
 use detectors::web_scan::WebScanDetector;
 use sinks::{jsonl::JsonlWriter, state::State};
 use tokio::sync::mpsc;
@@ -79,6 +84,11 @@ struct DetectorSet {
     fileless: Option<FilelessDetector>,
     dns_tunneling: Option<DnsTunnelingDetector>,
     lateral_movement: Option<LateralMovementDetector>,
+    process_injection: Option<ProcessInjectionDetector>,
+    user_creation: Option<UserCreationDetector>,
+    systemd_persistence: Option<SystemdPersistenceDetector>,
+    ransomware: Option<RansomwareDetector>,
+    credential_harvest: Option<CredentialHarvestDetector>,
 }
 
 #[derive(Default)]
@@ -328,6 +338,53 @@ async fn main() -> Result<()> {
                 d.scan_threshold,
                 d.window_seconds,
             )
+        }),
+        process_injection: cfg.detectors.process_injection.enabled.then(|| {
+            let d = &cfg.detectors.process_injection;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "process_injection detector enabled"
+            );
+            ProcessInjectionDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        user_creation: cfg.detectors.user_creation.enabled.then(|| {
+            let d = &cfg.detectors.user_creation;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "user_creation detector enabled"
+            );
+            UserCreationDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        systemd_persistence: cfg.detectors.systemd_persistence.enabled.then(|| {
+            let d = &cfg.detectors.systemd_persistence;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "systemd_persistence detector enabled"
+            );
+            SystemdPersistenceDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        ransomware: cfg.detectors.ransomware.enabled.then(|| {
+            let d = &cfg.detectors.ransomware;
+            info!(
+                file_threshold = d.file_threshold,
+                window_seconds = d.window_seconds,
+                cooldown_seconds = d.cooldown_seconds,
+                "ransomware detector enabled"
+            );
+            RansomwareDetector::new(
+                &cfg.agent.host_id,
+                d.file_threshold,
+                d.window_seconds,
+                d.cooldown_seconds,
+            )
+        }),
+        credential_harvest: cfg.detectors.credential_harvest.enabled.then(|| {
+            let d = &cfg.detectors.credential_harvest;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "credential_harvest detector enabled"
+            );
+            CredentialHarvestDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
         }),
     };
 
@@ -922,6 +979,36 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.lateral_movement {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.process_injection {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.user_creation {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.systemd_persistence {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.ransomware {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.credential_harvest {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }
