@@ -258,6 +258,17 @@ pub struct AiConfig {
     /// Protects internal infrastructure from false positives.
     #[serde(default = "default_protected_ips")]
     pub protected_ips: Vec<String>,
+
+    /// Minimum incident severity sent to AI analysis.
+    /// "high" (default) = only High/Critical go to AI.
+    /// "medium" = Medium/High/Critical go to AI (more aggressive, more API calls).
+    /// "low" = all incidents go to AI (expensive, not recommended).
+    #[serde(default = "default_ai_min_severity")]
+    pub min_severity: String,
+}
+
+fn default_ai_min_severity() -> String {
+    "high".to_string()
 }
 
 impl Default for AiConfig {
@@ -275,11 +286,22 @@ impl Default for AiConfig {
             circuit_breaker_threshold: 0,
             circuit_breaker_cooldown_secs: default_circuit_breaker_cooldown_secs(),
             protected_ips: default_protected_ips(),
+            min_severity: default_ai_min_severity(),
         }
     }
 }
 
 impl AiConfig {
+    /// Parse `min_severity` config into a Severity enum.
+    pub fn parsed_min_severity(&self) -> Severity {
+        match self.min_severity.to_lowercase().as_str() {
+            "low" => Severity::Low,
+            "medium" => Severity::Medium,
+            "critical" => Severity::Critical,
+            _ => Severity::High, // default
+        }
+    }
+
     /// Resolve the API key: config field takes precedence, then env var.
     pub fn resolved_api_key(&self) -> String {
         if !self.api_key.is_empty() {

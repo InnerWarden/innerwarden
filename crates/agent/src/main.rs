@@ -2283,7 +2283,7 @@ async fn process_incidents(
             }
         }
 
-        if !ai::should_invoke_ai(incident, &blocked_set) {
+        if !ai::should_invoke_ai(incident, &blocked_set, &cfg.ai.parsed_min_severity()) {
             info!(
                 incident_id = %incident.incident_id,
                 severity = ?incident.severity,

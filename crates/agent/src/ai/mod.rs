@@ -167,14 +167,25 @@ pub trait AiProvider: Send + Sync {
 /// Returns true if the incident is worth sending to the AI provider.
 ///
 /// Avoids wasting API calls on noise or already-handled incidents.
-pub fn should_invoke_ai(incident: &Incident, already_blocked: &HashSet<String>) -> bool {
+pub fn should_invoke_ai(
+    incident: &Incident,
+    already_blocked: &HashSet<String>,
+    min_severity: &innerwarden_core::event::Severity,
+) -> bool {
     use innerwarden_core::event::Severity;
 
-    // Medium, High, and Critical incidents go to AI analysis
-    if !matches!(
-        incident.severity,
-        Severity::Medium | Severity::High | Severity::Critical
-    ) {
+    // Check against configured minimum severity
+    let dominated_by_min = match min_severity {
+        Severity::Low => matches!(incident.severity, Severity::Debug | Severity::Info),
+        Severity::Medium => matches!(
+            incident.severity,
+            Severity::Debug | Severity::Info | Severity::Low
+        ),
+        Severity::High => !matches!(incident.severity, Severity::High | Severity::Critical),
+        Severity::Critical => !matches!(incident.severity, Severity::Critical),
+        _ => true,
+    };
+    if dominated_by_min {
         return false;
     }
 
@@ -372,13 +383,19 @@ mod tests {
     #[test]
     fn gate_passes_high_severity_external_ip() {
         let inc = make_incident(Severity::High, "1.2.3.4");
-        assert!(should_invoke_ai(&inc, &HashSet::new()));
+        assert!(should_invoke_ai(&inc, &HashSet::new(), &Severity::High));
     }
 
     #[test]
-    fn gate_passes_medium_severity_external_ip() {
+    fn gate_passes_medium_severity_with_medium_config() {
         let inc = make_incident(Severity::Medium, "1.2.3.4");
-        assert!(should_invoke_ai(&inc, &HashSet::new()));
+        assert!(should_invoke_ai(&inc, &HashSet::new(), &Severity::Medium));
+    }
+
+    #[test]
+    fn gate_blocks_medium_with_high_config() {
+        let inc = make_incident(Severity::Medium, "1.2.3.4");
+        assert!(!should_invoke_ai(&inc, &HashSet::new(), &Severity::High));
     }
 
     #[test]
@@ -386,25 +403,25 @@ mod tests {
         let inc = make_incident(Severity::High, "1.2.3.4");
         let mut blocked = HashSet::new();
         blocked.insert("1.2.3.4".to_string());
-        assert!(!should_invoke_ai(&inc, &blocked));
+        assert!(!should_invoke_ai(&inc, &blocked, &Severity::High));
     }
 
     #[test]
     fn gate_blocks_low_severity() {
         let inc = make_incident(Severity::Low, "1.2.3.4");
-        assert!(!should_invoke_ai(&inc, &HashSet::new()));
+        assert!(!should_invoke_ai(&inc, &HashSet::new(), &Severity::High));
     }
 
     #[test]
     fn gate_blocks_private_ip() {
         let inc = make_incident(Severity::High, "192.168.1.100");
-        assert!(!should_invoke_ai(&inc, &HashSet::new()));
+        assert!(!should_invoke_ai(&inc, &HashSet::new(), &Severity::High));
     }
 
     #[test]
     fn gate_blocks_loopback() {
         let inc = make_incident(Severity::Critical, "127.0.0.1");
-        assert!(!should_invoke_ai(&inc, &HashSet::new()));
+        assert!(!should_invoke_ai(&inc, &HashSet::new(), &Severity::High));
     }
 
     #[test]
