@@ -381,12 +381,13 @@ impl RootkitDetector {
         let short_lived_cutoff = now - Duration::seconds(2);
 
         for (&pid, info) in &self.pids {
-            // Skip short-lived processes (< 2s since last seen) — normal exits
-            if info.last_seen > short_lived_cutoff {
+            // Skip short-lived processes (< 5s since last seen) — normal exits
+            let five_sec_cutoff = now - chrono::Duration::seconds(5);
+            if info.last_seen > five_sec_cutoff {
                 continue;
             }
-            // Only flag if seen multiple times (still active)
-            if info.seen_count < 2 {
+            // Only flag if seen many times (persistent process, not one-shot commands)
+            if info.seen_count < 5 {
                 continue;
             }
             // Check if PID exists in /proc
@@ -1412,11 +1413,12 @@ mod tests {
             "PID seen only once should not be flagged"
         );
 
-        // Now bump seen_count to 2
-        det.pids.get_mut(&5555).unwrap().seen_count = 2;
+        // Now bump seen_count to 5 (persistent process threshold)
+        det.pids.get_mut(&5555).unwrap().seen_count = 5;
+        det.pids.get_mut(&5555).unwrap().last_seen = now - Duration::seconds(10);
         assert!(
             det.check_hidden_processes(now).is_some(),
-            "PID seen multiple times should be flagged"
+            "PID seen 5+ times should be flagged"
         );
     }
 
