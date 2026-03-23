@@ -175,11 +175,11 @@ fn check_firewall() -> CheckResult {
     let mut findings = Vec::new();
     let cat = "Firewall";
 
-    // Check UFW (try sudo first, fall back to non-sudo)
+    // Check UFW (try sudo first, fall back to non-sudo; use verbose for default policy)
     let ufw = Command::new("sudo")
-        .args(["ufw", "status"])
+        .args(["ufw", "status", "verbose"])
         .output()
-        .or_else(|_| Command::new("ufw").arg("status").output());
+        .or_else(|_| Command::new("ufw").args(["status", "verbose"]).output());
     match ufw {
         Ok(out) => {
             let status = String::from_utf8_lossy(&out.stdout);
@@ -591,8 +591,17 @@ fn check_services() -> CheckResult {
             .lines()
             .filter(|l| l.contains("0.0.0.0:") || l.contains(":::"))
             .filter(|l| {
-                // Exclude standard ports
-                !l.contains(":22 ") && !l.contains(":80 ") && !l.contains(":443 ")
+                // Exclude standard and known-safe ports
+                !l.contains(":22 ")
+                    && !l.contains(":80 ")
+                    && !l.contains(":443 ")
+                    && !l.contains(":53 ")       // DNS
+                    && !l.contains(":8787 ")     // Inner Warden dashboard
+                    && !l.contains(":8790 ")     // Inner Warden mesh
+                    && !l.contains(":2222 ")     // Inner Warden honeypot
+                    && !l.contains("innerwarden") // any Inner Warden process
+                    && !l.contains("docker-proxy") // Docker managed ports
+                    && !l.contains("containerd")
             })
             .map(|l| l.to_string())
             .collect();
@@ -1010,6 +1019,45 @@ fn check_kernel_modules() -> CheckResult {
         "xt_REDIRECT",
         "nf_log_syslog",
         "nf_log_ipv4",
+        // Networking diagnostics / misc
+        "tcp_diag",
+        "inet_diag",
+        "udp_diag",
+        "tls",
+        "xfrm_user",
+        "xfrm_algo",
+        "ip6t_REJECT",
+        "ip6t_rt",
+        "xt_hl",
+        "nft_limit",
+        "xt_owner",
+        "nft_fib",
+        "nft_fib_inet",
+        "nft_fib_ipv4",
+        "nft_fib_ipv6",
+        "nft_ct",
+        "nft_counter",
+        "nft_log",
+        "nft_masq",
+        "nft_nat",
+        "nft_reject",
+        "nft_reject_inet",
+        "nft_reject_ipv4",
+        "nft_reject_ipv6",
+        "ip6table_filter",
+        "ip6table_nat",
+        "ip6table_mangle",
+        "ip6_tables",
+        "iptable_raw",
+        "ip_set_hash_ipport",
+        "ip_set_hash_ipportnet",
+        // Oracle Cloud / ARM common
+        "veth",
+        "dummy",
+        "nfnetlink",
+        "nfnetlink_queue",
+        "nfnetlink_log",
+        "nf_log_common",
     ];
 
     match Command::new("lsmod").output() {
