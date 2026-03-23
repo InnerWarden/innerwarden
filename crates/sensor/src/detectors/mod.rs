@@ -1,6 +1,7 @@
 pub mod c2_callback;
 pub mod container_escape;
 pub mod credential_stuffing;
+pub mod crypto_miner;
 pub mod distributed_ssh;
 pub mod suspicious_login;
 

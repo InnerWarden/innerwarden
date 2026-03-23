@@ -21,6 +21,7 @@ use collectors::{
 use detectors::c2_callback::C2CallbackDetector;
 use detectors::container_escape::ContainerEscapeDetector;
 use detectors::credential_stuffing::CredentialStuffingDetector;
+use detectors::crypto_miner::CryptoMinerDetector;
 use detectors::distributed_ssh::DistributedSshDetector;
 use detectors::dns_tunneling::DnsTunnelingDetector;
 use detectors::docker_anomaly::DockerAnomalyDetector;
@@ -79,6 +80,7 @@ struct DetectorSet {
     fileless: Option<FilelessDetector>,
     dns_tunneling: Option<DnsTunnelingDetector>,
     lateral_movement: Option<LateralMovementDetector>,
+    crypto_miner: Option<CryptoMinerDetector>,
 }
 
 #[derive(Default)]
@@ -328,6 +330,14 @@ async fn main() -> Result<()> {
                 d.scan_threshold,
                 d.window_seconds,
             )
+        }),
+        crypto_miner: cfg.detectors.crypto_miner.enabled.then(|| {
+            let d = &cfg.detectors.crypto_miner;
+            info!(
+                cooldown_seconds = d.cooldown_seconds,
+                "crypto_miner detector enabled"
+            );
+            CryptoMinerDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
         }),
     };
 
@@ -922,6 +932,12 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.lateral_movement {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.crypto_miner {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }
