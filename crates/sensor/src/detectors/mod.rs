@@ -30,6 +30,7 @@ pub mod integrity_alert;
 pub mod lateral_movement;
 pub mod log_tampering;
 pub mod osquery_anomaly;
+pub mod outbound_anomaly;
 pub mod port_scan;
 pub mod privesc;
 pub mod process_tree;

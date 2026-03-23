@@ -30,6 +30,7 @@ use detectors::integrity_alert::IntegrityAlertDetector;
 use detectors::lateral_movement::LateralMovementDetector;
 use detectors::log_tampering::LogTamperingDetector;
 use detectors::osquery_anomaly::OsqueryAnomalyDetector;
+use detectors::outbound_anomaly::OutboundAnomalyDetector;
 use detectors::port_scan::PortScanDetector;
 use detectors::privesc::PrivescDetector;
 use detectors::process_tree::ProcessTreeDetector;
@@ -79,6 +80,7 @@ struct DetectorSet {
     fileless: Option<FilelessDetector>,
     dns_tunneling: Option<DnsTunnelingDetector>,
     lateral_movement: Option<LateralMovementDetector>,
+    outbound_anomaly: Option<OutboundAnomalyDetector>,
 }
 
 #[derive(Default)]
@@ -327,6 +329,27 @@ async fn main() -> Result<()> {
                 d.ssh_threshold,
                 d.scan_threshold,
                 d.window_seconds,
+            )
+        }),
+        outbound_anomaly: cfg.detectors.outbound_anomaly.enabled.then(|| {
+            let d = &cfg.detectors.outbound_anomaly;
+            info!(
+                connection_flood_threshold = d.connection_flood_threshold,
+                port_spray_threshold = d.port_spray_threshold,
+                udp_flood_threshold = d.udp_flood_threshold,
+                fanout_threshold = d.fanout_threshold,
+                window_seconds = d.window_seconds,
+                cooldown_seconds = d.cooldown_seconds,
+                "outbound_anomaly detector enabled"
+            );
+            OutboundAnomalyDetector::new(
+                &cfg.agent.host_id,
+                d.connection_flood_threshold,
+                d.port_spray_threshold,
+                d.udp_flood_threshold,
+                d.fanout_threshold,
+                d.window_seconds,
+                d.cooldown_seconds,
             )
         }),
     };
@@ -922,6 +945,12 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.lateral_movement {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.outbound_anomaly {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }

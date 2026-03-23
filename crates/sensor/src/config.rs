@@ -229,6 +229,8 @@ pub struct DetectorsConfig {
     pub dns_tunneling: DnsTunnelingConfig,
     #[serde(default)]
     pub lateral_movement: LateralMovementConfig,
+    #[serde(default)]
+    pub outbound_anomaly: OutboundAnomalyConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -514,6 +516,62 @@ impl Default for LateralMovementConfig {
             window_seconds: default_lateral_movement_window_seconds(),
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OutboundAnomalyConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_outbound_anomaly_connection_flood_threshold")]
+    pub connection_flood_threshold: usize,
+    #[serde(default = "default_outbound_anomaly_port_spray_threshold")]
+    pub port_spray_threshold: usize,
+    #[serde(default = "default_outbound_anomaly_udp_flood_threshold")]
+    pub udp_flood_threshold: usize,
+    #[serde(default = "default_outbound_anomaly_fanout_threshold")]
+    pub fanout_threshold: usize,
+    #[serde(default = "default_outbound_anomaly_window_seconds")]
+    pub window_seconds: u64,
+    #[serde(default = "default_outbound_anomaly_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for OutboundAnomalyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            connection_flood_threshold: default_outbound_anomaly_connection_flood_threshold(),
+            port_spray_threshold: default_outbound_anomaly_port_spray_threshold(),
+            udp_flood_threshold: default_outbound_anomaly_udp_flood_threshold(),
+            fanout_threshold: default_outbound_anomaly_fanout_threshold(),
+            window_seconds: default_outbound_anomaly_window_seconds(),
+            cooldown_seconds: default_outbound_anomaly_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_outbound_anomaly_connection_flood_threshold() -> usize {
+    50
+}
+
+fn default_outbound_anomaly_port_spray_threshold() -> usize {
+    20
+}
+
+fn default_outbound_anomaly_udp_flood_threshold() -> usize {
+    100
+}
+
+fn default_outbound_anomaly_fanout_threshold() -> usize {
+    10
+}
+
+fn default_outbound_anomaly_window_seconds() -> u64 {
+    60
+}
+
+fn default_outbound_anomaly_cooldown_seconds() -> u64 {
+    300
 }
 
 fn default_lateral_movement_ssh_threshold() -> usize {
