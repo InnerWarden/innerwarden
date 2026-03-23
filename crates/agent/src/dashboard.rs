@@ -1179,8 +1179,17 @@ fn load_ip_reputation_map(data_dir: &Path) -> HashMap<String, StoredIpReputation
     serde_json::from_str(&content).unwrap_or_default()
 }
 
-/// `GET /api/live-feed` — last 20 incidents with their decisions (public).
-async fn api_live_feed(State(state): State<DashboardState>) -> Json<Vec<LiveFeedItem>> {
+/// Live feed response with totals and items.
+#[derive(Serialize)]
+struct LiveFeedResponse {
+    total_today: usize,
+    total_blocked: usize,
+    total_high: usize,
+    items: Vec<LiveFeedItem>,
+}
+
+/// `GET /api/live-feed` — last 30 incidents with totals for the day (public).
+async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResponse> {
     let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let incidents = read_jsonl::<Incident>(&dated_path(&state.data_dir, "incidents", &date));
     let decisions = read_jsonl::<DecisionEntry>(&dated_path(&state.data_dir, "decisions", &date));
@@ -1190,6 +1199,18 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<Vec<LiveFeed
         .collect();
     let reputation_map = load_ip_reputation_map(&state.data_dir);
 
+    // Real totals for the entire day
+    let total_today = incidents.len();
+    let total_blocked = decisions
+        .iter()
+        .filter(|d| d.action_type == "block_ip")
+        .count();
+    let total_high = incidents
+        .iter()
+        .filter(|i| matches!(i.severity, Severity::High | Severity::Critical))
+        .count();
+
+    // Last 30 for display
     let mut items: Vec<LiveFeedItem> = incidents
         .iter()
         .rev()
@@ -1223,7 +1244,13 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<Vec<LiveFeed
         })
         .collect();
     items.reverse();
-    Json(items)
+
+    Json(LiveFeedResponse {
+        total_today,
+        total_blocked,
+        total_high,
+        items,
+    })
 }
 
 /// `GET /api/live-feed/stream` — SSE stream of alerts for public live page.
