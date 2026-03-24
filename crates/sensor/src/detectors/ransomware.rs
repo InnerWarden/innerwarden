@@ -274,9 +274,9 @@ impl RansomwareDetector {
 
             if count >= effective_threshold {
                 let window_secs = self.window.num_seconds();
-                let severity = if has_appended_ext {
-                    Severity::Critical
-                } else if count >= 5 {
+                // When !has_appended_ext: threshold=5, so count ≥ 5 → always Critical.
+                // When has_appended_ext: threshold=3, count 3-4 → High, count ≥ 5 → Critical.
+                let severity = if count >= 5 {
                     Severity::Critical
                 } else {
                     Severity::High
