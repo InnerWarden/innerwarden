@@ -527,16 +527,16 @@ async fn main() -> Result<()> {
                 cooldown_seconds = d.cooldown_seconds,
                 "packet_flood detector enabled (DDoS detection)"
             );
-            PacketFloodDetector::new(
-                &cfg.agent.host_id,
-                d.syn_threshold,
-                d.http_threshold,
-                d.slowloris_threshold,
-                d.udp_threshold,
-                d.rate_multiplier,
-                d.window_seconds,
-                d.cooldown_seconds,
-            )
+            PacketFloodDetector::new(detectors::packet_flood::PacketFloodParams {
+                host: cfg.agent.host_id.clone(),
+                syn_threshold: d.syn_threshold,
+                http_threshold: d.http_threshold,
+                slowloris_threshold: d.slowloris_threshold,
+                udp_threshold: d.udp_threshold,
+                rate_multiplier: d.rate_multiplier,
+                window_seconds: d.window_seconds,
+                cooldown_seconds: d.cooldown_seconds,
+            })
         }),
     };
 

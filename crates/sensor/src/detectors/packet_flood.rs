@@ -73,27 +73,30 @@ pub struct PacketFloodDetector {
     alerted: HashMap<String, DateTime<Utc>>,
 }
 
+/// Parameters for constructing a PacketFloodDetector.
+pub struct PacketFloodParams {
+    pub host: String,
+    pub syn_threshold: usize,
+    pub http_threshold: usize,
+    pub slowloris_threshold: usize,
+    pub udp_threshold: usize,
+    pub rate_multiplier: f64,
+    pub window_seconds: u64,
+    pub cooldown_seconds: u64,
+}
+
 impl PacketFloodDetector {
-    pub fn new(
-        host: impl Into<String>,
-        syn_threshold: usize,
-        http_threshold: usize,
-        slowloris_threshold: usize,
-        udp_threshold: usize,
-        rate_multiplier: f64,
-        window_seconds: u64,
-        cooldown_seconds: u64,
-    ) -> Self {
+    pub fn new(params: PacketFloodParams) -> Self {
         Self {
-            host: host.into(),
-            syn_threshold,
-            http_threshold,
-            slowloris_threshold,
-            udp_threshold,
-            rate_multiplier,
-            window: Duration::seconds(window_seconds as i64),
+            host: params.host,
+            syn_threshold: params.syn_threshold,
+            http_threshold: params.http_threshold,
+            slowloris_threshold: params.slowloris_threshold,
+            udp_threshold: params.udp_threshold,
+            rate_multiplier: params.rate_multiplier,
+            window: Duration::seconds(params.window_seconds as i64),
             udp_window: Duration::seconds(10),
-            cooldown: Duration::seconds(cooldown_seconds as i64),
+            cooldown: Duration::seconds(params.cooldown_seconds as i64),
             syn_events: VecDeque::new(),
             udp_events: HashMap::new(),
             http_events: VecDeque::new(),
@@ -593,13 +596,31 @@ mod tests {
     }
 
     fn new_detector() -> PacketFloodDetector {
-        PacketFloodDetector::new("test", 100, 200, 50, 50, 10.0, 30, 60)
+        PacketFloodDetector::new(PacketFloodParams {
+            host: "test".to_string(),
+            syn_threshold: 100,
+            http_threshold: 200,
+            slowloris_threshold: 50,
+            udp_threshold: 50,
+            rate_multiplier: 10.0,
+            window_seconds: 30,
+            cooldown_seconds: 60,
+        })
     }
 
     // ── Test 1: SYN flood triggers at threshold ─────────────────────────
     #[test]
     fn syn_flood_triggers_at_threshold() {
-        let mut det = PacketFloodDetector::new("test", 10, 200, 50, 50, 10.0, 30, 60);
+        let mut det = PacketFloodDetector::new(PacketFloodParams {
+            host: "test".to_string(),
+            syn_threshold: 10,
+            http_threshold: 200,
+            slowloris_threshold: 50,
+            udp_threshold: 50,
+            rate_multiplier: 10.0,
+            window_seconds: 30,
+            cooldown_seconds: 60,
+        });
         let now = Utc::now();
 
         // Send 10 failed SSH logins from different IPs within 30s
@@ -624,7 +645,16 @@ mod tests {
     // ── Test 2: Below SYN threshold doesn't trigger ─────────────────────
     #[test]
     fn below_syn_threshold_no_trigger() {
-        let mut det = PacketFloodDetector::new("test", 100, 200, 50, 50, 10.0, 30, 60);
+        let mut det = PacketFloodDetector::new(PacketFloodParams {
+            host: "test".to_string(),
+            syn_threshold: 100,
+            http_threshold: 200,
+            slowloris_threshold: 50,
+            udp_threshold: 50,
+            rate_multiplier: 10.0,
+            window_seconds: 30,
+            cooldown_seconds: 60,
+        });
         let now = Utc::now();
 
         // Send 20 failed logins from different IPs (well below 100 threshold)
@@ -646,7 +676,16 @@ mod tests {
     // ── Test 3: UDP amplification triggers ───────────────────────────────
     #[test]
     fn udp_amplification_triggers() {
-        let mut det = PacketFloodDetector::new("test", 100, 200, 50, 10, 10.0, 30, 60);
+        let mut det = PacketFloodDetector::new(PacketFloodParams {
+            host: "test".to_string(),
+            syn_threshold: 100,
+            http_threshold: 200,
+            slowloris_threshold: 50,
+            udp_threshold: 10,
+            rate_multiplier: 10.0,
+            window_seconds: 30,
+            cooldown_seconds: 60,
+        });
         let now = Utc::now();
 
         // Send 10 UDP events from different sources to same destination in 10s
@@ -680,7 +719,16 @@ mod tests {
     // ── Test 4: HTTP flood triggers ──────────────────────────────────────
     #[test]
     fn http_flood_triggers() {
-        let mut det = PacketFloodDetector::new("test", 100, 20, 50, 50, 10.0, 30, 60);
+        let mut det = PacketFloodDetector::new(PacketFloodParams {
+            host: "test".to_string(),
+            syn_threshold: 100,
+            http_threshold: 20,
+            slowloris_threshold: 50,
+            udp_threshold: 50,
+            rate_multiplier: 10.0,
+            window_seconds: 30,
+            cooldown_seconds: 60,
+        });
         let now = Utc::now();
 
         // Send 20 HTTP events from different IPs
@@ -704,7 +752,16 @@ mod tests {
     // ── Test 5: Slowloris detection triggers ─────────────────────────────
     #[test]
     fn slowloris_triggers() {
-        let mut det = PacketFloodDetector::new("test", 100, 200, 5, 50, 10.0, 30, 60);
+        let mut det = PacketFloodDetector::new(PacketFloodParams {
+            host: "test".to_string(),
+            syn_threshold: 100,
+            http_threshold: 200,
+            slowloris_threshold: 5,
+            udp_threshold: 50,
+            rate_multiplier: 10.0,
+            window_seconds: 30,
+            cooldown_seconds: 60,
+        });
         let now = Utc::now();
         let attacker_ip = "5.5.5.5";
 
@@ -737,7 +794,16 @@ mod tests {
     // ── Test 6: Multi-vector detection (2+ patterns) ─────────────────────
     #[test]
     fn multi_vector_triggers() {
-        let mut det = PacketFloodDetector::new("test", 5, 5, 50, 50, 10.0, 30, 60);
+        let mut det = PacketFloodDetector::new(PacketFloodParams {
+            host: "test".to_string(),
+            syn_threshold: 5,
+            http_threshold: 5,
+            slowloris_threshold: 50,
+            udp_threshold: 50,
+            rate_multiplier: 10.0,
+            window_seconds: 30,
+            cooldown_seconds: 60,
+        });
         let now = Utc::now();
 
         // Trigger SYN flood first
@@ -773,7 +839,16 @@ mod tests {
     // ── Test 7: Connection rate anomaly triggers ─────────────────────────
     #[test]
     fn connection_rate_anomaly_triggers() {
-        let mut det = PacketFloodDetector::new("test", 100, 200, 50, 50, 10.0, 30, 60);
+        let mut det = PacketFloodDetector::new(PacketFloodParams {
+            host: "test".to_string(),
+            syn_threshold: 100,
+            http_threshold: 200,
+            slowloris_threshold: 50,
+            udp_threshold: 50,
+            rate_multiplier: 10.0,
+            window_seconds: 30,
+            cooldown_seconds: 60,
+        });
         let start = Utc::now();
 
         // Build 5 minutes of baseline with ~5 connections per minute
@@ -857,7 +932,16 @@ mod tests {
     // ── Test 9: Cooldown suppresses re-alert ─────────────────────────────
     #[test]
     fn cooldown_suppresses_realert() {
-        let mut det = PacketFloodDetector::new("test", 5, 200, 50, 50, 10.0, 30, 60);
+        let mut det = PacketFloodDetector::new(PacketFloodParams {
+            host: "test".to_string(),
+            syn_threshold: 5,
+            http_threshold: 200,
+            slowloris_threshold: 50,
+            udp_threshold: 50,
+            rate_multiplier: 10.0,
+            window_seconds: 30,
+            cooldown_seconds: 60,
+        });
         let now = Utc::now();
 
         // Trigger SYN flood
@@ -913,7 +997,16 @@ mod tests {
     // ── Test 10: Different attack types tracked independently ────────────
     #[test]
     fn different_attack_types_tracked_independently() {
-        let mut det = PacketFloodDetector::new("test", 5, 5, 50, 50, 10.0, 30, 60);
+        let mut det = PacketFloodDetector::new(PacketFloodParams {
+            host: "test".to_string(),
+            syn_threshold: 5,
+            http_threshold: 5,
+            slowloris_threshold: 50,
+            udp_threshold: 50,
+            rate_multiplier: 10.0,
+            window_seconds: 30,
+            cooldown_seconds: 60,
+        });
         let now = Utc::now();
 
         // 3 SYN events (below threshold=5)
@@ -956,7 +1049,16 @@ mod tests {
     // ── Test 11: Baseline rate calculation works ─────────────────────────
     #[test]
     fn baseline_rate_calculation_works() {
-        let mut det = PacketFloodDetector::new("test", 100, 200, 50, 50, 10.0, 30, 60);
+        let mut det = PacketFloodDetector::new(PacketFloodParams {
+            host: "test".to_string(),
+            syn_threshold: 100,
+            http_threshold: 200,
+            slowloris_threshold: 50,
+            udp_threshold: 50,
+            rate_multiplier: 10.0,
+            window_seconds: 30,
+            cooldown_seconds: 60,
+        });
         let start = Utc::now();
 
         // Simulate 5 minutes with 10 connections each
@@ -988,7 +1090,16 @@ mod tests {
     // ── Test 12: Window expiration cleans old events ─────────────────────
     #[test]
     fn window_expiration_cleans_old_events() {
-        let mut det = PacketFloodDetector::new("test", 10, 200, 50, 50, 10.0, 30, 60);
+        let mut det = PacketFloodDetector::new(PacketFloodParams {
+            host: "test".to_string(),
+            syn_threshold: 10,
+            http_threshold: 200,
+            slowloris_threshold: 50,
+            udp_threshold: 50,
+            rate_multiplier: 10.0,
+            window_seconds: 30,
+            cooldown_seconds: 60,
+        });
         let now = Utc::now();
 
         // Send 8 SYN events at T=0 (below threshold of 10)
@@ -1025,7 +1136,16 @@ mod tests {
     // ── Test 13: UDP amplification requires multiple sources ─────────────
     #[test]
     fn udp_single_source_below_threshold_no_trigger() {
-        let mut det = PacketFloodDetector::new("test", 100, 200, 50, 10, 10.0, 30, 60);
+        let mut det = PacketFloodDetector::new(PacketFloodParams {
+            host: "test".to_string(),
+            syn_threshold: 100,
+            http_threshold: 200,
+            slowloris_threshold: 50,
+            udp_threshold: 10,
+            rate_multiplier: 10.0,
+            window_seconds: 30,
+            cooldown_seconds: 60,
+        });
         let now = Utc::now();
 
         // Send 10 UDP events from same source to same destination
@@ -1051,7 +1171,16 @@ mod tests {
     // ── Test 14: SYN flood requires multiple unique IPs ──────────────────
     #[test]
     fn syn_flood_requires_multiple_ips() {
-        let mut det = PacketFloodDetector::new("test", 5, 200, 50, 50, 10.0, 30, 60);
+        let mut det = PacketFloodDetector::new(PacketFloodParams {
+            host: "test".to_string(),
+            syn_threshold: 5,
+            http_threshold: 200,
+            slowloris_threshold: 50,
+            udp_threshold: 50,
+            rate_multiplier: 10.0,
+            window_seconds: 30,
+            cooldown_seconds: 60,
+        });
         let now = Utc::now();
 
         // Send 5 events but all from same IP — unique_ips < 3

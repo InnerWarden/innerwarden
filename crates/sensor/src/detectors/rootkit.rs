@@ -1058,13 +1058,9 @@ impl RootkitDetector {
                 raw_stddev
             };
 
-            let is_anomalous = if stats.trained && effective_stddev >= 1.0 {
+            let is_anomalous = stats.trained && effective_stddev >= 1.0 && {
                 let threshold_ns = stats.mean_ns + z_threshold * effective_stddev;
                 (delta_ns as f64) > threshold_ns
-            } else if !stats.trained {
-                false
-            } else {
-                false
             };
 
             // Snapshot pre-update stats for incident reporting
