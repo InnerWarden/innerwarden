@@ -854,44 +854,13 @@ fn attach_dispatcher(bpf: &mut aya::Ebpf) -> bool {
         }
     }
 
-    // --- 3. Insert loaded handlers into SYSCALL_DISPATCH ProgramArray ---
-    let mut inserted = 0u32;
-    if let Ok(mut dispatch_map) = ProgramArray::try_from(bpf.map_mut("SYSCALL_DISPATCH").unwrap()) {
-        for &(name, syscall_nr) in handlers {
-            // Get the fd for the already-loaded program
-            if let Some(prog) = bpf.program(name) {
-                let fd = prog.fd();
-                if let Some(fd) = fd {
-                    if dispatch_map.set(syscall_nr, fd, 0).is_ok() {
-                        inserted += 1;
-                    } else {
-                        warn!("dispatcher: failed to insert {name} at index {syscall_nr}");
-                    }
-                }
-            }
-        }
-        info!(count = inserted, "eBPF: SYSCALL_DISPATCH populated");
-    } else {
-        warn!("dispatcher: SYSCALL_DISPATCH map not found");
-        return false;
-    }
-
-    // --- 4. Populate SYSCALL_ENABLED map (hash map: syscall_nr → 1) ---
-    if let Ok(mut enabled_map) =
-        HashMap::<_, u32, u32>::try_from(bpf.map_mut("SYSCALL_ENABLED").unwrap())
-    {
-        for &(_, syscall_nr) in handlers {
-            let _ = enabled_map.insert(syscall_nr, 1u32, 0);
-        }
-        info!(
-            "eBPF: SYSCALL_ENABLED populated ({} syscalls)",
-            handlers.len()
-        );
-    } else {
-        warn!("dispatcher: SYSCALL_ENABLED map not found");
-    }
-
-    inserted > 0
+    // --- 3. Wire handlers into SYSCALL_DISPATCH + SYSCALL_ENABLED ---
+    // TODO: Aya 0.13 ProgramArray::set() takes &ProgramFd which conflicts with
+    // the mutable borrow from map_mut(). Needs Aya 0.14+ or raw bpf syscall.
+    // For now, dispatcher loads and attaches but handlers are not wired.
+    // The typed tracepoints (default mode) handle all 22 syscalls instead.
+    warn!("dispatcher: handler wiring not yet implemented — falling back to typed tracepoints");
+    false
 }
 
 #[cfg(feature = "ebpf")]
