@@ -321,17 +321,12 @@ impl RootkitDetector {
             }
         }
 
-        // Periodic hidden process check
-        if now - self.last_check >= self.check_interval {
-            self.last_check = now;
-            if let Some(inc) = self.check_hidden_processes(now) {
-                return Some(inc);
-            }
-        }
+        // Hidden process check disabled — too many false positives from
+        // short-lived system processes (MOTD scripts, cron jobs). The other
+        // 5 rootkit patterns remain active. Needs redesign: track process
+        // lifetime via both execve AND exit events before flagging.
 
-        // Clean up old PIDs every check cycle (processes that exited long ago)
-        let pid_cutoff = now - Duration::seconds(30);
-        self.pids.retain(|_, info| info.last_seen > pid_cutoff);
+        // Clean up state periodically
         if self.alerted.len() > 1000 {
             let cutoff = now - self.cooldown;
             self.alerted.retain(|_, ts| *ts > cutoff);

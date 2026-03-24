@@ -1212,9 +1212,12 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResp
         .count();
 
     // Last 30 for display
+    // Public feed: only show incidents that have an external IP entity.
+    // Hides internal process alerts (rootkit, sudo, etc) from public view.
     let mut items: Vec<LiveFeedItem> = incidents
         .iter()
         .rev()
+        .filter(|inc| inc.entities.iter().any(|e| e.r#type == EntityType::Ip))
         .take(30)
         .map(|inc| {
             let ip = inc
