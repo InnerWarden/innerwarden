@@ -329,11 +329,9 @@ impl RootkitDetector {
             }
         }
 
-        // Periodic cleanup of old PIDs
-        if self.pids.len() > 5000 {
-            let cutoff = now - Duration::seconds(60);
-            self.pids.retain(|_, info| info.last_seen > cutoff);
-        }
+        // Clean up old PIDs every check cycle (processes that exited long ago)
+        let pid_cutoff = now - Duration::seconds(30);
+        self.pids.retain(|_, info| info.last_seen > pid_cutoff);
         if self.alerted.len() > 1000 {
             let cutoff = now - self.cooldown;
             self.alerted.retain(|_, ts| *ts > cutoff);
