@@ -10,10 +10,11 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use bytes::Bytes;
 use chrono::Utc;
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
 use russh::server::{self, Auth, Config, Handler, Session};
-use russh::{ChannelId, CryptoVec};
+use russh::ChannelId;
 use serde::Serialize;
 use tracing::debug;
 
@@ -240,7 +241,7 @@ impl Handler for HoneypotSshHandler {
         if matches!(self.mode, HandlerMode::LlmShell { .. }) {
             let _ = session.channel_success(channel_id);
             let prompt = self.build_prompt();
-            let _ = session.data(channel_id, CryptoVec::from(prompt.into_bytes()));
+            let _ = session.data(channel_id, Bytes::from(prompt.into_bytes()));
         } else {
             let _ = session.channel_failure(channel_id);
         }
@@ -269,7 +270,7 @@ impl Handler for HoneypotSshHandler {
             match byte {
                 b'\r' | b'\n' => {
                     // Echo newline.
-                    let _ = session.data(channel_id, CryptoVec::from(b"\r\n".to_vec()));
+                    let _ = session.data(channel_id, Bytes::from(b"\r\n".to_vec()));
 
                     let cmd = String::from_utf8_lossy(input_buf).trim().to_string();
                     input_buf.clear();
@@ -280,13 +281,13 @@ impl Handler for HoneypotSshHandler {
                             accepted_user.as_deref().unwrap_or("root"),
                             hostname
                         );
-                        let _ = session.data(channel_id, CryptoVec::from(prompt.into_bytes()));
+                        let _ = session.data(channel_id, Bytes::from(prompt.into_bytes()));
                         continue;
                     }
 
                     // Handle exit/logout gracefully.
                     if cmd == "exit" || cmd == "logout" || cmd == "quit" {
-                        let _ = session.data(channel_id, CryptoVec::from(b"logout\r\n".to_vec()));
+                        let _ = session.data(channel_id, Bytes::from(b"logout\r\n".to_vec()));
                         let _ = session.close(channel_id);
                         return Ok(());
                     }
@@ -314,7 +315,7 @@ impl Handler for HoneypotSshHandler {
                     if !response.is_empty() {
                         let mut out = response.replace('\n', "\r\n");
                         out.push_str("\r\n");
-                        let _ = session.data(channel_id, CryptoVec::from(out.into_bytes()));
+                        let _ = session.data(channel_id, Bytes::from(out.into_bytes()));
                     }
 
                     // Update rolling history (keep last 10).
@@ -335,30 +336,30 @@ impl Handler for HoneypotSshHandler {
                     }
 
                     let prompt = format!("{}@{}:~# ", user, hostname);
-                    let _ = session.data(channel_id, CryptoVec::from(prompt.into_bytes()));
+                    let _ = session.data(channel_id, Bytes::from(prompt.into_bytes()));
                 }
                 0x7f | 0x08 => {
                     // Backspace / DEL.
                     if !input_buf.is_empty() {
                         input_buf.pop();
-                        let _ = session.data(channel_id, CryptoVec::from(b"\x08 \x08".to_vec()));
+                        let _ = session.data(channel_id, Bytes::from(b"\x08 \x08".to_vec()));
                     }
                 }
                 0x03 => {
                     // Ctrl+C.
                     input_buf.clear();
-                    let _ = session.data(channel_id, CryptoVec::from(b"^C\r\n".to_vec()));
+                    let _ = session.data(channel_id, Bytes::from(b"^C\r\n".to_vec()));
                     let prompt = format!(
                         "{}@{}:~# ",
                         accepted_user.as_deref().unwrap_or("root"),
                         hostname
                     );
-                    let _ = session.data(channel_id, CryptoVec::from(prompt.into_bytes()));
+                    let _ = session.data(channel_id, Bytes::from(prompt.into_bytes()));
                 }
                 byte if byte >= 0x20 => {
                     // Printable character: buffer and echo.
                     input_buf.push(byte);
-                    let _ = session.data(channel_id, CryptoVec::from(vec![byte]));
+                    let _ = session.data(channel_id, Bytes::from(vec![byte]));
                 }
                 _ => {}
             }
