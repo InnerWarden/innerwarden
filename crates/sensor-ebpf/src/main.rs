@@ -23,7 +23,11 @@
 
 use aya_ebpf::{
     bindings::xdp_action,
-    helpers::{bpf_get_current_cgroup_id, bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_kernel, bpf_probe_read_user_str_bytes},
+    helpers::{
+        bpf_get_current_cgroup_id, bpf_get_current_comm, bpf_get_current_pid_tgid,
+        bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_kernel,
+        bpf_probe_read_user_str_bytes,
+    },
     macros::{kprobe, lsm, map, tracepoint, xdp},
     maps::{HashMap, RingBuf},
     programs::{LsmContext, ProbeContext, TracePointContext, XdpContext},
@@ -31,9 +35,9 @@ use aya_ebpf::{
 };
 use aya_log_ebpf::info;
 use innerwarden_ebpf_types::{
-    ExecveEvent, ConnectEvent, PrivEscEvent, ProcessExitEvent,
-    PtraceEvent, SetUidEvent, SocketBindEvent, MountEvent, MemfdCreateEvent, ModuleLoadEvent,
-    SyscallKind, MAX_COMM_LEN, MAX_FILENAME_LEN,
+    ConnectEvent, ExecveEvent, MemfdCreateEvent, ModuleLoadEvent, MountEvent, PrivEscEvent,
+    ProcessExitEvent, PtraceEvent, SetUidEvent, SocketBindEvent, SyscallKind, MAX_COMM_LEN,
+    MAX_FILENAME_LEN,
 };
 
 // ---------------------------------------------------------------------------
@@ -60,6 +64,88 @@ static BLOCKLIST: HashMap<u32, u32> = HashMap::with_max_entries(10_000, 0);
 /// Checked BEFORE blocklist: allowlist wins.
 #[map]
 static ALLOWLIST: HashMap<u32, u32> = HashMap::with_max_entries(1_000, 0);
+
+// ---------------------------------------------------------------------------
+// Kernel-level noise filters — populated by userspace, checked before emit
+// ---------------------------------------------------------------------------
+
+/// Comm allowlist — processes that should never trigger alerts.
+/// Key: first 16 bytes of comm name (zero-padded).
+/// Value: bitmask of handlers to skip (bit 0=execve, 1=connect, 2=openat,
+///   3=ptrace, 4=setuid, 5=bind, 6=mount, 7=memfd, 8=init_module).
+/// Populated by agent on boot from config (e.g., cargo, rustc, apt, systemd).
+#[map]
+static COMM_ALLOWLIST: HashMap<[u8; 16], u32> = HashMap::with_max_entries(256, 0);
+
+/// Cgroup allowlist — containers that are known-safe (monitoring, database).
+/// Key: cgroup_id. Value: 1 = skip all non-critical events.
+/// Populated by agent from container inventory.
+#[map]
+static CGROUP_ALLOWLIST: HashMap<u64, u32> = HashMap::with_max_entries(128, 0);
+
+/// Per-PID rate limiter — prevents ring buffer flood from noisy processes.
+/// Key: PID. Value: last emission timestamp (ktime_ns).
+/// If a PID emitted within the last RATE_LIMIT_NS, the event is dropped.
+/// Cleaned up periodically by userspace.
+#[map]
+static PID_RATE_LIMIT: HashMap<u32, u64> = HashMap::with_max_entries(4096, 0);
+
+/// Minimum nanoseconds between events from the same PID (100ms = 100_000_000 ns).
+/// Prevents cargo, find, grep from flooding the ring buffer during builds.
+const RATE_LIMIT_NS: u64 = 100_000_000;
+
+/// Exception list — specific (comm, handler) pairs to always skip.
+/// Key: first 16 bytes of comm. Value: always 1.
+/// More granular than COMM_ALLOWLIST — for processes that are noisy on one
+/// handler but relevant on others (e.g., sshd is noisy on openat but
+/// critical on connect and setuid).
+#[map]
+static EXCEPTION_LIST: HashMap<[u8; 16], u32> = HashMap::with_max_entries(512, 0);
+
+// ---------------------------------------------------------------------------
+// Shared filter helpers
+// ---------------------------------------------------------------------------
+
+/// Check if the current process comm is in the allowlist for this handler.
+/// Returns true if the event should be SKIPPED (process is allowed).
+#[inline(always)]
+fn is_comm_allowed(handler_bit: u32) -> bool {
+    if let Ok(comm) = bpf_get_current_comm() {
+        let mut key = [0u8; 16];
+        let len = comm.len().min(16);
+        key[..len].copy_from_slice(&comm[..len]);
+
+        if let Some(&mask) = unsafe { COMM_ALLOWLIST.get(&key) } {
+            return mask & (1 << handler_bit) != 0;
+        }
+    }
+    false
+}
+
+/// Check if the current cgroup is in the allowlist (known-safe container).
+/// Returns true if the event should be SKIPPED.
+#[inline(always)]
+fn is_cgroup_allowed() -> bool {
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    unsafe { CGROUP_ALLOWLIST.get(&cgroup_id) }.is_some()
+}
+
+/// Per-PID rate limiter. Returns true if the event should be SKIPPED.
+/// Allows max 1 event per RATE_LIMIT_NS per PID per handler.
+#[inline(always)]
+fn is_rate_limited(pid: u32) -> bool {
+    let now = unsafe { bpf_ktime_get_ns() };
+
+    if let Some(&last_ts) = unsafe { PID_RATE_LIMIT.get(&pid) } {
+        if now.saturating_sub(last_ts) < RATE_LIMIT_NS {
+            return true; // too soon — skip
+        }
+    }
+
+    // Update timestamp (best-effort, ignore error if map is full)
+    let _ = PID_RATE_LIMIT.insert(&pid, &now, 0);
+    false
+}
 
 // ---------------------------------------------------------------------------
 // XDP: innerwarden_xdp — wire-speed IP blocking
@@ -142,6 +228,14 @@ pub fn innerwarden_execve(ctx: TracePointContext) -> u32 {
 }
 
 fn try_execve(ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(0) || is_cgroup_allowed() {
+        return Ok(());
+    }
+    let pid = bpf_get_current_pid_tgid() as u32;
+    if is_rate_limited(pid) {
+        return Ok(());
+    }
+
     // Read filename from tracepoint args
     // sys_enter_execve args: [filename, argv, envp]
     let filename_ptr: *const u8 = unsafe { ctx.read_at(16)? };
@@ -175,7 +269,8 @@ fn try_execve(ctx: &TracePointContext) -> Result<(), i64> {
 
     // Read comm
     if let Ok(comm) = bpf_get_current_comm() {
-        event.comm[..comm.len().min(MAX_COMM_LEN)].copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
     }
 
     // Read filename from user space
@@ -212,6 +307,10 @@ pub fn innerwarden_connect(ctx: TracePointContext) -> u32 {
 }
 
 fn try_connect(ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(1) || is_cgroup_allowed() {
+        return Ok(());
+    }
+
     // sys_enter_connect args: [fd, uservaddr, addrlen]
     let addr_ptr: *const u8 = unsafe { ctx.read_at(24)? };
 
@@ -261,7 +360,8 @@ fn try_connect(ctx: &TracePointContext) -> Result<(), i64> {
     event.ts_ns = ts;
 
     if let Ok(comm) = bpf_get_current_comm() {
-        event.comm[..comm.len().min(MAX_COMM_LEN)].copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
     }
 
     entry.submit(0);
@@ -285,6 +385,14 @@ pub fn innerwarden_openat(ctx: TracePointContext) -> u32 {
 }
 
 fn try_openat(ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(2) || is_cgroup_allowed() {
+        return Ok(());
+    }
+    let pid = bpf_get_current_pid_tgid() as u32;
+    if is_rate_limited(pid) {
+        return Ok(());
+    }
+
     // sys_enter_openat args: [dfd, filename, flags, mode]
     let filename_ptr: *const u8 = unsafe { ctx.read_at(24)? };
 
@@ -505,7 +613,7 @@ fn try_lsm_exec(ctx: &LsmContext) -> Result<i32, i64> {
             || (c[0] == b'c' && c[1] == b'a' && c[2] == b'r' && c[3] == b'g')    // cargo
             || (c[0] == b'r' && c[1] == b'u' && c[2] == b's' && c[3] == b't')    // rustc
             // System
-            || (c[0] == b's' && c[1] == b'y' && c[2] == b's' && c[3] == b't');   // systemd*
+            || (c[0] == b's' && c[1] == b'y' && c[2] == b's' && c[3] == b't'); // systemd*
         if is_allowed {
             return Ok(0);
         }
@@ -620,13 +728,19 @@ pub fn innerwarden_ptrace(ctx: TracePointContext) -> u32 {
 
 #[inline(always)]
 fn try_ptrace(ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(3) || is_cgroup_allowed() {
+        return Ok(());
+    }
+
     // sys_enter_ptrace args: [request, pid, addr, data]
     let request: u64 = unsafe { ctx.read_at(16)? };
     let target_pid: u64 = unsafe { ctx.read_at(24)? };
 
     // Only dangerous operations
-    if request != PTRACE_ATTACH && request != PTRACE_SEIZE
-        && request != PTRACE_POKETEXT && request != PTRACE_POKEDATA
+    if request != PTRACE_ATTACH
+        && request != PTRACE_SEIZE
+        && request != PTRACE_POKETEXT
+        && request != PTRACE_POKEDATA
     {
         return Ok(());
     }
@@ -677,6 +791,11 @@ pub fn innerwarden_setuid(ctx: TracePointContext) -> u32 {
 
 #[inline(always)]
 fn try_setuid(ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(4) {
+        return Ok(());
+    }
+    // Note: no cgroup filter on setuid — privilege escalation is always relevant
+
     // sys_enter_setuid args: [uid]
     let target_uid: u32 = unsafe { ctx.read_at(16)? };
     let current_uid = bpf_get_current_uid_gid() as u32;
@@ -730,6 +849,10 @@ pub fn innerwarden_bind(ctx: TracePointContext) -> u32 {
 
 #[inline(always)]
 fn try_bind(ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(5) || is_cgroup_allowed() {
+        return Ok(());
+    }
+
     // sys_enter_bind args: [fd, umyaddr, addrlen]
     let addr_ptr: *const u8 = unsafe { ctx.read_at(24)? };
 
@@ -802,6 +925,12 @@ pub fn innerwarden_mount(ctx: TracePointContext) -> u32 {
 
 #[inline(always)]
 fn try_mount(ctx: &TracePointContext) -> Result<(), i64> {
+    // No comm/cgroup filter — mount is always security-critical
+    let pid = bpf_get_current_pid_tgid() as u32;
+    if is_rate_limited(pid) {
+        return Ok(());
+    }
+
     // sys_enter_mount args: [dev_name, dir_name, type, flags, data]
     let source_ptr: *const u8 = unsafe { ctx.read_at(16)? };
     let target_ptr: *const u8 = unsafe { ctx.read_at(24)? };
@@ -827,15 +956,21 @@ fn try_mount(ctx: &TracePointContext) -> Result<(), i64> {
 
     // Read source path
     event.source = [0u8; MAX_FILENAME_LEN];
-    unsafe { let _ = bpf_probe_read_user_str_bytes(source_ptr, &mut event.source); }
+    unsafe {
+        let _ = bpf_probe_read_user_str_bytes(source_ptr, &mut event.source);
+    }
 
     // Read target path
     event.target = [0u8; MAX_FILENAME_LEN];
-    unsafe { let _ = bpf_probe_read_user_str_bytes(target_ptr, &mut event.target); }
+    unsafe {
+        let _ = bpf_probe_read_user_str_bytes(target_ptr, &mut event.target);
+    }
 
     // Read filesystem type
     event.fs_type = [0u8; 32];
-    unsafe { let _ = bpf_probe_read_user_str_bytes(type_ptr, &mut event.fs_type); }
+    unsafe {
+        let _ = bpf_probe_read_user_str_bytes(type_ptr, &mut event.fs_type);
+    }
 
     if let Ok(comm) = bpf_get_current_comm() {
         event.comm[..comm.len().min(MAX_COMM_LEN)]
@@ -864,6 +999,11 @@ pub fn innerwarden_memfd_create(ctx: TracePointContext) -> u32 {
 
 #[inline(always)]
 fn try_memfd_create(ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(7) {
+        return Ok(());
+    }
+    // No cgroup filter — memfd_create is rare and always suspicious
+
     // sys_enter_memfd_create args: [uname, flags]
     let name_ptr: *const u8 = unsafe { ctx.read_at(16)? };
     let flags: u32 = unsafe { ctx.read_at(24)? };
@@ -886,7 +1026,9 @@ fn try_memfd_create(ctx: &TracePointContext) -> Result<(), i64> {
     event.ts_ns = ts;
 
     event.name = [0u8; MAX_FILENAME_LEN];
-    unsafe { let _ = bpf_probe_read_user_str_bytes(name_ptr, &mut event.name); }
+    unsafe {
+        let _ = bpf_probe_read_user_str_bytes(name_ptr, &mut event.name);
+    }
 
     if let Ok(comm) = bpf_get_current_comm() {
         event.comm[..comm.len().min(MAX_COMM_LEN)]
@@ -915,6 +1057,7 @@ pub fn innerwarden_init_module(ctx: TracePointContext) -> u32 {
 
 #[inline(always)]
 fn try_init_module(_ctx: &TracePointContext) -> Result<(), i64> {
+    // No filters — kernel module loading is ALWAYS critical. No exceptions.
     let pid = bpf_get_current_pid_tgid() as u32;
     let uid = bpf_get_current_uid_gid() as u32;
     let ts = unsafe { bpf_ktime_get_ns() };
