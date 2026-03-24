@@ -631,6 +631,19 @@ pub struct RootkitConfig {
     pub check_interval_seconds: u64,
     #[serde(default = "default_rootkit_cooldown_seconds")]
     pub cooldown_seconds: u64,
+    /// Enable kernel function timing analysis for rootkit detection.
+    /// Detects syscall hooks by measuring inter-event timing anomalies.
+    #[serde(default = "default_true")]
+    pub timing_enabled: bool,
+    /// Minimum samples before a syscall timing profile is considered trained.
+    #[serde(default = "default_rootkit_timing_min_samples")]
+    pub timing_min_samples: u64,
+    /// Z-score threshold for flagging a single timing anomaly.
+    #[serde(default = "default_rootkit_timing_z_threshold")]
+    pub timing_z_threshold: f64,
+    /// Consecutive anomalous timings required to raise an incident.
+    #[serde(default = "default_rootkit_timing_consecutive_threshold")]
+    pub timing_consecutive_threshold: usize,
 }
 
 impl Default for RootkitConfig {
@@ -639,6 +652,10 @@ impl Default for RootkitConfig {
             enabled: true,
             check_interval_seconds: default_rootkit_check_interval_seconds(),
             cooldown_seconds: default_rootkit_cooldown_seconds(),
+            timing_enabled: true,
+            timing_min_samples: default_rootkit_timing_min_samples(),
+            timing_z_threshold: default_rootkit_timing_z_threshold(),
+            timing_consecutive_threshold: default_rootkit_timing_consecutive_threshold(),
         }
     }
 }
@@ -649,6 +666,18 @@ fn default_rootkit_check_interval_seconds() -> u64 {
 
 fn default_rootkit_cooldown_seconds() -> u64 {
     600
+}
+
+fn default_rootkit_timing_min_samples() -> u64 {
+    100
+}
+
+fn default_rootkit_timing_z_threshold() -> f64 {
+    4.0
+}
+
+fn default_rootkit_timing_consecutive_threshold() -> usize {
+    5
 }
 
 #[derive(Debug, Deserialize)]

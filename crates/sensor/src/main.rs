@@ -393,12 +393,22 @@ async fn main() -> Result<()> {
             info!(
                 check_interval_seconds = d.check_interval_seconds,
                 cooldown_seconds = d.cooldown_seconds,
+                timing_enabled = d.timing_enabled,
+                timing_min_samples = d.timing_min_samples,
+                timing_z_threshold = d.timing_z_threshold,
+                timing_consecutive_threshold = d.timing_consecutive_threshold,
                 "rootkit detector enabled"
             );
             RootkitDetector::new(
                 &cfg.agent.host_id,
                 d.check_interval_seconds,
                 d.cooldown_seconds,
+            )
+            .with_timing_config(
+                d.timing_enabled,
+                d.timing_min_samples,
+                d.timing_z_threshold,
+                d.timing_consecutive_threshold,
             )
         }),
         reverse_shell: cfg.detectors.reverse_shell.enabled.then(|| {

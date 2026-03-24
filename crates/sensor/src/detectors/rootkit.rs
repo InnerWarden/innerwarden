@@ -24,6 +24,12 @@ use innerwarden_core::{event::Event, event::Severity, incident::Incident};
 ///
 /// 6. **Process name spoofing** — eBPF sees the real binary path via execve but
 ///    the comm field doesn't match the binary name.
+///
+/// 7. **Kernel function timing analysis** — tracks inter-event timing per syscall kind
+///    using Welford's online algorithm. Rootkits that hook kernel functions (e.g.,
+///    getdents64 to hide files/processes) add measurable latency. Consecutive timing
+///    anomalies beyond a configurable z-score threshold raise an incident.
+///    Based on research from ait-aecid/rootkit-detection-ebpf-time-trace.
 pub struct RootkitDetector {
     cooldown: Duration,
     check_interval: Duration,
@@ -37,6 +43,84 @@ pub struct RootkitDetector {
     /// Pluggable function to check if a PID exists in /proc.
     /// Defaults to checking the filesystem. Overridden in tests.
     pid_exists_fn: fn(u32) -> bool,
+    /// Per-syscall-kind timing statistics (Welford's online algorithm).
+    /// Tracks inter-event timing to detect kernel function hooking.
+    syscall_timing: HashMap<String, TimingStats>,
+    /// Whether timing analysis is enabled.
+    timing_enabled: bool,
+    /// Minimum samples before a timing profile is considered trained.
+    timing_min_samples: u64,
+    /// Z-score threshold for flagging a single timing anomaly.
+    timing_z_threshold: f64,
+    /// Consecutive anomalous timings required to raise an incident.
+    timing_consecutive_threshold: usize,
+}
+
+/// Per-syscall-kind timing statistics using Welford's online algorithm.
+/// Tracks inter-event timing deltas to build a baseline and detect anomalies
+/// that indicate kernel function hooking (rootkit behavior).
+#[derive(Debug, Clone)]
+struct TimingStats {
+    /// Number of timing samples observed.
+    count: u64,
+    /// Running mean of inter-event delta in nanoseconds.
+    mean_ns: f64,
+    /// Welford's M2 aggregator for computing variance.
+    m2: f64,
+    /// Minimum inter-event delta observed (nanoseconds).
+    min_ns: u64,
+    /// Maximum inter-event delta observed (nanoseconds).
+    max_ns: u64,
+    /// Timestamp of the last event of this kind.
+    last_ts: DateTime<Utc>,
+    /// True after timing_min_samples have been collected.
+    trained: bool,
+    /// Count of consecutive anomalous timings.
+    consecutive_anomalies: usize,
+}
+
+impl TimingStats {
+    fn new(ts: DateTime<Utc>) -> Self {
+        Self {
+            count: 0,
+            mean_ns: 0.0,
+            m2: 0.0,
+            min_ns: u64::MAX,
+            max_ns: 0,
+            last_ts: ts,
+            trained: false,
+            consecutive_anomalies: 0,
+        }
+    }
+
+    /// Update with a new inter-event delta using Welford's online algorithm.
+    fn update(&mut self, delta_ns: u64, min_samples: u64) {
+        self.count += 1;
+        let x = delta_ns as f64;
+        let delta = x - self.mean_ns;
+        self.mean_ns += delta / self.count as f64;
+        let delta2 = x - self.mean_ns;
+        self.m2 += delta * delta2;
+
+        if delta_ns < self.min_ns {
+            self.min_ns = delta_ns;
+        }
+        if delta_ns > self.max_ns {
+            self.max_ns = delta_ns;
+        }
+
+        if self.count >= min_samples {
+            self.trained = true;
+        }
+    }
+
+    /// Compute the population standard deviation.
+    fn stddev(&self) -> f64 {
+        if self.count < 2 {
+            return 0.0;
+        }
+        (self.m2 / self.count as f64).sqrt()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -276,7 +360,27 @@ impl RootkitDetector {
             last_check: Utc::now(),
             host: host.into(),
             pid_exists_fn: default_pid_exists,
+            syscall_timing: HashMap::new(),
+            timing_enabled: true,
+            timing_min_samples: 100,
+            timing_z_threshold: 4.0,
+            timing_consecutive_threshold: 5,
         }
+    }
+
+    /// Create with explicit timing configuration.
+    pub fn with_timing_config(
+        mut self,
+        enabled: bool,
+        min_samples: u64,
+        z_threshold: f64,
+        consecutive_threshold: usize,
+    ) -> Self {
+        self.timing_enabled = enabled;
+        self.timing_min_samples = min_samples;
+        self.timing_z_threshold = z_threshold;
+        self.timing_consecutive_threshold = consecutive_threshold;
+        self
     }
 
     #[cfg(test)]
@@ -299,6 +403,13 @@ impl RootkitDetector {
         if event.kind == "process.exit" {
             if let Some(pid) = event.details["pid"].as_u64() {
                 self.pids.remove(&(pid as u32));
+            }
+        }
+
+        // Kernel function timing analysis — runs for every event to build profiles
+        if self.timing_enabled {
+            if let Some(inc) = self.check_timing_anomaly(event, now) {
+                return Some(inc);
             }
         }
 
@@ -897,6 +1008,174 @@ impl RootkitDetector {
         })
     }
 
+    /// Check inter-event timing for anomalies that indicate kernel function hooking.
+    ///
+    /// For each event kind, we track the time delta between consecutive events.
+    /// After collecting enough samples (timing_min_samples), we use Welford's
+    /// running statistics to detect anomalies: if delta > mean + z_threshold * stddev,
+    /// the event is anomalous. After timing_consecutive_threshold consecutive anomalies
+    /// for the same kind, we raise an incident.
+    ///
+    /// Specific patterns:
+    /// - file.read_access anomaly → possible getdents64 hook (hiding files/processes)
+    /// - shell.command_exec anomaly → possible execve hook
+    /// - network.connection anomaly → possible connect hook (hiding network connections)
+    fn check_timing_anomaly(&mut self, event: &Event, now: DateTime<Utc>) -> Option<Incident> {
+        let kind = &event.kind;
+        let min_samples = self.timing_min_samples;
+        let z_threshold = self.timing_z_threshold;
+        let consecutive_threshold = self.timing_consecutive_threshold;
+
+        // Snapshot needed for incident generation — extracted before releasing borrow
+        let anomaly_info = {
+            let stats = self
+                .syscall_timing
+                .entry(kind.clone())
+                .or_insert_with(|| TimingStats::new(now));
+
+            // Compute delta from last event of this kind
+            let delta = now - stats.last_ts;
+            let delta_ns = delta.num_nanoseconds().unwrap_or(0);
+
+            // Skip the first event (no delta yet) and negative/zero deltas
+            if delta_ns <= 0 {
+                stats.last_ts = now;
+                return None;
+            }
+            let delta_ns = delta_ns as u64;
+
+            // Check anomaly BEFORE updating stats — so the baseline is not
+            // contaminated by the potentially anomalous sample.
+            //
+            // When stddev is near-zero (all samples nearly identical), we use
+            // a minimum effective stddev of mean/10 so that a delta of
+            // mean + 4*(mean/10) = 1.4*mean still won't trigger, but a delta
+            // orders of magnitude larger will.
+            let raw_stddev = stats.stddev();
+            let effective_stddev = if raw_stddev < stats.mean_ns * 0.01 {
+                stats.mean_ns * 0.1
+            } else {
+                raw_stddev
+            };
+
+            let is_anomalous = if stats.trained && effective_stddev >= 1.0 {
+                let threshold_ns = stats.mean_ns + z_threshold * effective_stddev;
+                (delta_ns as f64) > threshold_ns
+            } else if !stats.trained {
+                false
+            } else {
+                false
+            };
+
+            // Snapshot pre-update stats for incident reporting
+            let pre_mean = stats.mean_ns;
+            let pre_stddev = effective_stddev;
+            let pre_count = stats.count;
+
+            // Only update baseline with non-anomalous samples.
+            // Anomalous samples would corrupt the running statistics
+            // and prevent detection of sustained anomalies.
+            if !is_anomalous {
+                stats.update(delta_ns, min_samples);
+            }
+            stats.last_ts = now;
+
+            if is_anomalous {
+                stats.consecutive_anomalies += 1;
+            } else {
+                stats.consecutive_anomalies = 0;
+                return None;
+            }
+
+            if stats.consecutive_anomalies < consecutive_threshold {
+                return None;
+            }
+
+            // Extract values we need for the incident before releasing the borrow
+            let actual_us = delta_ns / 1_000;
+            let expected_us = (pre_mean / 1_000.0) as u64;
+            let stddev_us = (pre_stddev / 1_000.0) as u64;
+            let z_score = if pre_stddev > 0.0 {
+                ((delta_ns as f64) - pre_mean) / pre_stddev
+            } else {
+                0.0
+            };
+            let total_samples = pre_count;
+
+            Some((actual_us, expected_us, stddev_us, z_score, total_samples))
+        };
+
+        let (actual_us, expected_us, stddev_us, z_score, total_samples) = anomaly_info?;
+
+        // Now we can access self freely — the mutable borrow on syscall_timing is released
+        let alert_key = format!("timing:{kind}");
+        if self.is_cooled_down(&alert_key, now) {
+            return None;
+        }
+        self.alerted.insert(alert_key, now);
+
+        // Reset consecutive count after alerting (cooldown reset)
+        if let Some(s) = self.syscall_timing.get_mut(kind) {
+            s.consecutive_anomalies = 0;
+        }
+
+        // Map event kind to suspected kernel hook
+        let hook_hint = match kind.as_str() {
+            "file.read_access" => " (possible getdents64 hook — hiding files/processes)",
+            "shell.command_exec" => " (possible execve hook)",
+            "network.connection" | "network.outbound_connect" => {
+                " (possible connect hook — hiding network connections)"
+            }
+            _ => "",
+        };
+
+        let title = format!(
+            "Syscall timing anomaly: {kind} latency {actual_us}\u{00B5}s vs {expected_us}\u{00B5}s baseline{hook_hint}"
+        );
+
+        Some(Incident {
+            ts: now,
+            host: self.host.clone(),
+            incident_id: format!(
+                "rootkit:timing:{kind}:{}",
+                now.format("%Y-%m-%dT%H:%MZ")
+            ),
+            severity: Severity::High,
+            title: title.clone(),
+            summary: format!(
+                "Kernel function timing anomaly detected: {kind} shows {consecutive_threshold}+ consecutive \
+                 latency spikes ({actual_us}\u{00B5}s vs {expected_us}\u{00B5}s baseline, z>{z_threshold}). \
+                 This may indicate a rootkit hooking the underlying syscall{hook_hint}."
+            ),
+            evidence: serde_json::json!([{
+                "kind": "timing_anomaly",
+                "event_kind": kind,
+                "actual_delta_us": actual_us,
+                "baseline_mean_us": expected_us,
+                "baseline_stddev_us": stddev_us,
+                "z_score": z_score,
+                "consecutive_anomalies": consecutive_threshold,
+                "total_samples": total_samples,
+            }]),
+            recommended_checks: vec![
+                format!(
+                    "Kernel function timing anomaly on {kind}: {actual_us}\u{00B5}s vs {expected_us}\u{00B5}s baseline"
+                ),
+                "This pattern is consistent with a rootkit hooking kernel functions (e.g., getdents64, execve, connect)".to_string(),
+                "Check for loaded kernel modules: lsmod | diff - <(cat /proc/modules)".to_string(),
+                "Run rkhunter or chkrootkit for full rootkit scan".to_string(),
+                "Compare syscall table: cat /proc/kallsyms | grep sys_call_table".to_string(),
+                "If confirmed: boot from live USB for forensic analysis".to_string(),
+            ],
+            tags: vec![
+                "ebpf".to_string(),
+                "rootkit".to_string(),
+                "timing_anomaly".to_string(),
+            ],
+            entities: vec![],
+        })
+    }
+
     /// Check cooldown — returns true if the alert is still in cooldown.
     fn is_cooled_down(&self, key: &str, now: DateTime<Utc>) -> bool {
         if let Some(&last) = self.alerted.get(key) {
@@ -1471,5 +1750,328 @@ mod tests {
         // This should not trigger the modification check (but may trigger artifact check
         // only if the path is in the artifact list — it's not, so should be None)
         assert!(inc.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Kernel function timing analysis tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: create a generic event with a specific kind and timestamp.
+    /// Uses a benign filename so it doesn't trigger artifact/recon checks.
+    fn timing_event(kind: &str, ts: DateTime<Utc>) -> Event {
+        Event {
+            ts,
+            host: "test".to_string(),
+            source: "ebpf".to_string(),
+            kind: kind.to_string(),
+            severity: Severity::Info,
+            summary: format!("timing test event: {kind}"),
+            details: serde_json::json!({
+                "pid": 9999,
+                "uid": 1000,
+                "ppid": 1,
+                "comm": "app",
+                "filename": "/home/user/data.txt",
+                "command": "/usr/bin/app",
+            }),
+            tags: vec!["ebpf".to_string()],
+            entities: vec![],
+        }
+    }
+
+    /// Helper: create a detector with low thresholds for timing tests.
+    fn timing_detector(min_samples: u64, z_threshold: f64, consecutive: usize) -> RootkitDetector {
+        RootkitDetector::new("test", 10, 600).with_timing_config(
+            true,
+            min_samples,
+            z_threshold,
+            consecutive,
+        )
+    }
+
+    // --- Timing Test 1: Welford mean/stddev correct ---
+    #[test]
+    fn timing_stats_welford_mean_stddev_correct() {
+        let mut stats = TimingStats::new(Utc::now());
+        let values: Vec<u64> = vec![10, 20, 30, 40, 50];
+
+        for v in &values {
+            stats.update(*v, 3);
+        }
+
+        // Mean should be 30.0
+        assert!(
+            (stats.mean_ns - 30.0).abs() < 0.001,
+            "mean={}",
+            stats.mean_ns
+        );
+
+        // Population stddev of [10,20,30,40,50] = sqrt(200) ≈ 14.142
+        let stddev = stats.stddev();
+        assert!((stddev - 14.1421).abs() < 0.01, "stddev={stddev}");
+
+        assert_eq!(stats.count, 5);
+        assert_eq!(stats.min_ns, 10);
+        assert_eq!(stats.max_ns, 50);
+        assert!(stats.trained); // 5 >= min_samples(3)
+    }
+
+    // --- Timing Test 2: Normal timing doesn't trigger ---
+    #[test]
+    fn timing_normal_does_not_trigger() {
+        // min_samples=10, z=4.0, consecutive=5
+        let mut det = timing_detector(10, 4.0, 5);
+        let base = Utc::now();
+
+        // Feed 20 events at regular 100ms intervals — all normal, no anomaly
+        for i in 0..20 {
+            let ts = base + Duration::milliseconds(i * 100);
+            let ev = timing_event("file.read_access", ts);
+            let inc = det.process(&ev);
+            assert!(inc.is_none(), "Normal timing should not trigger at i={i}");
+        }
+    }
+
+    // --- Timing Test 3: Single anomalous timing doesn't trigger ---
+    #[test]
+    fn timing_single_anomaly_does_not_trigger() {
+        // min_samples=10, z=4.0, consecutive=5
+        let mut det = timing_detector(10, 4.0, 5);
+        let base = Utc::now();
+
+        // Train with 15 events at 100ms intervals
+        for i in 0..15 {
+            let ts = base + Duration::milliseconds(i * 100);
+            det.process(&timing_event("file.read_access", ts));
+        }
+
+        // One big spike (10 seconds) — should NOT trigger (need 5 consecutive)
+        let spike_ts = base + Duration::milliseconds(15 * 100) + Duration::seconds(10);
+        let inc = det.process(&timing_event("file.read_access", spike_ts));
+        assert!(
+            inc.is_none(),
+            "Single anomalous timing should not trigger an incident"
+        );
+
+        // Back to normal
+        let normal_ts = spike_ts + Duration::milliseconds(100);
+        let inc = det.process(&timing_event("file.read_access", normal_ts));
+        assert!(inc.is_none());
+    }
+
+    // --- Timing Test 4: 5 consecutive anomalous timings trigger ---
+    #[test]
+    fn timing_consecutive_anomalies_trigger() {
+        // min_samples=10, z=4.0, consecutive=5
+        let mut det = timing_detector(10, 4.0, 5);
+        let base = Utc::now();
+
+        // Train with 15 events at 1ms intervals (mean ~1ms, very tight stddev)
+        for i in 0..15 {
+            let ts = base + Duration::milliseconds(i);
+            det.process(&timing_event("file.read_access", ts));
+        }
+
+        // Verify trained
+        assert!(det.syscall_timing["file.read_access"].trained);
+
+        // Now send 5+ events with 10-second gaps (massive anomaly vs 1ms baseline)
+        let mut last_ts = base + Duration::milliseconds(15);
+        let mut triggered = false;
+        for _i in 0..10 {
+            last_ts = last_ts + Duration::seconds(10);
+            if let Some(inc) = det.process(&timing_event("file.read_access", last_ts)) {
+                assert_eq!(inc.severity, Severity::High);
+                assert!(inc.title.contains("timing anomaly"), "title={}", inc.title);
+                assert!(
+                    inc.title.contains("file.read_access"),
+                    "title={}",
+                    inc.title
+                );
+                assert!(inc.tags.contains(&"timing_anomaly".to_string()));
+                triggered = true;
+                break;
+            }
+        }
+        assert!(
+            triggered,
+            "Should trigger after 5 consecutive anomalous timings"
+        );
+    }
+
+    // --- Timing Test 5: Different syscall kinds tracked independently ---
+    #[test]
+    fn timing_different_kinds_tracked_independently() {
+        let mut det = timing_detector(5, 4.0, 3);
+        let base = Utc::now();
+
+        // Feed 8 file.read_access events at 1ms intervals
+        for i in 0..8 {
+            let ts = base + Duration::milliseconds(i);
+            det.process(&timing_event("file.read_access", ts));
+        }
+
+        // Feed 8 shell.command_exec events at 50ms intervals
+        for i in 0..8 {
+            let ts = base + Duration::milliseconds(i * 50);
+            det.process(&timing_event("shell.command_exec", ts));
+        }
+
+        // Both should be tracked independently
+        assert!(det.syscall_timing.contains_key("file.read_access"));
+        assert!(det.syscall_timing.contains_key("shell.command_exec"));
+
+        let file_stats = &det.syscall_timing["file.read_access"];
+        let exec_stats = &det.syscall_timing["shell.command_exec"];
+
+        // file.read_access mean should be ~1ms
+        assert!(file_stats.trained);
+        assert!(
+            file_stats.mean_ns < 5_000_000.0,
+            "file mean={}",
+            file_stats.mean_ns
+        );
+
+        // shell.command_exec mean should be ~50ms
+        assert!(exec_stats.trained);
+        assert!(
+            exec_stats.mean_ns > 10_000_000.0,
+            "exec mean={}",
+            exec_stats.mean_ns
+        );
+    }
+
+    // --- Timing Test 6: Untrained profile doesn't trigger ---
+    #[test]
+    fn timing_untrained_does_not_trigger() {
+        // Require 100 samples (default), but only provide 5
+        let mut det = timing_detector(100, 4.0, 5);
+        let base = Utc::now();
+
+        // Feed only 5 events at 1ms intervals, then one massive spike
+        for i in 0..5 {
+            let ts = base + Duration::milliseconds(i);
+            det.process(&timing_event("file.read_access", ts));
+        }
+
+        // Profile is NOT trained (5 < 100)
+        assert!(
+            !det.syscall_timing["file.read_access"].trained,
+            "Should not be trained with only 5 samples"
+        );
+
+        // Even a massive spike should not trigger
+        for _ in 0..10 {
+            let spike_ts = base + Duration::seconds(100);
+            let inc = det.process(&timing_event("file.read_access", spike_ts));
+            assert!(
+                inc.is_none(),
+                "Untrained profile should never trigger an incident"
+            );
+        }
+    }
+
+    // --- Timing Test 7: file.read_access anomaly mentions getdents64 ---
+    #[test]
+    fn timing_file_read_anomaly_mentions_getdents64() {
+        // min_samples=10, z=4.0, consecutive=3 (lower threshold for test)
+        let mut det = timing_detector(10, 4.0, 3);
+        let base = Utc::now();
+
+        // Train with 15 events at 1ms intervals
+        for i in 0..15 {
+            let ts = base + Duration::milliseconds(i);
+            det.process(&timing_event("file.read_access", ts));
+        }
+
+        // Now send 3 events with massive gaps
+        let mut last_ts = base + Duration::milliseconds(15);
+        let mut incident = None;
+        for _ in 0..3 {
+            last_ts = last_ts + Duration::seconds(10);
+            if let Some(inc) = det.process(&timing_event("file.read_access", last_ts)) {
+                incident = Some(inc);
+                break;
+            }
+        }
+
+        let inc = incident.expect("Should trigger timing anomaly for file.read_access");
+        assert!(
+            inc.title.contains("getdents64"),
+            "file.read_access anomaly should mention getdents64 hook, title={}",
+            inc.title
+        );
+    }
+
+    // --- Timing Test 8: Consecutive counter resets after alert (cooldown) ---
+    #[test]
+    fn timing_resets_consecutive_after_alert() {
+        // min_samples=10, z=4.0, consecutive=3
+        let mut det = timing_detector(10, 4.0, 3);
+        let base = Utc::now();
+
+        // Train with 15 events at 1ms intervals
+        for i in 0..15 {
+            let ts = base + Duration::milliseconds(i);
+            det.process(&timing_event("file.read_access", ts));
+        }
+
+        // Trigger with 3 anomalous events
+        let mut last_ts = base + Duration::milliseconds(15);
+        let mut triggered = false;
+        for _ in 0..3 {
+            last_ts = last_ts + Duration::seconds(10);
+            if det
+                .process(&timing_event("file.read_access", last_ts))
+                .is_some()
+            {
+                triggered = true;
+                break;
+            }
+        }
+        assert!(triggered, "Should have triggered first alert");
+
+        // After alert, consecutive_anomalies should be reset to 0
+        assert_eq!(
+            det.syscall_timing["file.read_access"].consecutive_anomalies, 0,
+            "consecutive_anomalies should be reset after alert"
+        );
+
+        // A single new anomaly should NOT trigger (need 3 more consecutive)
+        last_ts = last_ts + Duration::seconds(10);
+        let inc = det.process(&timing_event("file.read_access", last_ts));
+        assert!(
+            inc.is_none(),
+            "Should not trigger immediately after reset — needs consecutive threshold again"
+        );
+    }
+
+    // --- Timing Test 9 (bonus): timing disabled means no analysis ---
+    #[test]
+    fn timing_disabled_no_analysis() {
+        let mut det = RootkitDetector::new("test", 10, 600).with_timing_config(false, 10, 4.0, 3);
+        let base = Utc::now();
+
+        // Feed enough events and anomalies to normally trigger
+        for i in 0..15 {
+            let ts = base + Duration::milliseconds(i);
+            det.process(&timing_event("file.read_access", ts));
+        }
+
+        let mut last_ts = base + Duration::milliseconds(15);
+        for _ in 0..5 {
+            last_ts = last_ts + Duration::seconds(10);
+            let inc = det.process(&timing_event("file.read_access", last_ts));
+            assert!(
+                inc.is_none(),
+                "Timing disabled should never produce incidents"
+            );
+        }
+
+        // No timing stats should have been collected
+        assert!(
+            det.syscall_timing.is_empty(),
+            "No timing stats should be tracked when disabled"
+        );
     }
 }
