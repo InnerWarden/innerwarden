@@ -257,6 +257,8 @@ pub struct DetectorsConfig {
     pub ransomware: RansomwareConfig,
     #[serde(default)]
     pub credential_harvest: CredentialHarvestConfig,
+    #[serde(default)]
+    pub packet_flood: PacketFloodConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -899,6 +901,69 @@ impl Default for CredentialHarvestConfig {
 
 fn default_credential_harvest_cooldown_seconds() -> u64 {
     600
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PacketFloodConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_packet_flood_syn_threshold")]
+    pub syn_threshold: usize,
+    #[serde(default = "default_packet_flood_http_threshold")]
+    pub http_threshold: usize,
+    #[serde(default = "default_packet_flood_slowloris_threshold")]
+    pub slowloris_threshold: usize,
+    #[serde(default = "default_packet_flood_udp_threshold")]
+    pub udp_threshold: usize,
+    #[serde(default = "default_packet_flood_rate_multiplier")]
+    pub rate_multiplier: f64,
+    #[serde(default = "default_packet_flood_window_seconds")]
+    pub window_seconds: u64,
+    #[serde(default = "default_packet_flood_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for PacketFloodConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            syn_threshold: default_packet_flood_syn_threshold(),
+            http_threshold: default_packet_flood_http_threshold(),
+            slowloris_threshold: default_packet_flood_slowloris_threshold(),
+            udp_threshold: default_packet_flood_udp_threshold(),
+            rate_multiplier: default_packet_flood_rate_multiplier(),
+            window_seconds: default_packet_flood_window_seconds(),
+            cooldown_seconds: default_packet_flood_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_packet_flood_syn_threshold() -> usize {
+    100
+}
+
+fn default_packet_flood_http_threshold() -> usize {
+    200
+}
+
+fn default_packet_flood_slowloris_threshold() -> usize {
+    50
+}
+
+fn default_packet_flood_udp_threshold() -> usize {
+    50
+}
+
+fn default_packet_flood_rate_multiplier() -> f64 {
+    10.0
+}
+
+fn default_packet_flood_window_seconds() -> u64 {
+    30
+}
+
+fn default_packet_flood_cooldown_seconds() -> u64 {
+    60
 }
 
 fn default_lateral_movement_ssh_threshold() -> usize {

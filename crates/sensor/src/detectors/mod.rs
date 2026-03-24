@@ -55,3 +55,6 @@ pub mod ssh_key_injection;
 pub mod systemd_persistence;
 pub mod user_creation;
 pub mod web_shell;
+
+// v0.6.0 detectors
+pub mod packet_flood;
