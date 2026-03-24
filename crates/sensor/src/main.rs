@@ -36,6 +36,7 @@ use detectors::lateral_movement::LateralMovementDetector;
 use detectors::log_tampering::LogTamperingDetector;
 use detectors::osquery_anomaly::OsqueryAnomalyDetector;
 use detectors::outbound_anomaly::OutboundAnomalyDetector;
+use detectors::packet_flood::PacketFloodDetector;
 use detectors::port_scan::PortScanDetector;
 use detectors::privesc::PrivescDetector;
 use detectors::process_injection::ProcessInjectionDetector;
@@ -107,6 +108,7 @@ struct DetectorSet {
     systemd_persistence: Option<SystemdPersistenceDetector>,
     ransomware: Option<RansomwareDetector>,
     credential_harvest: Option<CredentialHarvestDetector>,
+    packet_flood: Option<PacketFloodDetector>,
 }
 
 #[derive(Default)]
@@ -498,6 +500,29 @@ async fn main() -> Result<()> {
                 "credential_harvest detector enabled"
             );
             CredentialHarvestDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+        }),
+        packet_flood: cfg.detectors.packet_flood.enabled.then(|| {
+            let d = &cfg.detectors.packet_flood;
+            info!(
+                syn_threshold = d.syn_threshold,
+                http_threshold = d.http_threshold,
+                slowloris_threshold = d.slowloris_threshold,
+                udp_threshold = d.udp_threshold,
+                rate_multiplier = d.rate_multiplier,
+                window_seconds = d.window_seconds,
+                cooldown_seconds = d.cooldown_seconds,
+                "packet_flood detector enabled (DDoS detection)"
+            );
+            PacketFloodDetector::new(
+                &cfg.agent.host_id,
+                d.syn_threshold,
+                d.http_threshold,
+                d.slowloris_threshold,
+                d.udp_threshold,
+                d.rate_multiplier,
+                d.window_seconds,
+                d.cooldown_seconds,
+            )
         }),
     };
 
@@ -1177,6 +1202,12 @@ fn process_event(
 
     if let Some(ref mut det) = detectors.credential_harvest {
         if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.packet_flood {
+        for incident in det.process(&ev) {
             write_incident(writer, stats, incident);
         }
     }
