@@ -22,6 +22,23 @@ pub struct OutputConfig {
     pub data_dir: String,
     #[serde(default = "default_true")]
     pub write_events: bool,
+    /// Redis URL for streaming events/incidents. When set, events go to Redis
+    /// Streams instead of JSONL files. Incidents are always written to JSONL too.
+    #[serde(default)]
+    #[cfg_attr(not(feature = "redis-sink"), allow(dead_code))]
+    pub redis_url: Option<String>,
+    /// Redis stream name for events. Default: "innerwarden:events".
+    #[serde(default)]
+    #[cfg_attr(not(feature = "redis-sink"), allow(dead_code))]
+    pub redis_stream: Option<String>,
+    /// Max entries in the Redis stream (~approximate via MAXLEN ~). Default: 50000.
+    #[serde(default = "default_redis_maxlen")]
+    #[cfg_attr(not(feature = "redis-sink"), allow(dead_code))]
+    pub redis_maxlen: usize,
+}
+
+fn default_redis_maxlen() -> usize {
+    50000
 }
 
 #[derive(Debug, Deserialize, Default)]

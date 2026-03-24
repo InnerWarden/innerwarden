@@ -55,6 +55,8 @@ use detectors::user_agent_scanner::UserAgentScannerDetector;
 use detectors::user_creation::UserCreationDetector;
 use detectors::web_scan::WebScanDetector;
 use detectors::web_shell::WebShellDetector;
+#[cfg(feature = "redis-sink")]
+use sinks::redis_stream::{RedisStreamConfig, RedisStreamWriter};
 use sinks::{jsonl::JsonlWriter, state::State};
 use tokio::sync::mpsc;
 use tokio::time;
@@ -142,7 +144,34 @@ async fn main() -> Result<()> {
     let mut state = State::load(&state_path)?;
     info!(cursors = state.cursors.len(), "state loaded");
 
-    let mut writer = JsonlWriter::new(data_dir, cfg.output.write_events)?;
+    // When Redis is configured, events go to Redis Streams. JSONL still writes
+    // incidents (they're small and need persistence). Events JSONL is disabled
+    // when Redis is active to avoid disk bloat.
+    #[cfg(feature = "redis-sink")]
+    let mut redis_writer: Option<RedisStreamWriter> = if let Some(ref url) = cfg.output.redis_url {
+        let redis_cfg = RedisStreamConfig::new(
+            url,
+            cfg.output.redis_stream.as_deref(),
+            cfg.output.redis_maxlen,
+        );
+        match RedisStreamWriter::connect(redis_cfg).await {
+            Ok(w) => Some(w),
+            Err(e) => {
+                warn!("Redis connection failed ({e:#}), falling back to JSONL only");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // If Redis is active, disable JSONL event writes (incidents still written).
+    #[cfg(feature = "redis-sink")]
+    let write_events_jsonl = cfg.output.write_events && redis_writer.is_none();
+    #[cfg(not(feature = "redis-sink"))]
+    let write_events_jsonl = cfg.output.write_events;
+
+    let mut writer = JsonlWriter::new(data_dir, write_events_jsonl)?;
     let (tx, mut rx) = mpsc::channel(1024);
 
     // Shared state — updated by collectors, read on shutdown for persistence.
@@ -840,75 +869,55 @@ async fn main() -> Result<()> {
     flush_ticker.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
     'main: loop {
+        // Receive next event or signal
         #[cfg(unix)]
-        let shutdown = tokio::select! {
-            event = rx.recv() => {
-                match event {
-                    Some(ev) => {
-                        process_event(
-                            ev,
-                            &mut writer,
-                            &mut detectors,
-                            &mut stats,
-                        );
-                        false
-                    }
-                    None => {
-                        info!("all collectors stopped");
-                        break 'main;
-                    }
-                }
-            }
+        let received = tokio::select! {
+            event = rx.recv() => event,
             _ = tokio::signal::ctrl_c() => {
                 info!("SIGINT received — shutting down");
-                true
+                break 'main;
             }
             _ = sigterm.recv() => {
                 info!("SIGTERM received — shutting down");
-                true
+                break 'main;
             }
             _ = flush_ticker.tick() => {
                 if let Err(e) = writer.flush() {
                     warn!("periodic flush failed: {e:#}");
                 }
-                false
+                continue 'main;
             }
         };
 
         #[cfg(not(unix))]
-        let shutdown = tokio::select! {
-            event = rx.recv() => {
-                match event {
-                    Some(ev) => {
-                        process_event(
-                            ev,
-                            &mut writer,
-                            &mut detectors,
-                            &mut stats,
-                        );
-                        false
-                    }
-                    None => {
-                        info!("all collectors stopped");
-                        break 'main;
-                    }
-                }
-            }
+        let received = tokio::select! {
+            event = rx.recv() => event,
             _ = tokio::signal::ctrl_c() => {
                 info!("SIGINT received — shutting down");
-                true
+                break 'main;
             }
             _ = flush_ticker.tick() => {
                 if let Err(e) = writer.flush() {
                     warn!("periodic flush failed: {e:#}");
                 }
-                false
+                continue 'main;
             }
         };
 
-        if shutdown {
+        let Some(ev) = received else {
+            info!("all collectors stopped");
             break 'main;
+        };
+
+        // Publish event to Redis stream (if enabled)
+        #[cfg(feature = "redis-sink")]
+        if let Some(ref mut rw) = redis_writer {
+            if let Err(e) = rw.write_event(&ev).await {
+                warn!(kind = %ev.kind, "Redis publish failed: {e:#}");
+            }
         }
+
+        process_event(ev, &mut writer, &mut detectors, &mut stats);
 
         // Also flush every 50 events as a safety net
         if stats.events_written > 0 && stats.events_written.is_multiple_of(50) {

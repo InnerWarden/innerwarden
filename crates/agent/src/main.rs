@@ -23,6 +23,8 @@ mod mesh;
 mod mitre;
 mod narrative;
 mod reader;
+#[cfg(feature = "redis-reader")]
+mod redis_reader;
 mod report;
 mod skills;
 mod slack;
@@ -304,6 +306,9 @@ struct AgentState {
     narrative_incidents_offset: u64,
     /// Forensics capture — grabs /proc state for High/Critical process incidents.
     forensics: forensics::ForensicsCapture,
+    /// Redis stream reader for events (None when redis_url is not configured).
+    #[cfg(feature = "redis-reader")]
+    redis_reader: Option<redis_reader::RedisStreamReader>,
 }
 
 /// Tracks a deferred honeypot-or-block decision waiting for operator input via Telegram.
@@ -1419,7 +1424,24 @@ async fn main() -> Result<()> {
         narrative_acc: NarrativeAccumulator::default(),
         narrative_incidents_offset: 0,
         forensics: forensics::ForensicsCapture::new(&cli.data_dir),
+        #[cfg(feature = "redis-reader")]
+        redis_reader: None,
     };
+
+    // Connect Redis reader if configured
+    #[cfg(feature = "redis-reader")]
+    if let Some(ref url) = cfg.redis_url {
+        let redis_cfg = redis_reader::agent_config(url, cfg.redis_stream.as_deref());
+        match redis_reader::RedisStreamReader::connect(redis_cfg).await {
+            Ok(r) => {
+                info!("Redis stream reader connected — events from Redis");
+                state.redis_reader = Some(r);
+            }
+            Err(e) => {
+                warn!("Redis reader connection failed ({e:#}), using JSONL fallback");
+            }
+        }
+    }
 
     if !state.ip_reputations.is_empty() {
         info!(
@@ -4779,24 +4801,54 @@ async fn process_narrative_tick(
         .format("%Y-%m-%d")
         .to_string();
 
-    let events_path = data_dir.join(format!("events-{today}.jsonl"));
+    // Read new events: from Redis if available, JSONL otherwise.
+    #[cfg(feature = "redis-reader")]
+    let (events_entries, events_count) = if let Some(ref mut rr) = state.redis_reader {
+        match rr.read_events::<innerwarden_core::event::Event>().await {
+            Ok(entries) => {
+                let count = entries.len();
+                (entries, count)
+            }
+            Err(e) => {
+                warn!("Redis event read failed: {e:#}");
+                state.telemetry.observe_error("redis_reader");
+                (Vec::new(), 0)
+            }
+        }
+    } else {
+        let events_path = data_dir.join(format!("events-{today}.jsonl"));
+        let new_events = reader::read_new_entries::<innerwarden_core::event::Event>(
+            &events_path,
+            cursor.events_offset(&today),
+        )
+        .inspect_err(|_| {
+            state.telemetry.observe_error("event_reader");
+        })?;
+        let count = new_events.entries.len();
+        cursor.set_events_offset(&today, new_events.new_offset);
+        (new_events.entries, count)
+    };
 
-    // Read new events and advance the events cursor
-    let new_events = reader::read_new_entries::<innerwarden_core::event::Event>(
-        &events_path,
-        cursor.events_offset(&today),
-    )
-    .inspect_err(|_| {
-        state.telemetry.observe_error("event_reader");
-    })?;
+    #[cfg(not(feature = "redis-reader"))]
+    let (events_entries, events_count) = {
+        let events_path = data_dir.join(format!("events-{today}.jsonl"));
+        let new_events = reader::read_new_entries::<innerwarden_core::event::Event>(
+            &events_path,
+            cursor.events_offset(&today),
+        )
+        .inspect_err(|_| {
+            state.telemetry.observe_error("event_reader");
+        })?;
+        let count = new_events.entries.len();
+        cursor.set_events_offset(&today, new_events.new_offset);
+        (new_events.entries, count)
+    };
 
-    let events_count = new_events.entries.len();
-    state.telemetry.observe_events(&new_events.entries);
-    cursor.set_events_offset(&today, new_events.new_offset);
+    state.telemetry.observe_events(&events_entries);
 
     // Feed new events into the narrative accumulator (incremental, no file re-read)
     state.narrative_acc.reset_for_date(&today);
-    state.narrative_acc.ingest_events(&new_events.entries);
+    state.narrative_acc.ingest_events(&events_entries);
 
     // Also ingest any new incidents incrementally
     let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
@@ -5939,6 +5991,8 @@ mod tests {
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
+            #[cfg(feature = "redis-reader")]
+            redis_reader: None,
         };
 
         // 4. Run the incident tick
@@ -6063,6 +6117,8 @@ mod tests {
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
+            #[cfg(feature = "redis-reader")]
+            redis_reader: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -6162,6 +6218,8 @@ mod tests {
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
+            #[cfg(feature = "redis-reader")]
+            redis_reader: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -6273,6 +6331,8 @@ mod tests {
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
+            #[cfg(feature = "redis-reader")]
+            redis_reader: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -6361,6 +6421,8 @@ mod tests {
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
+            #[cfg(feature = "redis-reader")]
+            redis_reader: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -6461,6 +6523,8 @@ mod tests {
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
+            #[cfg(feature = "redis-reader")]
+            redis_reader: None,
         };
 
         let mut cursor = reader::AgentCursor::default();

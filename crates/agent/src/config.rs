@@ -47,6 +47,15 @@ pub struct AgentConfig {
     /// Mesh collaborative defense network
     #[serde(default)]
     pub mesh: MeshNetworkConfig,
+    /// Redis URL for reading events from Redis Streams instead of JSONL files.
+    /// When set, events are consumed via XREADGROUP. Incidents still read from JSONL.
+    #[serde(default)]
+    #[cfg_attr(not(feature = "redis-reader"), allow(dead_code))]
+    pub redis_url: Option<String>,
+    /// Redis stream name for events. Default: "innerwarden:events".
+    #[serde(default)]
+    #[cfg_attr(not(feature = "redis-reader"), allow(dead_code))]
+    pub redis_stream: Option<String>,
 }
 
 /// Mesh network config — mirrors innerwarden_mesh::MeshConfig
