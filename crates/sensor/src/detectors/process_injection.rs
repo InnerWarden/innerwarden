@@ -1,4 +1,3 @@
-#[allow(clippy::too_many_arguments)]
 use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
@@ -26,6 +25,17 @@ const ATTACH_ARGS: &[&str] = &["-p", "--pid"];
 
 /// ptrace operations that indicate injection rather than tracing.
 const PTRACE_INJECT_OPS: &[&str] = &["ATTACH", "POKETEXT", "POKEDATA"];
+
+struct EmitParams<'a> {
+    severity: Severity,
+    comm: &'a str,
+    pid: u32,
+    uid: u32,
+    detail: &'a str,
+    title_prefix: &'a str,
+    alert_key: &'a str,
+    recommended_checks: Vec<String>,
+}
 
 impl ProcessInjectionDetector {
     pub fn new(host: impl Into<String>, cooldown_seconds: u64) -> Self {
@@ -61,19 +71,21 @@ impl ProcessInjectionDetector {
         if cmd_lower.contains("ld_preload=") {
             return self.emit_incident(
                 event,
-                Severity::High,
-                comm,
-                pid,
-                uid,
-                command,
-                "LD_PRELOAD injection",
-                "ld_preload",
-                vec![
-                    format!("Investigate LD_PRELOAD injection by {comm} (pid={pid})"),
-                    format!("Check loaded libraries: cat /proc/{pid}/maps"),
-                    "Review the preloaded library for malicious code".to_string(),
-                    "Check if the target process has been compromised".to_string(),
-                ],
+                EmitParams {
+                    severity: Severity::High,
+                    comm,
+                    pid,
+                    uid,
+                    detail: command,
+                    title_prefix: "LD_PRELOAD injection",
+                    alert_key: "ld_preload",
+                    recommended_checks: vec![
+                        format!("Investigate LD_PRELOAD injection by {comm} (pid={pid})"),
+                        format!("Check loaded libraries: cat /proc/{pid}/maps"),
+                        "Review the preloaded library for malicious code".to_string(),
+                        "Check if the target process has been compromised".to_string(),
+                    ],
+                },
             );
         }
 
@@ -83,19 +95,21 @@ impl ProcessInjectionDetector {
             if has_attach {
                 return self.emit_incident(
                     event,
-                    Severity::High,
-                    comm,
-                    pid,
-                    uid,
-                    command,
-                    "Debug tool attached to running process",
-                    "debug_attach",
-                    vec![
-                        format!("Investigate {comm} attaching to another process (pid={pid})"),
-                        "Check if the target process handles sensitive data".to_string(),
-                        "Review who initiated the debugging session".to_string(),
-                        format!("Check parent process: ps -o ppid= -p {pid}"),
-                    ],
+                    EmitParams {
+                        severity: Severity::High,
+                        comm,
+                        pid,
+                        uid,
+                        detail: command,
+                        title_prefix: "Debug tool attached to running process",
+                        alert_key: "debug_attach",
+                        recommended_checks: vec![
+                            format!("Investigate {comm} attaching to another process (pid={pid})"),
+                            "Check if the target process handles sensitive data".to_string(),
+                            "Review who initiated the debugging session".to_string(),
+                            format!("Check parent process: ps -o ppid= -p {pid}"),
+                        ],
+                    },
                 );
             }
         }
@@ -106,19 +120,22 @@ impl ProcessInjectionDetector {
             if has_inject_op {
                 return self.emit_incident(
                     event,
-                    Severity::Critical,
-                    comm,
-                    pid,
-                    uid,
-                    command,
-                    "ptrace injection operation detected",
-                    "ptrace_inject",
-                    vec![
-                        format!("CRITICAL: ptrace injection by {comm} (pid={pid})"),
-                        "Immediately investigate the target process for code injection".to_string(),
-                        format!("Check process memory: cat /proc/{pid}/maps"),
-                        "Consider killing the attacker process immediately".to_string(),
-                    ],
+                    EmitParams {
+                        severity: Severity::Critical,
+                        comm,
+                        pid,
+                        uid,
+                        detail: command,
+                        title_prefix: "ptrace injection operation detected",
+                        alert_key: "ptrace_inject",
+                        recommended_checks: vec![
+                            format!("CRITICAL: ptrace injection by {comm} (pid={pid})"),
+                            "Immediately investigate the target process for code injection"
+                                .to_string(),
+                            format!("Check process memory: cat /proc/{pid}/maps"),
+                            "Consider killing the attacker process immediately".to_string(),
+                        ],
+                    },
                 );
             }
         }
@@ -174,8 +191,6 @@ impl ProcessInjectionDetector {
         let is_write = event.kind == "file.write_access";
         let severity = if subpath == "mem" && is_write {
             Severity::Critical
-        } else if subpath == "mem" {
-            Severity::High
         } else {
             Severity::High
         };
@@ -185,34 +200,39 @@ impl ProcessInjectionDetector {
 
         self.emit_incident(
             event,
+            EmitParams {
+                severity,
+                comm,
+                pid,
+                uid,
+                detail: &detail,
+                title_prefix: &format!(
+                    "Process memory access: {access_type} {subpath} of pid {target_pid}"
+                ),
+                alert_key: "proc_mem_access",
+                recommended_checks: vec![
+                    format!(
+                        "Investigate {comm} (pid={pid}) accessing /proc/{target_pid}/{subpath}"
+                    ),
+                    format!("Identify target process: ps -p {target_pid} -o comm=,args="),
+                    format!("Check for injection: cat /proc/{target_pid}/maps"),
+                    "Review if this is legitimate debugging or an attack".to_string(),
+                ],
+            },
+        )
+    }
+
+    fn emit_incident(&mut self, event: &Event, params: EmitParams<'_>) -> Option<Incident> {
+        let EmitParams {
             severity,
             comm,
             pid,
             uid,
-            &detail,
-            &format!("Process memory access: {access_type} {subpath} of pid {target_pid}"),
-            "proc_mem_access",
-            vec![
-                format!("Investigate {comm} (pid={pid}) accessing /proc/{target_pid}/{subpath}"),
-                format!("Identify target process: ps -p {target_pid} -o comm=,args="),
-                format!("Check for injection: cat /proc/{target_pid}/maps"),
-                "Review if this is legitimate debugging or an attack".to_string(),
-            ],
-        )
-    }
-
-    fn emit_incident(
-        &mut self,
-        event: &Event,
-        severity: Severity,
-        comm: &str,
-        pid: u32,
-        uid: u32,
-        detail: &str,
-        title_prefix: &str,
-        alert_key: &str,
-        recommended_checks: Vec<String>,
-    ) -> Option<Incident> {
+            detail,
+            title_prefix,
+            alert_key,
+            recommended_checks,
+        } = params;
         let now = event.ts;
 
         let cooldown_key = format!("{comm}:{alert_key}:{pid}");

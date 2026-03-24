@@ -1,4 +1,3 @@
-#[allow(clippy::too_many_arguments)]
 use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
@@ -377,7 +376,7 @@ impl RootkitDetector {
     /// Check if any tracked PIDs are hidden from /proc.
     fn check_hidden_processes(&mut self, now: DateTime<Utc>) -> Option<Incident> {
         let check_fn = self.pid_exists_fn;
-        let short_lived_cutoff = now - Duration::seconds(2);
+        let _short_lived_cutoff = now - Duration::seconds(2);
 
         for (&pid, info) in &self.pids {
             // Skip short-lived processes (< 5s since last seen) — normal exits
@@ -449,7 +448,7 @@ impl RootkitDetector {
         let pid = event.details["pid"].as_u64().unwrap_or(0) as u32;
 
         // Check exact rootkit artifact paths
-        let is_artifact = ROOTKIT_ARTIFACT_PATHS.iter().any(|p| filename == *p);
+        let is_artifact = ROOTKIT_ARTIFACT_PATHS.contains(&filename);
 
         // Check suspicious files in /tmp and /dev/shm
         let is_suspicious_tmp = (filename.starts_with("/tmp/")
@@ -746,13 +745,9 @@ impl RootkitDetector {
         // Check if LD_PRELOAD appears in the command or environment
         // eBPF can capture the command line which may include env vars
         let preload_lib = if let Some(argv) = event.details["argv"].as_array() {
-            argv.iter().filter_map(|a| a.as_str()).find_map(|a| {
-                if let Some(lib) = a.strip_prefix("LD_PRELOAD=") {
-                    Some(lib.to_string())
-                } else {
-                    None
-                }
-            })
+            argv.iter()
+                .filter_map(|a| a.as_str())
+                .find_map(|a| a.strip_prefix("LD_PRELOAD=").map(|lib| lib.to_string()))
         } else if command.contains("LD_PRELOAD=") {
             command
                 .split_whitespace()

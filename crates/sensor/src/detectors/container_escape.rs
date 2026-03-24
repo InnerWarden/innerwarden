@@ -108,6 +108,16 @@ const SENSITIVE_PATHS: &[(&str, Severity, &str)] = &[
     ),
 ];
 
+struct IncidentParams<'a> {
+    container_id: &'a str,
+    pid: u32,
+    comm: &'a str,
+    severity: Severity,
+    description: &'a str,
+    pattern: &'a str,
+    ts: DateTime<Utc>,
+}
+
 impl ContainerEscapeDetector {
     pub fn new(host: impl Into<String>, window_seconds: u64) -> Self {
         Self {
@@ -161,15 +171,15 @@ impl ContainerEscapeDetector {
                 }
                 self.alerted.insert(alert_key, now);
 
-                return Some(self.build_incident(
+                return Some(self.build_incident(IncidentParams {
                     container_id,
                     pid,
                     comm,
-                    severity.clone(),
+                    severity: severity.clone(),
                     description,
-                    "escape_command",
-                    now,
-                ));
+                    pattern: "escape_command",
+                    ts: now,
+                }));
             }
         }
 
@@ -194,15 +204,15 @@ impl ContainerEscapeDetector {
                 }
                 self.alerted.insert(alert_key, now);
 
-                return Some(self.build_incident(
+                return Some(self.build_incident(IncidentParams {
                     container_id,
                     pid,
                     comm,
-                    severity.clone(),
-                    &format!("{description} — {filename}"),
-                    "sensitive_file_access",
-                    now,
-                ));
+                    severity: severity.clone(),
+                    description: &format!("{description} — {filename}"),
+                    pattern: "sensitive_file_access",
+                    ts: now,
+                }));
             }
         }
 
@@ -217,17 +227,16 @@ impl ContainerEscapeDetector {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn build_incident(
-        &self,
-        container_id: &str,
-        pid: u32,
-        comm: &str,
-        severity: Severity,
-        description: &str,
-        pattern: &str,
-        ts: DateTime<Utc>,
-    ) -> Incident {
+    fn build_incident(&self, params: IncidentParams<'_>) -> Incident {
+        let IncidentParams {
+            container_id,
+            pid,
+            comm,
+            severity,
+            description,
+            pattern,
+            ts,
+        } = params;
         Incident {
             ts,
             host: self.host.clone(),

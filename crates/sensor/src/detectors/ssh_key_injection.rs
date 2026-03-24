@@ -1,4 +1,3 @@
-#[allow(clippy::too_many_arguments)]
 use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
@@ -27,6 +26,17 @@ pub struct SshKeyInjectionDetector {
 
 /// Processes that legitimately modify SSH keys.
 const ALLOWED_PROCESSES: &[&str] = &["sshd", "ssh-keygen", "cloud-init", "waagent"];
+
+struct EmitParams<'a> {
+    ts: DateTime<Utc>,
+    pattern: &'a str,
+    severity: Severity,
+    comm: &'a str,
+    pid: u32,
+    uid: u32,
+    target: &'a str,
+    summary: &'a str,
+}
 
 impl SshKeyInjectionDetector {
     pub fn new(host: impl Into<String>, cooldown_seconds: u64) -> Self {
@@ -71,36 +81,36 @@ impl SshKeyInjectionDetector {
 
         // Pattern 1: authorized_keys modification
         if filename.contains(".ssh/authorized_keys") {
-            return self.emit_incident(
-                event.ts,
-                "authorized_keys_write",
-                Severity::Critical,
+            return self.emit_incident(EmitParams {
+                ts: event.ts,
+                pattern: "authorized_keys_write",
+                severity: Severity::Critical,
                 comm,
                 pid,
                 uid,
-                filename,
-                &format!(
+                target: filename,
+                summary: &format!(
                     "Unauthorized write to {filename} by {comm} (pid={pid}, uid={uid}) \
                      — possible SSH key injection for persistence"
                 ),
-            );
+            });
         }
 
         // Pattern 2: sshd_config modification by non-root non-sshd
         if filename == "/etc/ssh/sshd_config" && uid != 0 {
-            return self.emit_incident(
-                event.ts,
-                "sshd_config_write",
-                Severity::High,
+            return self.emit_incident(EmitParams {
+                ts: event.ts,
+                pattern: "sshd_config_write",
+                severity: Severity::High,
                 comm,
                 pid,
                 uid,
-                filename,
-                &format!(
+                target: filename,
+                summary: &format!(
                     "Non-root process {comm} (pid={pid}, uid={uid}) modified {filename} \
                      — possible SSH configuration tampering"
                 ),
-            );
+            });
         }
 
         None
@@ -137,52 +147,52 @@ impl SshKeyInjectionDetector {
 
         // Pattern 3: ssh-keygen + authorized_keys
         if lower.contains("ssh-keygen") && lower.contains("authorized_keys") {
-            return self.emit_incident(
-                event.ts,
-                "ssh_keygen_authorized_keys",
-                Severity::Critical,
+            return self.emit_incident(EmitParams {
+                ts: event.ts,
+                pattern: "ssh_keygen_authorized_keys",
+                severity: Severity::Critical,
                 comm,
                 pid,
                 uid,
-                command,
-                &format!(
+                target: command,
+                summary: &format!(
                     "Command combines ssh-keygen with authorized_keys modification \
                      (pid={pid}, uid={uid}): {command}"
                 ),
-            );
+            });
         }
 
         // Pattern 4: echo >> authorized_keys
         if lower.contains("echo") && lower.contains("authorized_keys") && lower.contains(">>") {
-            return self.emit_incident(
-                event.ts,
-                "echo_append_authorized_keys",
-                Severity::Critical,
+            return self.emit_incident(EmitParams {
+                ts: event.ts,
+                pattern: "echo_append_authorized_keys",
+                severity: Severity::Critical,
                 comm,
                 pid,
                 uid,
-                command,
-                &format!(
+                target: command,
+                summary: &format!(
                     "Command appends to authorized_keys via echo \
                      (pid={pid}, uid={uid}): {command}"
                 ),
-            );
+            });
         }
 
         None
     }
 
-    fn emit_incident(
-        &mut self,
-        ts: DateTime<Utc>,
-        pattern: &str,
-        severity: Severity,
-        comm: &str,
-        pid: u32,
-        uid: u32,
-        target: &str,
-        summary: &str,
-    ) -> Option<Incident> {
+    fn emit_incident(&mut self, params: EmitParams<'_>) -> Option<Incident> {
+        let EmitParams {
+            ts,
+            pattern,
+            severity,
+            comm,
+            pid,
+            uid,
+            target,
+            summary,
+        } = params;
         let key = format!("{pattern}:{comm}:{target}");
 
         // Cooldown check

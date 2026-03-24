@@ -1,4 +1,3 @@
-#[allow(clippy::too_many_arguments)]
 use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
@@ -55,6 +54,17 @@ const ALLOWLISTED_PARENTS: &[&str] = &[
 /// Privileged groups — adding a user to these is Critical.
 const PRIVILEGED_GROUPS: &[&str] = &["sudo", "wheel", "admin", "root", "docker"];
 
+struct EmitParams<'a> {
+    severity: Severity,
+    comm: &'a str,
+    pid: u32,
+    uid: u32,
+    detail: &'a str,
+    title: &'a str,
+    alert_key: &'a str,
+    recommended_checks: Vec<String>,
+}
+
 impl UserCreationDetector {
     pub fn new(host: impl Into<String>, cooldown_seconds: u64) -> Self {
         Self {
@@ -106,19 +116,21 @@ impl UserCreationDetector {
         {
             return self.emit(
                 event,
-                Severity::Critical,
-                comm,
-                pid,
-                uid,
-                command,
-                "Root-equivalent user creation (UID 0)",
-                "uid0_creation",
-                vec![
-                    format!("CRITICAL: {comm} creating user with UID 0 (root equivalent)"),
-                    "Check /etc/passwd for unauthorized UID 0 accounts".to_string(),
-                    format!("Review process tree: pstree -p {pid}"),
-                    "This is a strong indicator of backdoor creation".to_string(),
-                ],
+                EmitParams {
+                    severity: Severity::Critical,
+                    comm,
+                    pid,
+                    uid,
+                    detail: command,
+                    title: "Root-equivalent user creation (UID 0)",
+                    alert_key: "uid0_creation",
+                    recommended_checks: vec![
+                        format!("CRITICAL: {comm} creating user with UID 0 (root equivalent)"),
+                        "Check /etc/passwd for unauthorized UID 0 accounts".to_string(),
+                        format!("Review process tree: pstree -p {pid}"),
+                        "This is a strong indicator of backdoor creation".to_string(),
+                    ],
+                },
             );
         }
 
@@ -135,19 +147,21 @@ impl UserCreationDetector {
                 {
                     return self.emit(
                         event,
-                        Severity::Critical,
-                        comm,
-                        pid,
-                        uid,
-                        command,
-                        &format!("User added to privileged group: {group}"),
-                        "priv_group_add",
-                        vec![
-                            format!("CRITICAL: user added to {group} group via {comm}"),
-                            format!("Check group membership: getent group {group}"),
-                            format!("Review process tree: pstree -p {pid}"),
-                            "Verify this was an authorized administrative action".to_string(),
-                        ],
+                        EmitParams {
+                            severity: Severity::Critical,
+                            comm,
+                            pid,
+                            uid,
+                            detail: command,
+                            title: &format!("User added to privileged group: {group}"),
+                            alert_key: "priv_group_add",
+                            recommended_checks: vec![
+                                format!("CRITICAL: user added to {group} group via {comm}"),
+                                format!("Check group membership: getent group {group}"),
+                                format!("Review process tree: pstree -p {pid}"),
+                                "Verify this was an authorized administrative action".to_string(),
+                            ],
+                        },
                     );
                 }
             }
@@ -156,19 +170,21 @@ impl UserCreationDetector {
         // General user/group creation — High
         self.emit(
             event,
-            Severity::High,
-            comm,
-            pid,
-            uid,
-            command,
-            "User/group management command executed",
-            "user_mgmt",
-            vec![
-                format!("Investigate user management command by {comm} (pid={pid})"),
-                "Check /etc/passwd and /etc/group for new entries".to_string(),
-                format!("Review process tree: pstree -p {pid}"),
-                "Verify this was an authorized administrative action".to_string(),
-            ],
+            EmitParams {
+                severity: Severity::High,
+                comm,
+                pid,
+                uid,
+                detail: command,
+                title: "User/group management command executed",
+                alert_key: "user_mgmt",
+                recommended_checks: vec![
+                    format!("Investigate user management command by {comm} (pid={pid})"),
+                    "Check /etc/passwd and /etc/group for new entries".to_string(),
+                    format!("Review process tree: pstree -p {pid}"),
+                    "Verify this was an authorized administrative action".to_string(),
+                ],
+            },
         )
     }
 
@@ -203,34 +219,35 @@ impl UserCreationDetector {
 
         self.emit(
             event,
+            EmitParams {
+                severity,
+                comm,
+                pid,
+                uid,
+                detail: filename,
+                title: &format!("Direct write to {filename} by {comm}"),
+                alert_key: "identity_file_write",
+                recommended_checks: vec![
+                    format!("Investigate {comm} (pid={pid}) writing to {filename}"),
+                    format!("Check file integrity: stat {filename}"),
+                    "Compare with backup: diff /etc/passwd /etc/passwd-".to_string(),
+                    "Review recent user/group changes: last, lastlog".to_string(),
+                ],
+            },
+        )
+    }
+
+    fn emit(&mut self, event: &Event, params: EmitParams<'_>) -> Option<Incident> {
+        let EmitParams {
             severity,
             comm,
             pid,
             uid,
-            filename,
-            &format!("Direct write to {filename} by {comm}"),
-            "identity_file_write",
-            vec![
-                format!("Investigate {comm} (pid={pid}) writing to {filename}"),
-                format!("Check file integrity: stat {filename}"),
-                "Compare with backup: diff /etc/passwd /etc/passwd-".to_string(),
-                "Review recent user/group changes: last, lastlog".to_string(),
-            ],
-        )
-    }
-
-    fn emit(
-        &mut self,
-        event: &Event,
-        severity: Severity,
-        comm: &str,
-        pid: u32,
-        uid: u32,
-        detail: &str,
-        title: &str,
-        alert_key: &str,
-        recommended_checks: Vec<String>,
-    ) -> Option<Incident> {
+            detail,
+            title,
+            alert_key,
+            recommended_checks,
+        } = params;
         let now = event.ts;
 
         let cooldown_key = format!("{comm}:{alert_key}:{pid}");

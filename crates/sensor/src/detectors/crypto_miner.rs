@@ -61,6 +61,18 @@ pub struct CryptoMinerDetector {
     host: String,
 }
 
+struct IncidentParams<'a> {
+    ts: DateTime<Utc>,
+    pattern: &'a str,
+    severity: Severity,
+    title: String,
+    summary: String,
+    evidence: serde_json::Value,
+    recommended_checks: Vec<String>,
+    tags: Vec<String>,
+    entities: Vec<EntityRef>,
+}
+
 impl CryptoMinerDetector {
     pub fn new(host: impl Into<String>, cooldown_seconds: u64) -> Self {
         Self {
@@ -118,31 +130,31 @@ impl CryptoMinerDetector {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32;
 
-        Some(self.build_incident(
-            now,
-            "miner_process",
-            Severity::Critical,
-            format!("Crypto miner detected: {comm}"),
-            format!(
+        Some(self.build_incident(IncidentParams {
+            ts: now,
+            pattern: "miner_process",
+            severity: Severity::Critical,
+            title: format!("Crypto miner detected: {comm}"),
+            summary: format!(
                 "Known cryptocurrency miner process '{}' (pid={}) executing on host",
                 comm, pid
             ),
-            serde_json::json!([{
+            evidence: serde_json::json!([{
                 "kind": "crypto_miner",
                 "pattern": "miner_process",
                 "comm": comm,
                 "pid": pid,
             }]),
-            vec![
+            recommended_checks: vec![
                 format!("Kill process {comm} (pid={pid}) immediately"),
                 "Check how the miner was installed — review process tree and parent".to_string(),
                 "Scan for persistence mechanisms (crontab, systemd services)".to_string(),
                 "Check for lateral movement — the attacker may have compromised other hosts"
                     .to_string(),
             ],
-            vec!["crypto-miner".to_string(), "process".to_string()],
-            vec![],
-        ))
+            tags: vec!["crypto-miner".to_string(), "process".to_string()],
+            entities: vec![],
+        }))
     }
 
     /// Check if a network connection targets a mining pool.
@@ -189,21 +201,21 @@ impl CryptoMinerDetector {
                 let alert_key = format!("stratum:{}:{}:{}", comm, dst_ip, dst_port);
                 if !self.is_in_cooldown(&alert_key, now) {
                     self.alerted.insert(alert_key, now);
-                    return Some(self.build_incident(
-                        now,
-                        "stratum_protocol",
-                        Severity::High,
-                        format!(
+                    return Some(self.build_incident(IncidentParams {
+                        ts: now,
+                        pattern: "stratum_protocol",
+                        severity: Severity::High,
+                        title: format!(
                             "Stratum mining protocol: {comm} persistent connection to {dst_ip}:{dst_port}"
                         ),
-                        format!(
+                        summary: format!(
                             "Process {} shows stratum mining protocol pattern: {} persistent connections to {}:{} (mining pool port)",
                             comm,
                             conn_count,
                             dst_ip,
                             dst_port
                         ),
-                        serde_json::json!([{
+                        evidence: serde_json::json!([{
                             "kind": "crypto_miner",
                             "pattern": "stratum_protocol",
                             "comm": comm,
@@ -212,19 +224,19 @@ impl CryptoMinerDetector {
                             "dst_port": dst_port,
                             "connection_count": conn_count,
                         }]),
-                        vec![
+                        recommended_checks: vec![
                             format!("Investigate process {comm} (pid={pid}) — likely a crypto miner"),
                             format!("Block outbound connections to {dst_ip}:{dst_port}"),
                             "Review process tree to find installation vector".to_string(),
                             "Check CPU usage — mining causes sustained high CPU".to_string(),
                         ],
-                        vec![
+                        tags: vec![
                             "crypto-miner".to_string(),
                             "stratum".to_string(),
                             "network".to_string(),
                         ],
-                        vec![EntityRef::ip(dst_ip)],
-                    ));
+                        entities: vec![EntityRef::ip(dst_ip)],
+                    }));
                 }
             }
 
@@ -232,16 +244,18 @@ impl CryptoMinerDetector {
             let alert_key = format!("mining_port:{}:{}", comm, dst_ip);
             if !self.is_in_cooldown(&alert_key, now) {
                 self.alerted.insert(alert_key, now);
-                return Some(self.build_incident(
-                    now,
-                    "mining_pool_port",
-                    Severity::High,
-                    format!("Crypto mining: {comm} connecting to mining pool {dst_ip}:{dst_port}"),
-                    format!(
+                return Some(self.build_incident(IncidentParams {
+                    ts: now,
+                    pattern: "mining_pool_port",
+                    severity: Severity::High,
+                    title: format!(
+                        "Crypto mining: {comm} connecting to mining pool {dst_ip}:{dst_port}"
+                    ),
+                    summary: format!(
                         "Process {} (pid={}) connected to {}:{} — known mining pool port",
                         comm, pid, dst_ip, dst_port
                     ),
-                    serde_json::json!([{
+                    evidence: serde_json::json!([{
                         "kind": "crypto_miner",
                         "pattern": "mining_pool_port",
                         "comm": comm,
@@ -249,19 +263,19 @@ impl CryptoMinerDetector {
                         "dst_ip": dst_ip,
                         "dst_port": dst_port,
                     }]),
-                    vec![
+                    recommended_checks: vec![
                         format!("Investigate process {comm} (pid={pid}) — possible crypto miner"),
                         format!("Check if {dst_ip}:{dst_port} is a known mining pool"),
                         "Review CPU/GPU usage on the host".to_string(),
                         "Consider blocking the process and the destination IP".to_string(),
                     ],
-                    vec![
+                    tags: vec![
                         "crypto-miner".to_string(),
                         "network".to_string(),
                         "ebpf".to_string(),
                     ],
-                    vec![EntityRef::ip(dst_ip)],
-                ));
+                    entities: vec![EntityRef::ip(dst_ip)],
+                }));
             }
         }
 
@@ -311,16 +325,16 @@ impl CryptoMinerDetector {
 
         self.alerted.insert(alert_key, now);
 
-        Some(self.build_incident(
-            now,
-            "mining_pool_domain",
-            Severity::High,
-            format!("Crypto mining: {comm} connecting to mining pool {hostname}"),
-            format!(
+        Some(self.build_incident(IncidentParams {
+            ts: now,
+            pattern: "mining_pool_domain",
+            severity: Severity::High,
+            title: format!("Crypto mining: {comm} connecting to mining pool {hostname}"),
+            summary: format!(
                 "Process {} (pid={}) connected to known mining pool domain: {}",
                 comm, pid, hostname
             ),
-            serde_json::json!([{
+            evidence: serde_json::json!([{
                 "kind": "crypto_miner",
                 "pattern": "mining_pool_domain",
                 "comm": comm,
@@ -328,19 +342,19 @@ impl CryptoMinerDetector {
                 "hostname": hostname,
                 "matched_domain": *matched_domain,
             }]),
-            vec![
+            recommended_checks: vec![
                 format!("Kill process {comm} (pid={pid}) and investigate"),
                 format!("Block DNS resolution for {hostname}"),
                 "Scan for persistence mechanisms (crontab, systemd services)".to_string(),
                 "Review how the miner was installed".to_string(),
             ],
-            vec![
+            tags: vec![
                 "crypto-miner".to_string(),
                 "network".to_string(),
                 "dns".to_string(),
             ],
-            vec![],
-        ))
+            entities: vec![],
+        }))
     }
 
     /// Check if an alert key is within the cooldown period.
@@ -352,19 +366,18 @@ impl CryptoMinerDetector {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn build_incident(
-        &self,
-        ts: DateTime<Utc>,
-        pattern: &str,
-        severity: Severity,
-        title: String,
-        summary: String,
-        evidence: serde_json::Value,
-        recommended_checks: Vec<String>,
-        tags: Vec<String>,
-        entities: Vec<EntityRef>,
-    ) -> Incident {
+    fn build_incident(&self, params: IncidentParams<'_>) -> Incident {
+        let IncidentParams {
+            ts,
+            pattern,
+            severity,
+            title,
+            summary,
+            evidence,
+            recommended_checks,
+            tags,
+            entities,
+        } = params;
         Incident {
             ts,
             host: self.host.clone(),

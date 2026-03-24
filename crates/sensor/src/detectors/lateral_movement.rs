@@ -32,6 +32,17 @@ pub struct LateralMovementDetector {
     host: String,
 }
 
+struct IncidentParams<'a> {
+    dst_ip: &'a str,
+    dst_port: u16,
+    comm: &'a str,
+    pid: u32,
+    ts: DateTime<Utc>,
+    pattern: &'a str,
+    severity: Severity,
+    summary: String,
+}
+
 impl LateralMovementDetector {
     pub fn new(
         host: impl Into<String>,
@@ -114,18 +125,18 @@ impl LateralMovementDetector {
             let alert_key = format!("lateral_ssh:{}:{}", comm, pid);
             if !self.is_in_cooldown(&alert_key, now, cooldown) {
                 self.alerted.insert(alert_key, now);
-                return Some(self.build_incident(
+                return Some(self.build_incident(IncidentParams {
                     dst_ip,
                     dst_port,
                     comm,
                     pid,
-                    now,
-                    "ssh_scanning",
-                    Severity::High,
-                    format!(
+                    ts: now,
+                    pattern: "ssh_scanning",
+                    severity: Severity::High,
+                    summary: format!(
                         "Lateral movement: {comm} SSH scanning {ssh_unique_count} internal hosts"
                     ),
-                ));
+                }));
             }
         }
 
@@ -134,18 +145,18 @@ impl LateralMovementDetector {
             let alert_key = format!("lateral_scan:{}:{}:{}", comm, pid, dst_port);
             if !self.is_in_cooldown(&alert_key, now, cooldown) {
                 self.alerted.insert(alert_key, now);
-                return Some(self.build_incident(
+                return Some(self.build_incident(IncidentParams {
                     dst_ip,
                     dst_port,
                     comm,
                     pid,
-                    now,
-                    "port_scanning",
-                    Severity::High,
-                    format!(
+                    ts: now,
+                    pattern: "port_scanning",
+                    severity: Severity::High,
+                    summary: format!(
                         "Lateral movement: {comm} scanning port {dst_port} on {scan_unique_count} internal hosts"
                     ),
-                ));
+                }));
             }
         }
 
@@ -154,16 +165,18 @@ impl LateralMovementDetector {
             let alert_key = format!("lateral_service:{}:{}:{}", comm, dst_ip, dst_port);
             if !self.is_in_cooldown(&alert_key, now, cooldown) {
                 self.alerted.insert(alert_key, now);
-                return Some(self.build_incident(
+                return Some(self.build_incident(IncidentParams {
                     dst_ip,
                     dst_port,
                     comm,
                     pid,
-                    now,
-                    "service_probe",
-                    Severity::Medium,
-                    format!("Internal service probe: {comm} connecting to {dst_ip}:{dst_port}"),
-                ));
+                    ts: now,
+                    pattern: "service_probe",
+                    severity: Severity::Medium,
+                    summary: format!(
+                        "Internal service probe: {comm} connecting to {dst_ip}:{dst_port}"
+                    ),
+                }));
             }
         }
 
@@ -189,18 +202,17 @@ impl LateralMovementDetector {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn build_incident(
-        &self,
-        dst_ip: &str,
-        dst_port: u16,
-        comm: &str,
-        pid: u32,
-        ts: DateTime<Utc>,
-        pattern: &str,
-        severity: Severity,
-        summary: String,
-    ) -> Incident {
+    fn build_incident(&self, params: IncidentParams<'_>) -> Incident {
+        let IncidentParams {
+            dst_ip,
+            dst_port,
+            comm,
+            pid,
+            ts,
+            pattern,
+            severity,
+            summary,
+        } = params;
         Incident {
             ts,
             host: self.host.clone(),

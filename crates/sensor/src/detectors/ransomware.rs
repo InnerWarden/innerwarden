@@ -1,4 +1,3 @@
-#[allow(clippy::too_many_arguments)]
 use std::collections::{HashMap, VecDeque};
 
 use chrono::{DateTime, Duration, Utc};
@@ -56,6 +55,17 @@ const RANSOM_NOTE_NAMES: &[&str] = &[
     "decrypt_instruction",
     "your_files_are_encrypted",
 ];
+
+struct EmitParams<'a> {
+    severity: Severity,
+    comm: &'a str,
+    pid: u32,
+    uid: u32,
+    detail: &'a str,
+    title: &'a str,
+    alert_key: &'a str,
+    recommended_checks: Vec<String>,
+}
 
 impl RansomwareDetector {
     pub fn new(
@@ -122,24 +132,26 @@ impl RansomwareDetector {
             if unique_dirs.len() >= 3 {
                 return self.emit(
                     event,
-                    Severity::Critical,
-                    comm,
-                    pid,
-                    uid,
-                    &format!(
-                        "Ransom notes created in {} directories within {}s",
-                        unique_dirs.len(),
-                        self.window.num_seconds()
-                    ),
-                    &format!("Ransom note creation: {basename} in multiple directories"),
-                    "ransom_note",
-                    vec![
-                        format!("CRITICAL: Ransom notes detected in {0} directories by {comm}", unique_dirs.len()),
-                        "Immediately isolate the host from the network".to_string(),
-                        format!("Kill the process: kill -9 {pid}"),
-                        "Check for encrypted files and assess damage".to_string(),
-                        "Investigate infection vector: check recent downloads and email attachments".to_string(),
-                    ],
+                    EmitParams {
+                        severity: Severity::Critical,
+                        comm,
+                        pid,
+                        uid,
+                        detail: &format!(
+                            "Ransom notes created in {} directories within {}s",
+                            unique_dirs.len(),
+                            self.window.num_seconds()
+                        ),
+                        title: &format!("Ransom note creation: {basename} in multiple directories"),
+                        alert_key: "ransom_note",
+                        recommended_checks: vec![
+                            format!("CRITICAL: Ransom notes detected in {0} directories by {comm}", unique_dirs.len()),
+                            "Immediately isolate the host from the network".to_string(),
+                            format!("Kill the process: kill -9 {pid}"),
+                            "Check for encrypted files and assess damage".to_string(),
+                            "Investigate infection vector: check recent downloads and email attachments".to_string(),
+                        ],
+                    },
                 );
             }
         }
@@ -171,23 +183,25 @@ impl RansomwareDetector {
                 let window_secs = self.window.num_seconds();
                 return self.emit(
                     event,
-                    Severity::Critical,
-                    comm,
-                    pid,
-                    uid,
-                    &format!(
-                        "{comm} wrote {count} files with ransomware extensions in {window_secs}s"
-                    ),
-                    &format!(
-                        "Ransomware extension detected: {comm} wrote {count} suspicious files"
-                    ),
-                    "ransomware_ext",
-                    vec![
-                        format!("CRITICAL: {comm} writing files with ransomware extensions"),
-                        format!("Kill the process immediately: kill -9 {pid}"),
-                        "Isolate the host from the network".to_string(),
-                        "Check backup integrity and assess encrypted file count".to_string(),
-                    ],
+                    EmitParams {
+                        severity: Severity::Critical,
+                        comm,
+                        pid,
+                        uid,
+                        detail: &format!(
+                            "{comm} wrote {count} files with ransomware extensions in {window_secs}s"
+                        ),
+                        title: &format!(
+                            "Ransomware extension detected: {comm} wrote {count} suspicious files"
+                        ),
+                        alert_key: "ransomware_ext",
+                        recommended_checks: vec![
+                            format!("CRITICAL: {comm} writing files with ransomware extensions"),
+                            format!("Kill the process immediately: kill -9 {pid}"),
+                            "Isolate the host from the network".to_string(),
+                            "Check backup integrity and assess encrypted file count".to_string(),
+                        ],
+                    },
                 );
             }
         }
@@ -212,24 +226,26 @@ impl RansomwareDetector {
             let window_secs = self.window.num_seconds();
             return self.emit(
                 event,
-                Severity::High,
-                comm,
-                pid,
-                uid,
-                &format!("{comm} modified {count} files in {window_secs}s"),
-                &format!(
-                    "Possible ransomware: {comm} modified {count} files in {window_secs}s"
-                ),
-                "mass_write",
-                vec![
-                    format!(
-                        "Investigate mass file writes by {comm} (pid={pid}): {count} files in {window_secs}s"
+                EmitParams {
+                    severity: Severity::High,
+                    comm,
+                    pid,
+                    uid,
+                    detail: &format!("{comm} modified {count} files in {window_secs}s"),
+                    title: &format!(
+                        "Possible ransomware: {comm} modified {count} files in {window_secs}s"
                     ),
-                    "Check if files are being encrypted: file <path>".to_string(),
-                    format!("Check process: ps -p {pid} -o comm=,args="),
-                    "If ransomware confirmed: kill process, isolate host, restore from backup"
-                        .to_string(),
-                ],
+                    alert_key: "mass_write",
+                    recommended_checks: vec![
+                        format!(
+                            "Investigate mass file writes by {comm} (pid={pid}): {count} files in {window_secs}s"
+                        ),
+                        "Check if files are being encrypted: file <path>".to_string(),
+                        format!("Check process: ps -p {pid} -o comm=,args="),
+                        "If ransomware confirmed: kill process, isolate host, restore from backup"
+                            .to_string(),
+                    ],
+                },
             );
         }
 
@@ -258,37 +274,38 @@ impl RansomwareDetector {
             let tool = if is_openssl_enc { "openssl" } else { "gpg" };
             return self.emit(
                 event,
-                Severity::High,
-                comm,
-                pid,
-                uid,
-                command,
-                &format!("Encryption command detected: {tool}"),
-                "enc_command",
-                vec![
-                    format!("Investigate encryption command by {comm} (pid={pid}): {command}"),
-                    "Check what files are being encrypted".to_string(),
-                    format!("Review process tree: pstree -p {pid}"),
-                    "If unauthorized: kill process immediately".to_string(),
-                ],
+                EmitParams {
+                    severity: Severity::High,
+                    comm,
+                    pid,
+                    uid,
+                    detail: command,
+                    title: &format!("Encryption command detected: {tool}"),
+                    alert_key: "enc_command",
+                    recommended_checks: vec![
+                        format!("Investigate encryption command by {comm} (pid={pid}): {command}"),
+                        "Check what files are being encrypted".to_string(),
+                        format!("Review process tree: pstree -p {pid}"),
+                        "If unauthorized: kill process immediately".to_string(),
+                    ],
+                },
             );
         }
 
         None
     }
 
-    fn emit(
-        &mut self,
-        event: &Event,
-        severity: Severity,
-        comm: &str,
-        pid: u32,
-        uid: u32,
-        detail: &str,
-        title: &str,
-        alert_key: &str,
-        recommended_checks: Vec<String>,
-    ) -> Option<Incident> {
+    fn emit(&mut self, event: &Event, params: EmitParams<'_>) -> Option<Incident> {
+        let EmitParams {
+            severity,
+            comm,
+            pid,
+            uid,
+            detail,
+            title,
+            alert_key,
+            recommended_checks,
+        } = params;
         let now = event.ts;
 
         let cooldown_key = format!("{comm}:{alert_key}");

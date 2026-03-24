@@ -43,6 +43,16 @@ pub struct DnsTunnelingDetector {
     ebpf_burst: HashMap<String, VecDeque<DateTime<Utc>>>,
 }
 
+struct EbpfIncidentParams<'a> {
+    dst_ip: &'a str,
+    comm: &'a str,
+    pid: u32,
+    ts: DateTime<Utc>,
+    pattern: &'a str,
+    severity: Severity,
+    summary: String,
+}
+
 impl DnsTunnelingDetector {
     pub fn new(
         host: impl Into<String>,
@@ -208,18 +218,18 @@ impl DnsTunnelingDetector {
 
         if !is_standard && !self.is_in_cooldown(&nonstandard_key, now) {
             self.alerted.insert(nonstandard_key, now);
-            return Some(self.build_ebpf_incident(
+            return Some(self.build_ebpf_incident(EbpfIncidentParams {
                 dst_ip,
                 comm,
                 pid,
-                now,
-                "nonstandard_dns",
-                Severity::Medium,
-                format!(
+                ts: now,
+                pattern: "nonstandard_dns",
+                severity: Severity::Medium,
+                summary: format!(
                     "Non-standard DNS server: {} connecting to {}:53",
                     comm, dst_ip
                 ),
-            ));
+            }));
         }
 
         // ── Update beaconing state (per comm+dst_ip) ────────────────────
@@ -236,20 +246,20 @@ impl DnsTunnelingDetector {
             let alert_key = format!("ebpf_beacon:{}:{}", comm, dst_ip);
             if !self.is_in_cooldown(&alert_key, now) {
                 self.alerted.insert(alert_key, now);
-                return Some(self.build_ebpf_incident(
+                return Some(self.build_ebpf_incident(EbpfIncidentParams {
                     dst_ip,
                     comm,
                     pid,
-                    now,
-                    "dns_beaconing",
-                    Severity::High,
-                    format!(
+                    ts: now,
+                    pattern: "dns_beaconing",
+                    severity: Severity::High,
+                    summary: format!(
                         "DNS beaconing: {} made {} DNS queries in {}s",
                         comm,
                         beacon_count,
                         beacon_window.num_seconds()
                     ),
-                ));
+                }));
             }
         }
 
@@ -266,18 +276,18 @@ impl DnsTunnelingDetector {
             let alert_key = format!("ebpf_burst:{}", comm);
             if !self.is_in_cooldown(&alert_key, now) {
                 self.alerted.insert(alert_key, now);
-                return Some(self.build_ebpf_incident(
+                return Some(self.build_ebpf_incident(EbpfIncidentParams {
                     dst_ip,
                     comm,
                     pid,
-                    now,
-                    "dns_burst",
-                    Severity::High,
-                    format!(
+                    ts: now,
+                    pattern: "dns_burst",
+                    severity: Severity::High,
+                    summary: format!(
                         "DNS query burst: {} queries in 30s from {}",
                         burst_count, comm
                     ),
-                ));
+                }));
             }
         }
 
@@ -350,17 +360,16 @@ impl DnsTunnelingDetector {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn build_ebpf_incident(
-        &self,
-        dst_ip: &str,
-        comm: &str,
-        pid: u32,
-        ts: DateTime<Utc>,
-        pattern: &str,
-        severity: Severity,
-        summary: String,
-    ) -> Incident {
+    fn build_ebpf_incident(&self, params: EbpfIncidentParams<'_>) -> Incident {
+        let EbpfIncidentParams {
+            dst_ip,
+            comm,
+            pid,
+            ts,
+            pattern,
+            severity,
+            summary,
+        } = params;
         Incident {
             ts,
             host: self.host.clone(),

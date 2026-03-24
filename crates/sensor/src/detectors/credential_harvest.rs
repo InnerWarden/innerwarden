@@ -1,4 +1,3 @@
-#[allow(clippy::too_many_arguments)]
 use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
@@ -53,6 +52,17 @@ const ALLOWLISTED_PROCESSES: &[&str] = &[
     "node_exporter",
     "prometheus",
 ];
+
+struct EmitParams<'a> {
+    severity: Severity,
+    comm: &'a str,
+    pid: u32,
+    uid: u32,
+    detail: &'a str,
+    title: &'a str,
+    alert_key: &'a str,
+    recommended_checks: Vec<String>,
+}
 
 impl CredentialHarvestDetector {
     pub fn new(host: impl Into<String>, cooldown_seconds: u64) -> Self {
@@ -136,20 +146,23 @@ impl CredentialHarvestDetector {
 
         self.emit(
             event,
-            severity,
-            comm,
-            pid,
-            uid,
-            &format!("{comm} reading /proc/{target_pid}/{subpath} — {description}"),
-            &format!("Credential harvest: {comm} reading /proc/{target_pid}/{subpath}"),
-            &format!("proc_{subpath}_read"),
-            vec![
-                format!("Investigate {comm} (pid={pid}) reading /proc/{target_pid}/{subpath}"),
-                format!("Identify target process: ps -p {target_pid} -o comm=,args="),
-                format!("Check for credential tools: ls -la /proc/{pid}/exe"),
-                "Review the process for known credential harvesting behavior".to_string(),
-                "Check if sensitive data (tokens, passwords) may have been extracted".to_string(),
-            ],
+            EmitParams {
+                severity,
+                comm,
+                pid,
+                uid,
+                detail: &format!("{comm} reading /proc/{target_pid}/{subpath} — {description}"),
+                title: &format!("Credential harvest: {comm} reading /proc/{target_pid}/{subpath}"),
+                alert_key: &format!("proc_{subpath}_read"),
+                recommended_checks: vec![
+                    format!("Investigate {comm} (pid={pid}) reading /proc/{target_pid}/{subpath}"),
+                    format!("Identify target process: ps -p {target_pid} -o comm=,args="),
+                    format!("Check for credential tools: ls -la /proc/{pid}/exe"),
+                    "Review the process for known credential harvesting behavior".to_string(),
+                    "Check if sensitive data (tokens, passwords) may have been extracted"
+                        .to_string(),
+                ],
+            },
         )
     }
 
@@ -173,20 +186,22 @@ impl CredentialHarvestDetector {
         if is_known_tool {
             return self.emit(
                 event,
-                Severity::Critical,
-                comm,
-                pid,
-                uid,
-                command,
-                &format!("Known credential harvesting tool: {comm}"),
-                "known_tool",
-                vec![
-                    format!("CRITICAL: Known credential tool {comm} detected (pid={pid})"),
-                    format!("Kill immediately: kill -9 {pid}"),
-                    "Check what data was accessed or exfiltrated".to_string(),
-                    "Rotate all credentials on this host".to_string(),
-                    "Review audit logs for lateral movement".to_string(),
-                ],
+                EmitParams {
+                    severity: Severity::Critical,
+                    comm,
+                    pid,
+                    uid,
+                    detail: command,
+                    title: &format!("Known credential harvesting tool: {comm}"),
+                    alert_key: "known_tool",
+                    recommended_checks: vec![
+                        format!("CRITICAL: Known credential tool {comm} detected (pid={pid})"),
+                        format!("Kill immediately: kill -9 {pid}"),
+                        "Check what data was accessed or exfiltrated".to_string(),
+                        "Rotate all credentials on this host".to_string(),
+                        "Review audit logs for lateral movement".to_string(),
+                    ],
+                },
             );
         }
 
@@ -194,18 +209,20 @@ impl CredentialHarvestDetector {
         if cmd_lower.contains("strings /proc") || cmd_lower.contains("strings  /proc") {
             return self.emit(
                 event,
-                Severity::High,
-                comm,
-                pid,
-                uid,
-                command,
-                &format!("Process memory string extraction: {command}"),
-                "strings_proc",
-                vec![
-                    format!("Investigate memory string extraction by {comm} (pid={pid})"),
-                    "Check if credentials were extracted from process memory".to_string(),
-                    format!("Review process tree: pstree -p {pid}"),
-                ],
+                EmitParams {
+                    severity: Severity::High,
+                    comm,
+                    pid,
+                    uid,
+                    detail: command,
+                    title: &format!("Process memory string extraction: {command}"),
+                    alert_key: "strings_proc",
+                    recommended_checks: vec![
+                        format!("Investigate memory string extraction by {comm} (pid={pid})"),
+                        "Check if credentials were extracted from process memory".to_string(),
+                        format!("Review process tree: pstree -p {pid}"),
+                    ],
+                },
             );
         }
 
@@ -215,18 +232,22 @@ impl CredentialHarvestDetector {
             if !cmd_lower.contains("/proc/self/environ") {
                 return self.emit(
                     event,
-                    Severity::High,
-                    comm,
-                    pid,
-                    uid,
-                    command,
-                    &format!("Process environment variable theft: {command}"),
-                    "cat_environ",
-                    vec![
-                        format!("Investigate environment variable access by {comm} (pid={pid})"),
-                        "Check if tokens or secrets were read from other processes".to_string(),
-                        "Review what processes had their environment dumped".to_string(),
-                    ],
+                    EmitParams {
+                        severity: Severity::High,
+                        comm,
+                        pid,
+                        uid,
+                        detail: command,
+                        title: &format!("Process environment variable theft: {command}"),
+                        alert_key: "cat_environ",
+                        recommended_checks: vec![
+                            format!(
+                                "Investigate environment variable access by {comm} (pid={pid})"
+                            ),
+                            "Check if tokens or secrets were read from other processes".to_string(),
+                            "Review what processes had their environment dumped".to_string(),
+                        ],
+                    },
                 );
             }
         }
@@ -234,18 +255,17 @@ impl CredentialHarvestDetector {
         None
     }
 
-    fn emit(
-        &mut self,
-        event: &Event,
-        severity: Severity,
-        comm: &str,
-        pid: u32,
-        uid: u32,
-        detail: &str,
-        title: &str,
-        alert_key: &str,
-        recommended_checks: Vec<String>,
-    ) -> Option<Incident> {
+    fn emit(&mut self, event: &Event, params: EmitParams<'_>) -> Option<Incident> {
+        let EmitParams {
+            severity,
+            comm,
+            pid,
+            uid,
+            detail,
+            title,
+            alert_key,
+            recommended_checks,
+        } = params;
         let now = event.ts;
 
         let cooldown_key = format!("{comm}:{alert_key}:{pid}");

@@ -1,4 +1,3 @@
-#[allow(clippy::too_many_arguments)]
 use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
@@ -48,6 +47,16 @@ const SUSPICIOUS_EXTENSIONS: &[&str] = &[
 const ALLOWED_DEPLOYERS: &[&str] = &[
     "apt", "dpkg", "pip", "pip3", "composer", "npm", "git", "rsync", "cp",
 ];
+
+struct EmitParams<'a> {
+    ts: DateTime<Utc>,
+    pattern: &'a str,
+    comm: &'a str,
+    pid: u32,
+    uid: u32,
+    target: &'a str,
+    summary: &'a str,
+}
 
 impl WebShellDetector {
     pub fn new(host: impl Into<String>, cooldown_seconds: u64) -> Self {
@@ -112,18 +121,18 @@ impl WebShellDetector {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32;
 
-        self.emit_incident(
-            event.ts,
-            "file_write",
+        self.emit_incident(EmitParams {
+            ts: event.ts,
+            pattern: "file_write",
             comm,
             pid,
             uid,
-            filename,
-            &format!(
+            target: filename,
+            summary: &format!(
                 "Suspicious web shell file written by {comm} (pid={pid}, uid={uid}): \
                  {filename} — script file created in web directory"
             ),
-        )
+        })
     }
 
     fn check_command(&mut self, event: &Event) -> Option<Incident> {
@@ -165,18 +174,18 @@ impl WebShellDetector {
                 command.to_string()
             };
 
-            return self.emit_incident(
-                event.ts,
-                "command_write",
+            return self.emit_incident(EmitParams {
+                ts: event.ts,
+                pattern: "command_write",
                 comm,
                 pid,
                 uid,
-                &display_cmd,
-                &format!(
+                target: &display_cmd,
+                summary: &format!(
                     "Web shell deployment via command by {comm} (pid={pid}, uid={uid}): \
                      {display_cmd}"
                 ),
-            );
+            });
         }
 
         None
@@ -202,16 +211,16 @@ impl WebShellDetector {
             || lower.contains("curl") && lower.contains('>')
     }
 
-    fn emit_incident(
-        &mut self,
-        ts: DateTime<Utc>,
-        pattern: &str,
-        comm: &str,
-        pid: u32,
-        uid: u32,
-        target: &str,
-        summary: &str,
-    ) -> Option<Incident> {
+    fn emit_incident(&mut self, params: EmitParams<'_>) -> Option<Incident> {
+        let EmitParams {
+            ts,
+            pattern,
+            comm,
+            pid,
+            uid,
+            target,
+            summary,
+        } = params;
         let key = format!("{pattern}:{comm}:{target}");
 
         // Cooldown check

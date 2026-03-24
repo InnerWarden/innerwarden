@@ -3,6 +3,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use chrono::{DateTime, Duration, Utc};
 use innerwarden_core::{entities::EntityRef, event::Event, event::Severity, incident::Incident};
 
+/// Per-(process, dst_ip) ring of (timestamp, port) for port spray detection.
+type PortSprayMap = HashMap<(String, String), VecDeque<(DateTime<Utc>, u16)>>;
+/// Per-(process, port) ring of (timestamp, ip) for fan-out detection.
+type FanoutMap = HashMap<(String, u16), VecDeque<(DateTime<Utc>, String)>>;
+
 /// Known DDoS tool process names — instant Critical alert on execution.
 const DDOS_TOOLS: &[&str] = &[
     "hping3",
@@ -40,9 +45,9 @@ pub struct OutboundAnomalyDetector {
     /// Per-process ring of (timestamp, dst_ip, dst_port, protocol) for flood detection
     conn_history: HashMap<String, VecDeque<ConnRecord>>,
     /// Per-(process, dst_ip) set of ports seen in window — for port spray
-    port_spray: HashMap<(String, String), VecDeque<(DateTime<Utc>, u16)>>,
+    port_spray: PortSprayMap,
     /// Per-(process, port) set of IPs seen in window — for fan-out
-    fanout: HashMap<(String, u16), VecDeque<(DateTime<Utc>, String)>>,
+    fanout: FanoutMap,
     /// Cooldown per alert key
     alerted: HashMap<String, DateTime<Utc>>,
     host: String,
@@ -55,6 +60,17 @@ struct ConnRecord {
     dst_ip: String,
     dst_port: u16,
     proto: String,
+}
+
+struct IncidentParams<'a> {
+    dst_ip: &'a str,
+    dst_port: u16,
+    comm: &'a str,
+    pid: u32,
+    ts: DateTime<Utc>,
+    pattern: &'a str,
+    severity: Severity,
+    summary: String,
 }
 
 impl OutboundAnomalyDetector {
@@ -102,16 +118,16 @@ impl OutboundAnomalyDetector {
                         .get("pid")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0) as u32;
-                    return Some(self.build_incident(
-                        "",
-                        0,
-                        comm_base,
+                    return Some(self.build_incident(IncidentParams {
+                        dst_ip: "",
+                        dst_port: 0,
+                        comm: comm_base,
                         pid,
-                        event.ts,
-                        "ddos_tool",
-                        Severity::Critical,
-                        format!("DDoS tool detected: {comm_base}"),
-                    ));
+                        ts: event.ts,
+                        pattern: "ddos_tool",
+                        severity: Severity::Critical,
+                        summary: format!("DDoS tool detected: {comm_base}"),
+                    }));
                 }
             }
             return None;
@@ -229,16 +245,18 @@ impl OutboundAnomalyDetector {
             let alert_key = format!("udp_flood:{}", proc_key);
             if !self.is_in_cooldown(&alert_key, now) {
                 self.alerted.insert(alert_key, now);
-                return Some(self.build_incident(
+                return Some(self.build_incident(IncidentParams {
                     dst_ip,
                     dst_port,
                     comm,
                     pid,
-                    now,
-                    "udp_flood",
-                    Severity::Critical,
-                    format!("UDP flood detected: {comm} sending {udp_count} UDP packets in 30s"),
-                ));
+                    ts: now,
+                    pattern: "udp_flood",
+                    severity: Severity::Critical,
+                    summary: format!(
+                        "UDP flood detected: {comm} sending {udp_count} UDP packets in 30s"
+                    ),
+                }));
             }
         }
 
@@ -247,16 +265,18 @@ impl OutboundAnomalyDetector {
             let alert_key = format!("conn_flood:{}", proc_key);
             if !self.is_in_cooldown(&alert_key, now) {
                 self.alerted.insert(alert_key, now);
-                return Some(self.build_incident(
+                return Some(self.build_incident(IncidentParams {
                     dst_ip,
                     dst_port,
                     comm,
                     pid,
-                    now,
-                    "connection_flood",
-                    Severity::High,
-                    format!("Outbound flood: {comm} opened {conn_count} connections in 30s"),
-                ));
+                    ts: now,
+                    pattern: "connection_flood",
+                    severity: Severity::High,
+                    summary: format!(
+                        "Outbound flood: {comm} opened {conn_count} connections in 30s"
+                    ),
+                }));
             }
         }
 
@@ -265,18 +285,18 @@ impl OutboundAnomalyDetector {
             let alert_key = format!("port_spray:{}:{}", proc_key, dst_ip);
             if !self.is_in_cooldown(&alert_key, now) {
                 self.alerted.insert(alert_key, now);
-                return Some(self.build_incident(
+                return Some(self.build_incident(IncidentParams {
                     dst_ip,
                     dst_port,
                     comm,
                     pid,
-                    now,
-                    "port_spray",
-                    Severity::High,
-                    format!(
+                    ts: now,
+                    pattern: "port_spray",
+                    severity: Severity::High,
+                    summary: format!(
                         "Outbound port spray: {comm} scanning {unique_port_count} ports on {dst_ip}",
                     ),
-                ));
+                }));
             }
         }
 
@@ -285,18 +305,18 @@ impl OutboundAnomalyDetector {
             let alert_key = format!("fanout:{}:{}", proc_key, dst_port);
             if !self.is_in_cooldown(&alert_key, now) {
                 self.alerted.insert(alert_key, now);
-                return Some(self.build_incident(
+                return Some(self.build_incident(IncidentParams {
                     dst_ip,
                     dst_port,
                     comm,
                     pid,
-                    now,
-                    "fanout",
-                    Severity::High,
-                    format!(
+                    ts: now,
+                    pattern: "fanout",
+                    severity: Severity::High,
+                    summary: format!(
                         "Outbound fan-out: {comm} connecting to {unique_ip_count} IPs on port {dst_port}",
                     ),
-                ));
+                }));
             }
         }
 
@@ -334,18 +354,17 @@ impl OutboundAnomalyDetector {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn build_incident(
-        &self,
-        dst_ip: &str,
-        dst_port: u16,
-        comm: &str,
-        pid: u32,
-        ts: DateTime<Utc>,
-        pattern: &str,
-        severity: Severity,
-        summary: String,
-    ) -> Incident {
+    fn build_incident(&self, params: IncidentParams<'_>) -> Incident {
+        let IncidentParams {
+            dst_ip,
+            dst_port,
+            comm,
+            pid,
+            ts,
+            pattern,
+            severity,
+            summary,
+        } = params;
         Incident {
             ts,
             host: self.host.clone(),

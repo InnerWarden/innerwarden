@@ -1,4 +1,3 @@
-#[allow(clippy::too_many_arguments)]
 use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
@@ -55,6 +54,17 @@ const ALLOWLISTED_PROCESSES: &[&str] = &[
 
 /// Suspicious paths in ExecStart — strong indicator of backdoor.
 const SUSPICIOUS_EXEC_PATHS: &[&str] = &["/tmp/", "/dev/shm/", "/var/tmp/"];
+
+struct EmitParams<'a> {
+    severity: Severity,
+    comm: &'a str,
+    pid: u32,
+    uid: u32,
+    detail: &'a str,
+    title: &'a str,
+    alert_key: &'a str,
+    recommended_checks: Vec<String>,
+}
 
 impl SystemdPersistenceDetector {
     pub fn new(host: impl Into<String>, cooldown_seconds: u64) -> Self {
@@ -122,20 +132,27 @@ impl SystemdPersistenceDetector {
 
         self.emit(
             event,
-            severity,
-            comm,
-            pid,
-            uid,
-            filename,
-            &format!("Systemd unit file created: {filename}"),
-            "unit_file_write",
-            vec![
-                format!("Investigate systemd unit file creation by {comm} (pid={pid}): {filename}"),
-                format!("Review unit file content: cat {filename}"),
-                "Check ExecStart for suspicious paths (/tmp, /dev/shm, hidden dirs)".to_string(),
-                "List recently modified units: find /etc/systemd/system -mmin -30".to_string(),
-                format!("Check if service is enabled: systemctl is-enabled $(basename {filename})"),
-            ],
+            EmitParams {
+                severity,
+                comm,
+                pid,
+                uid,
+                detail: filename,
+                title: &format!("Systemd unit file created: {filename}"),
+                alert_key: "unit_file_write",
+                recommended_checks: vec![
+                    format!(
+                        "Investigate systemd unit file creation by {comm} (pid={pid}): {filename}"
+                    ),
+                    format!("Review unit file content: cat {filename}"),
+                    "Check ExecStart for suspicious paths (/tmp, /dev/shm, hidden dirs)"
+                        .to_string(),
+                    "List recently modified units: find /etc/systemd/system -mmin -30".to_string(),
+                    format!(
+                        "Check if service is enabled: systemctl is-enabled $(basename {filename})"
+                    ),
+                ],
+            },
         )
     }
 
@@ -182,35 +199,36 @@ impl SystemdPersistenceDetector {
 
         self.emit(
             event,
+            EmitParams {
+                severity,
+                comm,
+                pid,
+                uid,
+                detail: command,
+                title: &format!("systemctl {action} executed"),
+                alert_key: &format!("systemctl_{action}"),
+                recommended_checks: vec![
+                    format!("Investigate systemctl {action} by {comm} (pid={pid})"),
+                    "List recently modified systemd units: systemctl list-unit-files --state=enabled"
+                        .to_string(),
+                    "Check for new or modified service files in /etc/systemd/system/".to_string(),
+                    format!("Review process tree: pstree -p {pid}"),
+                ],
+            },
+        )
+    }
+
+    fn emit(&mut self, event: &Event, params: EmitParams<'_>) -> Option<Incident> {
+        let EmitParams {
             severity,
             comm,
             pid,
             uid,
-            command,
-            &format!("systemctl {action} executed"),
-            &format!("systemctl_{action}"),
-            vec![
-                format!("Investigate systemctl {action} by {comm} (pid={pid})"),
-                "List recently modified systemd units: systemctl list-unit-files --state=enabled"
-                    .to_string(),
-                "Check for new or modified service files in /etc/systemd/system/".to_string(),
-                format!("Review process tree: pstree -p {pid}"),
-            ],
-        )
-    }
-
-    fn emit(
-        &mut self,
-        event: &Event,
-        severity: Severity,
-        comm: &str,
-        pid: u32,
-        uid: u32,
-        detail: &str,
-        title: &str,
-        alert_key: &str,
-        recommended_checks: Vec<String>,
-    ) -> Option<Incident> {
+            detail,
+            title,
+            alert_key,
+            recommended_checks,
+        } = params;
         let now = event.ts;
 
         let cooldown_key = format!("{comm}:{alert_key}:{pid}");

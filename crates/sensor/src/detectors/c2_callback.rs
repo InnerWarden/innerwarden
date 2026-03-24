@@ -35,6 +35,17 @@ struct ConnectionRecord {
     pid: u32,
 }
 
+struct IncidentParams<'a> {
+    dst_ip: &'a str,
+    dst_port: u16,
+    comm: &'a str,
+    pid: u32,
+    ts: DateTime<Utc>,
+    pattern: &'a str,
+    severity: Severity,
+    summary: String,
+}
+
 impl C2CallbackDetector {
     pub fn new(host: impl Into<String>, window_seconds: u64) -> Self {
         let c2_ports: HashSet<u16> = [
@@ -129,18 +140,18 @@ impl C2CallbackDetector {
                 // curl/wget to 443 is normal — skip
             } else {
                 self.alerted.insert(alert_key, now);
-                return Some(self.build_incident(
-                    &dst_ip,
+                return Some(self.build_incident(IncidentParams {
+                    dst_ip: &dst_ip,
                     dst_port,
-                    &comm,
+                    comm: &comm,
                     pid,
-                    now,
-                    "c2_port",
-                    Severity::High,
-                    format!(
+                    ts: now,
+                    pattern: "c2_port",
+                    severity: Severity::High,
+                    summary: format!(
                         "Process {comm} (pid={pid}) connected to {dst_ip}:{dst_port} — known C2 port"
                     ),
-                ));
+                }));
             }
         }
 
@@ -151,19 +162,19 @@ impl C2CallbackDetector {
             let timestamps: Vec<i64> = entries.iter().map(|r| r.ts.timestamp()).collect();
             if is_beaconing(&timestamps) {
                 self.alerted.insert(alert_key, now);
-                return Some(self.build_incident(
-                    &dst_ip,
+                return Some(self.build_incident(IncidentParams {
+                    dst_ip: &dst_ip,
                     dst_port,
-                    &comm,
+                    comm: &comm,
                     pid,
-                    now,
-                    "beaconing",
-                    Severity::Critical,
-                    format!(
+                    ts: now,
+                    pattern: "beaconing",
+                    severity: Severity::Critical,
+                    summary: format!(
                         "Beaconing detected: {comm} connected to {dst_ip} {} times at regular intervals",
                         conn_count
                     ),
-                ));
+                }));
             }
         }
 
@@ -175,19 +186,19 @@ impl C2CallbackDetector {
             .unwrap_or(0);
         if unique_dests >= 10 && self.suspicious_processes.contains(&comm_base) {
             self.alerted.insert(alert_key, now);
-            return Some(self.build_incident(
-                &dst_ip,
+            return Some(self.build_incident(IncidentParams {
+                dst_ip: &dst_ip,
                 dst_port,
-                &comm,
+                comm: &comm,
                 pid,
-                now,
-                "data_exfil",
-                Severity::Critical,
-                format!(
+                ts: now,
+                pattern: "data_exfil",
+                severity: Severity::Critical,
+                summary: format!(
                     "Possible data exfiltration: {comm} connected to {unique_dests} unique IPs in {} seconds",
                     self.window.num_seconds()
                 ),
-            ));
+            }));
         }
 
         // Prune stale data
@@ -207,18 +218,17 @@ impl C2CallbackDetector {
         None
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn build_incident(
-        &self,
-        dst_ip: &str,
-        dst_port: u16,
-        comm: &str,
-        pid: u32,
-        ts: DateTime<Utc>,
-        pattern: &str,
-        severity: Severity,
-        summary: String,
-    ) -> Incident {
+    fn build_incident(&self, params: IncidentParams<'_>) -> Incident {
+        let IncidentParams {
+            dst_ip,
+            dst_port,
+            comm,
+            pid,
+            ts,
+            pattern,
+            severity,
+            summary,
+        } = params;
         Incident {
             ts,
             host: self.host.clone(),
