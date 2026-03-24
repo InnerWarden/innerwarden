@@ -1639,6 +1639,7 @@ dependencies = [
  "clap",
  "dns-lookup",
  "innerwarden_core",
+ "libc",
  "redis",
  "serde",
  "serde_json",
