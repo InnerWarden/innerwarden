@@ -1270,6 +1270,17 @@ fn cmd_list(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
         };
         println!("{:<20} {:<10} {}", cap.id(), status, cap.description());
     }
+
+    println!();
+    println!("System coverage:");
+    println!("  22 eBPF kernel hooks (execve, connect, ptrace, setuid, bind, mount, ...)");
+    println!("  36 stateful detectors (SSH brute-force, rootkit, reverse shell, ransomware, ...)");
+    println!("  13 log collectors (auth_log, journald, docker, nginx, suricata, ...)");
+    println!("  7 kill chain patterns blocked at kernel level");
+    println!();
+    println!("These run automatically. Capabilities above are optional add-ons.");
+    println!("Run 'innerwarden scan' to see what's recommended for this machine.");
+
     Ok(())
 }
 
@@ -7356,7 +7367,10 @@ fn cmd_entity(cli: &Cli, target: &str, days: u64, data_dir: &Path) -> Result<()>
                         .as_array()
                         .map(|arr| {
                             arr.iter().any(|e| {
-                                e["type"].as_str() == Some("Ip")
+                                e["type"]
+                                    .as_str()
+                                    .map(|t| t.eq_ignore_ascii_case("ip"))
+                                    .unwrap_or(false)
                                     && e["value"].as_str() == Some(target)
                             })
                         })
@@ -7366,7 +7380,10 @@ fn cmd_entity(cli: &Cli, target: &str, days: u64, data_dir: &Path) -> Result<()>
                         .as_array()
                         .map(|arr| {
                             arr.iter().any(|e| {
-                                e["type"].as_str() == Some("User")
+                                e["type"]
+                                    .as_str()
+                                    .map(|t| t.eq_ignore_ascii_case("user"))
+                                    .unwrap_or(false)
                                     && e["value"].as_str() == Some(target)
                             })
                         })
@@ -9127,6 +9144,8 @@ fn cmd_pipeline_test(cli: &Cli, wait_secs: u64, data_dir: &Path) -> Result<()> {
         .append(true)
         .open(&incidents_path)?;
     writeln!(file, "{}", incident)?;
+    println!("        Title: Possible SSH brute force from {test_ip}");
+    println!("        Severity: HIGH");
     println!("        SSH brute-force from {test_ip} (documentation IP, safe)");
     println!("        Written to {}\n", incidents_path.display());
 
