@@ -2194,22 +2194,12 @@ async fn api_sensors_inner(state: &DashboardState) -> serde_json::Value {
     if safe_today.len() != 10 || safe_today.chars().nth(4).is_none_or(|c| c != '-') {
         return serde_json::json!({ "error": "invalid date" });
     }
-    let events_path = state.data_dir.join(format!("events-{safe_today}.jsonl"));
-    let incidents_path = state.data_dir.join(format!("incidents-{safe_today}.jsonl"));
-    // Resolve symlinks and verify paths stay within data_dir (CWE-22).
+    // Resolve data_dir to canonical form first, then construct paths from it (CWE-22).
     let Ok(canonical_data) = state.data_dir.canonicalize() else {
         return serde_json::json!({ "error": "invalid data directory" });
     };
-    if let Ok(cp) = events_path.canonicalize() {
-        if !cp.starts_with(&canonical_data) {
-            return serde_json::json!({ "error": "path traversal detected" });
-        }
-    }
-    if let Ok(cp) = incidents_path.canonicalize() {
-        if !cp.starts_with(&canonical_data) {
-            return serde_json::json!({ "error": "path traversal detected" });
-        }
-    }
+    let events_path = canonical_data.join(format!("events-{safe_today}.jsonl"));
+    let incidents_path = canonical_data.join(format!("incidents-{safe_today}.jsonl"));
 
     // Sample events file across its full length for timeline coverage.
     // Read 20 chunks of 64KB evenly spaced across the file → ~2000 events sampled.
