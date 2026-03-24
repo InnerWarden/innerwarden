@@ -38,9 +38,9 @@ impl GuardianMode {
 
     pub fn description(&self) -> &'static str {
         match self {
-            GuardianMode::Guard => "Threats get neutralized on sight. You get the report.",
-            GuardianMode::DryRun => "I simulate kills — nothing real hits the firewall yet.",
-            GuardianMode::Watch => "I flag everything, you make the call.",
+            GuardianMode::Guard => "Threats are blocked automatically. You receive reports.",
+            GuardianMode::DryRun => "Test mode — shows what would be blocked, no real changes.",
+            GuardianMode::Watch => "Monitor only — all actions require your approval.",
         }
     }
 }
@@ -440,13 +440,13 @@ impl TelegramClient {
         let pct = (ai_confidence * 100.0) as u32;
 
         let text = format!(
-            "🎯 <b>Live target acquired</b>\n\
+            "🎯 <b>Honeypot candidate detected</b>\n\
              \n\
              <b>IP:</b> <code>{ip}</code>\n\
              <b>Incident:</b> {title}\n\
              <b>AI read:</b> {reason} ({pct}% confidence)\n\
              \n\
-             Your call, operator — trap them or drop them?",
+             Redirect to honeypot for analysis, or block immediately?",
             ip = escape_html(ip),
             title = escape_html(&incident.title),
             reason = escape_html(ai_reason),
@@ -696,7 +696,7 @@ impl TelegramClient {
         } else {
             (
                 format!(
-                    "Dropped <code>{}</code> on sight — known threat, no AI needed.",
+                    "Blocked <code>{}</code> — known threat from reputation database.",
                     escape_html(ip)
                 ),
                 "🛡 <b>Instant kill</b> — AbuseIPDB reputation gate",
@@ -1619,10 +1619,8 @@ mod tests {
         assert_eq!(GuardianMode::Guard.label(), "🟢 GUARD");
         assert_eq!(GuardianMode::DryRun.label(), "🟡 DRY-RUN");
         assert_eq!(GuardianMode::Watch.label(), "🔵 WATCH");
-        assert!(GuardianMode::Guard.description().contains("neutralized"));
-        assert!(GuardianMode::Watch
-            .description()
-            .contains("you make the call"));
+        assert!(GuardianMode::Guard.description().contains("automatically"));
+        assert!(GuardianMode::Watch.description().contains("your approval"));
     }
 
     #[test]
@@ -1756,13 +1754,13 @@ mod tests {
         let pct = (confidence * 100.0) as u32;
 
         let text = format!(
-            "🎯 <b>Live target acquired</b>\n\
+            "🎯 <b>Honeypot candidate detected</b>\n\
              \n\
              <b>IP:</b> <code>{ip}</code>\n\
              <b>Incident:</b> {title}\n\
              <b>AI read:</b> {reason} ({pct}% confidence)\n\
              \n\
-             Your call, operator — trap them or drop them?",
+             Redirect to honeypot for analysis, or block immediately?",
             ip = escape_html(ip),
             title = escape_html(title),
             reason = escape_html(reason),
@@ -1776,11 +1774,11 @@ mod tests {
         );
         assert!(text.contains("87%"), "confidence percentage must appear");
         assert!(
-            text.contains("Live target acquired"),
-            "personality heading must appear"
+            text.contains("Honeypot candidate detected"),
+            "honeypot heading must appear"
         );
         assert!(
-            text.contains("trap them or drop them"),
+            text.contains("honeypot for analysis"),
             "operator question must appear"
         );
 
