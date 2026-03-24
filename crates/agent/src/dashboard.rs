@@ -1176,18 +1176,18 @@ struct StoredIpReputation {
 
 /// Load the `ip-reputation.json` file written by the agent's slow loop.
 fn load_ip_reputation_map(data_dir: &Path) -> HashMap<String, StoredIpReputation> {
-    // Validate data_dir is an absolute path within expected locations (CWE-22)
-    if !data_dir.is_absolute() {
-        return HashMap::new();
-    }
     let path = data_dir.join("ip-reputation.json");
-    if path
-        .components()
-        .any(|c| c == std::path::Component::ParentDir)
-    {
+    // Resolve symlinks and verify the path stays within the data directory (CWE-22).
+    let Ok(canonical) = path.canonicalize() else {
+        return HashMap::new();
+    };
+    let Ok(canonical_dir) = data_dir.canonicalize() else {
+        return HashMap::new();
+    };
+    if !canonical.starts_with(&canonical_dir) {
         return HashMap::new();
     }
-    let Ok(content) = std::fs::read_to_string(&path) else {
+    let Ok(content) = std::fs::read_to_string(&canonical) else {
         return HashMap::new();
     };
     serde_json::from_str(&content).unwrap_or_default()
@@ -1349,12 +1349,18 @@ async fn api_live_feed_honeypot(State(state): State<DashboardState>) -> Json<Vec
     let honeypot_dir = state.data_dir.join("honeypot");
     let mut sessions = Vec::new();
 
-    // Validate path to prevent traversal (CodeQL CWE-22)
-    if !state.data_dir.is_absolute() {
+    // Resolve symlinks and verify the path stays within data_dir (CWE-22).
+    let Ok(canonical_dir) = honeypot_dir.canonicalize() else {
+        return Json(sessions);
+    };
+    let Ok(canonical_data) = state.data_dir.canonicalize() else {
+        return Json(sessions);
+    };
+    if !canonical_dir.starts_with(&canonical_data) {
         return Json(sessions);
     }
 
-    let entries = match std::fs::read_dir(&honeypot_dir) {
+    let entries = match std::fs::read_dir(&canonical_dir) {
         Ok(e) => e,
         Err(_) => return Json(sessions),
     };
@@ -2184,15 +2190,26 @@ async fn api_sensors_inner(state: &DashboardState) -> serde_json::Value {
         .chars()
         .filter(|c| c.is_ascii_digit() || *c == '-')
         .collect::<String>();
-    // Validate date format and data_dir to prevent path traversal (CodeQL CWE-22)
+    // Validate date format to prevent path traversal (CodeQL CWE-22)
     if safe_today.len() != 10 || safe_today.chars().nth(4).is_none_or(|c| c != '-') {
         return serde_json::json!({ "error": "invalid date" });
     }
-    if !state.data_dir.is_absolute() {
-        return serde_json::json!({ "error": "invalid data directory" });
-    }
     let events_path = state.data_dir.join(format!("events-{safe_today}.jsonl"));
     let incidents_path = state.data_dir.join(format!("incidents-{safe_today}.jsonl"));
+    // Resolve symlinks and verify paths stay within data_dir (CWE-22).
+    let Ok(canonical_data) = state.data_dir.canonicalize() else {
+        return serde_json::json!({ "error": "invalid data directory" });
+    };
+    if let Ok(cp) = events_path.canonicalize() {
+        if !cp.starts_with(&canonical_data) {
+            return serde_json::json!({ "error": "path traversal detected" });
+        }
+    }
+    if let Ok(cp) = incidents_path.canonicalize() {
+        if !cp.starts_with(&canonical_data) {
+            return serde_json::json!({ "error": "path traversal detected" });
+        }
+    }
 
     // Sample events file across its full length for timeline coverage.
     // Read 20 chunks of 64KB evenly spaced across the file → ~2000 events sampled.
