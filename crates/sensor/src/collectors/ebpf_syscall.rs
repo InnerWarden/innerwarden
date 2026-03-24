@@ -546,6 +546,162 @@ fn attach_xdp(_bpf: &mut ()) {}
 /// Start the eBPF collector. Loads programs, attaches tracepoints, reads ring buffer.
 ///
 /// Events flow through the same mpsc channel as all other collectors.
+// ---------------------------------------------------------------------------
+// Kernel filter population — Falco-derived allowlists
+// ---------------------------------------------------------------------------
+//
+// Handler bitmask for COMM_ALLOWLIST:
+//   bit 0 = execve, 1 = connect, 2 = openat, 3 = ptrace,
+//   4 = setuid, 5 = bind, 6 = mount, 7 = memfd, 8 = init_module
+//
+// Sources: falcosecurity/rules (falco_rules.yaml), adapted for Inner Warden.
+
+#[cfg(feature = "ebpf")]
+fn populate_kernel_filters(bpf: &mut aya::Ebpf) {
+    use aya::maps::HashMap;
+
+    // --- COMM_ALLOWLIST: safe processes per handler ---
+    if let Ok(mut map) =
+        HashMap::<_, [u8; 16], u32>::try_from(bpf.map_mut("COMM_ALLOWLIST").unwrap())
+    {
+        // Helper: create 16-byte key from comm name
+        let key = |name: &str| -> [u8; 16] {
+            let mut k = [0u8; 16];
+            let bytes = name.as_bytes();
+            k[..bytes.len().min(16)].copy_from_slice(&bytes[..bytes.len().min(16)]);
+            k
+        };
+
+        const EXECVE: u32 = 1 << 0;
+        const CONNECT: u32 = 1 << 1;
+        const OPENAT: u32 = 1 << 2;
+        const PTRACE: u32 = 1 << 3;
+        const SETUID: u32 = 1 << 4;
+        const BIND: u32 = 1 << 5;
+        // bit 6 = mount (never allowlisted)
+        // bit 7 = memfd
+        // bit 8 = init_module (never allowlisted)
+
+        // Package managers — noisy on execve, openat, connect
+        for comm in [
+            "apt", "apt-get", "dpkg", "dnf", "yum", "rpm", "snap", "apk", "pip", "pip3", "conda",
+            "npm", "gem",
+        ] {
+            let _ = map.insert(key(comm), EXECVE | OPENAT | CONNECT, 0);
+        }
+
+        // Build tools — noisy on execve, openat
+        for comm in [
+            "cargo", "rustc", "gcc", "g++", "cc1", "cc1plus", "clang", "ld", "ar", "make", "cmake",
+            "ninja", "javac", "go",
+        ] {
+            let _ = map.insert(key(comm), EXECVE | OPENAT, 0);
+        }
+
+        // Coreutils — noisy on openat, execve (spawned constantly by scripts)
+        for comm in [
+            "cat", "ls", "cp", "mv", "rm", "mkdir", "chmod", "chown", "ln", "head", "tail", "wc",
+            "sort", "cut", "tr", "sed", "awk", "grep", "find", "xargs", "tee", "touch", "date",
+            "sleep", "true", "false", "echo", "env", "pwd", "id", "whoami", "basename", "dirname",
+            "readlink", "stat", "test", "seq", "yes", "dd", "df", "du", "uname", "mktemp",
+        ] {
+            let _ = map.insert(key(comm), EXECVE | OPENAT, 0);
+        }
+
+        // System daemons — allowed on setuid, connect, openat, bind
+        for comm in [
+            "systemd",
+            "systemd-logind",
+            "systemd-resolve",
+            "systemd-timesyn",
+            "systemd-network",
+        ] {
+            let _ = map.insert(key(comm), SETUID | CONNECT | OPENAT | BIND, 0);
+        }
+
+        // SSH daemons — allowed on setuid (legitimate priv change), bind
+        for comm in ["sshd", "sshd-session"] {
+            let _ = map.insert(key(comm), SETUID | BIND, 0);
+        }
+
+        // Auth/login — allowed on setuid
+        for comm in [
+            "sudo",
+            "su",
+            "login",
+            "cron",
+            "crond",
+            "polkitd",
+            "dbus-daemon",
+        ] {
+            let _ = map.insert(key(comm), SETUID, 0);
+        }
+
+        // Web/DB servers — allowed on bind (they legitimately bind ports)
+        for comm in [
+            "nginx",
+            "apache2",
+            "httpd",
+            "redis-server",
+            "mysqld",
+            "postgres",
+            "mongod",
+            "memcached",
+        ] {
+            let _ = map.insert(key(comm), BIND, 0);
+        }
+
+        // Container runtimes — allowed on bind, connect, openat
+        for comm in [
+            "dockerd",
+            "containerd",
+            "containerd-shim",
+            "runc",
+            "crio",
+            "podman",
+        ] {
+            let _ = map.insert(key(comm), BIND | CONNECT | OPENAT, 0);
+        }
+
+        // Debuggers — allowed on ptrace (their whole purpose)
+        for comm in ["gdb", "strace", "ltrace", "lldb", "perf", "valgrind"] {
+            let _ = map.insert(key(comm), PTRACE, 0);
+        }
+
+        // Monitoring agents — noisy on openat, connect
+        for comm in [
+            "prometheus",
+            "node_exporter",
+            "grafana",
+            "telegraf",
+            "collectd",
+            "fluentd",
+            "filebeat",
+        ] {
+            let _ = map.insert(key(comm), OPENAT | CONNECT, 0);
+        }
+
+        // Inner Warden itself — skip all handlers except init_module and mount
+        for comm in [
+            "innerwarden-sen",
+            "innerwarden-age",
+            "innerwarden-dna",
+            "innerwarden-shi",
+        ] {
+            let _ = map.insert(
+                key(comm),
+                EXECVE | CONNECT | OPENAT | PTRACE | SETUID | BIND,
+                0,
+            );
+        }
+
+        let count = map.keys().count();
+        tracing::info!(count, "eBPF: COMM_ALLOWLIST populated");
+    } else {
+        tracing::warn!("eBPF: COMM_ALLOWLIST map not found — kernel filters disabled");
+    }
+}
+
 #[cfg(feature = "ebpf")]
 pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     use aya::maps::RingBuf;
@@ -774,6 +930,9 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
             return;
         }
     };
+
+    // Populate kernel-level noise filters from Falco-derived allowlists
+    populate_kernel_filters(&mut bpf);
 
     info!("eBPF collector active — kernel-level syscall monitoring (13 hooks)");
 
