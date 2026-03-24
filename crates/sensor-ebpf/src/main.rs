@@ -131,6 +131,15 @@ const CHAIN_MPROTECT: u32 = 1 << 7;
 const PATTERN_REVERSE_SHELL: u32 = CHAIN_SOCKET | CHAIN_DUP_STDIN | CHAIN_DUP_STDOUT;
 const PATTERN_BIND_SHELL: u32 = CHAIN_BIND | CHAIN_LISTEN | CHAIN_DUP_STDIN | CHAIN_DUP_STDOUT;
 const PATTERN_CODE_INJECT: u32 = CHAIN_PTRACE | CHAIN_MPROTECT;
+// Zero-day exploit patterns — generic, no CVE signature needed:
+// Exploit → shellcode: mprotect(RWX) then redirect I/O
+const PATTERN_EXPLOIT_SHELL: u32 = CHAIN_MPROTECT | CHAIN_DUP_STDIN | CHAIN_DUP_STDOUT;
+// Exploit → inject + shell: ptrace into process then spawn shell
+const PATTERN_INJECT_SHELL: u32 = CHAIN_PTRACE | CHAIN_DUP_STDIN;
+// Exploit → RWX + outbound: shellcode phones home
+const PATTERN_EXPLOIT_C2: u32 = CHAIN_MPROTECT | CHAIN_SOCKET;
+// Full exploit chain: RWX memory + inject + redirect + outbound
+const PATTERN_FULL_EXPLOIT: u32 = CHAIN_MPROTECT | CHAIN_PTRACE | CHAIN_SOCKET;
 
 /// Set a kill chain flag for the current PID.
 #[inline(always)]
@@ -143,9 +152,17 @@ fn chain_flag(pid: u32, flag: u32) {
 #[inline(always)]
 fn chain_is_attack(pid: u32) -> bool {
     let flags = unsafe { PID_CHAIN.get(&pid) }.copied().unwrap_or(0);
+    if flags == 0 { return false; }
+    // Shell patterns
     (flags & PATTERN_REVERSE_SHELL) == PATTERN_REVERSE_SHELL
         || (flags & PATTERN_BIND_SHELL) == PATTERN_BIND_SHELL
+        // Injection patterns
         || (flags & PATTERN_CODE_INJECT) == PATTERN_CODE_INJECT
+        // Zero-day exploit patterns
+        || (flags & PATTERN_EXPLOIT_SHELL) == PATTERN_EXPLOIT_SHELL
+        || (flags & PATTERN_INJECT_SHELL) == PATTERN_INJECT_SHELL
+        || (flags & PATTERN_EXPLOIT_C2) == PATTERN_EXPLOIT_C2
+        || (flags & PATTERN_FULL_EXPLOIT) == PATTERN_FULL_EXPLOIT
 }
 
 /// Clear kill chain for a PID (called on process exit).
