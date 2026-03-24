@@ -751,11 +751,154 @@ fn populate_kernel_filters(bpf: &mut aya::Ebpf) {
     }
 }
 
+/// Attach a typed tracepoint program — helper to eliminate repetition.
+/// Returns true if the program was found, loaded, and attached successfully.
+#[cfg(feature = "ebpf")]
+fn attach_tp(bpf: &mut aya::Ebpf, name: &str, category: &str, tp_name: &str) -> bool {
+    use aya::programs::TracePoint;
+
+    if let Some(prog) = bpf.program_mut(name) {
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach(category, tp_name) {
+                    warn!(error = %e, "{name}: failed to attach to {category}/{tp_name}");
+                } else {
+                    info!("eBPF: {name} → {tp_name} ✅");
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Attach the syscall dispatcher — single raw_tracepoint on sys_enter that
+/// tail-calls per-syscall handlers via a SYSCALL_DISPATCH ProgramArray.
+///
+/// This is more efficient than 18 individual typed tracepoints because the
+/// kernel only fires one BPF program per syscall entry instead of scanning
+/// all tracepoints.
+///
+/// Returns true if the dispatcher was loaded and at least one handler was
+/// inserted into the dispatch table.
+///
+/// aarch64 syscall numbers (from include/uapi/asm-generic/unistd.h):
+///   execve=221, connect=203, openat=56, ptrace=117, setuid=146,
+///   bind=200, mount=40, memfd_create=279, init_module=105, dup2=n/a (dup3=24),
+///   listen=201, mprotect=226, clone=220, unlinkat=35, renameat2=276,
+///   kill=129, prctl=167, accept4=242
+#[cfg(feature = "ebpf")]
+fn attach_dispatcher(bpf: &mut aya::Ebpf) -> bool {
+    use aya::maps::{Array, HashMap, ProgramArray};
+    use aya::programs::RawTracePoint;
+
+    // --- 1. Load and attach the dispatcher to raw_tracepoint/sys_enter ---
+    let dispatcher_ok = if let Some(prog) = bpf.program_mut("innerwarden_dispatcher") {
+        match TryInto::<&mut RawTracePoint>::try_into(prog) {
+            Ok(rtp) => {
+                if let Err(e) = rtp.load() {
+                    warn!(error = %e, "dispatcher: failed to load");
+                    return false;
+                }
+                if let Err(e) = rtp.attach("sys_enter") {
+                    warn!(error = %e, "dispatcher: failed to attach to sys_enter");
+                    return false;
+                }
+                info!("eBPF: innerwarden_dispatcher → raw_tracepoint/sys_enter ✅");
+                true
+            }
+            Err(e) => {
+                warn!(error = %e, "dispatcher: not a RawTracePoint program");
+                return false;
+            }
+        }
+    } else {
+        return false;
+    };
+
+    if !dispatcher_ok {
+        return false;
+    }
+
+    // --- 2. Load each dispatch_* handler as RawTracePoint (no attach — called via tail_call) ---
+    // (name_in_elf, syscall_nr on aarch64)
+    let handlers: &[(&str, u32)] = &[
+        ("dispatch_execve", 221),
+        ("dispatch_connect", 203),
+        ("dispatch_openat", 56),
+        ("dispatch_ptrace", 117),
+        ("dispatch_setuid", 146),
+        ("dispatch_bind", 200),
+        ("dispatch_mount", 40),
+        ("dispatch_memfd_create", 279),
+        ("dispatch_init_module", 105),
+        ("dispatch_dup", 24), // dup3 on aarch64 (no dup2)
+        ("dispatch_listen", 201),
+        ("dispatch_mprotect", 226),
+        ("dispatch_clone", 220),
+        ("dispatch_unlink", 35),  // unlinkat
+        ("dispatch_rename", 276), // renameat2
+        ("dispatch_kill", 129),
+        ("dispatch_prctl", 167),
+        ("dispatch_accept", 242), // accept4
+    ];
+
+    // Load all handlers first (must happen before we borrow the map mutably)
+    for &(name, _) in handlers {
+        if let Some(prog) = bpf.program_mut(name) {
+            if let Ok(rtp) = TryInto::<&mut RawTracePoint>::try_into(prog) {
+                if let Err(e) = rtp.load() {
+                    warn!(error = %e, "dispatch handler {name}: failed to load");
+                }
+            }
+        }
+    }
+
+    // --- 3. Insert loaded handlers into SYSCALL_DISPATCH ProgramArray ---
+    let mut inserted = 0u32;
+    if let Ok(mut dispatch_map) = ProgramArray::try_from(bpf.map_mut("SYSCALL_DISPATCH").unwrap()) {
+        for &(name, syscall_nr) in handlers {
+            // Get the fd for the already-loaded program
+            if let Some(prog) = bpf.program(name) {
+                let fd = prog.fd();
+                if let Some(fd) = fd {
+                    if dispatch_map.set(syscall_nr, fd, 0).is_ok() {
+                        inserted += 1;
+                    } else {
+                        warn!("dispatcher: failed to insert {name} at index {syscall_nr}");
+                    }
+                }
+            }
+        }
+        info!(count = inserted, "eBPF: SYSCALL_DISPATCH populated");
+    } else {
+        warn!("dispatcher: SYSCALL_DISPATCH map not found");
+        return false;
+    }
+
+    // --- 4. Populate SYSCALL_ENABLED map (hash map: syscall_nr → 1) ---
+    if let Ok(mut enabled_map) =
+        HashMap::<_, u32, u32>::try_from(bpf.map_mut("SYSCALL_ENABLED").unwrap())
+    {
+        for &(_, syscall_nr) in handlers {
+            let _ = enabled_map.insert(syscall_nr, 1u32, 0);
+        }
+        info!(
+            "eBPF: SYSCALL_ENABLED populated ({} syscalls)",
+            handlers.len()
+        );
+    } else {
+        warn!("dispatcher: SYSCALL_ENABLED map not found");
+    }
+
+    inserted > 0
+}
+
 #[cfg(feature = "ebpf")]
 pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     use aya::maps::RingBuf;
     use aya::programs::TracePoint;
-    use aya::Ebpf;
+    use std::os::fd::{AsRawFd, FromRawFd};
 
     if !is_ebpf_available() {
         warn!("eBPF not available — falling back to audit-based collection");
@@ -780,7 +923,12 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     };
 
-    let mut bpf = match Ebpf::load(&bytes) {
+    // CO-RE loader: use BTF relocations when available for cross-kernel portability
+    let btf = aya::Btf::from_sys_fs().ok();
+    if btf.is_some() {
+        info!("eBPF: BTF available — CO-RE relocations enabled");
+    }
+    let mut bpf = match aya::EbpfLoader::new().btf(btf.as_ref()).load(&bytes) {
         Ok(b) => b,
         Err(e) => {
             warn!(error = %e, "failed to load eBPF programs into kernel (need root or CAP_BPF)");
@@ -788,68 +936,106 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     };
 
-    // Attach execve tracepoint
-    match bpf.program_mut("innerwarden_execve") {
-        Some(prog) => {
-            let tp: &mut TracePoint = match prog.try_into() {
-                Ok(t) => t,
-                Err(e) => {
-                    warn!(error = %e, "innerwarden_execve: not a tracepoint program");
-                    return;
-                }
-            };
-            if let Err(e) = tp.load() {
-                warn!(error = %e, "innerwarden_execve: failed to load");
-                return;
-            }
-            if let Err(e) = tp.attach("syscalls", "sys_enter_execve") {
-                warn!(error = %e, "innerwarden_execve: failed to attach");
-                return;
-            }
-            info!("eBPF: innerwarden_execve → sys_enter_execve ✅");
+    // --- Attach syscall handlers: dispatcher mode or individual tracepoints ---
+    let using_dispatcher = if bpf.program("innerwarden_dispatcher").is_some() {
+        info!("eBPF: dispatcher program found — attempting dispatcher mode");
+        attach_dispatcher(&mut bpf)
+    } else {
+        false
+    };
+
+    if using_dispatcher {
+        info!("eBPF: dispatcher mode active — single sys_enter hook with tail calls");
+    } else {
+        // Typed tracepoint mode — attach each handler individually
+        if !using_dispatcher && bpf.program("innerwarden_dispatcher").is_some() {
+            info!("eBPF: dispatcher attach failed — falling back to typed tracepoints");
         }
-        None => {
-            warn!("eBPF: innerwarden_execve program not found in bytecode");
-        }
+
+        // Core tracepoints (execve, connect, openat)
+        attach_tp(
+            &mut bpf,
+            "innerwarden_execve",
+            "syscalls",
+            "sys_enter_execve",
+        );
+        attach_tp(
+            &mut bpf,
+            "innerwarden_connect",
+            "syscalls",
+            "sys_enter_connect",
+        );
+        attach_tp(
+            &mut bpf,
+            "innerwarden_openat",
+            "syscalls",
+            "sys_enter_openat",
+        );
+
+        // v2 syscall handlers (non-critical — each is independent)
+        attach_tp(
+            &mut bpf,
+            "innerwarden_ptrace",
+            "syscalls",
+            "sys_enter_ptrace",
+        );
+        attach_tp(
+            &mut bpf,
+            "innerwarden_setuid",
+            "syscalls",
+            "sys_enter_setuid",
+        );
+        attach_tp(&mut bpf, "innerwarden_bind", "syscalls", "sys_enter_bind");
+        attach_tp(&mut bpf, "innerwarden_mount", "syscalls", "sys_enter_mount");
+        attach_tp(
+            &mut bpf,
+            "innerwarden_memfd_create",
+            "syscalls",
+            "sys_enter_memfd_create",
+        );
+        attach_tp(
+            &mut bpf,
+            "innerwarden_init_module",
+            "syscalls",
+            "sys_enter_init_module",
+        );
+        attach_tp(&mut bpf, "innerwarden_dup", "syscalls", "sys_enter_dup2");
+        attach_tp(
+            &mut bpf,
+            "innerwarden_listen",
+            "syscalls",
+            "sys_enter_listen",
+        );
+        attach_tp(
+            &mut bpf,
+            "innerwarden_mprotect",
+            "syscalls",
+            "sys_enter_mprotect",
+        );
+        attach_tp(&mut bpf, "innerwarden_clone", "syscalls", "sys_enter_clone");
+        attach_tp(
+            &mut bpf,
+            "innerwarden_unlink",
+            "syscalls",
+            "sys_enter_unlinkat",
+        );
+        attach_tp(
+            &mut bpf,
+            "innerwarden_rename",
+            "syscalls",
+            "sys_enter_renameat2",
+        );
+        attach_tp(&mut bpf, "innerwarden_kill", "syscalls", "sys_enter_kill");
+        attach_tp(&mut bpf, "innerwarden_prctl", "syscalls", "sys_enter_prctl");
+        attach_tp(
+            &mut bpf,
+            "innerwarden_accept",
+            "syscalls",
+            "sys_enter_accept4",
+        );
     }
 
-    // Attach connect tracepoint
-    match bpf.program_mut("innerwarden_connect") {
-        Some(prog) => {
-            let tp: &mut TracePoint = match prog.try_into() {
-                Ok(t) => t,
-                Err(e) => {
-                    warn!(error = %e, "innerwarden_connect: not a tracepoint program");
-                    return;
-                }
-            };
-            if let Err(e) = tp.load() {
-                warn!(error = %e, "innerwarden_connect: failed to load");
-                return;
-            }
-            if let Err(e) = tp.attach("syscalls", "sys_enter_connect") {
-                warn!(error = %e, "innerwarden_connect: failed to attach");
-                return;
-            }
-            info!("eBPF: innerwarden_connect → sys_enter_connect ✅");
-        }
-        None => {
-            warn!("eBPF: innerwarden_connect program not found in bytecode");
-        }
-    }
-
-    // Attach openat tracepoint (file access monitoring — non-critical)
-    if let Some(prog) = bpf.program_mut("innerwarden_openat") {
-        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
-            if tp.load().is_ok() {
-                if let Err(e) = tp.attach("syscalls", "sys_enter_openat") {
-                    warn!(error = %e, "innerwarden_openat: failed to attach");
-                } else {
-                    info!("eBPF: innerwarden_openat → sys_enter_openat ✅");
-                }
-            }
-        }
-    }
+    // --- Always attach non-tracepoint programs individually ---
 
     // Attach commit_creds kprobe (privilege escalation detection — non-critical)
     if let Some(prog) = bpf.program_mut("innerwarden_privesc") {
@@ -867,210 +1053,12 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
 
     // Attach sched_process_exit tracepoint (rootkit lifecycle tracking — non-critical)
     if let Some(prog) = bpf.program_mut("innerwarden_process_exit") {
-        use aya::programs::TracePoint;
         if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
             if tp.load().is_ok() {
                 if let Err(e) = tp.attach("sched", "sched_process_exit") {
                     warn!(error = %e, "innerwarden_process_exit: failed to attach");
                 } else {
                     info!("eBPF: innerwarden_process_exit → sched_process_exit (rootkit lifecycle) ✅");
-                }
-            }
-        }
-    }
-
-    // --- eBPF v2: new syscall handlers (non-critical — each is independent) ---
-
-    // ptrace: process injection detection
-    if let Some(prog) = bpf.program_mut("innerwarden_ptrace") {
-        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
-            if tp.load().is_ok() {
-                if let Err(e) = tp.attach("syscalls", "sys_enter_ptrace") {
-                    warn!(error = %e, "innerwarden_ptrace: failed to attach");
-                } else {
-                    info!("eBPF: innerwarden_ptrace → sys_enter_ptrace");
-                }
-            }
-        }
-    }
-
-    // setuid: privilege escalation at syscall level
-    if let Some(prog) = bpf.program_mut("innerwarden_setuid") {
-        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
-            if tp.load().is_ok() {
-                if let Err(e) = tp.attach("syscalls", "sys_enter_setuid") {
-                    warn!(error = %e, "innerwarden_setuid: failed to attach");
-                } else {
-                    info!("eBPF: innerwarden_setuid → sys_enter_setuid");
-                }
-            }
-        }
-    }
-
-    // bind: reverse shell setup detection
-    if let Some(prog) = bpf.program_mut("innerwarden_bind") {
-        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
-            if tp.load().is_ok() {
-                if let Err(e) = tp.attach("syscalls", "sys_enter_bind") {
-                    warn!(error = %e, "innerwarden_bind: failed to attach");
-                } else {
-                    info!("eBPF: innerwarden_bind → sys_enter_bind");
-                }
-            }
-        }
-    }
-
-    // mount: container escape detection
-    if let Some(prog) = bpf.program_mut("innerwarden_mount") {
-        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
-            if tp.load().is_ok() {
-                if let Err(e) = tp.attach("syscalls", "sys_enter_mount") {
-                    warn!(error = %e, "innerwarden_mount: failed to attach");
-                } else {
-                    info!("eBPF: innerwarden_mount → sys_enter_mount");
-                }
-            }
-        }
-    }
-
-    // memfd_create: fileless malware detection
-    if let Some(prog) = bpf.program_mut("innerwarden_memfd_create") {
-        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
-            if tp.load().is_ok() {
-                if let Err(e) = tp.attach("syscalls", "sys_enter_memfd_create") {
-                    warn!(error = %e, "innerwarden_memfd_create: failed to attach");
-                } else {
-                    info!("eBPF: innerwarden_memfd_create → sys_enter_memfd_create");
-                }
-            }
-        }
-    }
-
-    // init_module: rootkit loading detection
-    if let Some(prog) = bpf.program_mut("innerwarden_init_module") {
-        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
-            if tp.load().is_ok() {
-                if let Err(e) = tp.attach("syscalls", "sys_enter_init_module") {
-                    warn!(error = %e, "innerwarden_init_module: failed to attach");
-                } else {
-                    info!("eBPF: innerwarden_init_module → sys_enter_init_module");
-                }
-            }
-        }
-    }
-
-    // dup2: fd redirection (reverse shell)
-    if let Some(prog) = bpf.program_mut("innerwarden_dup") {
-        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
-            if tp.load().is_ok() {
-                if let Err(e) = tp.attach("syscalls", "sys_enter_dup2") {
-                    warn!(error = %e, "innerwarden_dup: failed to attach");
-                } else {
-                    info!("eBPF: innerwarden_dup → sys_enter_dup2");
-                }
-            }
-        }
-    }
-
-    // listen: reverse shell confirmation
-    if let Some(prog) = bpf.program_mut("innerwarden_listen") {
-        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
-            if tp.load().is_ok() {
-                if let Err(e) = tp.attach("syscalls", "sys_enter_listen") {
-                    warn!(error = %e, "innerwarden_listen: failed to attach");
-                } else {
-                    info!("eBPF: innerwarden_listen → sys_enter_listen");
-                }
-            }
-        }
-    }
-
-    // mprotect: shellcode (RWX memory)
-    if let Some(prog) = bpf.program_mut("innerwarden_mprotect") {
-        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
-            if tp.load().is_ok() {
-                if let Err(e) = tp.attach("syscalls", "sys_enter_mprotect") {
-                    warn!(error = %e, "innerwarden_mprotect: failed to attach");
-                } else {
-                    info!("eBPF: innerwarden_mprotect → sys_enter_mprotect");
-                }
-            }
-        }
-    }
-
-    // clone: fork bombs, process tree
-    if let Some(prog) = bpf.program_mut("innerwarden_clone") {
-        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
-            if tp.load().is_ok() {
-                if let Err(e) = tp.attach("syscalls", "sys_enter_clone") {
-                    warn!(error = %e, "innerwarden_clone: failed to attach");
-                } else {
-                    info!("eBPF: innerwarden_clone → sys_enter_clone");
-                }
-            }
-        }
-    }
-
-    // unlinkat: file deletion (evidence destruction)
-    if let Some(prog) = bpf.program_mut("innerwarden_unlink") {
-        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
-            if tp.load().is_ok() {
-                if let Err(e) = tp.attach("syscalls", "sys_enter_unlinkat") {
-                    warn!(error = %e, "innerwarden_unlink: failed to attach");
-                } else {
-                    info!("eBPF: innerwarden_unlink → sys_enter_unlinkat");
-                }
-            }
-        }
-    }
-
-    // renameat2: binary/config replacement
-    if let Some(prog) = bpf.program_mut("innerwarden_rename") {
-        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
-            if tp.load().is_ok() {
-                if let Err(e) = tp.attach("syscalls", "sys_enter_renameat2") {
-                    warn!(error = %e, "innerwarden_rename: failed to attach");
-                } else {
-                    info!("eBPF: innerwarden_rename → sys_enter_renameat2");
-                }
-            }
-        }
-    }
-
-    // kill: signal delivery (killing security processes)
-    if let Some(prog) = bpf.program_mut("innerwarden_kill") {
-        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
-            if tp.load().is_ok() {
-                if let Err(e) = tp.attach("syscalls", "sys_enter_kill") {
-                    warn!(error = %e, "innerwarden_kill: failed to attach");
-                } else {
-                    info!("eBPF: innerwarden_kill → sys_enter_kill");
-                }
-            }
-        }
-    }
-
-    // prctl: process name spoofing
-    if let Some(prog) = bpf.program_mut("innerwarden_prctl") {
-        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
-            if tp.load().is_ok() {
-                if let Err(e) = tp.attach("syscalls", "sys_enter_prctl") {
-                    warn!(error = %e, "innerwarden_prctl: failed to attach");
-                } else {
-                    info!("eBPF: innerwarden_prctl → sys_enter_prctl");
-                }
-            }
-        }
-    }
-
-    // accept4: incoming connections
-    if let Some(prog) = bpf.program_mut("innerwarden_accept") {
-        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
-            if tp.load().is_ok() {
-                if let Err(e) = tp.attach("syscalls", "sys_enter_accept4") {
-                    warn!(error = %e, "innerwarden_accept: failed to attach");
-                } else {
-                    info!("eBPF: innerwarden_accept → sys_enter_accept4");
                 }
             }
         }
@@ -1095,6 +1083,31 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     };
 
     info!("eBPF collector active — kernel-level syscall monitoring (22 hooks)");
+
+    // Setup epoll-based wakeup via AsyncFd wrapping the ring buffer's raw fd.
+    // Falls back to 100ms sleep polling if fd duplication or AsyncFd fails.
+    let async_fd = {
+        let ring_fd = ring_buf.as_raw_fd();
+        // dup() so AsyncFd owns an independent fd and won't close the ring buffer's fd
+        let duped = unsafe { libc::dup(ring_fd) };
+        if duped >= 0 {
+            // Safety: duped is a valid fd we just created
+            let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(duped) };
+            match tokio::io::unix::AsyncFd::new(owned) {
+                Ok(afd) => {
+                    info!("eBPF: ring buffer epoll wakeup enabled (fd={ring_fd})");
+                    Some(afd)
+                }
+                Err(e) => {
+                    warn!(error = %e, "eBPF: AsyncFd creation failed — falling back to poll");
+                    None
+                }
+            }
+        } else {
+            warn!("eBPF: dup() failed — falling back to poll");
+            None
+        }
+    };
 
     loop {
         while let Some(item) = ring_buf.next() {
@@ -1734,8 +1747,21 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
             }
         }
 
-        // Poll interval — 100ms is fast enough for security, low CPU
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Wait for ring buffer readability via epoll, or fall back to 100ms poll
+        if let Some(ref afd) = async_fd {
+            // Wait until the kernel signals data is available on the ring buffer fd
+            match afd.readable().await {
+                Ok(mut guard) => {
+                    guard.clear_ready();
+                }
+                Err(_) => {
+                    // epoll error — fall back to short sleep this iteration
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+        } else {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
 }
 
