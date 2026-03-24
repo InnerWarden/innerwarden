@@ -922,6 +922,9 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     // Attach XDP firewall (non-critical — continues without it)
     attach_xdp(&mut bpf);
 
+    // Populate kernel-level noise filters BEFORE taking ring buffer borrow
+    populate_kernel_filters(&mut bpf);
+
     // Read from ring buffer
     let mut ring_buf = match RingBuf::try_from(bpf.map_mut("EVENTS").unwrap()) {
         Ok(rb) => rb,
@@ -930,9 +933,6 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
             return;
         }
     };
-
-    // Populate kernel-level noise filters from Falco-derived allowlists
-    populate_kernel_filters(&mut bpf);
 
     info!("eBPF collector active — kernel-level syscall monitoring (13 hooks)");
 
