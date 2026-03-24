@@ -55,6 +55,18 @@ const RANSOMWARE_EXTENSIONS: &[&str] = &[
     ".cryptolocker",
 ];
 
+/// Processes that legitimately write many files rapidly (compilers, package managers).
+/// Excluded from mass-write detection to reduce false positives.
+const SAFE_MASS_WRITERS: &[&str] = &[
+    "cargo", "rustc", "gcc", "g++", "cc1", "cc1plus", "clang", "ld", "ar",
+    "npm", "yarn", "pnpm", "pip", "pip3", "apt", "apt-get", "dpkg", "yum", "dnf",
+    "go", "javac", "make", "cmake", "ninja", "meson",
+    "tar", "unzip", "gzip", "bzip2", "xz", "zstd",
+    "rsync", "cp", "mv", "install",
+    "docker", "dockerd", "containerd",
+    "git", "git-remote-https",
+];
+
 /// Ransom note filenames (case-insensitive comparison).
 const RANSOM_NOTE_NAMES: &[&str] = &[
     "readme.txt",
@@ -319,10 +331,11 @@ impl RansomwareDetector {
             }
         }
 
-        // Mass file write detection
+        // Mass file write detection (skip known safe mass-writers like compilers)
         let count = tracker.len();
         let threshold = self.file_threshold;
-        if count >= threshold {
+        let is_safe_writer = SAFE_MASS_WRITERS.contains(&comm);
+        if count >= threshold && !is_safe_writer {
             let window_secs = self.window.num_seconds();
             return self.emit(
                 event,
