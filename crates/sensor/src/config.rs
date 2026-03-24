@@ -629,6 +629,10 @@ pub struct RootkitConfig {
     pub check_interval_seconds: u64,
     #[serde(default = "default_rootkit_cooldown_seconds")]
     pub cooldown_seconds: u64,
+    /// Enable eBPF program integrity monitoring.
+    /// Detects rogue BPF programs pinned in /sys/fs/bpf/ and BPF manipulation commands.
+    #[serde(default = "default_true")]
+    pub bpf_integrity_enabled: bool,
 }
 
 impl Default for RootkitConfig {
@@ -637,6 +641,7 @@ impl Default for RootkitConfig {
             enabled: true,
             check_interval_seconds: default_rootkit_check_interval_seconds(),
             cooldown_seconds: default_rootkit_cooldown_seconds(),
+            bpf_integrity_enabled: true,
         }
     }
 }

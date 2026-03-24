@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Duration, Utc};
 use innerwarden_core::{event::Event, event::Severity, incident::Incident};
@@ -24,6 +24,11 @@ use innerwarden_core::{event::Event, event::Severity, incident::Incident};
 ///
 /// 6. **Process name spoofing** — eBPF sees the real binary path via execve but
 ///    the comm field doesn't match the binary name.
+///
+/// 7. **eBPF program integrity** — detects rogue BPF programs pinned in /sys/fs/bpf/
+///    that are not part of Inner Warden. Also flags BPF manipulation commands
+///    (bpftool, bpf_load) executed by non-innerwarden processes. Targets eBPF
+///    rootkits like LinkPro (October 2025) that hook sys_bpf to hide their programs.
 pub struct RootkitDetector {
     cooldown: Duration,
     check_interval: Duration,
@@ -37,6 +42,13 @@ pub struct RootkitDetector {
     /// Pluggable function to check if a PID exists in /proc.
     /// Defaults to checking the filesystem. Overridden in tests.
     pid_exists_fn: fn(u32) -> bool,
+    /// Known BPF pins at startup (baseline)
+    bpf_baseline: HashSet<String>,
+    /// Whether BPF integrity monitoring is enabled
+    bpf_integrity_enabled: bool,
+    /// Pluggable function to list entries in /sys/fs/bpf/.
+    /// Defaults to reading the filesystem. Overridden in tests.
+    list_bpf_pins_fn: fn() -> Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -261,13 +273,85 @@ const LEGIT_LIB_DIRS: &[&str] = &[
     "/usr/local/lib64",
 ];
 
+/// Inner Warden's own BPF pin paths (known-good).
+const INNERWARDEN_BPF_PINS: &[&str] = &[
+    "innerwarden",
+    "innerwarden/blocklist",
+    "innerwarden/allowlist",
+    "innerwarden/lsm_policy",
+];
+
+/// Known eBPF rootkit tool names and indicators.
+const KNOWN_EBPF_ROOTKIT_TOOLS: &[&str] = &[
+    "bpf_inject",
+    "ebpf_loader",
+    "ebpf_rootkit",
+    "linkpro",
+    "bpfkit",
+    "boopkit",
+    "ebpfkit",
+    "pamspy",
+    "pidhide",
+    "tricorder",
+    "bad-bpf",
+];
+
+/// Commands that indicate BPF program manipulation.
+const BPF_MANIPULATION_COMMANDS: &[&str] = &["bpftool", "bpf_load", "bpf_loader"];
+
+/// Process names that are allowed to run BPF manipulation commands.
+const BPF_ALLOWED_PROCESSES: &[&str] = &[
+    "innerwarden-sen", // truncated by Linux 15-char comm limit
+    "innerwarden-sensor",
+    "innerwarden",
+    "innerwarden-age", // agent, truncated
+    "innerwarden-agent",
+    "systemd",
+    "cilium",
+    "cilium-agent",
+    "falco",
+    "tetragon",
+];
+
 /// Default check: does /proc/{pid} exist on the filesystem?
 fn default_pid_exists(pid: u32) -> bool {
     std::path::Path::new(&format!("/proc/{pid}")).exists()
 }
 
+/// Default: list entries in /sys/fs/bpf/ directory.
+fn default_list_bpf_pins() -> Vec<String> {
+    let bpf_dir = std::path::Path::new("/sys/fs/bpf");
+    if !bpf_dir.exists() {
+        return Vec::new();
+    }
+    match std::fs::read_dir(bpf_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 impl RootkitDetector {
+    /// Convenience constructor with BPF integrity enabled by default.
+    #[allow(dead_code)]
     pub fn new(host: impl Into<String>, check_interval_secs: u64, cooldown_seconds: u64) -> Self {
+        Self::new_with_bpf(host, check_interval_secs, cooldown_seconds, true)
+    }
+
+    pub fn new_with_bpf(
+        host: impl Into<String>,
+        check_interval_secs: u64,
+        cooldown_seconds: u64,
+        bpf_integrity_enabled: bool,
+    ) -> Self {
+        let list_fn = default_list_bpf_pins;
+        let baseline = if bpf_integrity_enabled {
+            (list_fn)().into_iter().collect()
+        } else {
+            HashSet::new()
+        };
         Self {
             cooldown: Duration::seconds(cooldown_seconds as i64),
             check_interval: Duration::seconds(check_interval_secs as i64),
@@ -276,12 +360,31 @@ impl RootkitDetector {
             last_check: Utc::now(),
             host: host.into(),
             pid_exists_fn: default_pid_exists,
+            bpf_baseline: baseline,
+            bpf_integrity_enabled,
+            list_bpf_pins_fn: list_fn,
         }
     }
 
     #[cfg(test)]
     fn with_pid_exists_fn(mut self, f: fn(u32) -> bool) -> Self {
         self.pid_exists_fn = f;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_bpf_pins_fn(mut self, f: fn() -> Vec<String>) -> Self {
+        self.list_bpf_pins_fn = f;
+        // Rebuild baseline with the new function
+        if self.bpf_integrity_enabled {
+            self.bpf_baseline = (f)().into_iter().collect();
+        }
+        self
+    }
+
+    #[cfg(test)]
+    fn with_bpf_baseline(mut self, baseline: HashSet<String>) -> Self {
+        self.bpf_baseline = baseline;
         self
     }
 
@@ -315,7 +418,7 @@ impl RootkitDetector {
             }
         }
 
-        // Check for kernel module operations and process name spoofing (execve events)
+        // Check for kernel module operations, process name spoofing, and BPF manipulation (execve events)
         if event.kind == "shell.command_exec" {
             if let Some(inc) = self.check_kernel_module_op(event, now) {
                 return Some(inc);
@@ -326,6 +429,14 @@ impl RootkitDetector {
             if let Some(inc) = self.check_process_name_spoof(event, now) {
                 return Some(inc);
             }
+            if self.bpf_integrity_enabled {
+                if let Some(inc) = self.check_ebpf_rootkit_tool(event, now) {
+                    return Some(inc);
+                }
+                if let Some(inc) = self.check_bpf_manipulation_command(event, now) {
+                    return Some(inc);
+                }
+            }
         }
 
         // Hidden process check — now tracks both execve AND exit events.
@@ -335,6 +446,12 @@ impl RootkitDetector {
             self.last_check = now;
             if let Some(inc) = self.check_hidden_processes(now) {
                 return Some(inc);
+            }
+            // Periodic BPF pin check — scan /sys/fs/bpf/ for new entries
+            if self.bpf_integrity_enabled {
+                if let Some(inc) = self.check_bpf_pins(now) {
+                    return Some(inc);
+                }
             }
         }
 
@@ -895,6 +1012,214 @@ impl RootkitDetector {
             ],
             entities: vec![],
         })
+    }
+
+    // -----------------------------------------------------------------------
+    // eBPF program integrity checks
+    // -----------------------------------------------------------------------
+
+    /// Check if a shell.command_exec event involves a known eBPF rootkit tool.
+    fn check_ebpf_rootkit_tool(&mut self, event: &Event, now: DateTime<Utc>) -> Option<Incident> {
+        let comm = event.details["comm"].as_str().unwrap_or("");
+        let command = event.details["command"].as_str().unwrap_or("");
+        let pid = event.details["pid"].as_u64().unwrap_or(0) as u32;
+
+        let binary_name = command.rsplit('/').next().unwrap_or(command);
+        let comm_lower = comm.to_lowercase();
+        let binary_lower = binary_name.to_lowercase();
+
+        let matched_tool = KNOWN_EBPF_ROOTKIT_TOOLS.iter().find(|tool| {
+            comm_lower == **tool
+                || binary_lower == **tool
+                || comm_lower.contains(*tool)
+                || binary_lower.contains(*tool)
+        });
+
+        let tool_name = match matched_tool {
+            Some(t) => *t,
+            None => return None,
+        };
+
+        let alert_key = format!("ebpf_rootkit_tool:{tool_name}:{pid}");
+        if self.is_cooled_down(&alert_key, now) {
+            return None;
+        }
+        self.alerted.insert(alert_key, now);
+
+        Some(Incident {
+            ts: now,
+            host: self.host.clone(),
+            incident_id: format!(
+                "rootkit:ebpf_tool:{tool_name}:{}",
+                now.format("%Y-%m-%dT%H:%MZ")
+            ),
+            severity: Severity::Critical,
+            title: format!("Known eBPF rootkit tool detected: {comm}"),
+            summary: format!(
+                "Known eBPF rootkit tool detected: {comm} (pid={pid}) running {command} — matches known tool '{tool_name}'"
+            ),
+            evidence: serde_json::json!([{
+                "kind": "ebpf_rootkit_tool",
+                "comm": comm,
+                "command": command,
+                "pid": pid,
+                "matched_tool": tool_name,
+            }]),
+            recommended_checks: vec![
+                format!("CRITICAL: Known eBPF rootkit tool '{tool_name}' detected"),
+                format!("Kill process immediately: kill -9 {pid}"),
+                "List loaded BPF programs: bpftool prog list".to_string(),
+                "Check /sys/fs/bpf/ for pinned rootkit maps".to_string(),
+                "eBPF rootkits like LinkPro hook sys_bpf to hide themselves — use a trusted kernel to inspect".to_string(),
+                "Consider booting from a known-good live USB for forensic analysis".to_string(),
+            ],
+            tags: vec![
+                "ebpf".to_string(),
+                "rootkit".to_string(),
+                "ebpf_rootkit".to_string(),
+            ],
+            entities: vec![],
+        })
+    }
+
+    /// Check if a non-innerwarden process is running BPF manipulation commands.
+    fn check_bpf_manipulation_command(
+        &mut self,
+        event: &Event,
+        now: DateTime<Utc>,
+    ) -> Option<Incident> {
+        let comm = event.details["comm"].as_str().unwrap_or("");
+        let command = event.details["command"].as_str().unwrap_or("");
+        let pid = event.details["pid"].as_u64().unwrap_or(0) as u32;
+
+        let binary_name = command.rsplit('/').next().unwrap_or(command);
+
+        // Check if the command or binary matches a BPF manipulation command
+        let is_bpf_cmd = BPF_MANIPULATION_COMMANDS
+            .iter()
+            .any(|cmd| binary_name == *cmd || comm == *cmd);
+
+        // Also check argv for bpf-related commands
+        let argv_has_bpf = if let Some(argv) = event.details["argv"].as_array() {
+            argv.iter().filter_map(|a| a.as_str()).any(|a| {
+                let base = a.rsplit('/').next().unwrap_or(a);
+                BPF_MANIPULATION_COMMANDS.contains(&base)
+            })
+        } else {
+            false
+        };
+
+        if !is_bpf_cmd && !argv_has_bpf {
+            return None;
+        }
+
+        // Allow known processes
+        if BPF_ALLOWED_PROCESSES.contains(&comm) {
+            return None;
+        }
+
+        // Also check the binary path for innerwarden
+        if command.contains("innerwarden") {
+            return None;
+        }
+
+        let alert_key = format!("bpf_manipulation:{comm}:{pid}");
+        if self.is_cooled_down(&alert_key, now) {
+            return None;
+        }
+        self.alerted.insert(alert_key, now);
+
+        Some(Incident {
+            ts: now,
+            host: self.host.clone(),
+            incident_id: format!(
+                "rootkit:bpf_manipulation:{comm}:{}",
+                now.format("%Y-%m-%dT%H:%MZ")
+            ),
+            severity: Severity::High,
+            title: format!("BPF program manipulation: {comm} running {command}"),
+            summary: format!("BPF program manipulation: {comm} (pid={pid}) running {command}"),
+            evidence: serde_json::json!([{
+                "kind": "bpf_manipulation",
+                "comm": comm,
+                "command": command,
+                "pid": pid,
+            }]),
+            recommended_checks: vec![
+                format!("Investigate why {comm} (pid={pid}) is manipulating BPF programs"),
+                "List loaded BPF programs: bpftool prog list".to_string(),
+                "Check /sys/fs/bpf/ for unexpected pinned objects".to_string(),
+                "Verify this is a legitimate security or observability tool".to_string(),
+            ],
+            tags: vec![
+                "ebpf".to_string(),
+                "rootkit".to_string(),
+                "bpf_manipulation".to_string(),
+            ],
+            entities: vec![],
+        })
+    }
+
+    /// Periodic check: scan /sys/fs/bpf/ for entries not in the baseline.
+    fn check_bpf_pins(&mut self, now: DateTime<Utc>) -> Option<Incident> {
+        let current_pins: Vec<String> = (self.list_bpf_pins_fn)();
+
+        for pin in &current_pins {
+            // Check if this pin is in the baseline
+            if self.bpf_baseline.contains(pin) {
+                continue;
+            }
+
+            // Check if this is a known Inner Warden pin
+            if INNERWARDEN_BPF_PINS
+                .iter()
+                .any(|known| pin == *known || pin.starts_with(&format!("{known}/")))
+            {
+                continue;
+            }
+
+            let alert_key = format!("bpf_unknown_pin:{pin}");
+            if self.is_cooled_down(&alert_key, now) {
+                continue;
+            }
+            self.alerted.insert(alert_key, now);
+
+            return Some(Incident {
+                ts: now,
+                host: self.host.clone(),
+                incident_id: format!(
+                    "rootkit:bpf_pin:{}:{}",
+                    pin.replace('/', "_"),
+                    now.format("%Y-%m-%dT%H:%MZ")
+                ),
+                severity: Severity::High,
+                title: format!("Unknown BPF object pinned: /sys/fs/bpf/{pin}"),
+                summary: format!(
+                    "Unknown BPF object pinned at /sys/fs/bpf/{pin} — not present at startup baseline and not an Inner Warden pin"
+                ),
+                evidence: serde_json::json!([{
+                    "kind": "unknown_bpf_pin",
+                    "path": format!("/sys/fs/bpf/{pin}"),
+                    "pin_name": pin,
+                    "baseline_size": self.bpf_baseline.len(),
+                }]),
+                recommended_checks: vec![
+                    format!("Investigate BPF object: bpftool map show pinned /sys/fs/bpf/{pin}"),
+                    format!("Or: bpftool prog show pinned /sys/fs/bpf/{pin}"),
+                    "List all loaded BPF programs: bpftool prog list".to_string(),
+                    "eBPF rootkits (e.g., LinkPro) pin malicious programs in /sys/fs/bpf/".to_string(),
+                    "If unknown: remove the pin and investigate the loading process".to_string(),
+                ],
+                tags: vec![
+                    "ebpf".to_string(),
+                    "rootkit".to_string(),
+                    "bpf_pin".to_string(),
+                ],
+                entities: vec![],
+            });
+        }
+
+        None
     }
 
     /// Check cooldown — returns true if the alert is still in cooldown.
@@ -1471,5 +1796,207 @@ mod tests {
         // This should not trigger the modification check (but may trigger artifact check
         // only if the path is in the artifact list — it's not, so should be None)
         assert!(inc.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // eBPF program integrity tests
+    // -----------------------------------------------------------------------
+
+    fn make_bpf_detector(
+        bpf_pins_fn: fn() -> Vec<String>,
+        baseline: HashSet<String>,
+    ) -> RootkitDetector {
+        RootkitDetector::new_with_bpf("test", 10, 600, true)
+            .with_bpf_pins_fn(bpf_pins_fn)
+            .with_bpf_baseline(baseline)
+    }
+
+    // --- BPF Test 1: Unknown BPF pin detected ---
+    #[test]
+    fn unknown_bpf_pin_detected() {
+        fn pins_with_rogue() -> Vec<String> {
+            vec!["innerwarden".to_string(), "rogue_rootkit".to_string()]
+        }
+
+        let baseline: HashSet<String> = ["innerwarden".to_string()].into_iter().collect();
+        let mut det = make_bpf_detector(pins_with_rogue, baseline);
+        let now = Utc::now();
+
+        // Force periodic check
+        det.last_check = now - Duration::seconds(11);
+        let inc = det.check_bpf_pins(now);
+        assert!(inc.is_some(), "Unknown BPF pin should trigger alert");
+        let inc = inc.unwrap();
+        assert_eq!(inc.severity, Severity::High);
+        assert!(inc.title.contains("rogue_rootkit"));
+        assert!(inc.tags.contains(&"bpf_pin".to_string()));
+    }
+
+    // --- BPF Test 2: Known Inner Warden pins don't trigger ---
+    #[test]
+    fn innerwarden_bpf_pins_do_not_trigger() {
+        fn innerwarden_pins() -> Vec<String> {
+            vec![
+                "innerwarden".to_string(),
+                "innerwarden/blocklist".to_string(),
+                "innerwarden/allowlist".to_string(),
+                "innerwarden/lsm_policy".to_string(),
+            ]
+        }
+
+        // Empty baseline — but innerwarden pins should still be allowed
+        let baseline: HashSet<String> = HashSet::new();
+        let mut det = make_bpf_detector(innerwarden_pins, baseline);
+        let now = Utc::now();
+
+        det.last_check = now - Duration::seconds(11);
+        let inc = det.check_bpf_pins(now);
+        assert!(inc.is_none(), "Inner Warden BPF pins should not trigger");
+    }
+
+    // --- BPF Test 3: bpftool command by non-innerwarden process triggers ---
+    #[test]
+    fn bpftool_by_non_innerwarden_triggers() {
+        let mut det = RootkitDetector::new_with_bpf("test", 10, 600, true);
+        let now = Utc::now();
+
+        let ev = exec_event("unknown_proc", "/usr/sbin/bpftool", 5000, now);
+        let inc = det.process(&ev);
+        assert!(inc.is_some(), "bpftool by non-innerwarden should trigger");
+        let inc = inc.unwrap();
+        assert_eq!(inc.severity, Severity::High);
+        assert!(inc.title.contains("BPF program manipulation"));
+        assert!(inc.tags.contains(&"bpf_manipulation".to_string()));
+    }
+
+    // --- BPF Test 4: bpftool by innerwarden-sensor doesn't trigger ---
+    #[test]
+    fn bpftool_by_innerwarden_sensor_does_not_trigger() {
+        let mut det = RootkitDetector::new_with_bpf("test", 10, 600, true);
+        let now = Utc::now();
+
+        // innerwarden-sensor truncated to 15 chars = "innerwarden-sen"
+        let ev = exec_event("innerwarden-sen", "/usr/sbin/bpftool", 5001, now);
+        assert!(
+            det.process(&ev).is_none(),
+            "bpftool by innerwarden-sensor should not trigger"
+        );
+
+        // Also test with full name
+        let ev2 = exec_event("innerwarden-sensor", "/usr/sbin/bpftool", 5002, now);
+        assert!(
+            det.process(&ev2).is_none(),
+            "bpftool by innerwarden-sensor (full name) should not trigger"
+        );
+    }
+
+    // --- BPF Test 5: Known rootkit tool name triggers Critical ---
+    #[test]
+    fn known_ebpf_rootkit_tool_triggers_critical() {
+        let mut det = RootkitDetector::new_with_bpf("test", 10, 600, true);
+        let now = Utc::now();
+
+        // Test "bpfkit" — a known eBPF rootkit
+        let ev = exec_event("bpfkit", "/tmp/bpfkit", 6000, now);
+        let inc = det.process(&ev);
+        assert!(inc.is_some(), "Known eBPF rootkit tool should trigger");
+        let inc = inc.unwrap();
+        assert_eq!(inc.severity, Severity::Critical);
+        assert!(inc.title.contains("Known eBPF rootkit tool"));
+        assert!(inc.tags.contains(&"ebpf_rootkit".to_string()));
+
+        // Test "linkpro" — the LinkPro rootkit
+        let ev2 = exec_event("linkpro", "/opt/linkpro", 6001, now);
+        let inc2 = det.process(&ev2);
+        assert!(inc2.is_some(), "LinkPro should trigger Critical");
+        assert_eq!(inc2.unwrap().severity, Severity::Critical);
+
+        // Test "ebpf_loader" — generic eBPF loader tool
+        let ev3 = exec_event("ebpf_loader", "/tmp/ebpf_loader", 6002, now);
+        let inc3 = det.process(&ev3);
+        assert!(inc3.is_some(), "ebpf_loader should trigger Critical");
+        assert_eq!(inc3.unwrap().severity, Severity::Critical);
+    }
+
+    // --- BPF Test 6: Baseline built correctly ---
+    #[test]
+    fn bpf_baseline_built_correctly() {
+        fn initial_pins() -> Vec<String> {
+            vec![
+                "innerwarden".to_string(),
+                "cilium".to_string(),
+                "tc_filter".to_string(),
+            ]
+        }
+
+        let det =
+            RootkitDetector::new_with_bpf("test", 10, 600, true).with_bpf_pins_fn(initial_pins);
+
+        // After with_bpf_pins_fn rebuilds the baseline
+        assert_eq!(det.bpf_baseline.len(), 3);
+        assert!(det.bpf_baseline.contains("innerwarden"));
+        assert!(det.bpf_baseline.contains("cilium"));
+        assert!(det.bpf_baseline.contains("tc_filter"));
+    }
+
+    // --- BPF Test 7: New entry after baseline triggers ---
+    #[test]
+    fn new_bpf_entry_after_baseline_triggers() {
+        fn pins_with_new_entry() -> Vec<String> {
+            vec![
+                "innerwarden".to_string(),
+                "cilium".to_string(),
+                "suspicious_prog".to_string(), // new entry not in baseline
+            ]
+        }
+
+        // Baseline only has innerwarden and cilium
+        let baseline: HashSet<String> = ["innerwarden".to_string(), "cilium".to_string()]
+            .into_iter()
+            .collect();
+
+        let mut det = make_bpf_detector(pins_with_new_entry, baseline);
+        let now = Utc::now();
+
+        det.last_check = now - Duration::seconds(11);
+        let inc = det.check_bpf_pins(now);
+        assert!(inc.is_some(), "New BPF entry after baseline should trigger");
+        let inc = inc.unwrap();
+        assert_eq!(inc.severity, Severity::High);
+        assert!(inc.title.contains("suspicious_prog"));
+    }
+
+    // --- BPF Test 8: Cooldown works for BPF alerts ---
+    #[test]
+    fn bpf_alert_cooldown_works() {
+        fn pins_with_rogue() -> Vec<String> {
+            vec!["rogue_prog".to_string()]
+        }
+
+        let baseline: HashSet<String> = HashSet::new();
+        let mut det = make_bpf_detector(pins_with_rogue, baseline);
+        let now = Utc::now();
+
+        // First alert
+        det.last_check = now - Duration::seconds(11);
+        let inc1 = det.check_bpf_pins(now);
+        assert!(inc1.is_some(), "First BPF pin alert should trigger");
+
+        // Second check within cooldown — should be suppressed
+        det.last_check = now + Duration::seconds(9);
+        let inc2 = det.check_bpf_pins(now + Duration::seconds(10));
+        assert!(
+            inc2.is_none(),
+            "BPF pin alert within cooldown should be suppressed"
+        );
+
+        // After cooldown expires — should alert again
+        let after_cooldown = now + Duration::seconds(601);
+        det.last_check = after_cooldown - Duration::seconds(11);
+        let inc3 = det.check_bpf_pins(after_cooldown);
+        assert!(
+            inc3.is_some(),
+            "BPF pin alert after cooldown should trigger again"
+        );
     }
 }

@@ -391,12 +391,14 @@ async fn main() -> Result<()> {
             info!(
                 check_interval_seconds = d.check_interval_seconds,
                 cooldown_seconds = d.cooldown_seconds,
+                bpf_integrity_enabled = d.bpf_integrity_enabled,
                 "rootkit detector enabled"
             );
-            RootkitDetector::new(
+            RootkitDetector::new_with_bpf(
                 &cfg.agent.host_id,
                 d.check_interval_seconds,
                 d.cooldown_seconds,
+                d.bpf_integrity_enabled,
             )
         }),
         reverse_shell: cfg.detectors.reverse_shell.enabled.then(|| {
