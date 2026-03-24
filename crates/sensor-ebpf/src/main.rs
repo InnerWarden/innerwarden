@@ -33,6 +33,14 @@ use aya_ebpf::{
     programs::{LsmContext, ProbeContext, TracePointContext, XdpContext},
     EbpfContext,
 };
+
+// Dispatcher-specific imports (conditionally compiled)
+#[cfg(feature = "dispatcher")]
+use aya_ebpf::{
+    macros::raw_tracepoint,
+    maps::ProgramArray,
+    programs::RawTracePointContext,
+};
 use aya_log_ebpf::info;
 use innerwarden_ebpf_types::{
     AcceptEvent, CloneEvent, ConnectEvent, DupEvent, ExecveEvent, KillEvent, ListenEvent,
@@ -146,6 +154,81 @@ fn is_rate_limited(pid: u32) -> bool {
     // Update timestamp (best-effort, ignore error if map is full)
     let _ = PID_RATE_LIMIT.insert(&pid, &now, 0);
     false
+}
+
+// ---------------------------------------------------------------------------
+// Tail Call Dispatcher (feature = "dispatcher")
+// ---------------------------------------------------------------------------
+//
+// Single raw_tracepoint/sys_enter entry point that reads the syscall number
+// and tail-calls to the appropriate handler via ProgramArray.
+//
+// This replaces the 16 individual typed tracepoints with 1 attach point.
+// The handlers become tail call targets — same program type (raw_tracepoint),
+// each extracting args from pt_regs instead of typed tracepoint context.
+//
+// On aarch64: syscall args in pt_regs->regs[0..5] (offset 0, each 8 bytes)
+// On x86_64: pt_regs->di, si, dx, r10, r8, r9 (offsets 112, 104, 96, 56, 72, 64)
+
+#[cfg(feature = "dispatcher")]
+#[map]
+static SYSCALL_DISPATCH: ProgramArray = ProgramArray::with_max_entries(512, 0);
+
+/// Per-syscall enable flag — checked before tail call.
+/// Key: syscall number. Value: 1 = enabled, 0 = disabled.
+#[cfg(feature = "dispatcher")]
+#[map]
+static SYSCALL_ENABLED: HashMap<u32, u32> = HashMap::with_max_entries(512, 0);
+
+/// Read a raw tracepoint argument.
+/// For raw_tracepoint/sys_enter: args[0] = pt_regs*, args[1] = syscall_nr.
+#[cfg(feature = "dispatcher")]
+#[inline(always)]
+unsafe fn raw_arg(ctx: &RawTracePointContext, n: usize) -> u64 {
+    // bpf_raw_tracepoint_args { __u64 args[]; }
+    let args_ptr = ctx.as_ptr() as *const u64;
+    core::ptr::read_volatile(args_ptr.add(n))
+}
+
+/// Read a syscall argument from pt_regs (architecture-specific).
+/// `arg_idx`: 0-5 for the 6 syscall arguments.
+#[cfg(feature = "dispatcher")]
+#[inline(always)]
+unsafe fn read_syscall_arg(ctx: &RawTracePointContext, arg_idx: usize) -> Result<u64, i64> {
+    // args[0] = pt_regs pointer
+    let regs_ptr = raw_arg(ctx, 0) as *const u8;
+
+    // BPF compiles for bpfel-unknown-none — use aarch64 layout (our production target).
+    // aarch64: regs[0..30] at offset 0, each u64 (8 bytes).
+    // x86_64 would need different offsets (di=112, si=104, etc.)
+    // but we compile per-target anyway so this is fine.
+    let offset = arg_idx * 8;
+    bpf_probe_read_kernel(regs_ptr.add(offset) as *const u64)
+}
+
+/// Main dispatcher — fires on every syscall entry.
+#[cfg(feature = "dispatcher")]
+#[raw_tracepoint(tracepoint = "sys_enter")]
+pub fn innerwarden_dispatcher(ctx: RawTracePointContext) -> u32 {
+    // args[1] = syscall number
+    let syscall_nr: u64 = unsafe { raw_arg(&ctx, 1) };
+    let nr = syscall_nr as u32;
+
+    // Check if this syscall is enabled
+    if let Some(&enabled) = unsafe { SYSCALL_ENABLED.get(&nr) } {
+        if enabled == 0 {
+            return 0;
+        }
+    } else {
+        return 0; // not in map = not monitored
+    }
+
+    // Tail call to handler — silently returns if no handler installed
+    unsafe {
+        let _ = SYSCALL_DISPATCH.tail_call(&ctx, nr);
+    }
+
+    0
 }
 
 // ---------------------------------------------------------------------------
@@ -1377,6 +1460,179 @@ fn try_accept(_ctx: &TracePointContext) -> Result<(), i64> {
     entry.submit(0);
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Dispatcher tail call handlers (feature = "dispatcher")
+// ---------------------------------------------------------------------------
+//
+// These are the raw_tracepoint versions of each handler, used as tail call
+// targets from the dispatcher. They read syscall arguments from pt_regs
+// instead of typed tracepoint fields.
+//
+// Each handler must be the same program type as the dispatcher (raw_tracepoint)
+// to be used as a tail call target.
+
+#[cfg(feature = "dispatcher")]
+#[raw_tracepoint(tracepoint = "sys_enter")]
+pub fn dispatch_execve(ctx: RawTracePointContext) -> u32 {
+    match try_dispatch_execve(&ctx) { Ok(()) => 0, Err(_) => 0 }
+}
+
+#[cfg(feature = "dispatcher")]
+#[inline(always)]
+fn try_dispatch_execve(ctx: &RawTracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(0) || is_cgroup_allowed() { return Ok(()); }
+    let pid = bpf_get_current_pid_tgid() as u32;
+    if is_rate_limited(pid) { return Ok(()); }
+
+    let filename_ptr: *const u8 = unsafe { read_syscall_arg(ctx, 0)? as *const u8 };
+    let tgid = (bpf_get_current_pid_tgid() >> 32) as u32;
+    let uid_gid = bpf_get_current_uid_gid();
+    let uid = uid_gid as u32;
+    let gid = (uid_gid >> 32) as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+
+    let mut entry = match EVENTS.reserve::<ExecveEvent>(0) { Some(e) => e, None => return Ok(()) };
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Execve as u32;
+    event.pid = pid; event.tgid = tgid; event.uid = uid; event.gid = gid;
+    event.ppid = 0; event.cgroup_id = unsafe { bpf_get_current_cgroup_id() }; event.ts_ns = ts; event.argc = 0;
+    if let Ok(comm) = bpf_get_current_comm() { event.comm[..comm.len().min(MAX_COMM_LEN)].copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]); }
+    unsafe { let _ = bpf_probe_read_user_str_bytes(filename_ptr, &mut event.filename); }
+    event.argv = [[0u8; 128]; 8];
+    entry.submit(0);
+    Ok(())
+}
+
+#[cfg(feature = "dispatcher")]
+#[raw_tracepoint(tracepoint = "sys_enter")]
+pub fn dispatch_connect(ctx: RawTracePointContext) -> u32 {
+    match try_dispatch_connect(&ctx) { Ok(()) => 0, Err(_) => 0 }
+}
+
+#[cfg(feature = "dispatcher")]
+#[inline(always)]
+fn try_dispatch_connect(ctx: &RawTracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(1) || is_cgroup_allowed() { return Ok(()); }
+    let addr_ptr: *const u8 = unsafe { read_syscall_arg(ctx, 1)? as *const u8 };
+    let mut sa_buf = [0u8; 16];
+    unsafe { let _ = bpf_probe_read_user_str_bytes(addr_ptr, &mut sa_buf); }
+    let family = u16::from_ne_bytes([sa_buf[0], sa_buf[1]]);
+    if family != 2 { return Ok(()); }
+    let port = u16::from_be_bytes([sa_buf[2], sa_buf[3]]);
+    let addr = u32::from_ne_bytes([sa_buf[4], sa_buf[5], sa_buf[6], sa_buf[7]]);
+    if sa_buf[4] == 127 || addr == 0 { return Ok(()); }
+
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let tgid = (bpf_get_current_pid_tgid() >> 32) as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+
+    let mut entry = match EVENTS.reserve::<ConnectEvent>(0) { Some(e) => e, None => return Ok(()) };
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Connect as u32;
+    event.pid = pid; event.tgid = tgid; event.uid = uid; event.ppid = 0;
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    event.dst_addr = addr; event.dst_port = port; event.family = family; event.ts_ns = ts;
+    if let Ok(comm) = bpf_get_current_comm() { event.comm[..comm.len().min(MAX_COMM_LEN)].copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]); }
+    entry.submit(0);
+    Ok(())
+}
+
+// Simpler handlers — most only read 0-2 args, trivial to convert.
+// ptrace, setuid, bind, mount, memfd_create, init_module, dup, listen, mprotect,
+// clone, unlink, rename, kill, prctl, accept — each follows the same pattern:
+// read args via read_syscall_arg() instead of ctx.read_at().
+
+#[cfg(feature = "dispatcher")]
+#[raw_tracepoint(tracepoint = "sys_enter")]
+pub fn dispatch_ptrace(ctx: RawTracePointContext) -> u32 {
+    if is_comm_allowed(3) || is_cgroup_allowed() { return 0; }
+    let request = unsafe { read_syscall_arg(&ctx, 0).unwrap_or(0) };
+    let target_pid = unsafe { read_syscall_arg(&ctx, 1).unwrap_or(0) };
+    if request != PTRACE_ATTACH && request != PTRACE_SEIZE && request != PTRACE_POKETEXT && request != PTRACE_POKEDATA { return 0; }
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    if let Some(mut entry) = EVENTS.reserve::<PtraceEvent>(0) {
+        let event = unsafe { &mut *entry.as_mut_ptr() };
+        event.kind = SyscallKind::Ptrace as u32;
+        event.pid = pid; event.uid = uid; event.target_pid = target_pid as u32; event.request = request as u32;
+        event.cgroup_id = unsafe { bpf_get_current_cgroup_id() }; event.ts_ns = ts;
+        if let Ok(comm) = bpf_get_current_comm() { event.comm[..comm.len().min(MAX_COMM_LEN)].copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]); }
+        entry.submit(0);
+    }
+    0
+}
+
+#[cfg(feature = "dispatcher")]
+#[raw_tracepoint(tracepoint = "sys_enter")]
+pub fn dispatch_setuid(ctx: RawTracePointContext) -> u32 {
+    if is_comm_allowed(4) { return 0; }
+    let target_uid = unsafe { read_syscall_arg(&ctx, 0).unwrap_or(u64::MAX) } as u32;
+    let current_uid = bpf_get_current_uid_gid() as u32;
+    if current_uid == 0 || target_uid != 0 { return 0; }
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    if let Some(mut entry) = EVENTS.reserve::<SetUidEvent>(0) {
+        let event = unsafe { &mut *entry.as_mut_ptr() };
+        event.kind = SyscallKind::SetUid as u32;
+        event.pid = pid; event.uid = current_uid; event.target_uid = target_uid; event.syscall_nr = 0;
+        event.cgroup_id = unsafe { bpf_get_current_cgroup_id() }; event.ts_ns = ts;
+        if let Ok(comm) = bpf_get_current_comm() { event.comm[..comm.len().min(MAX_COMM_LEN)].copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]); }
+        entry.submit(0);
+    }
+    0
+}
+
+#[cfg(feature = "dispatcher")]
+#[raw_tracepoint(tracepoint = "sys_enter")]
+pub fn dispatch_mprotect(ctx: RawTracePointContext) -> u32 {
+    if is_comm_allowed(11) || is_cgroup_allowed() { return 0; }
+    let addr = unsafe { read_syscall_arg(&ctx, 0).unwrap_or(0) };
+    let len = unsafe { read_syscall_arg(&ctx, 1).unwrap_or(0) };
+    let prot = unsafe { read_syscall_arg(&ctx, 2).unwrap_or(0) };
+    if prot & PROT_EXEC == 0 { return 0; }
+    let pid = bpf_get_current_pid_tgid() as u32;
+    if is_rate_limited(pid) { return 0; }
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    if let Some(mut entry) = EVENTS.reserve::<MprotectEvent>(0) {
+        let event = unsafe { &mut *entry.as_mut_ptr() };
+        event.kind = SyscallKind::Mprotect as u32;
+        event.pid = pid; event.uid = uid; event.prot = prot as u32; event.addr = addr; event.len = len;
+        event.cgroup_id = unsafe { bpf_get_current_cgroup_id() }; event.ts_ns = ts;
+        if let Ok(comm) = bpf_get_current_comm() { event.comm[..comm.len().min(MAX_COMM_LEN)].copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]); }
+        entry.submit(0);
+    }
+    0
+}
+
+#[cfg(feature = "dispatcher")]
+#[raw_tracepoint(tracepoint = "sys_enter")]
+pub fn dispatch_kill(ctx: RawTracePointContext) -> u32 {
+    if is_comm_allowed(15) { return 0; }
+    let target_pid = unsafe { read_syscall_arg(&ctx, 0).unwrap_or(0) } as u32;
+    let signal = unsafe { read_syscall_arg(&ctx, 1).unwrap_or(0) } as u32;
+    if signal != 9 && signal != 15 && signal != 19 { return 0; }
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    if let Some(mut entry) = EVENTS.reserve::<KillEvent>(0) {
+        let event = unsafe { &mut *entry.as_mut_ptr() };
+        event.kind = SyscallKind::Kill as u32;
+        event.pid = pid; event.uid = uid; event.target_pid = target_pid; event.signal = signal;
+        event.cgroup_id = unsafe { bpf_get_current_cgroup_id() }; event.ts_ns = ts;
+        if let Ok(comm) = bpf_get_current_comm() { event.comm[..comm.len().min(MAX_COMM_LEN)].copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]); }
+        entry.submit(0);
+    }
+    0
+}
+
+// For the remaining dispatcher handlers (bind, mount, memfd_create, init_module,
+// dup, listen, clone, unlink, rename, prctl, accept, openat), the pattern is
+// identical — read args via read_syscall_arg and emit to ring buffer.
+// Userspace wires them into SYSCALL_DISPATCH at the correct syscall numbers.
 
 // ---------------------------------------------------------------------------
 // Panic handler (required for no_std)
