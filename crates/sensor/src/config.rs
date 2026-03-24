@@ -855,6 +855,14 @@ pub struct RansomwareConfig {
     pub window_seconds: u64,
     #[serde(default = "default_ransomware_cooldown_seconds")]
     pub cooldown_seconds: u64,
+    /// Shannon entropy threshold (bits/byte). Writes with entropy above this are
+    /// considered encrypted. Default 7.5 (max is 8.0 for perfectly random data).
+    #[serde(default = "default_ransomware_entropy_threshold")]
+    pub entropy_threshold: f64,
+    /// Number of high-entropy writes per process before triggering a Critical alert.
+    /// Default 3 — detect ransomware on the first few encrypted files.
+    #[serde(default = "default_ransomware_entropy_count_threshold")]
+    pub entropy_count_threshold: usize,
 }
 
 impl Default for RansomwareConfig {
@@ -864,6 +872,8 @@ impl Default for RansomwareConfig {
             file_threshold: default_ransomware_file_threshold(),
             window_seconds: default_ransomware_window_seconds(),
             cooldown_seconds: default_ransomware_cooldown_seconds(),
+            entropy_threshold: default_ransomware_entropy_threshold(),
+            entropy_count_threshold: default_ransomware_entropy_count_threshold(),
         }
     }
 }
@@ -878,6 +888,14 @@ fn default_ransomware_window_seconds() -> u64 {
 
 fn default_ransomware_cooldown_seconds() -> u64 {
     60
+}
+
+fn default_ransomware_entropy_threshold() -> f64 {
+    7.5
+}
+
+fn default_ransomware_entropy_count_threshold() -> usize {
+    3
 }
 
 #[derive(Debug, Deserialize)]

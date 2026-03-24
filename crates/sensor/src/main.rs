@@ -482,6 +482,8 @@ async fn main() -> Result<()> {
                 file_threshold = d.file_threshold,
                 window_seconds = d.window_seconds,
                 cooldown_seconds = d.cooldown_seconds,
+                entropy_threshold = d.entropy_threshold,
+                entropy_count_threshold = d.entropy_count_threshold,
                 "ransomware detector enabled"
             );
             RansomwareDetector::new(
@@ -489,6 +491,8 @@ async fn main() -> Result<()> {
                 d.file_threshold,
                 d.window_seconds,
                 d.cooldown_seconds,
+                d.entropy_threshold,
+                d.entropy_count_threshold,
             )
         }),
         credential_harvest: cfg.detectors.credential_harvest.enabled.then(|| {
