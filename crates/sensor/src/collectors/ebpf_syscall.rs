@@ -854,13 +854,53 @@ fn attach_dispatcher(bpf: &mut aya::Ebpf) -> bool {
         }
     }
 
-    // --- 3. Wire handlers into SYSCALL_DISPATCH + SYSCALL_ENABLED ---
-    // TODO: Aya 0.13 ProgramArray::set() takes &ProgramFd which conflicts with
-    // the mutable borrow from map_mut(). Needs Aya 0.14+ or raw bpf syscall.
-    // For now, dispatcher loads and attaches but handlers are not wired.
-    // The typed tracepoints (default mode) handle all 22 syscalls instead.
-    warn!("dispatcher: handler wiring not yet implemented — falling back to typed tracepoints");
-    false
+    // --- 3. Wire handlers into SYSCALL_DISPATCH ProgramArray ---
+    // Use take_map() to transfer ownership — avoids borrow conflict with bpf.program()
+    let mut dispatch_map = match bpf.take_map("SYSCALL_DISPATCH") {
+        Some(map) => match ProgramArray::try_from(map) {
+            Ok(arr) => arr,
+            Err(e) => {
+                warn!(error = %e, "dispatcher: SYSCALL_DISPATCH not a ProgramArray");
+                return false;
+            }
+        },
+        None => {
+            warn!("dispatcher: SYSCALL_DISPATCH map not found");
+            return false;
+        }
+    };
+
+    let mut inserted = 0u32;
+    for &(name, syscall_nr) in handlers {
+        if let Some(prog) = bpf.program(name) {
+            if let Ok(fd) = prog.fd() {
+                if dispatch_map.set(syscall_nr, fd, 0).is_ok() {
+                    inserted += 1;
+                }
+            }
+        }
+    }
+
+    if inserted == 0 {
+        warn!("dispatcher: no handlers wired into SYSCALL_DISPATCH");
+        return false;
+    }
+    info!(count = inserted, "eBPF: SYSCALL_DISPATCH populated");
+
+    // --- 4. Populate SYSCALL_ENABLED map ---
+    if let Some(map) = bpf.take_map("SYSCALL_ENABLED") {
+        if let Ok(mut enabled_map) = HashMap::<_, u32, u32>::try_from(map) {
+            for &(_, syscall_nr) in handlers {
+                let _ = enabled_map.insert(syscall_nr, 1u32, 0);
+            }
+            info!(
+                "eBPF: SYSCALL_ENABLED populated ({} syscalls)",
+                handlers.len()
+            );
+        }
+    }
+
+    true
 }
 
 #[cfg(feature = "ebpf")]
