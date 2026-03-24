@@ -20,6 +20,7 @@ mod forensics;
 mod geoip;
 mod ioc;
 mod mesh;
+mod mitre;
 mod narrative;
 mod reader;
 mod report;
