@@ -35,9 +35,10 @@ use aya_ebpf::{
 };
 use aya_log_ebpf::info;
 use innerwarden_ebpf_types::{
-    ConnectEvent, ExecveEvent, MemfdCreateEvent, ModuleLoadEvent, MountEvent, PrivEscEvent,
-    ProcessExitEvent, PtraceEvent, SetUidEvent, SocketBindEvent, SyscallKind, MAX_COMM_LEN,
-    MAX_FILENAME_LEN,
+    AcceptEvent, CloneEvent, ConnectEvent, DupEvent, ExecveEvent, KillEvent, ListenEvent,
+    MemfdCreateEvent, ModuleLoadEvent, MountEvent, MprotectEvent, PrivEscEvent, ProcessExitEvent,
+    PrctlEvent, PtraceEvent, RenameEvent, SetUidEvent, SocketBindEvent, SyscallKind, UnlinkEvent,
+    MAX_COMM_LEN, MAX_FILENAME_LEN,
 };
 
 // ---------------------------------------------------------------------------
@@ -1080,6 +1081,299 @@ fn try_init_module(_ctx: &TracePointContext) -> Result<(), i64> {
             .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
     }
 
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tracepoint: sys_enter_dup2/dup3 — fd redirection (reverse shell)
+// ---------------------------------------------------------------------------
+// Reverse shells redirect fd 0/1/2 (stdin/stdout/stderr) to a socket.
+// Only emits when newfd is 0, 1, or 2 (the dangerous redirections).
+
+#[tracepoint]
+pub fn innerwarden_dup(ctx: TracePointContext) -> u32 {
+    match try_dup(&ctx) { Ok(()) => 0, Err(_) => 0 }
+}
+
+#[inline(always)]
+fn try_dup(ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(9) || is_cgroup_allowed() { return Ok(()); }
+    // sys_enter_dup2 args: [oldfd, newfd]  /  dup3: [oldfd, newfd, flags]
+    let oldfd: u32 = unsafe { ctx.read_at(16)? };
+    let newfd: u32 = unsafe { ctx.read_at(20)? };
+    // Only care about redirecting to stdin(0), stdout(1), stderr(2)
+    if newfd > 2 { return Ok(()); }
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let mut entry = match EVENTS.reserve::<DupEvent>(0) { Some(e) => e, None => return Ok(()) };
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Dup as u32;
+    event.pid = pid; event.uid = uid; event.oldfd = oldfd; event.newfd = newfd;
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() }; event.ts_ns = ts;
+    if let Ok(comm) = bpf_get_current_comm() { event.comm[..comm.len().min(MAX_COMM_LEN)].copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]); }
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tracepoint: sys_enter_listen — confirms reverse shell / backdoor
+// ---------------------------------------------------------------------------
+
+#[tracepoint]
+pub fn innerwarden_listen(ctx: TracePointContext) -> u32 {
+    match try_listen(&ctx) { Ok(()) => 0, Err(_) => 0 }
+}
+
+#[inline(always)]
+fn try_listen(ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(10) || is_cgroup_allowed() { return Ok(()); }
+    // sys_enter_listen args: [fd, backlog]
+    let backlog: u32 = unsafe { ctx.read_at(20)? };
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let mut entry = match EVENTS.reserve::<ListenEvent>(0) { Some(e) => e, None => return Ok(()) };
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Listen as u32;
+    event.pid = pid; event.uid = uid; event.backlog = backlog;
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() }; event.ts_ns = ts;
+    if let Ok(comm) = bpf_get_current_comm() { event.comm[..comm.len().min(MAX_COMM_LEN)].copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]); }
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tracepoint: sys_enter_mprotect — shellcode detection (RWX memory)
+// ---------------------------------------------------------------------------
+// Only emits when PROT_EXEC (0x4) is being added — making memory executable.
+
+const PROT_EXEC: u64 = 0x4;
+
+#[tracepoint]
+pub fn innerwarden_mprotect(ctx: TracePointContext) -> u32 {
+    match try_mprotect(&ctx) { Ok(()) => 0, Err(_) => 0 }
+}
+
+#[inline(always)]
+fn try_mprotect(ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(11) || is_cgroup_allowed() { return Ok(()); }
+    // sys_enter_mprotect args: [addr, len, prot]
+    let addr: u64 = unsafe { ctx.read_at(16)? };
+    let len: u64 = unsafe { ctx.read_at(24)? };
+    let prot: u64 = unsafe { ctx.read_at(32)? };
+    // Only care about adding PROT_EXEC
+    if prot & PROT_EXEC == 0 { return Ok(()); }
+    let pid = bpf_get_current_pid_tgid() as u32;
+    if is_rate_limited(pid) { return Ok(()); }
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let mut entry = match EVENTS.reserve::<MprotectEvent>(0) { Some(e) => e, None => return Ok(()) };
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Mprotect as u32;
+    event.pid = pid; event.uid = uid; event.prot = prot as u32;
+    event.addr = addr; event.len = len;
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() }; event.ts_ns = ts;
+    if let Ok(comm) = bpf_get_current_comm() { event.comm[..comm.len().min(MAX_COMM_LEN)].copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]); }
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tracepoint: sys_enter_clone — fork bombs, process tree tracking
+// ---------------------------------------------------------------------------
+// Rate limited heavily — clone is called very frequently.
+
+#[tracepoint]
+pub fn innerwarden_clone(ctx: TracePointContext) -> u32 {
+    match try_clone(&ctx) { Ok(()) => 0, Err(_) => 0 }
+}
+
+#[inline(always)]
+fn try_clone(ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(12) || is_cgroup_allowed() { return Ok(()); }
+    let pid = bpf_get_current_pid_tgid() as u32;
+    if is_rate_limited(pid) { return Ok(()); }
+    // sys_enter_clone args: [clone_flags, ...]
+    let clone_flags: u64 = unsafe { ctx.read_at(16)? };
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let mut entry = match EVENTS.reserve::<CloneEvent>(0) { Some(e) => e, None => return Ok(()) };
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Clone as u32;
+    event.pid = pid; event.uid = uid; event.clone_flags = clone_flags;
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() }; event.ts_ns = ts;
+    if let Ok(comm) = bpf_get_current_comm() { event.comm[..comm.len().min(MAX_COMM_LEN)].copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]); }
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tracepoint: sys_enter_unlinkat — evidence destruction / log wipe
+// ---------------------------------------------------------------------------
+// Only emits for sensitive paths: /var/log, /etc, /root
+
+#[tracepoint]
+pub fn innerwarden_unlink(ctx: TracePointContext) -> u32 {
+    match try_unlink(&ctx) { Ok(()) => 0, Err(_) => 0 }
+}
+
+#[inline(always)]
+fn try_unlink(ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(13) || is_cgroup_allowed() { return Ok(()); }
+    // sys_enter_unlinkat args: [dfd, pathname, flag]
+    let path_ptr: *const u8 = unsafe { ctx.read_at(24)? };
+    let mut path_buf = [0u8; 64];
+    unsafe { let _ = bpf_probe_read_user_str_bytes(path_ptr, &mut path_buf); }
+    let f = &path_buf;
+    let is_sensitive =
+        (f[0] == b'/' && f[1] == b'v' && f[2] == b'a' && f[3] == b'r' && f[4] == b'/' && f[5] == b'l' && f[6] == b'o' && f[7] == b'g')
+        || (f[0] == b'/' && f[1] == b'e' && f[2] == b't' && f[3] == b'c' && f[4] == b'/')
+        || (f[0] == b'/' && f[1] == b'r' && f[2] == b'o' && f[3] == b'o' && f[4] == b't');
+    if !is_sensitive { return Ok(()); }
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let mut entry = match EVENTS.reserve::<UnlinkEvent>(0) { Some(e) => e, None => return Ok(()) };
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Unlink as u32;
+    event.pid = pid; event.uid = uid; event._pad = 0;
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() }; event.ts_ns = ts;
+    event.filename = [0u8; MAX_FILENAME_LEN];
+    unsafe { let _ = bpf_probe_read_user_str_bytes(path_ptr, &mut event.filename); }
+    if let Ok(comm) = bpf_get_current_comm() { event.comm[..comm.len().min(MAX_COMM_LEN)].copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]); }
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tracepoint: sys_enter_renameat2 — binary/config replacement
+// ---------------------------------------------------------------------------
+
+#[tracepoint]
+pub fn innerwarden_rename(ctx: TracePointContext) -> u32 {
+    match try_rename(&ctx) { Ok(()) => 0, Err(_) => 0 }
+}
+
+#[inline(always)]
+fn try_rename(ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(14) || is_cgroup_allowed() { return Ok(()); }
+    // sys_enter_renameat2 args: [olddfd, oldname, newdfd, newname, flags]
+    let oldname_ptr: *const u8 = unsafe { ctx.read_at(24)? };
+    let newname_ptr: *const u8 = unsafe { ctx.read_at(40)? };
+    // Only sensitive targets
+    let mut buf = [0u8; 16];
+    unsafe { let _ = bpf_probe_read_user_str_bytes(newname_ptr, &mut buf); }
+    let f = &buf;
+    let is_sensitive =
+        (f[0] == b'/' && f[1] == b'e' && f[2] == b't' && f[3] == b'c' && f[4] == b'/')
+        || (f[0] == b'/' && f[1] == b'u' && f[2] == b's' && f[3] == b'r')
+        || (f[0] == b'/' && f[1] == b'b' && f[2] == b'i' && f[3] == b'n');
+    if !is_sensitive { return Ok(()); }
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let mut entry = match EVENTS.reserve::<RenameEvent>(0) { Some(e) => e, None => return Ok(()) };
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Rename as u32;
+    event.pid = pid; event.uid = uid; event._pad = 0;
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() }; event.ts_ns = ts;
+    event.oldname = [0u8; MAX_FILENAME_LEN];
+    unsafe { let _ = bpf_probe_read_user_str_bytes(oldname_ptr, &mut event.oldname); }
+    event.newname = [0u8; MAX_FILENAME_LEN];
+    unsafe { let _ = bpf_probe_read_user_str_bytes(newname_ptr, &mut event.newname); }
+    if let Ok(comm) = bpf_get_current_comm() { event.comm[..comm.len().min(MAX_COMM_LEN)].copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]); }
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tracepoint: sys_enter_kill — killing security processes
+// ---------------------------------------------------------------------------
+// Only emits for SIGKILL(9), SIGTERM(15), SIGSTOP(19).
+
+#[tracepoint]
+pub fn innerwarden_kill(ctx: TracePointContext) -> u32 {
+    match try_kill(&ctx) { Ok(()) => 0, Err(_) => 0 }
+}
+
+#[inline(always)]
+fn try_kill(ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(15) { return Ok(()); }
+    // sys_enter_kill args: [pid, sig]
+    let target_pid: u32 = unsafe { ctx.read_at(16)? };
+    let signal: u32 = unsafe { ctx.read_at(20)? };
+    // Only dangerous signals
+    if signal != 9 && signal != 15 && signal != 19 { return Ok(()); }
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let mut entry = match EVENTS.reserve::<KillEvent>(0) { Some(e) => e, None => return Ok(()) };
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Kill as u32;
+    event.pid = pid; event.uid = uid; event.target_pid = target_pid; event.signal = signal;
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() }; event.ts_ns = ts;
+    if let Ok(comm) = bpf_get_current_comm() { event.comm[..comm.len().min(MAX_COMM_LEN)].copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]); }
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tracepoint: sys_enter_prctl — process name spoofing, privs manipulation
+// ---------------------------------------------------------------------------
+// Only PR_SET_NAME(15) and PR_SET_NO_NEW_PRIVS(38).
+
+const PR_SET_NAME: u64 = 15;
+const PR_SET_NO_NEW_PRIVS: u64 = 38;
+
+#[tracepoint]
+pub fn innerwarden_prctl(ctx: TracePointContext) -> u32 {
+    match try_prctl(&ctx) { Ok(()) => 0, Err(_) => 0 }
+}
+
+#[inline(always)]
+fn try_prctl(ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(16) { return Ok(()); }
+    // sys_enter_prctl args: [option, arg2, arg3, arg4, arg5]
+    let option: u64 = unsafe { ctx.read_at(16)? };
+    let arg2: u64 = unsafe { ctx.read_at(24)? };
+    if option != PR_SET_NAME && option != PR_SET_NO_NEW_PRIVS { return Ok(()); }
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let mut entry = match EVENTS.reserve::<PrctlEvent>(0) { Some(e) => e, None => return Ok(()) };
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Prctl as u32;
+    event.pid = pid; event.uid = uid; event.option = option as u32; event.arg2 = arg2;
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() }; event.ts_ns = ts;
+    if let Ok(comm) = bpf_get_current_comm() { event.comm[..comm.len().min(MAX_COMM_LEN)].copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]); }
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tracepoint: sys_enter_accept4 — incoming connection accepted
+// ---------------------------------------------------------------------------
+
+#[tracepoint]
+pub fn innerwarden_accept(ctx: TracePointContext) -> u32 {
+    match try_accept(&ctx) { Ok(()) => 0, Err(_) => 0 }
+}
+
+#[inline(always)]
+fn try_accept(_ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(17) || is_cgroup_allowed() { return Ok(()); }
+    let pid = bpf_get_current_pid_tgid() as u32;
+    if is_rate_limited(pid) { return Ok(()); }
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let mut entry = match EVENTS.reserve::<AcceptEvent>(0) { Some(e) => e, None => return Ok(()) };
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Accept as u32;
+    event.pid = pid; event.uid = uid; event._pad = 0;
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() }; event.ts_ns = ts;
+    if let Ok(comm) = bpf_get_current_comm() { event.comm[..comm.len().min(MAX_COMM_LEN)].copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]); }
     entry.submit(0);
     Ok(())
 }

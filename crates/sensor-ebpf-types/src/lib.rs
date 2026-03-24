@@ -51,6 +51,24 @@ pub enum SyscallKind {
     MemfdCreate = 12,
     /// Kernel module loading (rootkit insertion)
     InitModule = 13,
+    /// File descriptor duplication (reverse shell fd redirection)
+    Dup = 14,
+    /// Socket listen (confirms reverse shell / backdoor setup)
+    Listen = 15,
+    /// Memory protection change (shellcode — mprotect RWX)
+    Mprotect = 16,
+    /// Process fork/clone (fork bombs, process tree)
+    Clone = 17,
+    /// File deletion (evidence destruction, log wipe)
+    Unlink = 18,
+    /// File rename (binary replacement, config tampering)
+    Rename = 19,
+    /// Signal send (killing security processes)
+    Kill = 20,
+    /// Process control (name spoofing, no_new_privs bypass)
+    Prctl = 21,
+    /// Accept incoming connection
+    Accept = 22,
 }
 
 /// Event emitted by the eBPF `execve` tracepoint.
@@ -269,6 +287,142 @@ pub struct ModuleLoadEvent {
     pub pid: u32,
     pub uid: u32,
     pub syscall_nr: u32,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 event types — complete syscall coverage
+// ---------------------------------------------------------------------------
+
+/// Event emitted by `dup2`/`dup3` — fd redirection for reverse shells.
+/// Reverse shells redirect stdin/stdout/stderr to a socket fd.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DupEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub oldfd: u32,
+    pub newfd: u32,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+/// Event emitted by `listen` — confirms a bind as a server socket.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ListenEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub backlog: u32,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+/// Event emitted by `mprotect` — making memory executable (shellcode).
+/// Only fires when adding PROT_EXEC to a page (RWX transition).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MprotectEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub prot: u32,
+    pub addr: u64,
+    pub len: u64,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+/// Event emitted by `clone`/`clone3` — process creation.
+/// Filtered: only emits for suspicious flags or high fork rates.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CloneEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub clone_flags: u64,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+/// Event emitted by `unlink`/`unlinkat` — file deletion.
+/// Filtered: only sensitive paths (/var/log, /etc, evidence files).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct UnlinkEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub _pad: u32,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub filename: [u8; MAX_FILENAME_LEN],
+    pub ts_ns: u64,
+}
+
+/// Event emitted by `rename`/`renameat` — file rename/replacement.
+/// Filtered: only sensitive paths.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RenameEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub _pad: u32,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub oldname: [u8; MAX_FILENAME_LEN],
+    pub newname: [u8; MAX_FILENAME_LEN],
+    pub ts_ns: u64,
+}
+
+/// Event emitted by `kill`/`tkill` — sending signals to processes.
+/// Filtered: only SIGKILL/SIGTERM/SIGSTOP to security-relevant processes.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct KillEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub target_pid: u32,
+    pub signal: u32,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+/// Event emitted by `prctl` — process control operations.
+/// Filtered: only PR_SET_NAME (name spoofing) and PR_SET_NO_NEW_PRIVS.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PrctlEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub option: u32,
+    pub arg2: u64,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+/// Event emitted by `accept`/`accept4` — incoming connection accepted.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AcceptEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub _pad: u32,
     pub cgroup_id: u64,
     pub comm: [u8; MAX_COMM_LEN],
     pub ts_ns: u64,

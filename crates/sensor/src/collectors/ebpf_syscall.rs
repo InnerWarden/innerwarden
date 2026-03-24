@@ -681,18 +681,67 @@ fn populate_kernel_filters(bpf: &mut aya::Ebpf) {
             let _ = map.insert(key(comm), OPENAT | CONNECT, 0);
         }
 
-        // Inner Warden itself — skip all handlers except init_module and mount
+        // Log rotation / coreutils — allowed on unlink, rename
+        const UNLINK: u32 = 1 << 13;
+        const RENAME: u32 = 1 << 14;
+        for comm in ["logrotate", "journald", "rsyslogd", "systemd-journal"] {
+            let _ = map.insert(key(comm), UNLINK | RENAME | OPENAT, 0);
+        }
+
+        // JIT runtimes — allowed on mprotect (they make memory executable legitimately)
+        const MPROTECT: u32 = 1 << 11;
+        for comm in [
+            "node", "python3", "python", "java", "ruby", "php", "dotnet", "mono", "v8", "wasmtime",
+        ] {
+            let _ = map.insert(key(comm), MPROTECT, 0);
+        }
+
+        // Container runtimes — also allowed on clone, dup, listen, accept
+        const DUP: u32 = 1 << 9;
+        const LISTEN: u32 = 1 << 10;
+        const CLONE: u32 = 1 << 12;
+        const ACCEPT: u32 = 1 << 17;
+        for comm in [
+            "dockerd",
+            "containerd",
+            "containerd-shim",
+            "runc",
+            "crio",
+            "podman",
+        ] {
+            let _ = map.insert(
+                key(comm),
+                BIND | CONNECT | OPENAT | CLONE | DUP | LISTEN | ACCEPT,
+                0,
+            );
+        }
+
+        // Shells — allowed on dup, clone (normal shell behavior)
+        for comm in ["bash", "sh", "zsh", "dash", "ash", "fish", "tcsh", "ksh"] {
+            let _ = map.insert(key(comm), DUP | CLONE, 0);
+        }
+
+        // Inner Warden itself — skip everything except mount + init_module
+        let all_but_critical = EXECVE
+            | CONNECT
+            | OPENAT
+            | PTRACE
+            | SETUID
+            | BIND
+            | DUP
+            | LISTEN
+            | MPROTECT
+            | CLONE
+            | UNLINK
+            | RENAME
+            | ACCEPT;
         for comm in [
             "innerwarden-sen",
             "innerwarden-age",
             "innerwarden-dna",
             "innerwarden-shi",
         ] {
-            let _ = map.insert(
-                key(comm),
-                EXECVE | CONNECT | OPENAT | PTRACE | SETUID | BIND,
-                0,
-            );
+            let _ = map.insert(key(comm), all_but_critical, 0);
         }
 
         let count = map.keys().count();
@@ -910,10 +959,121 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     }
 
-    // finit_module: alternative rootkit loading path
-    if let Some(prog) = bpf.program_mut("innerwarden_init_module") {
-        // Note: reuses the same handler — finit_module has similar signature
-        // This will fail silently if the program was already attached above (expected)
+    // dup2: fd redirection (reverse shell)
+    if let Some(prog) = bpf.program_mut("innerwarden_dup") {
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach("syscalls", "sys_enter_dup2") {
+                    warn!(error = %e, "innerwarden_dup: failed to attach");
+                } else {
+                    info!("eBPF: innerwarden_dup → sys_enter_dup2");
+                }
+            }
+        }
+    }
+
+    // listen: reverse shell confirmation
+    if let Some(prog) = bpf.program_mut("innerwarden_listen") {
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach("syscalls", "sys_enter_listen") {
+                    warn!(error = %e, "innerwarden_listen: failed to attach");
+                } else {
+                    info!("eBPF: innerwarden_listen → sys_enter_listen");
+                }
+            }
+        }
+    }
+
+    // mprotect: shellcode (RWX memory)
+    if let Some(prog) = bpf.program_mut("innerwarden_mprotect") {
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach("syscalls", "sys_enter_mprotect") {
+                    warn!(error = %e, "innerwarden_mprotect: failed to attach");
+                } else {
+                    info!("eBPF: innerwarden_mprotect → sys_enter_mprotect");
+                }
+            }
+        }
+    }
+
+    // clone: fork bombs, process tree
+    if let Some(prog) = bpf.program_mut("innerwarden_clone") {
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach("syscalls", "sys_enter_clone") {
+                    warn!(error = %e, "innerwarden_clone: failed to attach");
+                } else {
+                    info!("eBPF: innerwarden_clone → sys_enter_clone");
+                }
+            }
+        }
+    }
+
+    // unlinkat: file deletion (evidence destruction)
+    if let Some(prog) = bpf.program_mut("innerwarden_unlink") {
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach("syscalls", "sys_enter_unlinkat") {
+                    warn!(error = %e, "innerwarden_unlink: failed to attach");
+                } else {
+                    info!("eBPF: innerwarden_unlink → sys_enter_unlinkat");
+                }
+            }
+        }
+    }
+
+    // renameat2: binary/config replacement
+    if let Some(prog) = bpf.program_mut("innerwarden_rename") {
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach("syscalls", "sys_enter_renameat2") {
+                    warn!(error = %e, "innerwarden_rename: failed to attach");
+                } else {
+                    info!("eBPF: innerwarden_rename → sys_enter_renameat2");
+                }
+            }
+        }
+    }
+
+    // kill: signal delivery (killing security processes)
+    if let Some(prog) = bpf.program_mut("innerwarden_kill") {
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach("syscalls", "sys_enter_kill") {
+                    warn!(error = %e, "innerwarden_kill: failed to attach");
+                } else {
+                    info!("eBPF: innerwarden_kill → sys_enter_kill");
+                }
+            }
+        }
+    }
+
+    // prctl: process name spoofing
+    if let Some(prog) = bpf.program_mut("innerwarden_prctl") {
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach("syscalls", "sys_enter_prctl") {
+                    warn!(error = %e, "innerwarden_prctl: failed to attach");
+                } else {
+                    info!("eBPF: innerwarden_prctl → sys_enter_prctl");
+                }
+            }
+        }
+    }
+
+    // accept4: incoming connections
+    if let Some(prog) = bpf.program_mut("innerwarden_accept") {
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach("syscalls", "sys_enter_accept4") {
+                    warn!(error = %e, "innerwarden_accept: failed to attach");
+                } else {
+                    info!("eBPF: innerwarden_accept → sys_enter_accept4");
+                }
+            }
+        }
     }
 
     // Attach LSM execution policy (non-critical — requires lsm=bpf in kernel cmdline)
@@ -934,7 +1094,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     };
 
-    info!("eBPF collector active — kernel-level syscall monitoring (13 hooks)");
+    info!("eBPF collector active — kernel-level syscall monitoring (22 hooks)");
 
     loop {
         while let Some(item) = ring_buf.next() {
@@ -1369,6 +1529,197 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                             "kernel".to_string(),
                             "module_load".to_string(),
                         ],
+                        entities: vec![],
+                    })
+                }
+                // DupEvent: kind(4) pid(4) uid(4) oldfd(4) newfd(4) _pad(4) cgroup_id(8) comm(64)
+                14 if data.len() >= 88 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let oldfd = u32::from_ne_bytes(data[12..16].try_into().unwrap());
+                    let newfd = u32::from_ne_bytes(data[16..20].try_into().unwrap());
+                    let comm = bytes_to_string(&data[24..88]);
+                    let fd_name = match newfd {
+                        0 => "stdin",
+                        1 => "stdout",
+                        2 => "stderr",
+                        _ => "fd",
+                    };
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "process.fd_redirect".to_string(),
+                        severity: Severity::High,
+                        summary: format!(
+                            "{comm} (PID {pid}) redirected fd {oldfd} → {fd_name}({newfd})"
+                        ),
+                        details: serde_json::json!({"pid": pid, "uid": uid, "oldfd": oldfd, "newfd": newfd, "comm": comm}),
+                        tags: vec!["ebpf".to_string(), "reverse_shell".to_string()],
+                        entities: vec![],
+                    })
+                }
+                // ListenEvent: kind(4) pid(4) uid(4) backlog(4) cgroup_id(8) comm(64)
+                15 if data.len() >= 80 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let backlog = u32::from_ne_bytes(data[12..16].try_into().unwrap());
+                    let comm = bytes_to_string(&data[24..88]);
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "network.listen".to_string(),
+                        severity: Severity::High,
+                        summary: format!(
+                            "{comm} (PID {pid}) started listening (backlog={backlog})"
+                        ),
+                        details: serde_json::json!({"pid": pid, "uid": uid, "backlog": backlog, "comm": comm}),
+                        tags: vec![
+                            "ebpf".to_string(),
+                            "network".to_string(),
+                            "listen".to_string(),
+                        ],
+                        entities: vec![],
+                    })
+                }
+                // MprotectEvent: kind(4) pid(4) uid(4) prot(4) addr(8) len(8) cgroup_id(8) comm(64)
+                16 if data.len() >= 96 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let prot = u32::from_ne_bytes(data[12..16].try_into().unwrap());
+                    let addr = u64::from_ne_bytes(data[16..24].try_into().unwrap());
+                    let len = u64::from_ne_bytes(data[24..32].try_into().unwrap());
+                    let comm = bytes_to_string(&data[40..104]);
+                    let rwx = prot & 0x7 == 0x7; // PROT_READ|PROT_WRITE|PROT_EXEC
+                    Some(Event {
+                        ts: chrono::Utc::now(), host: host.to_string(), source: "ebpf".to_string(),
+                        kind: "memory.mprotect_exec".to_string(),
+                        severity: if rwx { Severity::Critical } else { Severity::High },
+                        summary: format!("{comm} (PID {pid}) mprotect → executable memory at 0x{addr:x} ({len} bytes){}", if rwx { " [RWX — shellcode indicator]" } else { "" }),
+                        details: serde_json::json!({"pid": pid, "uid": uid, "prot": prot, "addr": format!("0x{addr:x}"), "len": len, "rwx": rwx, "comm": comm}),
+                        tags: vec!["ebpf".to_string(), "shellcode".to_string()], entities: vec![],
+                    })
+                }
+                // CloneEvent: kind(4) pid(4) uid(4) _pad(4) clone_flags(8) cgroup_id(8) comm(64)
+                17 if data.len() >= 88 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let clone_flags = u64::from_ne_bytes(data[16..24].try_into().unwrap());
+                    let comm = bytes_to_string(&data[32..96]);
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "process.clone".to_string(),
+                        severity: Severity::Debug,
+                        summary: format!("{comm} (PID {pid}) clone(flags=0x{clone_flags:x})"),
+                        details: serde_json::json!({"pid": pid, "uid": uid, "clone_flags": format!("0x{clone_flags:x}"), "comm": comm}),
+                        tags: vec!["ebpf".to_string()],
+                        entities: vec![],
+                    })
+                }
+                // UnlinkEvent: kind(4) pid(4) uid(4) _pad(4) cgroup_id(8) comm(64) filename(256)
+                18 if data.len() >= 344 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let comm = bytes_to_string(&data[24..88]);
+                    let filename = bytes_to_string(&data[88..344]);
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "file.delete".to_string(),
+                        severity: Severity::High,
+                        summary: format!("{comm} (PID {pid}) deleting {filename}"),
+                        details: serde_json::json!({"pid": pid, "uid": uid, "filename": filename, "comm": comm}),
+                        tags: vec!["ebpf".to_string(), "evidence_destruction".to_string()],
+                        entities: vec![],
+                    })
+                }
+                // RenameEvent: kind(4) pid(4) uid(4) _pad(4) cgroup_id(8) comm(64) oldname(256) newname(256)
+                19 if data.len() >= 600 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let comm = bytes_to_string(&data[24..88]);
+                    let oldname = bytes_to_string(&data[88..344]);
+                    let newname = bytes_to_string(&data[344..600]);
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "file.rename".to_string(),
+                        severity: Severity::High,
+                        summary: format!("{comm} (PID {pid}) renaming {oldname} → {newname}"),
+                        details: serde_json::json!({"pid": pid, "uid": uid, "oldname": oldname, "newname": newname, "comm": comm}),
+                        tags: vec!["ebpf".to_string(), "binary_replacement".to_string()],
+                        entities: vec![],
+                    })
+                }
+                // KillEvent: kind(4) pid(4) uid(4) target_pid(4) signal(4) _pad(4) cgroup_id(8) comm(64)
+                20 if data.len() >= 88 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let target_pid = u32::from_ne_bytes(data[12..16].try_into().unwrap());
+                    let signal = u32::from_ne_bytes(data[16..20].try_into().unwrap());
+                    let comm = bytes_to_string(&data[28..92]);
+                    let sig_name = match signal {
+                        9 => "SIGKILL",
+                        15 => "SIGTERM",
+                        19 => "SIGSTOP",
+                        _ => "SIG?",
+                    };
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "process.signal".to_string(),
+                        severity: Severity::High,
+                        summary: format!(
+                            "{comm} (PID {pid}) sending {sig_name} to PID {target_pid}"
+                        ),
+                        details: serde_json::json!({"pid": pid, "uid": uid, "target_pid": target_pid, "signal": signal, "signal_name": sig_name, "comm": comm}),
+                        tags: vec!["ebpf".to_string(), "kill_signal".to_string()],
+                        entities: vec![],
+                    })
+                }
+                // PrctlEvent: kind(4) pid(4) uid(4) option(4) arg2(8) cgroup_id(8) comm(64)
+                21 if data.len() >= 88 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let option = u32::from_ne_bytes(data[12..16].try_into().unwrap());
+                    let comm = bytes_to_string(&data[32..96]);
+                    let op_name = match option {
+                        15 => "PR_SET_NAME",
+                        38 => "PR_SET_NO_NEW_PRIVS",
+                        _ => "unknown",
+                    };
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "process.prctl".to_string(),
+                        severity: Severity::Medium,
+                        summary: format!("{comm} (PID {pid}) prctl({op_name})"),
+                        details: serde_json::json!({"pid": pid, "uid": uid, "option": option, "op_name": op_name, "comm": comm}),
+                        tags: vec!["ebpf".to_string(), "prctl".to_string()],
+                        entities: vec![],
+                    })
+                }
+                // AcceptEvent: kind(4) pid(4) uid(4) _pad(4) cgroup_id(8) comm(64)
+                22 if data.len() >= 80 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let comm = bytes_to_string(&data[24..88]);
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "network.accept".to_string(),
+                        severity: Severity::Debug,
+                        summary: format!("{comm} (PID {pid}) accepted incoming connection"),
+                        details: serde_json::json!({"pid": pid, "uid": uid, "comm": comm}),
+                        tags: vec!["ebpf".to_string(), "network".to_string()],
                         entities: vec![],
                     })
                 }
