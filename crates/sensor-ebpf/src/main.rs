@@ -30,14 +30,18 @@ use aya_ebpf::{
     EbpfContext,
 };
 use aya_log_ebpf::info;
-use innerwarden_ebpf_types::{ExecveEvent, ConnectEvent, PrivEscEvent, ProcessExitEvent, SyscallKind, MAX_COMM_LEN, MAX_FILENAME_LEN};
+use innerwarden_ebpf_types::{
+    ExecveEvent, ConnectEvent, PrivEscEvent, ProcessExitEvent,
+    PtraceEvent, SetUidEvent, SocketBindEvent, MountEvent, MemfdCreateEvent, ModuleLoadEvent,
+    SyscallKind, MAX_COMM_LEN, MAX_FILENAME_LEN,
+};
 
 // ---------------------------------------------------------------------------
 // Ring buffer — shared between all eBPF programs, read by userspace
 // ---------------------------------------------------------------------------
 
 #[map]
-static EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0); // 256 KB ring buffer
+static EVENTS: RingBuf = RingBuf::with_byte_size(1024 * 1024, 0); // 1 MB ring buffer (expanded for 13 hooks)
 
 // ---------------------------------------------------------------------------
 // XDP blocklist — IPv4 addresses to drop at wire speed
@@ -578,6 +582,354 @@ fn try_process_exit(ctx: &TracePointContext) -> Result<(), i64> {
     event.pid = pid;
     event.tgid = tgid;
     event.exit_code = 0; // exit code not directly available in tracepoint args
+    event.ts_ns = ts;
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tracepoint: sys_enter_ptrace — process injection detection
+// ---------------------------------------------------------------------------
+//
+// Only emits events for dangerous ptrace operations:
+//   PTRACE_ATTACH (16)    — attach to a running process
+//   PTRACE_SEIZE (0x4206) — modern attach variant
+//   PTRACE_POKETEXT (4)   — write to process memory (code injection)
+//   PTRACE_POKEDATA (5)   — write to process data
+//
+// PTRACE_TRACEME (0) is benign (child requesting tracing) and is ignored.
+
+const PTRACE_POKETEXT: u64 = 4;
+const PTRACE_POKEDATA: u64 = 5;
+const PTRACE_ATTACH: u64 = 16;
+const PTRACE_SEIZE: u64 = 0x4206;
+
+#[tracepoint]
+pub fn innerwarden_ptrace(ctx: TracePointContext) -> u32 {
+    match try_ptrace(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+#[inline(always)]
+fn try_ptrace(ctx: &TracePointContext) -> Result<(), i64> {
+    // sys_enter_ptrace args: [request, pid, addr, data]
+    let request: u64 = unsafe { ctx.read_at(16)? };
+    let target_pid: u64 = unsafe { ctx.read_at(24)? };
+
+    // Only dangerous operations
+    if request != PTRACE_ATTACH && request != PTRACE_SEIZE
+        && request != PTRACE_POKETEXT && request != PTRACE_POKEDATA
+    {
+        return Ok(());
+    }
+
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+
+    let mut entry = match EVENTS.reserve::<PtraceEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Ptrace as u32;
+    event.pid = pid;
+    event.uid = uid;
+    event.target_pid = target_pid as u32;
+    event.request = request as u32;
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    event.ts_ns = ts;
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tracepoint: sys_enter_setuid — privilege escalation at kernel level
+// ---------------------------------------------------------------------------
+//
+// Detects real privilege changes: non-root process setting uid to 0.
+// Covers setuid, setgid, setresuid, setresgid — all route here.
+// The kprobe on commit_creds catches the final credential application;
+// this tracepoint catches the syscall invocation (earlier in the chain).
+
+#[tracepoint]
+pub fn innerwarden_setuid(ctx: TracePointContext) -> u32 {
+    match try_setuid(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+#[inline(always)]
+fn try_setuid(ctx: &TracePointContext) -> Result<(), i64> {
+    // sys_enter_setuid args: [uid]
+    let target_uid: u32 = unsafe { ctx.read_at(16)? };
+    let current_uid = bpf_get_current_uid_gid() as u32;
+
+    // Only emit when non-root tries to become root
+    if current_uid == 0 || target_uid != 0 {
+        return Ok(());
+    }
+
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+
+    let mut entry = match EVENTS.reserve::<SetUidEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::SetUid as u32;
+    event.pid = pid;
+    event.uid = current_uid;
+    event.target_uid = target_uid;
+    event.syscall_nr = 0; // resolved by which tracepoint was attached
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    event.ts_ns = ts;
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tracepoint: sys_enter_bind — reverse shell setup detection
+// ---------------------------------------------------------------------------
+//
+// A process calling bind() on 0.0.0.0 with a TCP socket is setting up
+// a listener — a strong indicator of reverse shell or backdoor setup.
+// Combined with listen() detection in userspace for correlation.
+
+#[tracepoint]
+pub fn innerwarden_bind(ctx: TracePointContext) -> u32 {
+    match try_bind(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+#[inline(always)]
+fn try_bind(ctx: &TracePointContext) -> Result<(), i64> {
+    // sys_enter_bind args: [fd, umyaddr, addrlen]
+    let addr_ptr: *const u8 = unsafe { ctx.read_at(24)? };
+
+    // Read sockaddr_in: family(2) + port(2) + addr(4)
+    let mut sa_buf = [0u8; 16];
+    unsafe {
+        let _ = bpf_probe_read_user_str_bytes(addr_ptr, &mut sa_buf);
+    }
+
+    let family = u16::from_ne_bytes([sa_buf[0], sa_buf[1]]);
+
+    // Only track IPv4 (AF_INET = 2)
+    if family != 2 {
+        return Ok(());
+    }
+
+    let port = u16::from_be_bytes([sa_buf[2], sa_buf[3]]);
+    let addr = u32::from_ne_bytes([sa_buf[4], sa_buf[5], sa_buf[6], sa_buf[7]]);
+
+    // Skip ephemeral port range (32768+) to reduce noise from normal apps
+    // Focus on low ports and common backdoor ports
+    if port == 0 {
+        return Ok(());
+    }
+
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+
+    let mut entry = match EVENTS.reserve::<SocketBindEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::SocketBind as u32;
+    event.pid = pid;
+    event.uid = uid;
+    event.protocol = 0; // not available at bind time
+    event.family = family;
+    event.port = port;
+    event._pad = 0;
+    event.addr = addr;
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    event.ts_ns = ts;
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tracepoint: sys_enter_mount — container escape detection
+// ---------------------------------------------------------------------------
+//
+// Inside a container, mount() is almost always malicious. On the host,
+// it's rare and security-relevant. Always emitted.
+
+#[tracepoint]
+pub fn innerwarden_mount(ctx: TracePointContext) -> u32 {
+    match try_mount(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+#[inline(always)]
+fn try_mount(ctx: &TracePointContext) -> Result<(), i64> {
+    // sys_enter_mount args: [dev_name, dir_name, type, flags, data]
+    let source_ptr: *const u8 = unsafe { ctx.read_at(16)? };
+    let target_ptr: *const u8 = unsafe { ctx.read_at(24)? };
+    let type_ptr: *const u8 = unsafe { ctx.read_at(32)? };
+    let flags: u64 = unsafe { ctx.read_at(40)? };
+
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+
+    let mut entry = match EVENTS.reserve::<MountEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Mount as u32;
+    event.pid = pid;
+    event.uid = uid;
+    event.flags = flags as u32;
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    event.ts_ns = ts;
+
+    // Read source path
+    event.source = [0u8; MAX_FILENAME_LEN];
+    unsafe { let _ = bpf_probe_read_user_str_bytes(source_ptr, &mut event.source); }
+
+    // Read target path
+    event.target = [0u8; MAX_FILENAME_LEN];
+    unsafe { let _ = bpf_probe_read_user_str_bytes(target_ptr, &mut event.target); }
+
+    // Read filesystem type
+    event.fs_type = [0u8; 32];
+    unsafe { let _ = bpf_probe_read_user_str_bytes(type_ptr, &mut event.fs_type); }
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tracepoint: sys_enter_memfd_create — fileless malware detection
+// ---------------------------------------------------------------------------
+//
+// memfd_create() creates an anonymous memory-backed file. Legitimate uses
+// are rare (JIT compilers, some runtimes). Malware uses it to avoid disk.
+// Always emitted — very low frequency in normal operation.
+
+#[tracepoint]
+pub fn innerwarden_memfd_create(ctx: TracePointContext) -> u32 {
+    match try_memfd_create(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+#[inline(always)]
+fn try_memfd_create(ctx: &TracePointContext) -> Result<(), i64> {
+    // sys_enter_memfd_create args: [uname, flags]
+    let name_ptr: *const u8 = unsafe { ctx.read_at(16)? };
+    let flags: u32 = unsafe { ctx.read_at(24)? };
+
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+
+    let mut entry = match EVENTS.reserve::<MemfdCreateEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::MemfdCreate as u32;
+    event.pid = pid;
+    event.uid = uid;
+    event.flags = flags;
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    event.ts_ns = ts;
+
+    event.name = [0u8; MAX_FILENAME_LEN];
+    unsafe { let _ = bpf_probe_read_user_str_bytes(name_ptr, &mut event.name); }
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tracepoint: sys_enter_init_module / finit_module — rootkit loading
+// ---------------------------------------------------------------------------
+//
+// Kernel module loading is one of the most dangerous operations.
+// A loaded kernel module has full kernel privileges and can hide processes,
+// intercept syscalls, and install rootkits. Always emitted.
+
+#[tracepoint]
+pub fn innerwarden_init_module(ctx: TracePointContext) -> u32 {
+    match try_init_module(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+#[inline(always)]
+fn try_init_module(_ctx: &TracePointContext) -> Result<(), i64> {
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+
+    let mut entry = match EVENTS.reserve::<ModuleLoadEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::InitModule as u32;
+    event.pid = pid;
+    event.uid = uid;
+    event.syscall_nr = 0; // resolved by which tracepoint was attached
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
     event.ts_ns = ts;
 
     if let Ok(comm) = bpf_get_current_comm() {

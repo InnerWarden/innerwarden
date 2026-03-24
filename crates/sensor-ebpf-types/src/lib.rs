@@ -39,6 +39,18 @@ pub enum SyscallKind {
     LsmBlocked = 6,
     /// Process exit (sched_process_exit)
     ProcessExit = 7,
+    /// Process injection (ptrace ATTACH/POKETEXT)
+    Ptrace = 8,
+    /// Privilege change (setuid/setgid/setresuid/setresgid → root)
+    SetUid = 9,
+    /// Network bind+listen (reverse shell setup)
+    SocketBind = 10,
+    /// Filesystem mount (container escape indicator)
+    Mount = 11,
+    /// Anonymous memory-backed file (fileless malware)
+    MemfdCreate = 12,
+    /// Kernel module loading (rootkit insertion)
+    InitModule = 13,
 }
 
 /// Event emitted by the eBPF `execve` tracepoint.
@@ -149,6 +161,116 @@ pub struct ProcessExitEvent {
     pub tgid: u32,
     pub comm: [u8; MAX_COMM_LEN],
     pub exit_code: i32,
+    pub ts_ns: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 event types — kernel-level detection expansion
+// ---------------------------------------------------------------------------
+
+/// Event emitted by `ptrace` tracepoint — process injection detection.
+///
+/// Only fires for dangerous operations: PTRACE_ATTACH (16), PTRACE_SEIZE (0x4206),
+/// PTRACE_POKETEXT (4), PTRACE_POKEDATA (5). Ignores PTRACE_TRACEME (benign).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PtraceEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub target_pid: u32,
+    pub request: u32,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+/// Event emitted by setuid/setgid/setresuid/setresgid handlers.
+///
+/// Only fires when a non-root process sets uid to 0 (root).
+/// Legitimate escalation (sudo, su) is filtered in userspace.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SetUidEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub target_uid: u32,
+    pub syscall_nr: u32,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+/// Event emitted by `bind` tracepoint — reverse shell setup detection.
+///
+/// Captures socket bind operations. A process binding to 0.0.0.0 on a port
+/// and then listening is a strong reverse shell indicator.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SocketBindEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub protocol: u16,
+    pub family: u16,
+    pub port: u16,
+    pub _pad: u16,
+    pub addr: u32,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+/// Event emitted by `mount` tracepoint — container escape detection.
+///
+/// Inside a container, mount syscalls are almost always malicious.
+/// Captures source, target, and filesystem type.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MountEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub flags: u32,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub source: [u8; MAX_FILENAME_LEN],
+    pub target: [u8; MAX_FILENAME_LEN],
+    pub fs_type: [u8; 32],
+    pub ts_ns: u64,
+}
+
+/// Event emitted by `memfd_create` tracepoint — fileless malware detection.
+///
+/// memfd_create creates an anonymous memory-backed file. Legitimate uses are
+/// rare (mainly JIT compilers). Malware uses it to avoid touching disk.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MemfdCreateEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub flags: u32,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub name: [u8; MAX_FILENAME_LEN],
+    pub ts_ns: u64,
+}
+
+/// Event emitted by `init_module`/`finit_module` tracepoint — rootkit loading.
+///
+/// Kernel module loading is extremely rare in normal operation.
+/// Always security-relevant.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ModuleLoadEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub syscall_nr: u32,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
     pub ts_ns: u64,
 }
 
