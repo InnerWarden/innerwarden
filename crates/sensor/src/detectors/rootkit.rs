@@ -295,6 +295,13 @@ impl RootkitDetector {
             self.track_pid(event);
         }
 
+        // Remove PIDs on exit events (proper lifecycle tracking)
+        if event.kind == "process.exit" {
+            if let Some(pid) = event.details["pid"].as_u64() {
+                self.pids.remove(&(pid as u32));
+            }
+        }
+
         // Check for rootkit artifacts (openat events)
         if event.kind == "file.read_access" || event.kind == "file.write_access" {
             if let Some(inc) = self.check_rootkit_artifact(event, now) {
@@ -321,10 +328,15 @@ impl RootkitDetector {
             }
         }
 
-        // Hidden process check disabled — too many false positives from
-        // short-lived system processes (MOTD scripts, cron jobs). The other
-        // 5 rootkit patterns remain active. Needs redesign: track process
-        // lifetime via both execve AND exit events before flagging.
+        // Hidden process check — now tracks both execve AND exit events.
+        // Only flags PIDs that were born (execve) but never died (no exit event)
+        // AND are missing from /proc. Short-lived processes are removed by exit events.
+        if now - self.last_check >= self.check_interval {
+            self.last_check = now;
+            if let Some(inc) = self.check_hidden_processes(now) {
+                return Some(inc);
+            }
+        }
 
         // Clean up state periodically
         if self.alerted.len() > 1000 {

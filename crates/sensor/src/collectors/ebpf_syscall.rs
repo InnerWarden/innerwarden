@@ -660,6 +660,20 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     }
 
+    // Attach sched_process_exit tracepoint (rootkit lifecycle tracking — non-critical)
+    if let Some(prog) = bpf.program_mut("innerwarden_process_exit") {
+        use aya::programs::TracePoint;
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach("sched", "sched_process_exit") {
+                    warn!(error = %e, "innerwarden_process_exit: failed to attach");
+                } else {
+                    info!("eBPF: innerwarden_process_exit → sched_process_exit (rootkit lifecycle) ✅");
+                }
+            }
+        }
+    }
+
     // Attach LSM execution policy (non-critical — requires lsm=bpf in kernel cmdline)
     attach_lsm(&mut bpf);
 
@@ -845,6 +859,28 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         details,
                         tags,
                         entities,
+                    })
+                }
+                // ProcessExitEvent layout (#[repr(C)]):
+                //   kind(4) pid(4) tgid(4) comm(64) exit_code(4) ts_ns(8)
+                //   Offsets: 0  4  8  12..76  76  80
+                7 if data.len() >= 80 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let comm = bytes_to_string(&data[12..76]);
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "process.exit".to_string(),
+                        severity: Severity::Debug,
+                        summary: format!("Process exited: {comm} (PID {pid})"),
+                        details: serde_json::json!({
+                            "pid": pid,
+                            "comm": comm,
+                        }),
+                        tags: vec!["ebpf".to_string()],
+                        entities: vec![],
                     })
                 }
                 _ => None,

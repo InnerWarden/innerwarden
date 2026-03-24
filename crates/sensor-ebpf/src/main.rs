@@ -4,6 +4,7 @@
 //!   - sys_enter_execve: captures every process execution
 //!   - sys_enter_connect: captures outbound network connections
 //!   - sys_enter_openat: captures sensitive file access
+//!   - sched_process_exit: captures process exits (rootkit detection)
 //!
 //! Kprobes:
 //!   - commit_creds: detects privilege escalation (uid 1000 → uid 0)
@@ -29,7 +30,7 @@ use aya_ebpf::{
     EbpfContext,
 };
 use aya_log_ebpf::info;
-use innerwarden_ebpf_types::{ExecveEvent, ConnectEvent, PrivEscEvent, SyscallKind, MAX_COMM_LEN, MAX_FILENAME_LEN};
+use innerwarden_ebpf_types::{ExecveEvent, ConnectEvent, PrivEscEvent, ProcessExitEvent, SyscallKind, MAX_COMM_LEN, MAX_FILENAME_LEN};
 
 // ---------------------------------------------------------------------------
 // Ring buffer — shared between all eBPF programs, read by userspace
@@ -541,6 +542,51 @@ fn try_lsm_exec(ctx: &LsmContext) -> Result<i32, i64> {
     }
 
     Ok(-1) // -EPERM: deny execution
+}
+
+// ---------------------------------------------------------------------------
+// sched:sched_process_exit — track process exits for rootkit detection
+// ---------------------------------------------------------------------------
+//
+// By tracking both execve (birth) and exit (death), the rootkit detector
+// can distinguish between:
+//   - Short-lived processes that exited normally (not rootkits)
+//   - Long-running processes that disappeared from /proc (real rootkits)
+
+#[tracepoint]
+pub fn innerwarden_process_exit(ctx: TracePointContext) -> u32 {
+    match try_process_exit(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+#[inline(always)]
+fn try_process_exit(ctx: &TracePointContext) -> Result<(), i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let pid = pid_tgid as u32;
+    let tgid = (pid_tgid >> 32) as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+
+    let mut entry = match EVENTS.reserve::<ProcessExitEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()), // ring buffer full — fail-open
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::ProcessExit as u32;
+    event.pid = pid;
+    event.tgid = tgid;
+    event.exit_code = 0; // exit code not directly available in tracepoint args
+    event.ts_ns = ts;
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

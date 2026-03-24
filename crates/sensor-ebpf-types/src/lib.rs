@@ -37,6 +37,8 @@ pub enum SyscallKind {
     PrivEsc = 5,
     /// LSM blocked execution (bprm_check_security denied /tmp, /dev/shm)
     LsmBlocked = 6,
+    /// Process exit (sched_process_exit)
+    ProcessExit = 7,
 }
 
 /// Event emitted by the eBPF `execve` tracepoint.
@@ -131,6 +133,22 @@ pub struct PrivEscEvent {
     pub cgroup_id: u64,
     /// Process name
     pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+/// Event emitted by `sched:sched_process_exit` tracepoint.
+///
+/// Fires when any process exits. Used by the rootkit detector to track
+/// process lifecycle — a process seen by execve but never by exit + missing
+/// from /proc is a strong rootkit indicator.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ProcessExitEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub tgid: u32,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub exit_code: i32,
     pub ts_ns: u64,
 }
 
