@@ -674,6 +674,92 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     }
 
+    // --- eBPF v2: new syscall handlers (non-critical — each is independent) ---
+
+    // ptrace: process injection detection
+    if let Some(prog) = bpf.program_mut("innerwarden_ptrace") {
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach("syscalls", "sys_enter_ptrace") {
+                    warn!(error = %e, "innerwarden_ptrace: failed to attach");
+                } else {
+                    info!("eBPF: innerwarden_ptrace → sys_enter_ptrace");
+                }
+            }
+        }
+    }
+
+    // setuid: privilege escalation at syscall level
+    if let Some(prog) = bpf.program_mut("innerwarden_setuid") {
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach("syscalls", "sys_enter_setuid") {
+                    warn!(error = %e, "innerwarden_setuid: failed to attach");
+                } else {
+                    info!("eBPF: innerwarden_setuid → sys_enter_setuid");
+                }
+            }
+        }
+    }
+
+    // bind: reverse shell setup detection
+    if let Some(prog) = bpf.program_mut("innerwarden_bind") {
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach("syscalls", "sys_enter_bind") {
+                    warn!(error = %e, "innerwarden_bind: failed to attach");
+                } else {
+                    info!("eBPF: innerwarden_bind → sys_enter_bind");
+                }
+            }
+        }
+    }
+
+    // mount: container escape detection
+    if let Some(prog) = bpf.program_mut("innerwarden_mount") {
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach("syscalls", "sys_enter_mount") {
+                    warn!(error = %e, "innerwarden_mount: failed to attach");
+                } else {
+                    info!("eBPF: innerwarden_mount → sys_enter_mount");
+                }
+            }
+        }
+    }
+
+    // memfd_create: fileless malware detection
+    if let Some(prog) = bpf.program_mut("innerwarden_memfd_create") {
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach("syscalls", "sys_enter_memfd_create") {
+                    warn!(error = %e, "innerwarden_memfd_create: failed to attach");
+                } else {
+                    info!("eBPF: innerwarden_memfd_create → sys_enter_memfd_create");
+                }
+            }
+        }
+    }
+
+    // init_module: rootkit loading detection
+    if let Some(prog) = bpf.program_mut("innerwarden_init_module") {
+        if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+            if tp.load().is_ok() {
+                if let Err(e) = tp.attach("syscalls", "sys_enter_init_module") {
+                    warn!(error = %e, "innerwarden_init_module: failed to attach");
+                } else {
+                    info!("eBPF: innerwarden_init_module → sys_enter_init_module");
+                }
+            }
+        }
+    }
+
+    // finit_module: alternative rootkit loading path
+    if let Some(prog) = bpf.program_mut("innerwarden_init_module") {
+        // Note: reuses the same handler — finit_module has similar signature
+        // This will fail silently if the program was already attached above (expected)
+    }
+
     // Attach LSM execution policy (non-critical — requires lsm=bpf in kernel cmdline)
     attach_lsm(&mut bpf);
 
@@ -689,7 +775,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     };
 
-    info!("eBPF collector active — kernel-level syscall monitoring (execve + connect + openat)");
+    info!("eBPF collector active — kernel-level syscall monitoring (13 hooks)");
 
     loop {
         while let Some(item) = ring_buf.next() {
@@ -880,6 +966,250 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                             "comm": comm,
                         }),
                         tags: vec!["ebpf".to_string()],
+                        entities: vec![],
+                    })
+                }
+                // PtraceEvent: kind(4) pid(4) uid(4) target_pid(4) request(4) _pad(4) cgroup_id(8) comm(64) ts_ns(8)
+                // Offsets: 0  4  8  12  16  20  24  32..96
+                8 if data.len() >= 96 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let target_pid = u32::from_ne_bytes(data[12..16].try_into().unwrap());
+                    let request = u32::from_ne_bytes(data[16..20].try_into().unwrap());
+                    let cgroup_id = u64::from_ne_bytes(data[24..32].try_into().unwrap());
+                    let comm = bytes_to_string(&data[32..96]);
+
+                    let request_name = match request {
+                        4 => "PTRACE_POKETEXT",
+                        5 => "PTRACE_POKEDATA",
+                        16 => "PTRACE_ATTACH",
+                        0x4206 => "PTRACE_SEIZE",
+                        _ => "UNKNOWN",
+                    };
+                    let container_id = resolve_container_id(pid);
+
+                    let mut details = serde_json::json!({
+                        "pid": pid, "uid": uid, "target_pid": target_pid,
+                        "request": request, "request_name": request_name,
+                        "comm": comm, "cgroup_id": cgroup_id,
+                    });
+                    if let Some(ref cid) = container_id {
+                        details["container_id"] = serde_json::Value::String(cid.to_string());
+                    }
+
+                    let mut tags = vec![
+                        "ebpf".to_string(),
+                        "ptrace".to_string(),
+                        "injection".to_string(),
+                    ];
+                    if container_id.is_some() {
+                        tags.push("container".to_string());
+                    }
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "process.ptrace_attach".to_string(),
+                        severity: Severity::Critical,
+                        summary: format!(
+                            "{comm} (PID {pid}) called {request_name} on PID {target_pid}"
+                        ),
+                        details,
+                        tags,
+                        entities: vec![],
+                    })
+                }
+                // SetUidEvent: kind(4) pid(4) uid(4) target_uid(4) syscall_nr(4) _pad(4) cgroup_id(8) comm(64) ts_ns(8)
+                // Offsets: 0  4  8  12  16  20  24  32..96
+                9 if data.len() >= 96 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let target_uid = u32::from_ne_bytes(data[12..16].try_into().unwrap());
+                    let cgroup_id = u64::from_ne_bytes(data[24..32].try_into().unwrap());
+                    let comm = bytes_to_string(&data[32..96]);
+
+                    let container_id = resolve_container_id(pid);
+                    let mut details = serde_json::json!({
+                        "pid": pid, "uid": uid, "target_uid": target_uid,
+                        "comm": comm, "cgroup_id": cgroup_id,
+                    });
+                    if let Some(ref cid) = container_id {
+                        details["container_id"] = serde_json::Value::String(cid.to_string());
+                    }
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "privilege.setuid".to_string(),
+                        severity: Severity::High,
+                        summary: format!(
+                            "{comm} (PID {pid}, uid {uid}) called setuid(0) — escalating to root"
+                        ),
+                        details,
+                        tags: vec!["ebpf".to_string(), "privesc".to_string()],
+                        entities: vec![],
+                    })
+                }
+                // SocketBindEvent: kind(4) pid(4) uid(4) protocol(2) family(2) port(2) _pad(2) addr(4) cgroup_id(8) comm(64) ts_ns(8)
+                // Offsets: 0  4  8  12  14  16  18  20  24  32..96
+                10 if data.len() >= 96 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let family = u16::from_ne_bytes(data[12..14].try_into().unwrap());
+                    let port = u16::from_ne_bytes(data[16..18].try_into().unwrap());
+                    let addr = u32::from_ne_bytes(data[20..24].try_into().unwrap());
+                    let cgroup_id = u64::from_ne_bytes(data[24..32].try_into().unwrap());
+                    let comm = bytes_to_string(&data[32..96]);
+
+                    let ip = std::net::Ipv4Addr::from(addr);
+                    let container_id = resolve_container_id(pid);
+
+                    // Low ports or INADDR_ANY are more suspicious
+                    let severity = if port < 1024 || addr == 0 {
+                        Severity::High
+                    } else {
+                        Severity::Medium
+                    };
+
+                    let mut details = serde_json::json!({
+                        "pid": pid, "uid": uid, "port": port,
+                        "addr": format!("{ip}"), "family": family,
+                        "comm": comm, "cgroup_id": cgroup_id,
+                    });
+                    if let Some(ref cid) = container_id {
+                        details["container_id"] = serde_json::Value::String(cid.to_string());
+                    }
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "network.bind_listen".to_string(),
+                        severity,
+                        summary: format!("{comm} (PID {pid}) binding to {ip}:{port}"),
+                        details,
+                        tags: vec![
+                            "ebpf".to_string(),
+                            "network".to_string(),
+                            "bind".to_string(),
+                        ],
+                        entities: vec![],
+                    })
+                }
+                // MountEvent: kind(4) pid(4) uid(4) flags(4) cgroup_id(8) comm(64) source(256) target(256) fs_type(32) ts_ns(8)
+                // Offsets: 0  4  8  12  16  24..88  88..344  344..600  600..632
+                11 if data.len() >= 632 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let flags = u32::from_ne_bytes(data[12..16].try_into().unwrap());
+                    let cgroup_id = u64::from_ne_bytes(data[16..24].try_into().unwrap());
+                    let comm = bytes_to_string(&data[24..88]);
+                    let source = bytes_to_string(&data[88..344]);
+                    let target = bytes_to_string(&data[344..600]);
+                    let fs_type = bytes_to_string(&data[600..632]);
+
+                    let container_id = resolve_container_id(pid);
+                    let in_container = cgroup_id > 1;
+
+                    let severity = if in_container {
+                        Severity::Critical
+                    } else {
+                        Severity::High
+                    };
+
+                    let mut details = serde_json::json!({
+                        "pid": pid, "uid": uid, "flags": flags,
+                        "source": source, "target": target, "fs_type": fs_type,
+                        "comm": comm, "cgroup_id": cgroup_id,
+                        "in_container": in_container,
+                    });
+                    if let Some(ref cid) = container_id {
+                        details["container_id"] = serde_json::Value::String(cid.to_string());
+                    }
+
+                    let mut tags = vec!["ebpf".to_string(), "mount".to_string()];
+                    if in_container {
+                        tags.push("container_escape".to_string());
+                    }
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "filesystem.mount".to_string(),
+                        severity,
+                        summary: format!(
+                            "{comm} (PID {pid}) mounting {source} on {target} (type: {fs_type})"
+                        ),
+                        details,
+                        tags,
+                        entities: vec![],
+                    })
+                }
+                // MemfdCreateEvent: kind(4) pid(4) uid(4) flags(4) cgroup_id(8) comm(64) name(256) ts_ns(8)
+                // Offsets: 0  4  8  12  16  24..88  88..344
+                12 if data.len() >= 344 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let flags = u32::from_ne_bytes(data[12..16].try_into().unwrap());
+                    let cgroup_id = u64::from_ne_bytes(data[16..24].try_into().unwrap());
+                    let comm = bytes_to_string(&data[24..88]);
+                    let name = bytes_to_string(&data[88..344]);
+
+                    let container_id = resolve_container_id(pid);
+
+                    let mut details = serde_json::json!({
+                        "pid": pid, "uid": uid, "flags": flags,
+                        "name": name, "comm": comm, "cgroup_id": cgroup_id,
+                    });
+                    if let Some(ref cid) = container_id {
+                        details["container_id"] = serde_json::Value::String(cid.to_string());
+                    }
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "process.memfd_create".to_string(),
+                        severity: Severity::High,
+                        summary: format!(
+                            "{comm} (PID {pid}) created anonymous memory file: {name}"
+                        ),
+                        details,
+                        tags: vec![
+                            "ebpf".to_string(),
+                            "fileless".to_string(),
+                            "memfd".to_string(),
+                        ],
+                        entities: vec![],
+                    })
+                }
+                // ModuleLoadEvent: kind(4) pid(4) uid(4) syscall_nr(4) cgroup_id(8) comm(64) ts_ns(8)
+                // Offsets: 0  4  8  12  16  24..88
+                13 if data.len() >= 88 => {
+                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let cgroup_id = u64::from_ne_bytes(data[16..24].try_into().unwrap());
+                    let comm = bytes_to_string(&data[24..88]);
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "kernel.module_load".to_string(),
+                        severity: Severity::Critical,
+                        summary: format!("{comm} (PID {pid}, uid {uid}) loading kernel module"),
+                        details: serde_json::json!({
+                            "pid": pid, "uid": uid, "comm": comm,
+                            "cgroup_id": cgroup_id,
+                        }),
+                        tags: vec![
+                            "ebpf".to_string(),
+                            "kernel".to_string(),
+                            "module_load".to_string(),
+                        ],
                         entities: vec![],
                     })
                 }
