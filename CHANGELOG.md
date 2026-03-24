@@ -11,6 +11,44 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.5.0] — 2026-03-24
+
+### eBPF v2
+
+- **22 kernel hooks** (was 7) — added ptrace, setuid, bind, mount, memfd_create, init_module, dup2, listen, mprotect, clone, unlinkat, renameat2, kill, prctl, accept4
+- **Kill chain detection** — 7 patterns blocked at kernel level (reverse shell, bind shell, code injection, 4 zero-day patterns)
+- **Kernel-level noise filters** — COMM_ALLOWLIST (137 processes from production rulesets), CGROUP_ALLOWLIST, PID_RATE_LIMIT, PID_CHAIN
+- **Ring buffer epoll wakeup** — microsecond latency (was 100ms polling)
+- **CO-RE/BTF portability** — any kernel 5.8+
+- **Tail call dispatcher** via ProgramArray
+- **Ring buffer increased** 256KB → 1MB
+
+### Infrastructure
+
+- **Redis Streams integration** — optional event transport replacing JSONL for events
+- **DNA engine deployed to production** — behavioral fingerprinting + attack chains + anomaly detection
+- **Shield deployed to production** — DDoS protection, XDP blocking active
+- **Cloudflare auto-failover** — configured and tested
+- **Shield adaptive kernel defense** — tightens PID_RATE_LIMIT and XDP BLOCKLIST on escalation
+
+### Fixes
+
+- **Ransomware false positives** — allowlist for compilers and package managers
+- **clippy if_same_then_else** in ransomware severity logic
+- **CodeQL CWE-22** — path traversal fixes (canonicalize paths)
+- **russh 0.57→0.58** — libcrux-sha3 vulnerability
+- **gitleaks CI** pinned to v8.24.0
+- **Shield ingestor** — parse IP from details/entities (was expecting source_ip field)
+
+### UX
+
+- **Professional personality messages** on live feed
+- **Telegram messages cleaned up** — no aggressive language
+- **Site disclaimer updated**
+- **Auto-scroll removed** from live feed
+
+---
+
 ## [0.4.0] — 2026-03-23
 
 ### New detectors

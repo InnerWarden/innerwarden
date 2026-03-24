@@ -9,6 +9,9 @@ host_id = "my-server"
 [output]
 data_dir = "/var/lib/innerwarden"
 write_events = true
+# redis_url = "redis://127.0.0.1:6379"   # optional: stream events/incidents to Redis Streams
+# redis_stream = "innerwarden:events"     # default stream name
+# redis_maxlen = 50000                    # approximate max entries via MAXLEN ~
 
 # ── Collectors ──────────────────────────────────────────────────────────────
 
@@ -94,6 +97,74 @@ window_seconds = 60
 enabled = false
 threshold = 20        # HTTP errors per IP in window
 window_seconds = 60
+
+# ── Advanced detectors (v0.5+) ───────────────────────────────────────────────
+# All default to enabled = false. Enable after establishing baseline.
+
+[detectors.execution_guard]
+enabled = false       # AST analysis + sequence correlation
+
+[detectors.dns_tunneling]
+enabled = false
+
+[detectors.crypto_miner]
+enabled = false
+
+[detectors.rootkit]
+enabled = false
+
+[detectors.reverse_shell]
+enabled = false
+
+[detectors.ransomware]
+enabled = false
+
+[detectors.packet_flood]
+enabled = false       # DDoS / flood detection (Shield)
+
+[detectors.lateral_movement]
+enabled = false
+
+[detectors.data_exfiltration]
+enabled = false
+
+[detectors.process_injection]
+enabled = false
+
+[detectors.credential_harvest]
+enabled = false
+
+[detectors.log_tampering]
+enabled = false
+
+[detectors.kernel_module_load]
+enabled = false
+
+[detectors.web_shell]
+enabled = false
+
+[detectors.ssh_key_injection]
+enabled = false
+
+[detectors.crontab_persistence]
+enabled = false
+
+[detectors.systemd_persistence]
+enabled = false
+
+[detectors.user_creation]
+enabled = false
+
+[detectors.outbound_anomaly]
+enabled = false
+
+[detectors.fileless]
+enabled = false
+
+# These detectors are always-on (no config needed):
+# suricata_alert, docker_anomaly, integrity_alert, osquery_anomaly,
+# c2_callback, container_escape, distributed_ssh, suspicious_login,
+# process_tree, privesc
 ```
 
 Test config: `config.test.toml` (points to `./testdata/`)
@@ -105,6 +176,10 @@ Test config: `config.test.toml` (points to `./testdata/`)
 All fields have sane defaults; the file is optional. Use `--config` to specify location.
 
 ```toml
+# ── Input source ─────────────────────────────────────────────────────────────
+# redis_url = "redis://127.0.0.1:6379"   # optional: read events/incidents from Redis Streams instead of JSONL
+# redis_stream = "innerwarden:events"     # default stream name
+
 [narrative]
 enabled = true       # generates summary-YYYY-MM-DD.md
 keep_days = 7
@@ -243,6 +318,23 @@ enabled = false
 # api_key = ""             # or env CROWDSEC_API_KEY; find in /etc/crowdsec/local_api_credentials.yaml
 poll_secs = 60             # how often to poll LAPI for new ban decisions
 max_per_sync = 50          # max new IPs to block per tick (prevents OOM from large community lists)
+
+[allowlist]
+trusted_ips = []       # IPs or CIDRs that skip AI gate (e.g. ["10.0.0.0/8", "192.168.1.100"])
+trusted_users = []     # usernames that skip AI gate
+
+[web_push]
+enabled = false
+min_severity = "high"
+# VAPID keys generated via: innerwarden notify web-push setup
+
+[mesh]
+enabled = false
+# bind = "0.0.0.0:9473"
+# peers = [{ endpoint = "peer1:9473", public_key = "...", label = "dc-east" }]
+# poll_secs = 30
+# auto_broadcast = true
+# max_signals_per_hour = 100
 
 [data]
 events_keep_days = 7

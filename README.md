@@ -15,7 +15,7 @@
 > **Warning**
 > Inner Warden is an **experimental** security agent that can **block IP addresses, kill processes, suspend user privileges, pause containers, and modify firewall rules** on your system. These are powerful, potentially disruptive actions. Read this document carefully before deploying. Always start in observe-only mode and review behavior before enabling automatic responses.
 
-Inner Warden is an autonomous security agent for Linux and macOS. It detects attacks, alerts you, and — when you allow it — responds automatically. No cloud. No dependencies. Just two Rust daemons and a CLI.
+Inner Warden is an autonomous security agent for Linux and macOS. It detects attacks, blocks them at the kernel level, and — when you allow it — responds automatically. 22 eBPF kernel hooks. 36 detectors. 10 response skills. No cloud. No dependencies. Just two Rust daemons and a CLI.
 
 ```bash
 curl -fsSL https://innerwarden.com/install | sudo bash
@@ -61,11 +61,12 @@ https://github.com/user-attachments/assets/e49ea3aa-a3a7-4b4a-8912-8ebe17609a82
 
 ## What it does
 
-1. **Watches** — collects signals from your host: SSH, Docker, nginx, sudo, shell audit, firewall logs, **eBPF kernel tracing** (every process, connection, and file access)
-2. **Detects** — nineteen stateful detectors identify brute-force, credential stuffing, port scans, C2 callbacks, privilege escalation, container escapes, suspicious process trees, and more
-3. **Alerts you** — Telegram, Slack, webhook (PagerDuty, Discord, Teams, DingTalk, and more) — real time, on your phone
-4. **Decides** — optionally asks AI for a confidence-scored recommendation (not required)
-5. **Acts** — blocks the IP, suspends sudo, deploys a honeypot, captures traffic. Or does nothing — your call.
+1. **Watches** — collects signals from your host: SSH, Docker, nginx, sudo, shell audit, firewall logs, **eBPF kernel tracing** (22 hooks — every process, connection, file access, privilege change, and network bind)
+2. **Detects** — 36 stateful detectors identify brute-force, credential stuffing, port scans, C2 callbacks, privilege escalation, container escapes, reverse shells, ransomware, rootkits, DNS tunneling, and more
+3. **Blocks at the kernel** — LSM enforcement stops reverse shells and /tmp execution before they run. XDP drops attack traffic at wire speed. 7 kill chain patterns detected and blocked without signatures.
+4. **Alerts you** — Telegram, Slack, webhook (PagerDuty, Discord, Teams, DingTalk, and more) — real time, on your phone
+5. **Decides** — optionally asks AI for a confidence-scored recommendation (not required)
+6. **Acts** — blocks the IP, suspends sudo, deploys a honeypot, captures traffic. Or does nothing — your call.
 
 Everything is local, audited, and reversible.
 
@@ -103,9 +104,11 @@ When a threat is confirmed, Inner Warden picks the right tool.
 | **Suspend sudo** | Revokes sudo for a user via sudoers drop-in. Auto-expires after TTL. |
 | **Kill process** | Terminates all processes for a compromised user. TTL-bounded. |
 | **Block container** | Pauses a Docker container. Auto-unpauses after TTL. |
-| **Deploy honeypot** | SSH/HTTP decoy with LLM-powered shell — captures credentials and behavior |
+| **Deploy honeypot** | SSH/HTTP decoy with LLM-powered interactive shell — captures credentials and behavior |
 | **Rate limit nginx** | Blocks abusive HTTP traffic at the nginx layer with TTL |
 | **Monitor IP** | Bounded tcpdump capture for forensic analysis |
+| **Block IP (Cloudflare)** | Edge-level blocking via Cloudflare API — stops traffic before it reaches your server |
+| **Report to AbuseIPDB** | Shares attacker IPs with community threat intelligence |
 
 Blocking is **layered** — a single block decision triggers XDP (instant kernel drop) + firewall (persists reboot) + Cloudflare edge (stops traffic upstream) + AbuseIPDB report (community intelligence). All skills are bounded, audited, and reversible.
 
@@ -113,26 +116,38 @@ Blocking is **layered** — a single block decision triggers XDP (instant kernel
 
 ## What it detects
 
+36 stateful detectors covering the full attack lifecycle. Highlights:
+
 | Detector | Threat | MITRE |
 |----------|--------|-------|
 | `ssh_bruteforce` | Repeated SSH failures from one IP | T1110.001 |
 | `credential_stuffing` | Many usernames tried from one IP | T1110.004 |
-| `port_scan` | Rapid unique-port probing | T1595 |
-| `sudo_abuse` | Burst of privileged commands by a user | T1548 |
-| `search_abuse` | High-rate requests to expensive endpoints | — |
-| `execution_guard` | Suspicious shell commands via AST analysis | T1059 |
-| `web_scan` | HTTP error floods — path traversal, LFI probing | T1190 |
-| `user_agent_scanner` | Known scanner signatures (Nikto, sqlmap, Nuclei, 20+) with rDNS bot verification | T1595.002 |
-| `suricata_alert` | Repeated IDS alerts from same source IP (Suricata integration) | — |
-| `docker_anomaly` | Rapid container restarts, OOM kills | T1610 |
-| `integrity_alert` | Changes to /etc/passwd, /etc/shadow, sudoers, SSH keys | T1098 |
-| `osquery_anomaly` | New SUID binaries, unauthorized SSH keys, crontab changes | T1053 |
 | `distributed_ssh` | Coordinated botnet scan — many IPs, few attempts each | T1110 |
 | `suspicious_login` | Brute-force followed by successful login = compromise | T1110 |
-| `c2_callback` | Beaconing, C2 port connections, data exfiltration patterns | T1071 |
+| `port_scan` | Rapid unique-port probing | T1595 |
+| `reverse_shell` | Reverse/bind shell detection via eBPF + behavioral analysis | T1059 |
+| `execution_guard` | Suspicious shell commands via AST analysis | T1059 |
 | `process_tree` | Suspicious parent-child: web server → shell, Java RCE | T1059 |
-| `container_escape` | nsenter, Docker socket access, host file reads from container | T1611 |
 | `privesc` | Real-time privilege escalation via eBPF kprobe on `commit_creds` | T1068 |
+| `rootkit` | Kernel module and userland rootkit detection | T1014 |
+| `ransomware` | Rapid file encryption, ransom note creation, extension changes | T1486 |
+| `c2_callback` | Beaconing, C2 port connections, data exfiltration patterns | T1071 |
+| `dns_tunneling` | Encoded DNS queries for covert data transfer | T1071.004 |
+| `container_escape` | nsenter, Docker socket access, host file reads from container | T1611 |
+| `lateral_movement` | SSH pivoting, credential reuse across hosts | T1021 |
+| `crypto_miner` | CPU abuse from mining processes | T1496 |
+| `web_scan` | HTTP error floods — path traversal, LFI probing | T1190 |
+| `web_shell` | Web shell upload and command execution | T1505.003 |
+| `data_exfiltration` | Large outbound transfers, DNS exfil, staging patterns | T1048 |
+| `fileless` | In-memory execution, /proc/self/mem writes | T1055 |
+| `log_tampering` | Log deletion, truncation, timestomping | T1070 |
+| `kernel_module_load` | Unauthorized kernel module insertion | T1547.006 |
+| `sudo_abuse` | Burst of privileged commands by a user | T1548 |
+| `integrity_alert` | Changes to /etc/passwd, /etc/shadow, sudoers, SSH keys | T1098 |
+| `packet_flood` | DDoS / volumetric attack detection | — |
+| `user_agent_scanner` | Known scanner signatures (Nikto, sqlmap, Nuclei, 20+) | T1595.002 |
+
+Plus: `docker_anomaly`, `osquery_anomaly`, `suricata_alert`, `search_abuse`, `credential_harvest`, `ssh_key_injection`, `user_creation`, `crontab_persistence`, `systemd_persistence`, `process_injection`, `outbound_anomaly`.
 
 `execution_guard` parses commands structurally using tree-sitter-bash. It catches `curl | sh` pipelines, `/tmp` execution, reverse shell patterns, and staged download-chmod-execute sequences.
 
@@ -145,18 +160,24 @@ Blocking is **layered** — a single block decision triggers XDP (instant kernel
 ## How it works
 
 ```
-[Sensor]  →  [Detectors]  →  [AI triage]  →  [Skill execution]
- watch        identify        assess &         block / suspend /
- activity     patterns        recommend        honeypot / capture
+[Sensor]  →  [Detectors]  →  [Redis Streams]  →  [AI triage]  →  [Skill execution]
+ 22 eBPF       36 stateful      event              assess &         block / suspend /
+ hooks +       detectors        transport           recommend        honeypot / capture
+ 13 collectors
 ```
 
-**Sensor** — deterministic signal collection. No AI, no HTTP. Sources: auth.log, journald, Docker events, file integrity, nginx, shell audit, macOS unified log, syslog firewall, **eBPF syscall tracing** (execve, connect, openat). Optional: Suricata, osquery, Wazuh, AWS CloudTrail.
+**Sensor** — deterministic signal collection. No AI, no HTTP. 13 collectors: auth.log, journald, Docker events, file integrity, nginx access/error, shell audit, macOS unified log, syslog firewall, **eBPF syscall tracing** (22 kernel hooks). Optional: Suricata, osquery, Wazuh, AWS CloudTrail. Events flow through Redis Streams to the agent.
 
-**eBPF** — six programs running inside the Linux kernel (5.8+):
-- 3 **tracepoints** (execve, connect, openat) — sees every process, connection, and file access
-- 1 **kprobe** (`commit_creds`) — detects privilege escalation in real time
-- 1 **LSM hook** (`bprm_check_security`) — blocks execution from /tmp and /dev/shm at the kernel level
-- 1 **XDP program** — wire-speed IP blocking at the network driver (10M+ pps drop rate)
+**eBPF** — 22 kernel hooks running inside Linux (5.8+, CO-RE/BTF portable):
+- **18 tracepoints** — execve, connect, openat, ptrace, setuid, bind, mount, memfd_create, init_module, dup2, listen, mprotect, clone, unlinkat, renameat2, kill, prctl, accept4
+- **1 kprobe** (`commit_creds`) — detects privilege escalation before any log is written
+- **1 kprobe** (`sched_process_exit`) — tracks process lifecycle for kill chain correlation
+- **LSM enforcement** (`bprm_check_security`) — blocks execution from /tmp and /dev/shm at the kernel level, plus **kill chain detection**: 7 generic patterns (reverse shell, bind shell, code injection, exploit-to-shell, inject-to-shell, exploit-to-C2, full exploit chain) blocked at execve — no CVE signatures needed
+- **XDP program** — wire-speed IP blocking at the network driver (10M+ pps drop rate)
+
+**Kernel-level noise filters** keep overhead near zero: COMM_ALLOWLIST (137 trusted processes like sshd, systemd, docker), CGROUP_ALLOWLIST, PID_RATE_LIMIT, and PID_CHAIN. Tail call dispatcher routes events through a single attach point to N handlers via ProgramArray. Ring buffer with epoll wakeup delivers events in microseconds.
+
+**DDoS defense** — 4-layer adaptive protection: XDP kernel drop (wire speed) + Shield module (dynamic rate limiting) + Cloudflare auto-failover (edge blocking) + Nginx rate limit. Rate limits tighten dynamically under attack.
 
 **Mesh network** — collaborative defense between nodes. Attack one server, all others block the IP automatically. Ed25519 signed signals, game-theory trust model (tit-for-tat), staging pool with TTL-based auto-reversal. No signal causes immediate action — everything is scored and staged.
 
@@ -165,11 +186,11 @@ innerwarden mesh enable
 innerwarden mesh add-peer https://peer-server:8790
 ```
 
-All in 10KB of bytecode. Container-aware via cgroup ID. Zero performance overhead.
+Container-aware via cgroup ID. Zero performance overhead.
 
-**Agent** — reads incidents, applies algorithm gate (skip low severity, private IPs, already-blocked), optionally sends to AI for confidence-scored triage, executes the chosen skill. Policy-gated: nothing runs unless you've explicitly enabled it.
+**Agent** — reads incidents from Redis Streams, applies algorithm gate (skip low severity, private IPs, already-blocked), enriches with AbuseIPDB + GeoIP + CrowdSec, optionally sends to AI for confidence-scored triage, executes the chosen skill. Policy-gated: nothing runs unless you've explicitly enabled it.
 
-Two Rust daemons. No external dependencies. Under 50 MB RAM total. Dashboard sleeps after 15 min of inactivity.
+Two Rust daemons. No external dependencies. Under 50 MB RAM total. Dashboard with auth, live SSE feed, MITRE ATT&CK mapping, and attack map. Sleeps after 15 min of inactivity.
 
 ---
 
@@ -193,7 +214,7 @@ Not everything should be automatic.
 - **Telegram** — every High/Critical incident pushed to your phone. Approve or deny with inline buttons. Sensitivity control: quiet/normal/verbose.
 - **Slack** — incident notifications via incoming webhook
 - **Webhook** — HTTP POST to any endpoint. Works with PagerDuty, Opsgenie, Discord, Microsoft Teams, Google Chat, DingTalk, Feishu/Lark, WeCom, n8n, Zapier, Make, Home Assistant.
-- **Dashboard** — local authenticated UI: sensor HUD, investigation timeline, entity search, operator actions, live SSE, attacker path viewer
+- **Dashboard** — local authenticated UI: sensor HUD, investigation timeline, entity search, operator actions, live SSE feed, attack map, MITRE ATT&CK mapping, attacker path viewer
 
 ---
 
@@ -527,7 +548,7 @@ innerwarden test                                    # verify full pipeline end-t
 
 ## Supported environments
 
-- **Linux** — Ubuntu 22.04+, any systemd-based distro. Full feature set including eBPF kernel tracing (tracepoints, kprobe, LSM, XDP).
+- **Linux** — Ubuntu 22.04+, any systemd-based distro. Full feature set: 22 eBPF kernel hooks (tracepoints, kprobes, LSM, XDP), kill chain enforcement, wire-speed blocking.
 - **macOS** — Ventura and later (launchd, pf firewall, unified log). Detection and response work fully, but eBPF kernel programs are Linux-only. macOS uses log-based collectors instead.
 
 Pre-built binaries: `x86_64` and `aarch64` for both platforms.
@@ -537,7 +558,7 @@ Pre-built binaries: `x86_64` and `aarch64` for both platforms.
 ## Build and test
 
 ```bash
-make test       # 741+ tests
+make test       # 1010+ tests
 make build      # debug build (sensor + agent + ctl)
 make replay-qa  # end-to-end integration test
 ```
@@ -562,7 +583,10 @@ No. Starts in observe-only mode. You enable response skills and disable dry-run 
 No. Detection, logging, dashboard, and reports all work without AI. AI adds confidence-scored triage for autonomous response — it is optional.
 
 **How is this different from Fail2ban?**
-Fail2ban blocks IPs based on regex patterns. Inner Warden has nineteen detectors, six eBPF kernel programs, a collaborative defense mesh network, eleven response skills (including sudo suspension, process kill, container pause, honeypots, and traffic capture), twelve AI providers, Telegram bot, AbuseIPDB intelligence sharing, and a full investigation dashboard.
+Fail2ban blocks IPs based on regex patterns. Inner Warden has 36 detectors, 22 eBPF kernel hooks with kill chain enforcement, a collaborative defense mesh network, 10 response skills (including sudo suspension, process kill, container pause, honeypots, and traffic capture), twelve AI providers, 4-layer DDoS defense, Telegram bot, AbuseIPDB intelligence sharing, and a full investigation dashboard with MITRE ATT&CK mapping.
+
+**How is this different from other HIDS tools?**
+Most host intrusion detection systems only observe — they write alerts for a human to act on. Inner Warden observes AND blocks. LSM hooks stop reverse shells at the kernel's execve before the process runs. XDP drops attack traffic at wire speed. Kill chain detection blocks 7 generic exploit patterns without CVE signatures, catching zero-day exploits by behavior rather than known hashes.
 
 **Can I add custom detectors or skills?**
 Yes. See [module authoring guide](docs/module-authoring.md).

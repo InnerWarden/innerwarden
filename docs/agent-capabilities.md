@@ -8,12 +8,20 @@ Two independent loops in the same `tokio::select!`:
 - **Fast loop (2s)** — incidents + webhook + Telegram T.1 + AI + skill execution + audit trail
 - **Slow loop (30s)** — narrative generation (throttled to 5-minute minimum interval), telemetry, data retention
 
+## Input Sources
+
+**JSONL reader** — incremental byte-offset cursors over `incidents-*.jsonl` and `events-*.jsonl` files (`reader.rs`). State persisted in `agent-state.json`.
+
+**Redis Streams reader** — when `redis_url` is configured, reads from Redis Streams via XREADGROUP consumer groups (`redis_reader.rs`). Multiple consumers (agent, DNA, Shield) can independently track position. Replaces JSONL polling for high-throughput deployments.
+
 ## Incident Processing Pipeline
 
 ```
-incidents-*.jsonl
+incidents-*.jsonl / Redis Streams
       ↓
 Algorithm gate: skip low-severity, private IPs, already-blocked
+      ↓
+Allowlist check: trusted IPs/CIDRs/users skip AI gate (still logged + notified)
       ↓
 Deduplication (same IP in same tick)
       ↓
@@ -25,13 +33,19 @@ GeoIP enrichment (if enabled)
       ↓
 AI provider (OpenAI / Anthropic / Ollama) → AiDecision { action, confidence }
       ↓
+MITRE ATT&CK mapping (detector → tactic + technique)
+      ↓
 Circuit breaker / rate limiter check
       ↓
 Confidence threshold + auto_execute check
       ↓
 Skill execution → decisions-*.jsonl audit trail
       ↓
-Webhook + Telegram + Slack notifications
+Cloudflare edge push (if enabled) → IP Access Rules API
+      ↓
+Mesh broadcast (if enabled) → peer nodes
+      ↓
+Webhook + Telegram + Slack + Web Push notifications
 ```
 
 ## AI Providers
@@ -65,6 +79,7 @@ All providers implement `AiProvider` trait; `Arc<dyn AiProvider>` in `AgentState
 | `block-ip-iptables` | `iptables -A INPUT -s <IP> -j DROP` |
 | `block-ip-nftables` | `nft add element ... { <IP> }` |
 | `block-ip-pf` | `pfctl -t innerwarden-blocked -T add <IP>` (macOS) |
+| `block-ip-xdp` | XDP wire-speed drop via BPF hash map (10-25M pps, zero CPU) |
 | `suspend-user-sudo` | Drop-in file in `/etc/sudoers.d/` with TTL; auto-cleanup on expiry |
 | `rate-limit-nginx` | nginx-layer deny (HTTP 403) with TTL + auto-cleanup |
 | `monitor-ip` | Limited traffic capture via `tcpdump` + sidecar metadata `.pcap` |
@@ -79,20 +94,6 @@ All skills: bounded, audited, reversible. Dry-run logs what would happen without
 - In-memory, persisted across ticks
 - Inserted immediately after any `block_ip` decision (even in dry-run) to prevent re-evaluation
 - Pre-loaded from `decisions-*.jsonl` at startup (today + yesterday) to survive restarts
-
-## Notification Channels
-
-**Webhook** — HTTP POST to any endpoint; severity filter; fires on fast tick (real-time)
-
-**Telegram T.1** — push notification for every High/Critical incident; severity badge, source icon, entity summary, optional dashboard deep-link
-
-**Telegram T.2** — bidirectional approval via inline keyboard (✅ Approve / ❌ Reject); long-poll task (25s); TTL configurable (default 10 min); audit trail with `ai_provider: "telegram:<operator>"`
-
-**Telegram T.3** — conversational bot: `/status`, `/help`, `/incidents`, `/decisions`, `/ask <question>`, free-text→AI; `/menu` inline keyboard; 10 tests
-
-**Slack** — Incoming Webhook with Block Kit; emoji + colored sidebar + context row + optional dashboard deep-link
-
-**Telegram daily summary** — `TelegramConfig.daily_summary_hour: Option<u8>`; sends daily Markdown summary at local configured hour (max once per day)
 
 ## Dashboard
 
@@ -135,6 +136,14 @@ Local authenticated HTTP server (`--dashboard`). HTTP Basic auth required.
 - Sensor Collectors section: 10 collector cards with ACTIVE/DETECTED/NOT FOUND badges, event count, NATIVE/EXTERNAL badge
 - Integration Advisor section: conflict detection (abuseipdb+fail2ban, telegram+slack), recommended next step
 
+## MITRE ATT&CK Mapping
+
+Every detector is mapped to a primary MITRE ATT&CK tactic + technique pair (`mitre.rs`). The mapping is applied during incident processing and included in dashboard views, notifications, and audit trail. Covers all 37 detectors across tactics: Credential Access, Initial Access, Reconnaissance, Impact, Execution, Persistence, Defense Evasion, Discovery, Lateral Movement, Collection, Privilege Escalation, Command and Control, Exfiltration.
+
+## Allowlist
+
+Trusted IPs, CIDRs, and users configured in `[allowlist]`. Allowlisted entities are still logged and notified but skip the AI gate — they never trigger automatic skill execution. Supports exact IPs and CIDR notation.
+
 ## Enrichment
 
 **AbuseIPDB** — IP reputation lookup before AI call; injected into prompt as `IP REPUTATION (AbuseIPDB):`; fail-silent; `auto_block_threshold` (0-100, 0=disabled) — blocks known botnet IPs without calling AI; `ai_provider: "abuseipdb"` in audit trail; 6 tests
@@ -146,6 +155,30 @@ Local authenticated HTTP server (`--dashboard`). HTTP Basic auth required.
 **Fail2ban** — polls `fail2ban-client` CLI; bans not in blocklist are enforced via block skills; `ai_provider: "fail2ban:<jail>"`; 5 tests
 
 **Cloudflare** — pushes blocked IPs to Cloudflare edge via IP Access Rules API; called after successful `block-ip-*` skill; `auto_push_blocks` config; fail-silent; 6 tests
+
+**CrowdSec** — polls CrowdSec LAPI for ban decisions; enforces bans via block skills; `max_per_sync` to prevent OOM from large community lists; `ai_provider: "crowdsec"`
+
+**Mesh** — collaborative defense network via `innerwarden-mesh` crate. Peers exchange block signals with trust scoring. Agent broadcasts local blocks to mesh; applies mesh-sourced blocks locally. Configurable bind address, peer list, poll interval, max signals per hour.
+
+## Notification Channels
+
+**Webhook** — HTTP POST to any endpoint; severity filter; fires on fast tick (real-time)
+
+**Telegram T.1** — push notification for every High/Critical incident; severity badge, source icon, entity summary, optional dashboard deep-link
+
+**Telegram T.2** — bidirectional approval via inline keyboard; long-poll task (25s); TTL configurable (default 10 min); audit trail with `ai_provider: "telegram:<operator>"`
+
+**Telegram T.3** — conversational bot: `/status`, `/help`, `/incidents`, `/decisions`, `/ask <question>`, free-text→AI; `/menu` inline keyboard; 10 tests
+
+**Slack** — Incoming Webhook with Block Kit; emoji + colored sidebar + context row + optional dashboard deep-link
+
+**Web Push** — RFC 8291 content encryption + RFC 8292 VAPID; browser push notifications; VAPID key generation via `innerwarden notify web-push setup`; subscriptions at `POST /api/push/subscribe`; configurable `min_severity`
+
+**Telegram daily summary** — `TelegramConfig.daily_summary_hour: Option<u8>`; sends daily Markdown summary at local configured hour (max once per day)
+
+## IOC Extraction
+
+Honeypot shell command analysis extracts indicators of compromise: remote IPs, domains, URLs from attacker-typed commands (`ioc.rs`). Used to identify C2 servers, malware drop points, and exfiltration targets.
 
 ## Reliability Features
 
