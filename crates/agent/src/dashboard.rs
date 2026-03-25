@@ -1233,7 +1233,7 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResp
         t.contains("(en-agent)") || t.contains("(n-shield)")
             || t.contains("(en-sensor)") || t.contains("innerwarden")
         // System daemons that legitimately do setuid
-            || t.contains("(imesyncd)") // systemd-timesyncd
+            || t.contains("(timesyncd)") // systemd-timesyncd
             || t.contains("(systemd")   // any systemd process
             || t.contains("(networkd)")  // systemd-networkd
             || t.contains("(resolved)")  // systemd-resolved
@@ -1248,7 +1248,7 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResp
             || t.contains("(fwupdmgr)") // firmware update manager
             || t.contains("(mandb)")    // man-db cache rebuild
             || t.contains("(find)")     // find in cron jobs
-            || t.contains("(install)")  // install command (package managers)
+            || t.contains("(install)") // install command (package managers)
     };
     let mut items: Vec<LiveFeedItem> = incidents
         .iter()
