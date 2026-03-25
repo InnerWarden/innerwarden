@@ -98,7 +98,7 @@ enabled = false
 threshold = 20        # HTTP errors per IP in window
 window_seconds = 60
 
-# ── Advanced detectors (v0.5+) ───────────────────────────────────────────────
+# ── Advanced detectors (v0.4.1+) ─────────────────────────────────────────────
 # All default to enabled = false. Enable after establishing baseline.
 
 [detectors.execution_guard]
