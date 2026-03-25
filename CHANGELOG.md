@@ -11,7 +11,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [0.5.0] — 2026-03-24
+## [0.4.1] — 2026-03-25
 
 ### eBPF v2
 
