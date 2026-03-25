@@ -227,12 +227,6 @@ impl NarrativeAccumulator {
 struct AgentState {
     skill_registry: skills::SkillRegistry,
     blocklist: skills::Blocklist,
-    /// Recent action decisions keyed by `action:detector:entity_kind:entity_value`.
-    /// Used to suppress repeated AI decisions for the same scope within a short window.
-    decision_cooldowns: HashMap<String, chrono::DateTime<chrono::Utc>>,
-    /// Recent notification alerts keyed by `detector:entity_kind:entity_value`.
-    /// Suppresses duplicate Telegram/Slack/webhook alerts for the same entity.
-    notification_cooldowns: HashMap<String, chrono::DateTime<chrono::Utc>>,
     correlator: correlation::TemporalCorrelator,
     telemetry: telemetry::TelemetryState,
     telemetry_writer: Option<telemetry::TelemetryWriter>,
@@ -282,9 +276,6 @@ struct AgentState {
     /// When Telegram is configured and AI recommends Honeypot, execution is deferred
     /// until the operator picks an action via the 4-button inline keyboard.
     pending_honeypot_choices: HashMap<String, PendingHoneypotChoice>,
-    /// Tracks how many times each IP has been blocked. When count > 1 the IP is
-    /// flagged as a repeat offender in the decision reason.
-    block_counts: HashMap<String, u32>,
     /// Local IP reputation: per-IP history used for adaptive block TTL.
     /// Persisted to `ip-reputation.json` every slow-loop tick.
     ip_reputations: HashMap<String, LocalIpReputation>,
@@ -307,8 +298,8 @@ struct AgentState {
     narrative_incidents_offset: u64,
     /// Forensics capture — grabs /proc state for High/Critical process incidents.
     forensics: forensics::ForensicsCapture,
-    /// Persistent state store (redb) — replaces in-memory HashMaps for
-    /// ip_reputations, cooldowns, block_counts, xdp_block_times, trust_rules.
+    /// Persistent state store (redb) — cooldowns, block_counts, ip_reputations,
+    /// xdp_block_times, trust_rules. Primary source of truth for reads.
     store: state_store::StateStore,
     /// Redis stream reader for events (None when redis_url is not configured).
     #[cfg(feature = "redis-reader")]
@@ -1313,11 +1304,15 @@ async fn main() -> Result<()> {
         state_store::StateStore::open(&std::env::temp_dir()).expect("fallback store")
     });
 
+    // Seed the persistent store with decision cooldowns loaded from recent JSONL files.
+    // This ensures restart continuity: IPs already decided on won't be re-evaluated.
+    for (key, ts) in &startup_cooldowns {
+        store.set_cooldown(state_store::CooldownTable::Decision, key, *ts);
+    }
+
     let mut state = AgentState {
         skill_registry: skills::SkillRegistry::default_builtin(),
         blocklist: startup_blocklist,
-        decision_cooldowns: startup_cooldowns,
-        notification_cooldowns: HashMap::new(),
         correlator: correlation::TemporalCorrelator::new(cfg.correlation.window_seconds, 4096),
         telemetry: telemetry::TelemetryState::default(),
         telemetry_writer: if cfg.telemetry.enabled {
@@ -1410,7 +1405,6 @@ async fn main() -> Result<()> {
         },
         circuit_breaker_until: None,
         pending_honeypot_choices: HashMap::new(),
-        block_counts: HashMap::new(),
         ip_reputations: load_ip_reputations(&cli.data_dir),
         lsm_enabled: false,
         mesh: if cfg.mesh.enabled {
@@ -1621,13 +1615,10 @@ async fn main() -> Result<()> {
                     // Trim in-memory structures to prevent unbounded memory growth
                     state.blocklist.trim_if_needed(10_000);
                     let cutoff_2h = chrono::Utc::now() - chrono::Duration::hours(2);
-                    state.decision_cooldowns.retain(|_, ts| *ts > cutoff_2h);
                     state.store.retain_cooldowns(state_store::CooldownTable::Decision, cutoff_2h);
-                    state.notification_cooldowns.retain(|_, ts| *ts > cutoff_2h);
                     state.store.retain_cooldowns(state_store::CooldownTable::Notification, cutoff_2h);
                     // Cap block_counts to 5000 entries
-                    if state.block_counts.len() > 5000 {
-                        state.block_counts.clear();
+                    if state.store.block_counts_len() > 5000 {
                         state.store.clear_block_counts();
                     }
                     // Cap ip_reputations and persist to disk for dashboard
@@ -1713,7 +1704,6 @@ async fn main() -> Result<()> {
                             &state.skill_registry,
                             &cfg,
                             &mut state.decision_writer,
-                            &mut state.decision_cooldowns,
                             &host,
                             state.telegram_client.as_ref(),
                         ).await;
@@ -1784,13 +1774,10 @@ async fn main() -> Result<()> {
                     // Trim in-memory structures to prevent unbounded memory growth
                     state.blocklist.trim_if_needed(10_000);
                     let cutoff_2h = chrono::Utc::now() - chrono::Duration::hours(2);
-                    state.decision_cooldowns.retain(|_, ts| *ts > cutoff_2h);
                     state.store.retain_cooldowns(state_store::CooldownTable::Decision, cutoff_2h);
-                    state.notification_cooldowns.retain(|_, ts| *ts > cutoff_2h);
                     state.store.retain_cooldowns(state_store::CooldownTable::Notification, cutoff_2h);
                     // Cap block_counts to 5000 entries
-                    if state.block_counts.len() > 5000 {
-                        state.block_counts.clear();
+                    if state.store.block_counts_len() > 5000 {
                         state.store.clear_block_counts();
                     }
                     // Cap ip_reputations and persist to disk for dashboard
@@ -1825,7 +1812,6 @@ async fn main() -> Result<()> {
                             &state.skill_registry,
                             &cfg,
                             &mut state.decision_writer,
-                            &mut state.decision_cooldowns,
                             &host,
                             state.telegram_client.as_ref(),
                         ).await;
@@ -2179,9 +2165,9 @@ async fn process_incidents(
         let notify_keys = notification_cooldown_keys(incident);
         let notify_suppressed = notify_keys.iter().any(|k| {
             state
-                .notification_cooldowns
-                .get(k)
-                .is_some_and(|ts| *ts > notify_cutoff)
+                .store
+                .get_cooldown(state_store::CooldownTable::Notification, k)
+                .is_some_and(|ts| ts > notify_cutoff)
         });
 
         if notify_suppressed {
@@ -2245,7 +2231,6 @@ async fn process_incidents(
             // Mark notification cooldown for all entities in this incident
             let now = chrono::Utc::now();
             for k in &notify_keys {
-                state.notification_cooldowns.insert(k.clone(), now);
                 state
                     .store
                     .set_cooldown(state_store::CooldownTable::Notification, k, now);
@@ -2344,9 +2329,9 @@ async fn process_incidents(
         let candidates = decision_cooldown_candidates(incident);
         let in_cooldown = candidates.iter().any(|k| {
             state
-                .decision_cooldowns
-                .get(k)
-                .is_some_and(|ts| *ts > cooldown_cutoff)
+                .store
+                .get_cooldown(state_store::CooldownTable::Decision, k)
+                .is_some_and(|ts| ts > cooldown_cutoff)
         });
         if in_cooldown {
             info!(
@@ -2477,9 +2462,6 @@ async fn process_incidents(
                         if let Some(key) =
                             decision_cooldown_key_for_decision(incident, &auto_decision)
                         {
-                            state
-                                .decision_cooldowns
-                                .insert(key.clone(), chrono::Utc::now());
                             state.store.set_cooldown(
                                 state_store::CooldownTable::Decision,
                                 &key,
@@ -2587,9 +2569,6 @@ async fn process_incidents(
                     state.blocklist.insert(ip.clone());
                     if let Some(key) = decision_cooldown_key_for_decision(incident, &auto_decision)
                     {
-                        state
-                            .decision_cooldowns
-                            .insert(key.clone(), chrono::Utc::now());
                         state.store.set_cooldown(
                             state_store::CooldownTable::Decision,
                             &key,
@@ -2640,7 +2619,7 @@ async fn process_incidents(
             if let Some(ref ip) = primary_ip {
                 let is_new_attacker = !state.blocklist.contains(ip)
                     && !blocked_set.contains(ip)
-                    && state.block_counts.get(ip).copied().unwrap_or(0) == 0;
+                    && state.store.get_block_count(ip) == 0;
 
                 // suspicious_login = brute-force followed by success → HIGH VALUE
                 // Route to honeypot to observe what they do with access
@@ -2672,9 +2651,6 @@ async fn process_incidents(
                     if let Some(key) =
                         decision_cooldown_key_for_decision(incident, &honeypot_decision)
                     {
-                        state
-                            .decision_cooldowns
-                            .insert(key.clone(), chrono::Utc::now());
                         state.store.set_cooldown(
                             state_store::CooldownTable::Decision,
                             &key,
@@ -2823,9 +2799,6 @@ async fn process_incidents(
         // Record decision cooldown so the same action:detector:entity scope is not
         // re-evaluated by AI within the cooldown window (default 1h).
         if let Some(key) = decision_cooldown_key_for_decision(incident, &decision) {
-            state
-                .decision_cooldowns
-                .insert(key.clone(), chrono::Utc::now());
             state.store.set_cooldown(
                 state_store::CooldownTable::Decision,
                 &key,
@@ -2845,9 +2818,7 @@ async fn process_incidents(
             // Track repeat offenders: increment the block count for this IP.
             // When an IP has been blocked more than once, annotate the decision
             // reason so it surfaces in the audit trail and notifications.
-            let count = state.block_counts.entry(ip.clone()).or_insert(0);
-            *count += 1;
-            state.store.increment_block_count(ip);
+            let block_count = state.store.increment_block_count(ip);
 
             // Update local IP reputation — record incident + block.
             let rep = state
@@ -2870,15 +2841,15 @@ async fn process_incidents(
                 "adaptive TTL applied"
             );
 
-            if *count > 1 {
+            if block_count > 1 {
                 warn!(
                     ip = %ip,
-                    block_count = *count,
+                    block_count,
                     "repeat offender detected"
                 );
                 decision.reason = format!(
                     "{} [repeat offender — blocked {} times, TTL {}]",
-                    decision.reason, *count, ttl_label
+                    decision.reason, block_count, ttl_label
                 );
             }
         }
@@ -6008,8 +5979,6 @@ mod tests {
         let mut state = AgentState {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
-            decision_cooldowns: HashMap::new(),
-            notification_cooldowns: HashMap::new(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
             telemetry: telemetry::TelemetryState::default(),
             telemetry_writer: None,
@@ -6029,7 +5998,6 @@ mod tests {
             cloudflare_client: None,
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
-            block_counts: HashMap::new(),
             ip_reputations: HashMap::new(),
             lsm_enabled: false,
             mesh: None,
@@ -6135,8 +6103,6 @@ mod tests {
         let mut state = AgentState {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
-            decision_cooldowns: HashMap::new(),
-            notification_cooldowns: HashMap::new(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
             telemetry: telemetry::TelemetryState::default(),
             telemetry_writer: None,
@@ -6156,7 +6122,6 @@ mod tests {
             cloudflare_client: None,
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
-            block_counts: HashMap::new(),
             ip_reputations: HashMap::new(),
             lsm_enabled: false,
             mesh: None,
@@ -6237,8 +6202,6 @@ mod tests {
         let mut state = AgentState {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
-            decision_cooldowns: HashMap::new(),
-            notification_cooldowns: HashMap::new(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
             telemetry: telemetry::TelemetryState::default(),
             telemetry_writer: None,
@@ -6258,7 +6221,6 @@ mod tests {
             cloudflare_client: None,
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
-            block_counts: HashMap::new(),
             ip_reputations: HashMap::new(),
             lsm_enabled: false,
             mesh: None,
@@ -6351,8 +6313,6 @@ mod tests {
         let mut state = AgentState {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
-            decision_cooldowns: HashMap::new(),
-            notification_cooldowns: HashMap::new(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
             telemetry: telemetry::TelemetryState::default(),
             telemetry_writer: None,
@@ -6372,7 +6332,6 @@ mod tests {
             cloudflare_client: None,
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
-            block_counts: HashMap::new(),
             ip_reputations: HashMap::new(),
             lsm_enabled: false,
             mesh: None,
@@ -6442,8 +6401,6 @@ mod tests {
         let mut state = AgentState {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
-            decision_cooldowns: HashMap::new(),
-            notification_cooldowns: HashMap::new(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
             telemetry: telemetry::TelemetryState::default(),
             telemetry_writer: None,
@@ -6463,7 +6420,6 @@ mod tests {
             cloudflare_client: None,
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
-            block_counts: HashMap::new(),
             ip_reputations: HashMap::new(),
             lsm_enabled: false,
             mesh: None,
@@ -6545,8 +6501,6 @@ mod tests {
         let mut state = AgentState {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
-            decision_cooldowns: HashMap::new(),
-            notification_cooldowns: HashMap::new(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
             telemetry: telemetry::TelemetryState::default(),
             telemetry_writer: None,
@@ -6566,7 +6520,6 @@ mod tests {
             cloudflare_client: None,
             circuit_breaker_until: None,
             pending_honeypot_choices: HashMap::new(),
-            block_counts: HashMap::new(),
             ip_reputations: HashMap::new(),
             lsm_enabled: false,
             mesh: None,
@@ -6594,10 +6547,13 @@ mod tests {
             "AI should be called once — second incident suppressed by cooldown"
         );
 
-        // Verify the cooldown entry was recorded
+        // Verify the cooldown entry was recorded in the persistent store
         assert!(
-            !state.decision_cooldowns.is_empty(),
-            "decision cooldown should be recorded"
+            state.store.has_cooldown(
+                state_store::CooldownTable::Decision,
+                &format!("block_ip:ssh_bruteforce:ip:{}", attacker_ip)
+            ),
+            "decision cooldown should be recorded in store"
         );
     }
 
@@ -6739,16 +6695,17 @@ mod tests {
 
     #[test]
     fn block_counts_cleared_at_threshold() {
-        let mut counts: HashMap<String, u32> = HashMap::new();
+        let dir = TempDir::new().unwrap();
+        let store = state_store::StateStore::open(dir.path()).unwrap();
         for i in 0..5001 {
-            counts.insert(format!("1.2.3.{i}"), 1);
+            store.increment_block_count(&format!("1.2.3.{i}"));
         }
-        assert!(counts.len() > 5000);
+        assert!(store.block_counts_len() > 5000);
         // Simulate the trim logic from narrative tick
-        if counts.len() > 5000 {
-            counts.clear();
+        if store.block_counts_len() > 5000 {
+            store.clear_block_counts();
         }
-        assert_eq!(counts.len(), 0);
+        assert_eq!(store.block_counts_len(), 0);
     }
 
     #[test]

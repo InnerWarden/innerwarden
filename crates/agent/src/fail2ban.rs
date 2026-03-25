@@ -23,7 +23,6 @@ pub async fn sync_tick(
     _skill_registry: &crate::skills::SkillRegistry,
     _cfg: &crate::config::AgentConfig,
     _decision_writer: &mut Option<crate::decisions::DecisionWriter>,
-    _decision_cooldowns: &mut std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
     _host: &str,
     _telegram: Option<&std::sync::Arc<crate::telegram::TelegramClient>>,
 ) {
