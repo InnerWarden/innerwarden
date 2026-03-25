@@ -62,8 +62,12 @@ impl JsonlWriter {
             }
         }
 
-        let w = self.events_writer(today)?;
         let line = serde_json::to_string(event)?;
+        if line.len() > 16_384 {
+            warn!(kind = %event.kind, size = line.len(), "event exceeds 16KB limit, skipping");
+            return Ok(());
+        }
+        let w = self.events_writer(today)?;
         writeln!(w.writer, "{line}")?;
         Ok(())
     }

@@ -47,6 +47,9 @@ pub struct AgentConfig {
     /// Mesh collaborative defense network
     #[serde(default)]
     pub mesh: MeshNetworkConfig,
+    /// Dashboard settings
+    #[serde(default)]
+    pub dashboard: DashboardConfig,
     /// Redis URL for reading events from Redis Streams instead of JSONL files.
     /// When set, events are consumed via XREADGROUP. Incidents still read from JSONL.
     #[serde(default)]
@@ -56,6 +59,16 @@ pub struct AgentConfig {
     #[serde(default)]
     #[cfg_attr(not(feature = "redis-reader"), allow(dead_code))]
     pub redis_stream: Option<String>,
+}
+
+/// Dashboard config — trusted proxy IPs and other dashboard-related settings.
+#[derive(Debug, Deserialize, Default)]
+pub struct DashboardConfig {
+    /// List of trusted reverse-proxy IPs. Only when the connecting IP is in
+    /// this list will X-Forwarded-For / X-Real-IP headers be honoured.
+    /// Example: `["127.0.0.1", "::1", "10.0.0.1"]`
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
 }
 
 /// Mesh network config — mirrors innerwarden_mesh::MeshConfig
@@ -1085,6 +1098,23 @@ pub fn load(path: &Path) -> Result<AgentConfig> {
     if !path.exists() {
         return Ok(AgentConfig::default());
     }
+
+    // Warn if config file is readable by group/others (may contain API keys)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            let mode = meta.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                tracing::warn!(
+                    path = %path.display(),
+                    mode = format!("{:o}", mode),
+                    "config file is readable by other users, consider chmod 600"
+                );
+            }
+        }
+    }
+
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read agent config {}", path.display()))?;
     toml::from_str(&content)

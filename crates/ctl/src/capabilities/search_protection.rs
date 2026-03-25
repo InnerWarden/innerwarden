@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use anyhow::{Context, Result};
 
 use crate::capability::{
@@ -260,11 +258,11 @@ impl Capability for SearchProtectionCapability {
 fn create_nginx_placeholder(path: &str) -> Result<()> {
     let comment = "# Managed by innerwarden — do not edit manually\n\
                    # Block rules populated automatically by the rate-limit-nginx skill\n";
-    let tmp = PathBuf::from(format!(
-        "/tmp/innerwarden-nginx-placeholder-{}",
-        std::process::id()
-    ));
-    std::fs::write(&tmp, comment).context("failed to write nginx placeholder tmp file")?;
+    let tmp = tempfile::Builder::new()
+        .prefix("innerwarden-nginx-placeholder-")
+        .tempfile()
+        .context("failed to create temp file for nginx placeholder")?;
+    std::fs::write(tmp.path(), comment).context("failed to write nginx placeholder tmp file")?;
 
     let out = std::process::Command::new("sudo")
         .args([
@@ -275,13 +273,13 @@ fn create_nginx_placeholder(path: &str) -> Result<()> {
             "root",
             "-m",
             "644",
-            tmp.to_str().unwrap(),
+            tmp.path().to_str().unwrap(),
             path,
         ])
         .output()
         .context("failed to run sudo install for nginx placeholder")?;
 
-    let _ = std::fs::remove_file(&tmp);
+    // tmp is automatically cleaned up on drop
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);

@@ -1,15 +1,16 @@
 //! Safe sudoers drop-in management.
 //!
 //! Write flow:
-//! 1. Write content to a temp file under /tmp
+//! 1. Write content to a secure temp file (O_EXCL, 0600)
 //! 2. Validate with `visudo -cf <tempfile>`  (fails fast — never installs invalid rules)
 //! 3. `install -o root -g root -m 440 <tempfile> /etc/sudoers.d/<name>`
 //! 4. Cleanup temp file
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 
 pub struct SudoersDropIn {
     /// File name inside /etc/sudoers.d/ (no path separators)
@@ -26,42 +27,57 @@ impl SudoersDropIn {
         }
     }
 
-    pub fn path(&self) -> PathBuf {
-        PathBuf::from(format!("/etc/sudoers.d/{}", self.name))
+    pub fn path(&self) -> Result<PathBuf> {
+        ensure!(
+            !self.name.is_empty()
+                && !self.name.contains('/')
+                && !self.name.contains("..")
+                && self
+                    .name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "sudoers drop-in name must be a simple filename (got '{}')",
+            self.name
+        );
+        Ok(PathBuf::from(format!("/etc/sudoers.d/{}", self.name)))
     }
 
     #[allow(dead_code)]
     pub fn is_installed(&self) -> bool {
-        self.path().exists()
+        self.path().map(|p| p.exists()).unwrap_or(false)
     }
 
     /// Write the drop-in, validate with visudo, and install atomically.
     /// If dry_run is true, only prints what would happen.
     pub fn install(&self, dry_run: bool) -> Result<()> {
-        let dest = self.path();
+        let dest = self.path()?;
 
         if dry_run {
             return Ok(());
         }
 
-        // Write to temp file
-        let tmp = PathBuf::from(format!("/tmp/innerwarden-sudoers-{}", std::process::id()));
-        std::fs::write(&tmp, &self.content)
-            .with_context(|| format!("failed to write temp sudoers file {}", tmp.display()))?;
+        // Write to secure temp file (unique name, exclusive create)
+        let mut tmp = tempfile::Builder::new()
+            .prefix("innerwarden-sudoers-")
+            .tempfile_in("/tmp")
+            .context("failed to create secure temp file for sudoers")?;
+
+        tmp.write_all(self.content.as_bytes())
+            .context("failed to write sudoers content to temp file")?;
+
+        let tmp_path = tmp.path().to_path_buf();
 
         // Validate with visudo
         let validate = Command::new("visudo")
-            .args(["-cf", tmp.to_str().unwrap()])
+            .args(["-cf", &tmp_path.display().to_string()])
             .output();
 
         match validate {
             Err(e) => {
-                let _ = std::fs::remove_file(&tmp);
                 bail!("failed to run visudo: {e}");
             }
             Ok(out) if !out.status.success() => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
-                let _ = std::fs::remove_file(&tmp);
                 bail!("visudo validation failed for sudoers drop-in:\n{stderr}");
             }
             Ok(_) => {}
@@ -76,13 +92,11 @@ impl SudoersDropIn {
                 "root",
                 "-m",
                 "440",
-                tmp.to_str().unwrap(),
-                dest.to_str().unwrap(),
+                &tmp_path.display().to_string(),
+                &dest.display().to_string(),
             ])
             .output()
             .with_context(|| "failed to run install command")?;
-
-        let _ = std::fs::remove_file(&tmp);
 
         if !install.status.success() {
             let stderr = String::from_utf8_lossy(&install.stderr);
@@ -94,7 +108,7 @@ impl SudoersDropIn {
 
     /// Remove the drop-in file.
     pub fn remove(&self, dry_run: bool) -> Result<()> {
-        let dest = self.path();
+        let dest = self.path()?;
         if !dest.exists() {
             return Ok(());
         }
@@ -145,7 +159,7 @@ pub fn search_protection_nginx_rule() -> String {
     "# Managed by innerwarden-ctl — do not edit manually\n\
      # Generated for capability: search-protection\n\
      innerwarden ALL=(ALL) NOPASSWD: \\\n  \
-     /usr/bin/install -o root -g root -m 644 * /etc/nginx/innerwarden-blocklist.conf, \\\n  \
+     /usr/bin/install -o root -g root -m 644 /tmp/innerwarden-nginx-* /etc/nginx/innerwarden-blocklist.conf, \\\n  \
      /usr/sbin/nginx -t, \\\n  \
      /usr/sbin/nginx -s reload\n"
         .to_string()
@@ -156,8 +170,8 @@ pub fn suspend_user_sudo_rule() -> String {
     "# Managed by innerwarden-ctl — do not edit manually\n\
      # Generated for capability: sudo-protection\n\
      innerwarden ALL=(ALL) NOPASSWD: \\\n  \
-     /usr/bin/install -o root -g root -m 440 * /etc/sudoers.d/*, \\\n  \
-     /usr/sbin/visudo -cf *, \\\n  \
+     /usr/bin/install -o root -g root -m 440 /tmp/innerwarden-sudoers-* /etc/sudoers.d/innerwarden-*, \\\n  \
+     /usr/sbin/visudo -cf /tmp/innerwarden-sudoers-*, \\\n  \
      /bin/rm -f /etc/sudoers.d/zz-innerwarden-deny-*\n"
         .to_string()
 }
@@ -185,6 +199,33 @@ mod tests {
     #[test]
     fn drop_in_path_is_correct() {
         let d = SudoersDropIn::new("innerwarden-test", "# test\n");
-        assert_eq!(d.path(), PathBuf::from("/etc/sudoers.d/innerwarden-test"));
+        assert_eq!(
+            d.path().unwrap(),
+            PathBuf::from("/etc/sudoers.d/innerwarden-test")
+        );
+    }
+
+    #[test]
+    fn drop_in_path_rejects_traversal() {
+        let d = SudoersDropIn::new("../evil", "# test\n");
+        assert!(d.path().is_err());
+    }
+
+    #[test]
+    fn drop_in_path_rejects_slash() {
+        let d = SudoersDropIn::new("foo/bar", "# test\n");
+        assert!(d.path().is_err());
+    }
+
+    #[test]
+    fn drop_in_path_rejects_empty() {
+        let d = SudoersDropIn::new("", "# test\n");
+        assert!(d.path().is_err());
+    }
+
+    #[test]
+    fn drop_in_path_rejects_special_chars() {
+        let d = SudoersDropIn::new("foo;bar", "# test\n");
+        assert!(d.path().is_err());
     }
 }

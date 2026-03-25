@@ -1136,6 +1136,32 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     };
 
+    // Safe byte parsing: returns from match arm with `continue` on malformed data
+    macro_rules! read_u16 {
+        ($data:expr, $range:expr) => {
+            match $data[$range].try_into().ok().map(u16::from_ne_bytes) {
+                Some(v) => v,
+                None => continue,
+            }
+        };
+    }
+    macro_rules! read_u32 {
+        ($data:expr, $range:expr) => {
+            match $data[$range].try_into().ok().map(u32::from_ne_bytes) {
+                Some(v) => v,
+                None => continue,
+            }
+        };
+    }
+    macro_rules! read_u64 {
+        ($data:expr, $range:expr) => {
+            match $data[$range].try_into().ok().map(u64::from_ne_bytes) {
+                Some(v) => v,
+                None => continue,
+            }
+        };
+    }
+
     loop {
         while let Some(item) = ring_buf.next() {
             let data: &[u8] = &item;
@@ -1143,16 +1169,16 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 continue;
             }
 
-            let kind = u32::from_ne_bytes(data[0..4].try_into().unwrap());
+            let kind = read_u32!(data, 0..4);
 
             let event = match kind {
                 // ExecveEvent layout (#[repr(C)]):
                 //   kind(4) pid(4) tgid(4) uid(4) gid(4) ppid(4) cgroup_id(8) comm(64) filename(256)
                 //   Offsets: 0  4  8  12  16  20  24  32..96  96..352
                 1 if data.len() >= 352 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[12..16].try_into().unwrap());
-                    let cgroup_id = u64::from_ne_bytes(data[24..32].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 12..16);
+                    let cgroup_id = read_u64!(data, 24..32);
                     let comm = bytes_to_string(&data[32..96]);
                     let filename = bytes_to_string(&data[96..352]);
 
@@ -1179,12 +1205,12 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 //   dst_addr(4) dst_port(2) family(2) ts_ns(8)
                 //   Offsets: 0  4  8  12  16  20  24  32..96  96  100  102
                 2 if data.len() >= 104 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[12..16].try_into().unwrap());
-                    let cgroup_id = u64::from_ne_bytes(data[24..32].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 12..16);
+                    let cgroup_id = read_u64!(data, 24..32);
                     let comm = bytes_to_string(&data[32..96]);
-                    let addr = u32::from_ne_bytes(data[96..100].try_into().unwrap());
-                    let port = u16::from_ne_bytes(data[100..102].try_into().unwrap());
+                    let addr = read_u32!(data, 96..100);
+                    let port = read_u16!(data, 100..102);
 
                     let ip = Ipv4Addr::from(addr);
 
@@ -1211,12 +1237,12 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 //   kind(4) pid(4) uid(4) ppid(4) cgroup_id(8) comm(64) filename(256) flags(4)
                 //   Offsets: 0  4  8  12  16  24..88  88..344  344
                 3 if data.len() >= 348 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
-                    let cgroup_id = u64::from_ne_bytes(data[16..24].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let cgroup_id = read_u64!(data, 16..24);
                     let comm = bytes_to_string(&data[24..88]);
                     let filename = bytes_to_string(&data[88..344]);
-                    let flags = u32::from_ne_bytes(data[344..348].try_into().unwrap());
+                    let flags = read_u32!(data, 344..348);
 
                     if comm.starts_with("innerwarden") {
                         continue;
@@ -1241,10 +1267,10 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 //   kind(4) pid(4) tgid(4) old_uid(4) new_uid(4) _pad(4) cgroup_id(8) comm(64) ts_ns(8)
                 //   Offsets: 0  4  8  12  16  20  24  32..96
                 5 if data.len() >= 96 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let old_uid = u32::from_ne_bytes(data[12..16].try_into().unwrap());
-                    let new_uid = u32::from_ne_bytes(data[16..20].try_into().unwrap());
-                    let cgroup_id = u64::from_ne_bytes(data[24..32].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let old_uid = read_u32!(data, 12..16);
+                    let new_uid = read_u32!(data, 16..20);
+                    let cgroup_id = read_u64!(data, 24..32);
                     let comm = bytes_to_string(&data[32..96]);
 
                     if comm.starts_with("innerwarden") {
@@ -1266,9 +1292,9 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 // LSM blocked execution — uses ExecveEvent layout but kind=6
                 // Same offsets as ExecveEvent: kind(4) pid(4) tgid(4) uid(4) gid(4) ppid(4) cgroup_id(8) comm(64) filename(256)
                 6 if data.len() >= 352 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[12..16].try_into().unwrap());
-                    let cgroup_id = u64::from_ne_bytes(data[24..32].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 12..16);
+                    let cgroup_id = read_u64!(data, 24..32);
                     let comm = bytes_to_string(&data[32..96]);
                     let filename = bytes_to_string(&data[96..352]);
 
@@ -1310,7 +1336,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 //   kind(4) pid(4) tgid(4) comm(64) exit_code(4) ts_ns(8)
                 //   Offsets: 0  4  8  12..76  76  80
                 7 if data.len() >= 80 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
                     let comm = bytes_to_string(&data[12..76]);
 
                     Some(Event {
@@ -1331,11 +1357,11 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 // PtraceEvent: kind(4) pid(4) uid(4) target_pid(4) request(4) _pad(4) cgroup_id(8) comm(64) ts_ns(8)
                 // Offsets: 0  4  8  12  16  20  24  32..96
                 8 if data.len() >= 96 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
-                    let target_pid = u32::from_ne_bytes(data[12..16].try_into().unwrap());
-                    let request = u32::from_ne_bytes(data[16..20].try_into().unwrap());
-                    let cgroup_id = u64::from_ne_bytes(data[24..32].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let target_pid = read_u32!(data, 12..16);
+                    let request = read_u32!(data, 16..20);
+                    let cgroup_id = read_u64!(data, 24..32);
                     let comm = bytes_to_string(&data[32..96]);
 
                     let request_name = match request {
@@ -1382,10 +1408,10 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 // SetUidEvent: kind(4) pid(4) uid(4) target_uid(4) syscall_nr(4) _pad(4) cgroup_id(8) comm(64) ts_ns(8)
                 // Offsets: 0  4  8  12  16  20  24  32..96
                 9 if data.len() >= 96 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
-                    let target_uid = u32::from_ne_bytes(data[12..16].try_into().unwrap());
-                    let cgroup_id = u64::from_ne_bytes(data[24..32].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let target_uid = read_u32!(data, 12..16);
+                    let cgroup_id = read_u64!(data, 24..32);
                     let comm = bytes_to_string(&data[32..96]);
 
                     let container_id = resolve_container_id(pid);
@@ -1414,12 +1440,12 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 // SocketBindEvent: kind(4) pid(4) uid(4) protocol(2) family(2) port(2) _pad(2) addr(4) cgroup_id(8) comm(64) ts_ns(8)
                 // Offsets: 0  4  8  12  14  16  18  20  24  32..96
                 10 if data.len() >= 96 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
-                    let family = u16::from_ne_bytes(data[12..14].try_into().unwrap());
-                    let port = u16::from_ne_bytes(data[16..18].try_into().unwrap());
-                    let addr = u32::from_ne_bytes(data[20..24].try_into().unwrap());
-                    let cgroup_id = u64::from_ne_bytes(data[24..32].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let family = read_u16!(data, 12..14);
+                    let port = read_u16!(data, 16..18);
+                    let addr = read_u32!(data, 20..24);
+                    let cgroup_id = read_u64!(data, 24..32);
                     let comm = bytes_to_string(&data[32..96]);
 
                     let ip = std::net::Ipv4Addr::from(addr);
@@ -1460,10 +1486,10 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 // MountEvent: kind(4) pid(4) uid(4) flags(4) cgroup_id(8) comm(64) source(256) target(256) fs_type(32) ts_ns(8)
                 // Offsets: 0  4  8  12  16  24..88  88..344  344..600  600..632
                 11 if data.len() >= 632 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
-                    let flags = u32::from_ne_bytes(data[12..16].try_into().unwrap());
-                    let cgroup_id = u64::from_ne_bytes(data[16..24].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let flags = read_u32!(data, 12..16);
+                    let cgroup_id = read_u64!(data, 16..24);
                     let comm = bytes_to_string(&data[24..88]);
                     let source = bytes_to_string(&data[88..344]);
                     let target = bytes_to_string(&data[344..600]);
@@ -1510,10 +1536,10 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 // MemfdCreateEvent: kind(4) pid(4) uid(4) flags(4) cgroup_id(8) comm(64) name(256) ts_ns(8)
                 // Offsets: 0  4  8  12  16  24..88  88..344
                 12 if data.len() >= 344 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
-                    let flags = u32::from_ne_bytes(data[12..16].try_into().unwrap());
-                    let cgroup_id = u64::from_ne_bytes(data[16..24].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let flags = read_u32!(data, 12..16);
+                    let cgroup_id = read_u64!(data, 16..24);
                     let comm = bytes_to_string(&data[24..88]);
                     let name = bytes_to_string(&data[88..344]);
 
@@ -1548,9 +1574,9 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 // ModuleLoadEvent: kind(4) pid(4) uid(4) syscall_nr(4) cgroup_id(8) comm(64) ts_ns(8)
                 // Offsets: 0  4  8  12  16  24..88
                 13 if data.len() >= 88 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
-                    let cgroup_id = u64::from_ne_bytes(data[16..24].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let cgroup_id = read_u64!(data, 16..24);
                     let comm = bytes_to_string(&data[24..88]);
 
                     Some(Event {
@@ -1574,10 +1600,10 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 }
                 // DupEvent: kind(4) pid(4) uid(4) oldfd(4) newfd(4) _pad(4) cgroup_id(8) comm(64)
                 14 if data.len() >= 88 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
-                    let oldfd = u32::from_ne_bytes(data[12..16].try_into().unwrap());
-                    let newfd = u32::from_ne_bytes(data[16..20].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let oldfd = read_u32!(data, 12..16);
+                    let newfd = read_u32!(data, 16..20);
                     let comm = bytes_to_string(&data[24..88]);
                     let fd_name = match newfd {
                         0 => "stdin",
@@ -1601,9 +1627,9 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 }
                 // ListenEvent: kind(4) pid(4) uid(4) backlog(4) cgroup_id(8) comm(64)
                 15 if data.len() >= 80 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
-                    let backlog = u32::from_ne_bytes(data[12..16].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let backlog = read_u32!(data, 12..16);
                     let comm = bytes_to_string(&data[24..88]);
                     Some(Event {
                         ts: chrono::Utc::now(),
@@ -1625,11 +1651,11 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 }
                 // MprotectEvent: kind(4) pid(4) uid(4) prot(4) addr(8) len(8) cgroup_id(8) comm(64)
                 16 if data.len() >= 96 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
-                    let prot = u32::from_ne_bytes(data[12..16].try_into().unwrap());
-                    let addr = u64::from_ne_bytes(data[16..24].try_into().unwrap());
-                    let len = u64::from_ne_bytes(data[24..32].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let prot = read_u32!(data, 12..16);
+                    let addr = read_u64!(data, 16..24);
+                    let len = read_u64!(data, 24..32);
                     let comm = bytes_to_string(&data[40..104]);
                     let rwx = prot & 0x7 == 0x7; // PROT_READ|PROT_WRITE|PROT_EXEC
                     Some(Event {
@@ -1643,9 +1669,9 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 }
                 // CloneEvent: kind(4) pid(4) uid(4) _pad(4) clone_flags(8) cgroup_id(8) comm(64)
                 17 if data.len() >= 88 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
-                    let clone_flags = u64::from_ne_bytes(data[16..24].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let clone_flags = read_u64!(data, 16..24);
                     let comm = bytes_to_string(&data[32..96]);
                     Some(Event {
                         ts: chrono::Utc::now(),
@@ -1661,8 +1687,8 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 }
                 // UnlinkEvent: kind(4) pid(4) uid(4) _pad(4) cgroup_id(8) comm(64) filename(256)
                 18 if data.len() >= 344 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
                     let comm = bytes_to_string(&data[24..88]);
                     let filename = bytes_to_string(&data[88..344]);
                     Some(Event {
@@ -1679,8 +1705,8 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 }
                 // RenameEvent: kind(4) pid(4) uid(4) _pad(4) cgroup_id(8) comm(64) oldname(256) newname(256)
                 19 if data.len() >= 600 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
                     let comm = bytes_to_string(&data[24..88]);
                     let oldname = bytes_to_string(&data[88..344]);
                     let newname = bytes_to_string(&data[344..600]);
@@ -1698,10 +1724,10 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 }
                 // KillEvent: kind(4) pid(4) uid(4) target_pid(4) signal(4) _pad(4) cgroup_id(8) comm(64)
                 20 if data.len() >= 88 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
-                    let target_pid = u32::from_ne_bytes(data[12..16].try_into().unwrap());
-                    let signal = u32::from_ne_bytes(data[16..20].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let target_pid = read_u32!(data, 12..16);
+                    let signal = read_u32!(data, 16..20);
                     let comm = bytes_to_string(&data[28..92]);
                     let sig_name = match signal {
                         9 => "SIGKILL",
@@ -1725,9 +1751,9 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 }
                 // PrctlEvent: kind(4) pid(4) uid(4) option(4) arg2(8) cgroup_id(8) comm(64)
                 21 if data.len() >= 88 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
-                    let option = u32::from_ne_bytes(data[12..16].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let option = read_u32!(data, 12..16);
                     let comm = bytes_to_string(&data[32..96]);
                     let op_name = match option {
                         15 => "PR_SET_NAME",
@@ -1748,8 +1774,8 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                 }
                 // AcceptEvent: kind(4) pid(4) uid(4) _pad(4) cgroup_id(8) comm(64)
                 22 if data.len() >= 80 => {
-                    let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                    let uid = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
                     let comm = bytes_to_string(&data[24..88]);
                     Some(Event {
                         ts: chrono::Utc::now(),

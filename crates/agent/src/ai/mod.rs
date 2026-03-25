@@ -269,7 +269,32 @@ const OPENAI_COMPATIBLE: &[(&str, &str, &str)] = &[
     ),
 ];
 
-pub fn build_provider(cfg: &AiConfig) -> Box<dyn AiProvider> {
+/// Reject plain HTTP for remote AI provider endpoints.
+/// Only `localhost` / `127.0.0.1` / `[::1]` are allowed over HTTP.
+fn validate_ai_base_url(url: &str) -> Result<()> {
+    if url.is_empty() {
+        return Ok(());
+    }
+    if url.starts_with("http://") {
+        let host_part = url.strip_prefix("http://").unwrap_or("");
+        let host = host_part
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .split('/')
+            .next()
+            .unwrap_or("");
+        if host != "localhost" && host != "127.0.0.1" && host != "::1" && host != "[::1]" {
+            anyhow::bail!(
+                "HTTP is not allowed for remote AI providers (use HTTPS). Got: {}",
+                url
+            );
+        }
+    }
+    Ok(())
+}
+
+pub fn build_provider(cfg: &AiConfig) -> Result<Box<dyn AiProvider>> {
     // Check if provider is OpenAI-compatible (including "openai" itself)
     if let Some(&(_, default_url, default_model)) = OPENAI_COMPATIBLE
         .iter()
@@ -278,6 +303,7 @@ pub fn build_provider(cfg: &AiConfig) -> Box<dyn AiProvider> {
         let base_url = if cfg.base_url.is_empty() {
             default_url.to_string()
         } else {
+            validate_ai_base_url(&cfg.base_url)?;
             cfg.base_url.clone()
         };
         let model = if cfg.model.is_empty() {
@@ -285,18 +311,18 @@ pub fn build_provider(cfg: &AiConfig) -> Box<dyn AiProvider> {
         } else {
             cfg.model.clone()
         };
-        return Box::new(openai::OpenAiProvider::with_base_url(
+        return Ok(Box::new(openai::OpenAiProvider::with_base_url(
             cfg.resolved_api_key(),
             model,
             base_url,
-        ));
+        )));
     }
 
     match cfg.provider.as_str() {
-        "anthropic" => Box::new(anthropic::AnthropicProvider::new(
+        "anthropic" => Ok(Box::new(anthropic::AnthropicProvider::new(
             cfg.resolved_api_key(),
             cfg.model.clone(),
-        )),
+        ))),
         "ollama" => {
             let api_key = cfg.resolved_api_key();
             let api_key = if api_key.is_empty() {
@@ -306,13 +332,16 @@ pub fn build_provider(cfg: &AiConfig) -> Box<dyn AiProvider> {
             };
 
             let base_url = if !cfg.base_url.is_empty() {
+                validate_ai_base_url(&cfg.base_url)?;
                 cfg.base_url.clone()
             } else if api_key.is_some() {
                 // Cloud mode: default to Ollama's hosted API
                 "https://api.ollama.com".to_string()
             } else {
-                std::env::var("OLLAMA_BASE_URL")
-                    .unwrap_or_else(|_| "http://localhost:11434".to_string())
+                let env_url = std::env::var("OLLAMA_BASE_URL")
+                    .unwrap_or_else(|_| "http://localhost:11434".to_string());
+                validate_ai_base_url(&env_url)?;
+                env_url
             };
 
             // Default model: cloud → qwen3-coder:480b, local → llama3.2
@@ -325,31 +354,34 @@ pub fn build_provider(cfg: &AiConfig) -> Box<dyn AiProvider> {
             } else {
                 cfg.model.clone()
             };
-            Box::new(ollama::OllamaProvider::new(base_url, model, api_key))
+            Ok(Box::new(ollama::OllamaProvider::new(
+                base_url, model, api_key,
+            )))
         }
         other => {
             // Unknown provider name — if base_url is set, treat as OpenAI-compatible.
             // This lets users connect any compatible API without code changes.
             if !cfg.base_url.is_empty() {
+                validate_ai_base_url(&cfg.base_url)?;
                 tracing::info!(
                     provider = other,
                     base_url = %cfg.base_url,
                     "treating unknown provider as OpenAI-compatible via base_url"
                 );
-                Box::new(openai::OpenAiProvider::with_base_url(
+                Ok(Box::new(openai::OpenAiProvider::with_base_url(
                     cfg.resolved_api_key(),
                     cfg.model.clone(),
                     cfg.base_url.clone(),
-                ))
+                )))
             } else {
                 tracing::warn!(
                     provider = other,
                     "unknown AI provider and no base_url — falling back to openai"
                 );
-                Box::new(openai::OpenAiProvider::new(
+                Ok(Box::new(openai::OpenAiProvider::new(
                     cfg.resolved_api_key(),
                     cfg.model.clone(),
-                ))
+                )))
             }
         }
     }

@@ -511,7 +511,7 @@ enum Command {
     ///   innerwarden backup
     ///   innerwarden backup --output /tmp/my-backup.tar.gz
     Backup {
-        /// Output path for the archive (default: /tmp/innerwarden-backup-YYYYMMDD.tar.gz)
+        /// Output path for the archive (default: secure temp file in system temp dir)
         #[arg(long)]
         output: Option<PathBuf>,
     },
@@ -2772,18 +2772,30 @@ fn cmd_upgrade(
         .parent()
         .unwrap_or(Path::new("/etc/innerwarden"));
     if config_dir.exists() {
-        let backup_name = format!(
-            "/tmp/innerwarden-backup-pre-upgrade-{}.tar.gz",
-            chrono::Local::now().format("%Y%m%d%H%M%S")
-        );
-        print!("  Backing up configs to {backup_name}... ");
-        match std::process::Command::new("tar")
-            .args(["czf", &backup_name, "-C", "/"])
-            .arg(config_dir.strip_prefix("/").unwrap_or(config_dir))
-            .output()
+        match tempfile::Builder::new()
+            .prefix("innerwarden-backup-pre-upgrade-")
+            .suffix(".tar.gz")
+            .tempfile()
         {
-            Ok(out) if out.status.success() => println!("done"),
-            _ => println!("skipped (tar failed, continuing anyway)"),
+            Ok(tmp) => {
+                let backup_path = tmp.path().to_string_lossy().to_string();
+                print!("  Backing up configs to {backup_path}... ");
+                match std::process::Command::new("tar")
+                    .args(["czf", &backup_path, "-C", "/"])
+                    .arg(config_dir.strip_prefix("/").unwrap_or(config_dir))
+                    .output()
+                {
+                    Ok(out) if out.status.success() => {
+                        // Keep the backup file (prevent cleanup on drop)
+                        let _ = tmp.keep();
+                        println!("done");
+                    }
+                    _ => println!("skipped (tar failed, continuing anyway)"),
+                }
+            }
+            Err(_) => {
+                println!("  Skipping backup (could not create temp file)");
+            }
         }
     }
 
@@ -6669,15 +6681,25 @@ fn cmd_backup(cli: &Cli, output: Option<&Path>) -> Result<()> {
         require_sudo(cli);
     }
 
-    let today = epoch_secs_to_date(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-    );
-
-    let default_path = PathBuf::from(format!("/tmp/innerwarden-backup-{}.tar.gz", today));
-    let output_path = output.unwrap_or(&default_path);
+    // When no --output is given, create a secure temp file with an unpredictable name
+    let tmp_file = if output.is_none() {
+        Some(
+            tempfile::Builder::new()
+                .prefix("innerwarden-backup-")
+                .suffix(".tar.gz")
+                .tempfile()
+                .context("failed to create temp file for backup")?,
+        )
+    } else {
+        None
+    };
+    let default_path: PathBuf;
+    let output_path = if let Some(ref tmp) = tmp_file {
+        default_path = tmp.path().to_path_buf();
+        &default_path
+    } else {
+        output.unwrap()
+    };
 
     let files = [
         "etc/innerwarden/config.toml",
@@ -6710,6 +6732,10 @@ fn cmd_backup(cli: &Cli, output: Option<&Path>) -> Result<()> {
         .context("failed to run tar")?;
 
     if status.success() {
+        // Keep the temp file so the backup persists on disk
+        if let Some(tmp) = tmp_file {
+            let _ = tmp.keep();
+        }
         println!("\n  [ok] backup saved to {}", output_path.display());
     } else {
         anyhow::bail!(

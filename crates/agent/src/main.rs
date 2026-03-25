@@ -1165,6 +1165,7 @@ async fn main() -> Result<()> {
         let dashboard_data_dir = cli.data_dir.clone();
         let dashboard_bind = cli.dashboard_bind.clone();
         let web_push_pub_key = cfg.web_push.vapid_public_key.clone();
+        let trusted_proxies = cfg.dashboard.trusted_proxies.clone();
         tokio::spawn(async move {
             if let Err(e) = dashboard::serve(
                 dashboard_data_dir,
@@ -1172,6 +1173,7 @@ async fn main() -> Result<()> {
                 auth,
                 action_cfg,
                 web_push_pub_key,
+                trusted_proxies,
             )
             .await
             {
@@ -1327,7 +1329,13 @@ async fn main() -> Result<()> {
             None
         },
         ai_provider: if cfg.ai.enabled {
-            Some(Arc::from(ai::build_provider(&cfg.ai)))
+            match ai::build_provider(&cfg.ai) {
+                Ok(p) => Some(Arc::from(p)),
+                Err(e) => {
+                    warn!("failed to create AI provider: {e:#}");
+                    None
+                }
+            }
         } else {
             None
         },

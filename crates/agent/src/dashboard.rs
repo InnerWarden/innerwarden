@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use anyhow::{Context, Result};
@@ -46,6 +47,39 @@ struct SsePayload {
 }
 
 type EventTx = broadcast::Sender<SsePayload>;
+
+// ---------------------------------------------------------------------------
+// SSE connection limit
+// ---------------------------------------------------------------------------
+
+static SSE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
+const MAX_SSE_CONNECTIONS: usize = 50;
+
+/// RAII guard that decrements the SSE connection counter on drop.
+struct SseGuard;
+
+impl Drop for SseGuard {
+    fn drop(&mut self) {
+        SSE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Security headers middleware
+// ---------------------------------------------------------------------------
+
+async fn security_headers(req: axum::extract::Request, next: Next) -> Response {
+    let mut resp = next.run(req).await;
+    let headers = resp.headers_mut();
+    headers.insert(header::X_FRAME_OPTIONS, "DENY".parse().unwrap());
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
+    headers.insert("x-xss-protection", "0".parse().unwrap());
+    headers.insert(
+        "referrer-policy",
+        "strict-origin-when-cross-origin".parse().unwrap(),
+    );
+    resp
+}
 
 // ---------------------------------------------------------------------------
 // Shared state / auth
@@ -140,6 +174,9 @@ struct DashboardState {
     last_activity: Arc<std::sync::atomic::AtomicU64>,
     /// Cached sensor API response (30s TTL) to avoid re-reading events file on every request.
     sensor_cache: Arc<tokio::sync::Mutex<(u64, serde_json::Value)>>,
+    /// Trusted reverse-proxy IPs — only honour X-Forwarded-For / X-Real-IP
+    /// when the connecting socket IP is in this set.
+    trusted_proxies: Arc<Vec<IpAddr>>,
 }
 
 #[derive(Clone)]
@@ -623,6 +660,7 @@ pub async fn serve(
     auth: Option<DashboardAuth>,
     action_cfg: DashboardActionConfig,
     web_push_vapid_public_key: String,
+    trusted_proxy_strs: Vec<String>,
 ) -> Result<()> {
     if auth.is_none() {
         warn!(
@@ -657,6 +695,26 @@ pub async fn serve(
         !is_localhost
     };
 
+    // Parse trusted proxy IPs at startup — only these connecting IPs may
+    // set X-Forwarded-For / X-Real-IP headers.
+    let trusted_proxies: Vec<IpAddr> = trusted_proxy_strs
+        .iter()
+        .filter_map(|s| {
+            s.parse::<IpAddr>()
+                .map_err(|e| {
+                    warn!(proxy = %s, error = %e, "ignoring invalid trusted_proxy IP");
+                    e
+                })
+                .ok()
+        })
+        .collect();
+    if !trusted_proxies.is_empty() {
+        info!(
+            count = trusted_proxies.len(),
+            "loaded trusted proxy IPs for X-Forwarded-For"
+        );
+    }
+
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -669,8 +727,10 @@ pub async fn serve(
         insecure_http,
         last_activity: Arc::new(std::sync::atomic::AtomicU64::new(now_secs)),
         sensor_cache: Arc::new(tokio::sync::Mutex::new((0, serde_json::json!({})))),
+        trusted_proxies: Arc::new(trusted_proxies),
     };
-    let auth_layer = middleware::from_fn_with_state(auth, require_basic_auth);
+    let auth_layer =
+        middleware::from_fn_with_state((auth, state.trusted_proxies.clone()), require_basic_auth);
     let activity_state = state.last_activity.clone();
     let activity_layer = middleware::from_fn(move |req: Request<Body>, next: Next| {
         let ts = activity_state.clone();
@@ -685,17 +745,21 @@ pub async fn serve(
     });
     // Global rate limiter — rejects requests from IPs exceeding 120/min with 429.
     // Prevents memory exhaustion from bot traffic when dashboard is internet-facing.
-    let rate_limit_layer = middleware::from_fn(|req: Request<Body>, next: Next| async move {
-        let ip = extract_client_ip(&req);
-        if global_rate_check(&ip) {
-            return axum::http::Response::builder()
-                .status(429)
-                .header("retry-after", "60")
-                .body(Body::from("Too Many Requests"))
-                .unwrap()
-                .into_response();
+    let rate_limit_proxies = state.trusted_proxies.clone();
+    let rate_limit_layer = middleware::from_fn(move |req: Request<Body>, next: Next| {
+        let proxies = rate_limit_proxies.clone();
+        async move {
+            let ip = extract_client_ip(&req, &proxies);
+            if global_rate_check(&ip) {
+                return axum::http::Response::builder()
+                    .status(429)
+                    .header("retry-after", "60")
+                    .body(Body::from("Too Many Requests"))
+                    .unwrap()
+                    .into_response();
+            }
+            next.run(req).await
         }
-        next.run(req).await
     });
 
     // Agent API routes — no auth required (localhost service-to-service)
@@ -761,6 +825,7 @@ pub async fn serve(
     let app = agent_api
         .merge(live_api)
         .merge(dashboard)
+        .layer(middleware::from_fn(security_headers))
         .layer(activity_layer)
         .layer(rate_limit_layer);
 
@@ -862,33 +927,44 @@ fn global_rate_check(ip: &str) -> bool {
 /// Extract a client IP string from the request.
 /// Checks `X-Forwarded-For` and `X-Real-IP` headers first (reverse-proxy scenario),
 /// then falls back to the socket peer address injected by `axum::serve`.
-fn extract_client_ip(req: &Request<Body>) -> String {
-    // X-Forwarded-For: first entry is the original client
-    if let Some(val) = req.headers().get("x-forwarded-for") {
-        if let Ok(s) = val.to_str() {
-            if let Some(first) = s.split(',').next() {
-                let trimmed = first.trim();
+fn extract_client_ip(req: &Request<Body>, trusted_proxies: &[IpAddr]) -> String {
+    // Determine the raw connection IP first (socket peer from ConnectInfo).
+    let conn_ip: Option<IpAddr> = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip());
+
+    // Only honour proxy headers when the connecting IP is a trusted proxy.
+    let from_trusted_proxy = conn_ip
+        .map(|ip| trusted_proxies.contains(&ip))
+        .unwrap_or(false);
+
+    if from_trusted_proxy {
+        // X-Forwarded-For: first entry is the original client
+        if let Some(val) = req.headers().get("x-forwarded-for") {
+            if let Ok(s) = val.to_str() {
+                if let Some(first) = s.split(',').next() {
+                    let trimmed = first.trim();
+                    if !trimmed.is_empty() {
+                        return trimmed.to_string();
+                    }
+                }
+            }
+        }
+        // X-Real-IP
+        if let Some(val) = req.headers().get("x-real-ip") {
+            if let Ok(s) = val.to_str() {
+                let trimmed = s.trim();
                 if !trimmed.is_empty() {
                     return trimmed.to_string();
                 }
             }
         }
     }
-    // X-Real-IP
-    if let Some(val) = req.headers().get("x-real-ip") {
-        if let Ok(s) = val.to_str() {
-            let trimmed = s.trim();
-            if !trimmed.is_empty() {
-                return trimmed.to_string();
-            }
-        }
-    }
+
     // Fallback: socket peer address from axum::serve ConnectInfo
-    if let Some(addr) = req
-        .extensions()
-        .get::<axum::extract::ConnectInfo<SocketAddr>>()
-    {
-        return addr.0.ip().to_string();
+    if let Some(ip) = conn_ip {
+        return ip.to_string();
     }
     "unknown".to_string()
 }
@@ -933,7 +1009,7 @@ fn clear_rate_limit(ip: &str) {
 }
 
 async fn require_basic_auth(
-    State(auth): State<Option<DashboardAuth>>,
+    State((auth, trusted_proxies)): State<(Option<DashboardAuth>, Arc<Vec<IpAddr>>)>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
@@ -942,7 +1018,7 @@ async fn require_basic_auth(
         return next.run(req).await;
     };
 
-    let client_ip = extract_client_ip(&req);
+    let client_ip = extract_client_ip(&req, &trusted_proxies);
 
     // Check if this IP is already rate-limited before doing any auth work
     if is_rate_limited(&client_ip) {
@@ -1303,9 +1379,20 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResp
 /// `GET /api/live-feed/stream` — SSE stream of alerts for public live page.
 async fn api_live_feed_stream(
     State(state): State<DashboardState>,
-) -> Sse<impl futures_core::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
+) -> Result<
+    Sse<impl futures_core::Stream<Item = Result<SseEvent, std::convert::Infallible>>>,
+    StatusCode,
+> {
+    let current = SSE_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
+    if current >= MAX_SSE_CONNECTIONS {
+        SSE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+
     let rx = state.event_tx.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|msg: Result<SsePayload, _>| {
+    let guard = SseGuard;
+    let stream = BroadcastStream::new(rx).filter_map(move |msg: Result<SsePayload, _>| {
+        let _keep = &guard;
         let payload = msg.ok()?;
         // Only forward alert and heartbeat events to the public feed
         if payload.kind != "alert" && payload.kind != "heartbeat" {
@@ -1314,7 +1401,7 @@ async fn api_live_feed_stream(
         let data = serde_json::to_string(&payload).unwrap_or_default();
         Some(Ok(SseEvent::default().event(&payload.kind).data(data)))
     });
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 /// `GET /api/live-feed/geoip?ips=1.2.3.4,5.6.7.8` — batch GeoIP lookup (public proxy).
@@ -1519,14 +1606,25 @@ struct GeoIpResult {
 /// `GET /api/events/stream` — SSE live event stream (D6).
 async fn api_events_stream(
     State(state): State<DashboardState>,
-) -> Sse<impl futures_core::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
+) -> Result<
+    Sse<impl futures_core::Stream<Item = Result<SseEvent, std::convert::Infallible>>>,
+    StatusCode,
+> {
+    let current = SSE_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
+    if current >= MAX_SSE_CONNECTIONS {
+        SSE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+
     let rx = state.event_tx.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|msg: Result<SsePayload, _>| {
+    let guard = SseGuard;
+    let stream = BroadcastStream::new(rx).filter_map(move |msg: Result<SsePayload, _>| {
+        let _keep = &guard;
         let payload = msg.ok()?;
         let data = serde_json::to_string(&payload).unwrap_or_default();
         Some(Ok(SseEvent::default().event(&payload.kind).data(data)))
     });
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 // ---------------------------------------------------------------------------

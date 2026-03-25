@@ -1521,21 +1521,7 @@ async fn run_external_handoff(
     }
 
     let pcap_path_value = pcap_path.unwrap_or("").to_string();
-    let expanded_args = config
-        .args
-        .iter()
-        .map(|arg| {
-            apply_handoff_placeholders(
-                arg,
-                &runtime.session_id,
-                &runtime.target_ip.to_string(),
-                metadata_path,
-                evidence_path,
-                &pcap_path_value,
-            )
-        })
-        .collect::<Vec<_>>();
-    status.args = expanded_args.clone();
+    status.args = config.args.clone();
 
     let mut attestation_key = None::<String>;
     if config.attestation_enabled {
@@ -1574,11 +1560,22 @@ async fn run_external_handoff(
     }
 
     let mut cmd = Command::new(&config.command);
-    cmd.args(&expanded_args);
+    cmd.args(&config.args);
     if config.clear_env {
         cmd.env_clear();
         cmd.env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
     }
+    cmd.env("INNERWARDEN_SESSION_ID", &runtime.session_id);
+    cmd.env("INNERWARDEN_TARGET_IP", runtime.target_ip.to_string());
+    cmd.env(
+        "INNERWARDEN_METADATA_PATH",
+        metadata_path.display().to_string(),
+    );
+    cmd.env(
+        "INNERWARDEN_EVIDENCE_PATH",
+        evidence_path.display().to_string(),
+    );
+    cmd.env("INNERWARDEN_PCAP_PATH", &pcap_path_value);
     if config.attestation_enabled {
         if let Some(challenge) = status.attestation.challenge.as_deref() {
             cmd.env("INNERWARDEN_HANDOFF_ATTEST_CHALLENGE", challenge);
@@ -1698,22 +1695,6 @@ async fn run_external_handoff(
     )
     .await;
     status
-}
-
-fn apply_handoff_placeholders(
-    value: &str,
-    session_id: &str,
-    target_ip: &str,
-    metadata_path: &Path,
-    evidence_path: &Path,
-    pcap_path: &str,
-) -> String {
-    value
-        .replace("{session_id}", session_id)
-        .replace("{target_ip}", target_ip)
-        .replace("{metadata_path}", &metadata_path.display().to_string())
-        .replace("{evidence_path}", &evidence_path.display().to_string())
-        .replace("{pcap_path}", pcap_path)
 }
 
 async fn sign_external_handoff(
@@ -1883,18 +1864,24 @@ fn is_command_allowed(command: &str, allowed_commands: &[String]) -> bool {
     if command_trim.is_empty() {
         return false;
     }
-    let command_file_name = Path::new(command_trim)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
+    // Canonicalize to resolve symlinks and path traversal
+    let canonical = match std::fs::canonicalize(command_trim) {
+        Ok(p) => p,
+        Err(_) => return false, // command doesn't exist or can't be resolved
+    };
+    let command_file_name = canonical.file_name().and_then(|s| s.to_str()).unwrap_or("");
     allowed_commands.iter().any(|allowed| {
         let allowed_trim = allowed.trim();
         if allowed_trim.is_empty() {
             return false;
         }
         if allowed_trim.contains('/') {
-            allowed_trim == command_trim
+            // Full path: canonicalize and compare
+            std::fs::canonicalize(allowed_trim)
+                .map(|p| p == canonical)
+                .unwrap_or(false)
         } else {
+            // Basename only: match against canonical basename
             allowed_trim == command_file_name
         }
     })
@@ -3023,38 +3010,31 @@ mod tests {
     }
 
     #[test]
-    fn handoff_placeholder_expansion_works() {
-        let metadata = PathBuf::from("/tmp/meta.json");
-        let evidence = PathBuf::from("/tmp/evidence.jsonl");
-        let expanded = apply_handoff_placeholders(
-            "--session={session_id} --target={target_ip} --meta={metadata_path} --ev={evidence_path} --pcap={pcap_path}",
-            "s1",
-            "1.2.3.4",
-            &metadata,
-            &evidence,
-            "/tmp/sample.pcap",
-        );
-        assert!(expanded.contains("--session=s1"));
-        assert!(expanded.contains("--target=1.2.3.4"));
-        assert!(expanded.contains("--meta=/tmp/meta.json"));
-        assert!(expanded.contains("--ev=/tmp/evidence.jsonl"));
-        assert!(expanded.contains("--pcap=/tmp/sample.pcap"));
-    }
-
-    #[test]
     fn external_handoff_allowlist_matches_path_and_basename() {
+        // Use /bin/ls which exists on all platforms
+        let ls_path = if std::path::Path::new("/bin/ls").exists() {
+            "/bin/ls"
+        } else {
+            "/usr/bin/ls"
+        };
+        let ls_canonical = std::fs::canonicalize(ls_path).expect("ls must exist for this test");
+
+        // Full path match (canonicalized)
         assert!(is_command_allowed(
-            "/usr/local/bin/iw-handoff",
-            &["/usr/local/bin/iw-handoff".to_string()]
+            ls_path,
+            &[ls_canonical.display().to_string()]
         ));
-        assert!(is_command_allowed(
-            "/usr/local/bin/iw-handoff",
-            &["iw-handoff".to_string()]
-        ));
+        // Basename match
+        assert!(is_command_allowed(ls_path, &["ls".to_string()]));
+        // Non-matching basename
+        assert!(!is_command_allowed(ls_path, &["other-cmd".to_string()]));
+        // Non-existent command always rejected
         assert!(!is_command_allowed(
-            "/usr/local/bin/iw-handoff",
-            &["other-cmd".to_string()]
+            "/nonexistent/path/to/binary",
+            &["/nonexistent/path/to/binary".to_string()]
         ));
+        // Empty command rejected
+        assert!(!is_command_allowed("", &["ls".to_string()]));
     }
 
     #[test]
