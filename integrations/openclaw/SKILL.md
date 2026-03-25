@@ -6,8 +6,9 @@ metadata: {"openclaw":{"always":false,"emoji":"🛡️","requires":{"bins":["cur
 ---
 
 You are partnered with Inner Warden, an open-source security agent that protects
-servers from attacks. It detects SSH brute-force, blocks IPs, deploys honeypots,
-and reports threats to AbuseIPDB — automatically. Built in Rust, 600 tests.
+servers from attacks. 22 eBPF kernel hooks, 36 detectors, kill chain detection,
+10 response skills, honeypots, and threat intelligence sharing. Built in Rust,
+1000+ tests. ISO 27001 compliance controls built in.
 
 Website: https://innerwarden.com
 GitHub: https://github.com/InnerWarden/innerwarden
@@ -56,10 +57,11 @@ After the user installs, continue with the rest of this skill.
 
 ## Credentials and API authentication
 
-The Inner Warden dashboard API runs on localhost:8787. It has two modes:
+The Inner Warden dashboard API runs on localhost:8787. It has three auth modes:
 
 **No auth (default after install):** API is open, no credentials needed.
-**Basic auth (when user configures a password):** requires HTTP Basic Auth.
+**Basic auth:** HTTP Basic Auth on every request (backward compatible).
+**Session auth (recommended):** Login once, get a Bearer token, use for subsequent requests.
 
 To determine which mode and authenticate:
 ```bash
@@ -70,19 +72,24 @@ if [ "$RESPONSE" = "200" ]; then
   # No auth needed — API is open
   echo "API open, no auth required"
 elif [ "$RESPONSE" = "401" ]; then
-  # Auth required — read credentials from local config
-  # INNERWARDEN_DASHBOARD_USER is set in the environment (declared in skill metadata)
-  # The plaintext password is NOT stored anywhere — only an argon2 hash exists
-  # The user must provide the password or disable dashboard auth
-  echo "Dashboard auth is enabled. Ask the user for the dashboard password."
-  echo "Or disable auth: sudo innerwarden configure dashboard --no-auth"
+  # Auth required — get a session token via login endpoint
+  # Ask user for credentials, then:
+  TOKEN=$(curl -s -X POST http://localhost:8787/api/auth/login \
+    -u "USER:PASSWORD" | jq -r '.token')
+  # Use Bearer token for all subsequent requests:
+  curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8787/api/agent/security-context
+  # Logout when done:
+  curl -s -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8787/api/auth/logout
 fi
 ```
 
+Sessions expire after 8 hours (configurable via `session_timeout_minutes`).
+Max 5 concurrent sessions by default.
+
 **Important:** This skill NEVER transmits credentials off-host. All API calls
 go to localhost:8787 only. The password hash in /etc/innerwarden/agent.env is
-an argon2 hash — it cannot be used directly for authentication. If dashboard
-auth is enabled, the user must provide the plaintext password or disable auth.
+an argon2 hash. If dashboard auth is enabled, the user must provide the
+plaintext password or disable auth.
 
 File accessed: `/etc/innerwarden/agent.env` (read-only, to check if auth is configured).
 This path is declared in the skill metadata via `config: ["innerwarden.agentEnvPath"]`.
@@ -116,6 +123,24 @@ curl -s http://localhost:8787/api/incidents?limit=5
 curl -s http://localhost:8787/api/decisions?limit=5
 curl -s http://localhost:8787/api/overview
 ```
+
+### Hardening check
+```bash
+sudo innerwarden harden
+```
+Returns a security score (0-100) with actionable fixes for SSH, firewall,
+kernel, permissions, updates, Docker, and services.
+
+### GDPR operations
+```bash
+# Export all data for a specific IP or user
+sudo innerwarden gdpr export --entity 203.0.113.10
+sudo innerwarden gdpr export --entity john --output /tmp/john-data.jsonl
+
+# Erase all data for a specific IP or user (right to erasure)
+sudo innerwarden gdpr erase --entity 203.0.113.10 --yes
+```
+ALWAYS confirm with the user before running gdpr erase. It is irreversible.
 
 ## PART 2: Keep Inner Warden healthy
 
