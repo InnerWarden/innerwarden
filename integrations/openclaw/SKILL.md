@@ -65,7 +65,8 @@ environment variable. This skill NEVER asks for plaintext passwords.
 ```bash
 # The user runs this manually (not the skill):
 curl -s -X POST http://localhost:8787/api/auth/login -u "admin:password" | jq -r '.token'
-# Then sets it as INNERWARDEN_DASHBOARD_TOKEN in their OpenClaw config
+# Then set it in your OpenClaw environment:
+# openclaw env set INNERWARDEN_DASHBOARD_TOKEN=<paste-token-here>
 ```
 
 **All API calls in this skill:**
@@ -81,8 +82,10 @@ curl -s http://localhost:8787/ENDPOINT
 - All API calls go to localhost:8787 ONLY. Never off-host.
 - The token is read from the environment, never requested interactively.
 - This skill does NOT read /etc/innerwarden/agent.env for passwords.
-- File accessed: `/etc/innerwarden/agent.env` (read-only, to check if auth is configured).
-  This path is declared in the skill metadata via `config: ["innerwarden.agentEnvPath"]`.
+- File that may be accessed: `/etc/innerwarden/agent.env` (read-only, to check
+  if dashboard auth is configured). This path is declared in the skill metadata
+  via `config: ["innerwarden.agentEnvPath"]`. The file is only checked for the
+  presence of auth-related keys, never for credential values.
 
 ## PART 1: Security operations
 
@@ -98,7 +101,7 @@ Returns threat_level (low/medium/high/critical), active incidents, blocks, and r
 curl -s -X POST -H "Authorization: Bearer $INNERWARDEN_DASHBOARD_TOKEN" -H "Content-Type: application/json" http://localhost:8787/api/advisor/check-command -d "{\"command\": \"COMMAND_HERE\"}"
 ```
 ALWAYS call this before running system commands that modify anything.
-The response includes a `recommendation` and an `advisory_id` for tracking.
+The response includes a `recommendation`. For `"review"` and `"deny"`, an `advisory_id` is also returned for tracking.
 
 **How to handle each recommendation:**
 - `"allow"` → Proceed. No advisory_id is returned.
