@@ -1225,14 +1225,30 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResp
         .count();
 
     // Last 30 for display
-    // Public feed: show all incidents except Inner Warden's own internal operations.
-    // Filter out privesc from innerwarden processes (agent does setuid for skills).
+    // Public feed: filter out system daemon privesc (legitimate setuid) and
+    // Inner Warden's own operations. These are noise, not attacks.
     let is_internal = |inc: &Incident| -> bool {
         let t = inc.title.to_lowercase();
-        t.contains("(en-agent)")
-            || t.contains("(n-shield)")
-            || t.contains("(en-sensor)")
-            || t.contains("innerwarden")
+        // Inner Warden processes doing setuid for skills
+        t.contains("(en-agent)") || t.contains("(n-shield)")
+            || t.contains("(en-sensor)") || t.contains("innerwarden")
+        // System daemons that legitimately do setuid
+            || t.contains("(imesyncd)") // systemd-timesyncd
+            || t.contains("(systemd")   // any systemd process
+            || t.contains("(networkd)")  // systemd-networkd
+            || t.contains("(resolved)")  // systemd-resolved
+            || t.contains("(sshd)")     // sshd privilege separation
+            || t.contains("(cron)")     // cron running as root
+            || t.contains("(polkitd)")  // polkit auth
+            || t.contains("(dbus-daem") // dbus
+            || t.contains("(login)")    // login process
+            || t.contains("(su)")       // su command
+            || t.contains("(sudo)")     // sudo command
+            || t.contains("(pkexec)")   // polkit exec
+            || t.contains("(fwupdmgr)") // firmware update manager
+            || t.contains("(mandb)")    // man-db cache rebuild
+            || t.contains("(find)")     // find in cron jobs
+            || t.contains("(install)")  // install command (package managers)
     };
     let mut items: Vec<LiveFeedItem> = incidents
         .iter()
