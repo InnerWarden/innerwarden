@@ -881,6 +881,9 @@ pub async fn serve(
         // Honeypot tab
         .route("/api/honeypot/sessions", get(api_honeypot_sessions))
         .route("/api/action/honeypot", post(api_action_honeypot))
+        // Compliance tab
+        .route("/api/admin-actions", get(api_admin_actions))
+        .route("/api/advisory-cache", get(api_advisory_cache))
         // D6 - SSE live event stream
         .route("/api/events/stream", get(api_events_stream))
         // Web Push
@@ -2591,6 +2594,51 @@ async fn api_honeypot_sessions(State(state): State<DashboardState>) -> Json<serd
     });
 
     Json(serde_json::json!({ "sessions": sessions }))
+}
+
+/// GET /api/admin-actions - recent admin action entries for compliance view.
+async fn api_admin_actions(State(state): State<DashboardState>) -> Json<serde_json::Value> {
+    let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let path = state.data_dir.join(format!("admin-actions-{date}.jsonl"));
+    let entries = read_jsonl::<AdminActionEntry>(&path);
+    let items: Vec<serde_json::Value> = entries
+        .iter()
+        .rev()
+        .take(50)
+        .map(|e| {
+            serde_json::json!({
+                "ts": e.ts.to_rfc3339(),
+                "operator": e.operator,
+                "source": e.source,
+                "action": e.action,
+                "target": e.target,
+                "result": e.result,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "date": date, "total": entries.len(), "items": items }))
+}
+
+/// GET /api/advisory-cache - current advisory cache for compliance view.
+async fn api_advisory_cache(State(state): State<DashboardState>) -> Json<serde_json::Value> {
+    let cache = state
+        .advisory_cache
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
+    let items: Vec<serde_json::Value> = cache
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "advisory_id": e.advisory_id,
+                "command_preview": e.command_preview,
+                "risk_score": e.risk_score,
+                "recommendation": e.recommendation,
+                "signals": e.signals,
+                "ts": e.ts.to_rfc3339(),
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "total": items.len(), "items": items }))
 }
 
 /// GET /api/sensors - sensor activity time-series for dashboard graphs.
@@ -6827,6 +6875,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       <button type="button" class="main-nav-btn" id="navReport" onclick="showView('report')">Report</button>
       <button type="button" class="main-nav-btn" id="navStatus" onclick="showView('status')">Health</button>
       <button type="button" class="main-nav-btn" id="navHoneypot" onclick="showView('honeypot')">🍯 Honeypot</button>
+      <button type="button" class="main-nav-btn" id="navCompliance" onclick="showView('compliance')">🛡️ Compliance</button>
     </div>
     <button type="button" class="panel-toggle-btn" id="panelToggleBtn" onclick="toggleLeftPanel()" aria-label="Toggle panel">
       <span id="panelToggleIcon">▲</span> List
@@ -7067,6 +7116,49 @@ const INDEX_HTML: &str = r##"<!doctype html>
     </div>
   </div>
 
+  <!-- Compliance tab view -->
+  <div class="report-view" id="viewCompliance" style="display:none">
+    <div class="report-toolbar">
+      <button type="button" class="report-refresh-btn" onclick="loadCompliance()">↻ Refresh</button>
+      <span id="complianceViewStatus" class="report-status"></span>
+    </div>
+    <div id="complianceContent" class="report-content" style="padding:16px;">
+      <div class="kpi-grid" style="grid-template-columns: repeat(4, 1fr);">
+        <div class="kpi-card">
+          <div class="kpi-label">Active Sessions</div>
+          <div class="kpi-value" id="comp-sessions">-</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Admin Actions Today</div>
+          <div class="kpi-value" id="comp-admin-actions">-</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Advisory Cache</div>
+          <div class="kpi-value" id="comp-advisories">-</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Audit Trail</div>
+          <div class="kpi-value" id="comp-audit-status">Active</div>
+        </div>
+      </div>
+
+      <h3 style="margin:24px 0 12px;color:var(--text);">Recent Admin Actions</h3>
+      <div id="comp-admin-list" class="card" style="max-height:400px;overflow-y:auto;padding:12px;">
+        <div class="muted">Loading...</div>
+      </div>
+
+      <h3 style="margin:24px 0 12px;color:var(--text);">Active Advisories (Trusted Advisor)</h3>
+      <div id="comp-advisory-list" class="card" style="max-height:300px;overflow-y:auto;padding:12px;">
+        <div class="muted">Loading...</div>
+      </div>
+
+      <h3 style="margin:24px 0 12px;color:var(--text);">Active Sessions</h3>
+      <div id="comp-session-list" class="card" style="max-height:300px;overflow-y:auto;padding:12px;">
+        <div class="muted">Loading...</div>
+      </div>
+    </div>
+  </div>
+
   <!-- D3 - action modal -->
   <div class="modal-overlay" id="actionModal" onclick="handleModalBg(event)">
     <div class="modal-box" onclick="event.stopPropagation()">
@@ -7108,8 +7200,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
   // ── D10 - View switcher ──────────────────────────────────────────────────
   function showView(name) {
-    const views = { sensors: 'viewSensors', investigate: 'viewInvestigate', report: 'viewReport', status: 'viewStatus', honeypot: 'viewHoneypot' };
-    const btns  = { sensors: 'navSensors', investigate: 'navInvestigate', report: 'navReport', status: 'navStatus', honeypot: 'navHoneypot' };
+    const views = { sensors: 'viewSensors', investigate: 'viewInvestigate', report: 'viewReport', status: 'viewStatus', honeypot: 'viewHoneypot', compliance: 'viewCompliance' };
+    const btns  = { sensors: 'navSensors', investigate: 'navInvestigate', report: 'navReport', status: 'navStatus', honeypot: 'navHoneypot', compliance: 'navCompliance' };
     Object.keys(views).forEach(k => {
       const el = document.getElementById(views[k]);
       const btn = document.getElementById(btns[k]);
@@ -7122,6 +7214,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     if (name === 'report') loadReport();
     if (name === 'status') loadStatus();
     if (name === 'honeypot') loadHoneypot();
+    if (name === 'compliance') loadCompliance();
   }
 
   // ── E2 - Home state ─────────────────────────────────────────────────────
@@ -8081,6 +8174,70 @@ const INDEX_HTML: &str = r##"<!doctype html>
   function collapseLeftOnMobile() {
     if (window.innerWidth <= 860 && leftPanelOpen) {
       toggleLeftPanel();
+    }
+  }
+
+  // ── Compliance tab ──────────────────────────────────────────────────
+  async function loadCompliance() {
+    const status = document.getElementById('complianceViewStatus');
+    if (status) status.textContent = 'Loading…';
+    try {
+      // Admin actions
+      const actions = await loadJson('/api/admin-actions');
+      document.getElementById('comp-admin-actions').textContent = actions.total || 0;
+      const listEl = document.getElementById('comp-admin-list');
+      if (actions.items && actions.items.length > 0) {
+        listEl.innerHTML = actions.items.map(a => `
+          <div style="display:flex;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);">
+            <span style="color:var(--muted);font-size:0.75rem;min-width:70px;">${new Date(a.ts).toLocaleTimeString()}</span>
+            <span style="color:var(--accent);font-size:0.75rem;min-width:70px;">${a.source}</span>
+            <span style="font-size:0.8rem;color:var(--text);">${a.operator} ${a.action} <span style="color:var(--accent)">${a.target}</span></span>
+            <span style="margin-left:auto;font-size:0.7rem;color:${a.result === 'success' ? 'var(--ok)' : 'var(--danger)'};">${a.result}</span>
+          </div>
+        `).join('');
+      } else {
+        listEl.innerHTML = '<div class="muted">No admin actions recorded today</div>';
+      }
+
+      // Advisory cache
+      const advisories = await loadJson('/api/advisory-cache');
+      document.getElementById('comp-advisories').textContent = advisories.total || 0;
+      const advEl = document.getElementById('comp-advisory-list');
+      if (advisories.items && advisories.items.length > 0) {
+        advEl.innerHTML = advisories.items.map(a => `
+          <div style="display:flex;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);align-items:center;">
+            <span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.7rem;font-weight:600;
+              background:${a.recommendation === 'deny' ? 'rgba(244,63,94,0.15)' : 'rgba(255,184,77,0.15)'};
+              color:${a.recommendation === 'deny' ? 'var(--danger)' : 'var(--warn)'};">${a.recommendation}</span>
+            <code style="font-size:0.75rem;color:var(--accent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${a.command_preview}</code>
+            <span style="font-size:0.7rem;color:var(--muted);">score ${a.risk_score}</span>
+          </div>
+        `).join('');
+      } else {
+        advEl.innerHTML = '<div class="muted">No active advisories</div>';
+      }
+
+      // Sessions
+      const sessions = await loadJson('/api/auth/sessions');
+      const sessCount = Array.isArray(sessions) ? sessions.length : 0;
+      document.getElementById('comp-sessions').textContent = sessCount;
+      const sessEl = document.getElementById('comp-session-list');
+      if (sessCount > 0) {
+        sessEl.innerHTML = sessions.map(s => `
+          <div style="display:flex;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);">
+            <span style="color:var(--text);font-size:0.8rem;">${s.username}</span>
+            <span style="color:var(--muted);font-size:0.75rem;">${s.client_ip}</span>
+            <span style="margin-left:auto;font-size:0.7rem;color:var(--muted);">since ${new Date(s.created_at).toLocaleTimeString()}</span>
+          </div>
+        `).join('');
+      } else {
+        sessEl.innerHTML = '<div class="muted">No active sessions</div>';
+      }
+
+      if (status) status.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    } catch (e) {
+      console.error('Failed to load compliance data:', e);
+      if (status) status.textContent = 'Error';
     }
   }
 
