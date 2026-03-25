@@ -11,6 +11,36 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.3] — 2026-03-25
+
+### Security
+
+- **eBPF parser hardening** — replaced 69 `.try_into().unwrap()` calls in ring buffer parsing with safe macros that continue on malformed events instead of crashing the sensor.
+- **Sudoers TOCTOU fix** — replaced predictable `/tmp/innerwarden-sudoers-<PID>` with `tempfile::Builder` (exclusive create, random suffix).
+- **Sudoers wildcard constraints** — narrowed `*` wildcards in sudoers rules to `/tmp/innerwarden-*` and `/etc/sudoers.d/innerwarden-*` paths only.
+- **Sudoers filename validation** — `SudoersDropIn::path()` now rejects names containing `/`, `..`, or special characters.
+- **Dashboard X-Forwarded-For** — proxy headers only trusted when connecting IP is in `dashboard.trusted_proxies` config (default: empty, trust nothing).
+- **AI provider HTTPS enforcement** — `http://` base URLs rejected for remote hosts (allowed only for localhost/127.0.0.1/::1).
+- **Config file permission warning** — agent warns on startup if `agent.toml` is readable by group/other users.
+- **Honeypot handoff injection fix** — replaced `{target_ip}` placeholder expansion in command args with environment variables (`INNERWARDEN_SESSION_ID`, `INNERWARDEN_TARGET_IP`, etc.).
+- **Honeypot allowlist path traversal fix** — `is_command_allowed()` now uses `fs::canonicalize()` to resolve symlinks and `../` before matching.
+- **Supply chain: pin innerwarden-mesh** — dependency pinned to commit hash instead of branch master.
+- **CTL temp file hardening** — all `/tmp/innerwarden-*` paths in CTL replaced with `tempfile::Builder`.
+- **Dashboard security headers** — `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin` on all responses.
+- **SSE connection limit** — max 50 concurrent SSE streams, returns 429 on overflow.
+- **Event size enforcement** — JSONL sink skips events exceeding 16KB with a warning.
+
+### Fixed
+
+- **Live feed filter typo** — `(imesyncd)` → `(timesyncd)` in system daemon privesc filter.
+- **cargo fmt** — trailing whitespace in dashboard.rs that broke CI.
+
+### Changed
+
+- **README overhaul** — full ASCII architecture diagram, eBPF/detector count badges, all em-dashes removed, warning moved to disclaimer section.
+
+---
+
 ## [0.4.2] — 2026-03-25
 
 ### Added
