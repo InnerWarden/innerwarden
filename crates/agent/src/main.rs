@@ -28,6 +28,7 @@ mod redis_reader;
 mod report;
 mod skills;
 mod slack;
+mod state_store;
 mod telegram;
 mod telemetry;
 mod web_push;
@@ -306,6 +307,9 @@ struct AgentState {
     narrative_incidents_offset: u64,
     /// Forensics capture — grabs /proc state for High/Critical process incidents.
     forensics: forensics::ForensicsCapture,
+    /// Persistent state store (redb) — replaces in-memory HashMaps for
+    /// ip_reputations, cooldowns, block_counts, xdp_block_times, trust_rules.
+    store: state_store::StateStore,
     /// Redis stream reader for events (None when redis_url is not configured).
     #[cfg(feature = "redis-reader")]
     redis_reader: Option<redis_reader::RedisStreamReader>,
@@ -1304,6 +1308,11 @@ async fn main() -> Result<()> {
     let (approval_tx, approval_rx_for_state) =
         tokio::sync::mpsc::channel::<telegram::ApprovalResult>(64);
 
+    let store = state_store::StateStore::open(&cli.data_dir).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "state store open failed — using fresh store");
+        state_store::StateStore::open(&std::env::temp_dir()).expect("fallback store")
+    });
+
     let mut state = AgentState {
         skill_registry: skills::SkillRegistry::default_builtin(),
         blocklist: startup_blocklist,
@@ -1424,6 +1433,7 @@ async fn main() -> Result<()> {
         narrative_acc: NarrativeAccumulator::default(),
         narrative_incidents_offset: 0,
         forensics: forensics::ForensicsCapture::new(&cli.data_dir),
+        store,
         #[cfg(feature = "redis-reader")]
         redis_reader: None,
     };
@@ -1612,10 +1622,13 @@ async fn main() -> Result<()> {
                     state.blocklist.trim_if_needed(10_000);
                     let cutoff_2h = chrono::Utc::now() - chrono::Duration::hours(2);
                     state.decision_cooldowns.retain(|_, ts| *ts > cutoff_2h);
+                    state.store.retain_cooldowns(state_store::CooldownTable::Decision, cutoff_2h);
                     state.notification_cooldowns.retain(|_, ts| *ts > cutoff_2h);
+                    state.store.retain_cooldowns(state_store::CooldownTable::Notification, cutoff_2h);
                     // Cap block_counts to 5000 entries
                     if state.block_counts.len() > 5000 {
                         state.block_counts.clear();
+                        state.store.clear_block_counts();
                     }
                     // Cap ip_reputations and persist to disk for dashboard
                     if state.ip_reputations.len() > 10000 {
@@ -1772,10 +1785,13 @@ async fn main() -> Result<()> {
                     state.blocklist.trim_if_needed(10_000);
                     let cutoff_2h = chrono::Utc::now() - chrono::Duration::hours(2);
                     state.decision_cooldowns.retain(|_, ts| *ts > cutoff_2h);
+                    state.store.retain_cooldowns(state_store::CooldownTable::Decision, cutoff_2h);
                     state.notification_cooldowns.retain(|_, ts| *ts > cutoff_2h);
+                    state.store.retain_cooldowns(state_store::CooldownTable::Notification, cutoff_2h);
                     // Cap block_counts to 5000 entries
                     if state.block_counts.len() > 5000 {
                         state.block_counts.clear();
+                        state.store.clear_block_counts();
                     }
                     // Cap ip_reputations and persist to disk for dashboard
                     if state.ip_reputations.len() > 10000 {
@@ -2230,6 +2246,9 @@ async fn process_incidents(
             let now = chrono::Utc::now();
             for k in &notify_keys {
                 state.notification_cooldowns.insert(k.clone(), now);
+                state
+                    .store
+                    .set_cooldown(state_store::CooldownTable::Notification, k, now);
             }
         } // end if !notify_suppressed
 
@@ -2458,7 +2477,14 @@ async fn process_incidents(
                         if let Some(key) =
                             decision_cooldown_key_for_decision(incident, &auto_decision)
                         {
-                            state.decision_cooldowns.insert(key, chrono::Utc::now());
+                            state
+                                .decision_cooldowns
+                                .insert(key.clone(), chrono::Utc::now());
+                            state.store.set_cooldown(
+                                state_store::CooldownTable::Decision,
+                                &key,
+                                chrono::Utc::now(),
+                            );
                         }
                         let (execution_result, _cf_pushed) = if cfg.responder.enabled {
                             execute_decision(&auto_decision, incident, data_dir, cfg, state).await
@@ -2561,7 +2587,14 @@ async fn process_incidents(
                     state.blocklist.insert(ip.clone());
                     if let Some(key) = decision_cooldown_key_for_decision(incident, &auto_decision)
                     {
-                        state.decision_cooldowns.insert(key, chrono::Utc::now());
+                        state
+                            .decision_cooldowns
+                            .insert(key.clone(), chrono::Utc::now());
+                        state.store.set_cooldown(
+                            state_store::CooldownTable::Decision,
+                            &key,
+                            chrono::Utc::now(),
+                        );
                     }
                     let (execution_result, _cf_pushed) = if cfg.responder.enabled {
                         execute_decision(&auto_decision, incident, data_dir, cfg, state).await
@@ -2639,7 +2672,14 @@ async fn process_incidents(
                     if let Some(key) =
                         decision_cooldown_key_for_decision(incident, &honeypot_decision)
                     {
-                        state.decision_cooldowns.insert(key, chrono::Utc::now());
+                        state
+                            .decision_cooldowns
+                            .insert(key.clone(), chrono::Utc::now());
+                        state.store.set_cooldown(
+                            state_store::CooldownTable::Decision,
+                            &key,
+                            chrono::Utc::now(),
+                        );
                     }
                     let (execution_result, _) = if cfg.responder.enabled {
                         execute_decision(&honeypot_decision, incident, data_dir, cfg, state).await
@@ -2783,7 +2823,14 @@ async fn process_incidents(
         // Record decision cooldown so the same action:detector:entity scope is not
         // re-evaluated by AI within the cooldown window (default 1h).
         if let Some(key) = decision_cooldown_key_for_decision(incident, &decision) {
-            state.decision_cooldowns.insert(key, chrono::Utc::now());
+            state
+                .decision_cooldowns
+                .insert(key.clone(), chrono::Utc::now());
+            state.store.set_cooldown(
+                state_store::CooldownTable::Decision,
+                &key,
+                chrono::Utc::now(),
+            );
         }
 
         // Update in-memory blocklist immediately for BlockIp decisions so subsequent
@@ -2800,6 +2847,7 @@ async fn process_incidents(
             // reason so it surfaces in the audit trail and notifications.
             let count = state.block_counts.entry(ip.clone()).or_insert(0);
             *count += 1;
+            state.store.increment_block_count(ip);
 
             // Update local IP reputation — record incident + block.
             let rep = state
@@ -5991,6 +6039,7 @@ mod tests {
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
+            store: state_store::StateStore::open(dir.path()).unwrap(),
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -6117,6 +6166,7 @@ mod tests {
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
+            store: state_store::StateStore::open(dir.path()).unwrap(),
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -6218,6 +6268,7 @@ mod tests {
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
+            store: state_store::StateStore::open(dir.path()).unwrap(),
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -6331,6 +6382,7 @@ mod tests {
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
+            store: state_store::StateStore::open(dir.path()).unwrap(),
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -6421,6 +6473,7 @@ mod tests {
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
+            store: state_store::StateStore::open(dir.path()).unwrap(),
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -6523,6 +6576,7 @@ mod tests {
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
+            store: state_store::StateStore::open(dir.path()).unwrap(),
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };

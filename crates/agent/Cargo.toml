@@ -44,6 +44,7 @@ p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pkcs8"] }
 aes-gcm = "0.10"
 hkdf = "0.12"
 bytes = "1"
+redb = "2"
 redis = { version = "0.27", features = ["tokio-comp", "aio"], optional = true }
 
 [features]

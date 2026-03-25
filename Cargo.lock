@@ -1560,6 +1560,7 @@ dependencies = [
  "innerwarden_core",
  "p256",
  "rand_core 0.6.4",
+ "redb",
  "redis",
  "regex",
  "reqwest",
@@ -2507,6 +2508,15 @@ name = "rand_core"
 version = "0.10.0-rc-3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f66ee92bc15280519ef199a274fe0cafff4245d31bc39aaa31c011ad56cb1f05"
+
+[[package]]
+name = "redb"
+version = "2.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eca1e9d98d5a7e9002d0013e18d5a9b000aee942eb134883a82f06ebffb6c01"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "redis"
