@@ -10,8 +10,13 @@ use tracing::warn;
 // JSONL incremental reader
 // ---------------------------------------------------------------------------
 
+/// Maximum entries to parse per call to prevent memory spikes on large backlogs.
+/// When the file has more unread data, subsequent calls will pick up where we left off.
+const MAX_ENTRIES_PER_READ: usize = 5000;
+
 /// Read new entries from a JSONL file starting at `offset` bytes.
-/// Returns the parsed entries and the new byte offset (end of file).
+/// Returns the parsed entries and the new byte offset.
+/// Caps at MAX_ENTRIES_PER_READ to prevent memory spikes after restarts.
 pub fn read_new_entries<T: DeserializeOwned>(path: &Path, offset: u64) -> Result<ReadResult<T>> {
     if !path.exists() {
         return Ok(ReadResult {
@@ -57,6 +62,11 @@ pub fn read_new_entries<T: DeserializeOwned>(path: &Path, offset: u64) -> Result
                     "skipping malformed JSONL line: {e}"
                 );
             }
+        }
+
+        // Cap per-read to prevent memory spikes when catching up on large backlogs
+        if entries.len() >= MAX_ENTRIES_PER_READ {
+            break;
         }
     }
 
