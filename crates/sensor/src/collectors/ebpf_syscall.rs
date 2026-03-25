@@ -15,8 +15,15 @@ use std::net::Ipv4Addr;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-/// Path to the eBPF bytecode file (compiled separately).
-/// In production, this could be embedded via include_bytes! in a build script.
+/// Embedded eBPF bytecode (compiled into the sensor binary).
+/// Built with: cargo +nightly build --target bpfel-unknown-none -Z build-std=core --release
+/// When the feature `ebpf-embedded` is enabled, the bytecode is baked into the binary
+/// via include_bytes! — no separate file needed. `innerwarden upgrade` updates everything.
+#[cfg(feature = "ebpf-embedded")]
+const EBPF_BYTECODE_EMBEDDED: &[u8] =
+    include_bytes!("../../../sensor-ebpf/target/bpfel-unknown-none/release/innerwarden-ebpf");
+
+/// Fallback paths for when bytecode is NOT embedded (dev mode or separate deploy).
 const EBPF_OBJ_PATH: &str = "/usr/local/lib/innerwarden/innerwarden-ebpf";
 const EBPF_OBJ_PATH_DEV: &str =
     "crates/sensor-ebpf/target/bpfel-unknown-none/release/innerwarden-ebpf";
@@ -914,21 +921,32 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         return;
     }
 
-    let obj_path = match find_ebpf_obj() {
-        Some(p) => p,
-        None => {
-            warn!("eBPF bytecode not found — skipping eBPF collector");
-            return;
-        }
+    // Load eBPF bytecode: prefer embedded (baked into binary), fallback to file on disk.
+    #[cfg(feature = "ebpf-embedded")]
+    let bytes = {
+        info!(
+            "eBPF collector: using embedded bytecode ({} bytes)",
+            EBPF_BYTECODE_EMBEDDED.len()
+        );
+        EBPF_BYTECODE_EMBEDDED.to_vec()
     };
 
-    info!(path = %obj_path, "eBPF collector: loading bytecode");
-
-    let bytes = match std::fs::read(&obj_path) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(error = %e, "failed to read eBPF bytecode");
-            return;
+    #[cfg(not(feature = "ebpf-embedded"))]
+    let bytes = {
+        let obj_path = match find_ebpf_obj() {
+            Some(p) => p,
+            None => {
+                warn!("eBPF bytecode not found — skipping eBPF collector");
+                return;
+            }
+        };
+        info!(path = %obj_path, "eBPF collector: loading bytecode from file");
+        match std::fs::read(&obj_path) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(error = %e, "failed to read eBPF bytecode");
+                return;
+            }
         }
     };
 

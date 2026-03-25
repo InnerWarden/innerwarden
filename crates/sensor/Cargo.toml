@@ -35,6 +35,7 @@ libc = { version = "0.2", optional = true }
 [features]
 default = []
 ebpf = ["aya", "aya-log", "libc"]
+ebpf-embedded = ["ebpf"]
 redis-sink = ["redis"]
 
 [dev-dependencies]
