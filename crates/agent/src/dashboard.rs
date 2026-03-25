@@ -1225,11 +1225,17 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResp
         .count();
 
     // Last 30 for display
-    // Public feed: show all incidents (IP-based, process-based, shield escalations).
-    // Internal usernames are sanitized in the frontend.
+    // Public feed: show all incidents except Inner Warden's own internal operations.
+    // Filter out privesc from innerwarden processes (agent does setuid for skills).
+    let is_internal = |inc: &Incident| -> bool {
+        let t = inc.title.to_lowercase();
+        t.contains("(en-agent)") || t.contains("(n-shield)")
+            || t.contains("(en-sensor)") || t.contains("innerwarden")
+    };
     let mut items: Vec<LiveFeedItem> = incidents
         .iter()
         .rev()
+        .filter(|inc| !is_internal(inc))
         .take(30)
         .map(|inc| {
             let ip = inc
