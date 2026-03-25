@@ -6,7 +6,7 @@ use tracing::{info, warn};
 
 use crate::skills::{ResponseSkill, SkillContext, SkillResult, SkillTier};
 
-/// XDP firewall block — drops packets at the network driver level.
+/// XDP firewall block - drops packets at the network driver level.
 ///
 /// Instead of adding a firewall rule (ufw/iptables), this inserts the IP
 /// into a BPF hash map that the XDP program checks on every incoming packet.
@@ -29,7 +29,7 @@ impl ResponseSkill for BlockIpXdp {
     fn description(&self) -> &'static str {
         "Drops packets from the attacking IP at the network driver level using XDP. \
          10-25 million pps drop rate, zero CPU overhead. \
-         The fastest possible firewall — packets never reach the kernel network stack."
+         The fastest possible firewall - packets never reach the kernel network stack."
     }
     fn tier(&self) -> SkillTier {
         SkillTier::Open
@@ -84,10 +84,10 @@ impl ResponseSkill for BlockIpXdp {
 
             // Check if pinned map exists
             if !std::path::Path::new(BLOCKLIST_PIN).exists() {
-                // XDP not loaded — fall through, agent will use fallback backend
+                // XDP not loaded - fall through, agent will use fallback backend
                 warn!(
                     ip,
-                    "XDP blocklist map not found at {BLOCKLIST_PIN} — XDP firewall not loaded"
+                    "XDP blocklist map not found at {BLOCKLIST_PIN} - XDP firewall not loaded"
                 );
                 return SkillResult {
                     success: false,
@@ -127,7 +127,7 @@ impl ResponseSkill for BlockIpXdp {
                     info!(ip, "blocked via XDP (wire-speed drop)");
                     SkillResult {
                         success: true,
-                        message: format!("Blocked {ip} via XDP — wire-speed drop active"),
+                        message: format!("Blocked {ip} via XDP - wire-speed drop active"),
                     }
                 }
                 Ok(out) => {

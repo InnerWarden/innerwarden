@@ -99,7 +99,7 @@ fn poll_integrity(
         match hash_file(path) {
             Ok(hash) => match known.get(&key) {
                 None => {
-                    // First time seeing this file — establish baseline, no event.
+                    // First time seeing this file - establish baseline, no event.
                     info!(path = %path.display(), hash = %&hash[..12], "integrity baseline set");
                     new_hashes.insert(key, hash);
                 }
@@ -127,12 +127,12 @@ fn hash_file(path: &Path) -> io::Result<String> {
 }
 
 fn make_change_event(path: &Path, new_hash: &str, old_hash: &str, host: &str) -> Event {
-    // Detect authorized_keys changes — emit a specific event with username and MITRE tagging.
+    // Detect authorized_keys changes - emit a specific event with username and MITRE tagging.
     if let Some(ev) = make_ssh_key_event(path, new_hash, old_hash, host) {
         return ev;
     }
 
-    // Detect cron tampering — emit a specific event with MITRE T1053.003 tagging.
+    // Detect cron tampering - emit a specific event with MITRE T1053.003 tagging.
     if let Some(ev) = make_cron_event(path, new_hash, old_hash, host) {
         return ev;
     }
@@ -238,7 +238,7 @@ fn extract_ssh_username(path: &Path) -> Option<String> {
 /// Detects changes to:
 /// - `/etc/crontab`
 /// - `/etc/cron.d/*` and `/etc/cron.{hourly,daily,weekly,monthly}/*`
-/// - `/var/spool/cron/crontabs/<user>` (user crontabs — extracts username)
+/// - `/var/spool/cron/crontabs/<user>` (user crontabs - extracts username)
 ///
 /// Tagged as MITRE ATT&CK T1053.003 (Scheduled Task/Job: Cron).
 fn make_cron_event(path: &Path, new_hash: &str, old_hash: &str, host: &str) -> Option<Event> {
@@ -444,7 +444,7 @@ mod tests {
 
     #[test]
     fn non_ssh_dir_path_returns_none_for_username() {
-        // /etc/authorized_keys — not under .ssh/
+        // /etc/authorized_keys - not under .ssh/
         let path = Path::new("/etc/authorized_keys");
         let user = extract_ssh_username(path);
         assert!(user.is_none());

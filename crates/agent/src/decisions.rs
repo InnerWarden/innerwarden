@@ -117,7 +117,7 @@ impl DecisionWriter {
         self.last_hash = Some(sha256_hex(&line));
 
         writeln!(self.writer, "{line}").context("failed to write decision entry")?;
-        // Flush immediately — audit trail must survive a crash between decisions
+        // Flush immediately - audit trail must survive a crash between decisions
         self.writer
             .flush()
             .context("failed to flush decision entry")?;

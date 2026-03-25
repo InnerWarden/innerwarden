@@ -1,4 +1,4 @@
-//! System hardening advisor — scans configuration and suggests improvements.
+//! System hardening advisor - scans configuration and suggests improvements.
 //!
 //! `innerwarden harden` reads system files, evaluates security posture,
 //! and prints actionable recommendations. Never applies changes automatically.
@@ -640,7 +640,7 @@ fn check_services() -> CheckResult {
                 category: cat,
                 severity: Severity::Medium,
                 title: format!("{} services exposed on all interfaces", listening_all.len()),
-                fix: "Review services binding to 0.0.0.0 — bind to 127.0.0.1 where possible".into(),
+                fix: "Review services binding to 0.0.0.0 - bind to 127.0.0.1 where possible".into(),
             });
         } else {
             passed.push("Service exposure looks reasonable".into());
@@ -726,7 +726,7 @@ fn check_crontabs() -> CheckResult {
                             findings.push(Finding {
                                 category: cat,
                                 severity: Severity::Medium,
-                                title: format!("{}:{} — {}", path.display(), lineno + 1, reason),
+                                title: format!("{}:{} - {}", path.display(), lineno + 1, reason),
                                 fix: format!(
                                     "Review the entry in {} and remove it if unexpected",
                                     path.display()
@@ -752,7 +752,7 @@ fn check_crontabs() -> CheckResult {
                 findings.push(Finding {
                     category: cat,
                     severity: Severity::Medium,
-                    title: format!("/etc/crontab:{} — {}", lineno + 1, reason),
+                    title: format!("/etc/crontab:{} - {}", lineno + 1, reason),
                     fix: "Review the entry in /etc/crontab and remove it if unexpected".into(),
                 });
             }
@@ -762,7 +762,7 @@ fn check_crontabs() -> CheckResult {
     if findings.is_empty() {
         if scanned > 0 {
             passed.push(format!(
-                "Scanned {scanned} crontab file(s) — no suspicious entries"
+                "Scanned {scanned} crontab file(s) - no suspicious entries"
             ));
         } else {
             passed.push("No crontab files found to scan".into());
@@ -781,7 +781,7 @@ fn check_kernel_modules() -> CheckResult {
     let mut findings = Vec::new();
     let cat = "Kernel Modules";
 
-    // Known rootkit modules — always flag as Critical.
+    // Known rootkit modules - always flag as Critical.
     let rootkit_modules: &[&str] = &[
         "diamorphine",
         "reptile",
@@ -1111,7 +1111,7 @@ fn check_kernel_modules() -> CheckResult {
                         severity: Severity::Critical,
                         title: format!("Known rootkit module loaded: {module}"),
                         fix: format!(
-                            "Investigate immediately — remove with: sudo rmmod {module} && audit the system"
+                            "Investigate immediately - remove with: sudo rmmod {module} && audit the system"
                         ),
                     });
                     continue;
@@ -1491,11 +1491,11 @@ fn check_firmware() -> CheckResult {
                 category: cat,
                 severity: Severity::Medium,
                 title: "UEFI Secure Boot status unreadable".into(),
-                fix: "Check BIOS settings — Secure Boot may be disabled or misconfigured".into(),
+                fix: "Check BIOS settings - Secure Boot may be disabled or misconfigured".into(),
             });
         }
     } else {
-        passed.push("Legacy BIOS (no UEFI — Secure Boot not applicable)".into());
+        passed.push("Legacy BIOS (no UEFI - Secure Boot not applicable)".into());
     }
 
     // Kernel tainted flag
@@ -1535,7 +1535,7 @@ fn check_firmware() -> CheckResult {
                 category: cat,
                 severity,
                 title: format!("Kernel is tainted (flags={val}): {}", reasons.join(", ")),
-                fix: "Investigate tainted kernel — unsigned or out-of-tree modules detected. Run: cat /proc/sys/kernel/tainted".into(),
+                fix: "Investigate tainted kernel - unsigned or out-of-tree modules detected. Run: cat /proc/sys/kernel/tainted".into(),
             });
         }
     }
@@ -1566,7 +1566,7 @@ fn check_firmware() -> CheckResult {
                 category: cat,
                 severity: Severity::Critical,
                 title: format!("{count} world-writable file(s) in /boot"),
-                fix: "Fix permissions: sudo chmod o-w /boot/* — world-writable boot files allow kernel tampering".into(),
+                fix: "Fix permissions: sudo chmod o-w /boot/* - world-writable boot files allow kernel tampering".into(),
             });
         }
     }
@@ -1616,7 +1616,7 @@ fn check_firmware() -> CheckResult {
 
 pub fn cmd_harden(verbose: bool) -> Result<()> {
     println!();
-    println!("  \x1b[1m\x1b[36mInner Warden — Security Hardening Advisor\x1b[0m");
+    println!("  \x1b[1m\x1b[36mInner Warden - Security Hardening Advisor\x1b[0m");
     println!("  \x1b[90mScanning system configuration...\x1b[0m");
 
     let ignore_path = Path::new("/etc/innerwarden/harden-ignore.toml");
@@ -1732,7 +1732,7 @@ pub fn cmd_harden(verbose: bool) -> Result<()> {
     };
 
     println!(
-        "  \x1b[1mScore:\x1b[0m {}{}\x1b[0m/100 — {}",
+        "  \x1b[1mScore:\x1b[0m {}{}\x1b[0m/100 - {}",
         bar_color, score, grade
     );
     println!("  {}", bar);
@@ -1747,7 +1747,7 @@ pub fn cmd_harden(verbose: bool) -> Result<()> {
     } else {
         println!("\n  \x1b[90mRun with --verbose to see all passed checks.\x1b[0m");
         println!(
-            "  \x1b[90mInner Warden only advises — no changes are applied automatically.\x1b[0m\n"
+            "  \x1b[90mInner Warden only advises - no changes are applied automatically.\x1b[0m\n"
         );
     }
 
@@ -1927,7 +1927,7 @@ add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" alway
         let mut findings = Vec::new();
         check_tls_apache_files(&files, &mut passed, &mut findings);
 
-        // "all" without -SSLv3 means SSLv3 is still included — but our check
+        // "all" without -SSLv3 means SSLv3 is still included - but our check
         // looks for explicit "sslv3" / "tlsv1" tokens. The "all" case means
         // SSLProtocol IS set but doesn't contain deprecated keywords explicitly,
         // so it won't fire the deprecated-protocol finding. That's fine; the

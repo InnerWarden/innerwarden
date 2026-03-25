@@ -1,11 +1,11 @@
 //! Parses a `module.toml` manifest into a typed `ModuleManifest` struct.
 //!
 //! Also provides helpers used by `innerwarden module enable`:
-//! - `collector_section` / `detector_section` — map module-provided IDs to sensor config keys
-//! - `notifier_section` — map module-provided notifier IDs to agent config section names
-//! - `generate_module_sudoers_rule` — build a sudoers drop-in from `[security].allowed_commands`
-//! - `module_planned_effects` — human-readable list of what `enable` will do
-//! - `is_module_enabled` — check whether all components are already active
+//! - `collector_section` / `detector_section` - map module-provided IDs to sensor config keys
+//! - `notifier_section` - map module-provided notifier IDs to agent config section names
+//! - `generate_module_sudoers_rule` - build a sudoers drop-in from `[security].allowed_commands`
+//! - `module_planned_effects` - human-readable list of what `enable` will do
+//! - `is_module_enabled` - check whether all components are already active
 
 use std::path::Path;
 
@@ -100,7 +100,7 @@ impl ModuleManifest {
         let detectors = str_array(provides.as_ref().and_then(|t| t.get("detectors")));
         let notifiers = str_array(provides.as_ref().and_then(|t| t.get("notifiers")));
 
-        // [[rules]] — collect unique skills in declaration order
+        // [[rules]] - collect unique skills in declaration order
         let mut skills: Vec<String> = Vec::new();
         if let Some(rules) = doc.get("rules").and_then(|v| v.as_array_of_tables()) {
             for rule in rules.iter() {
@@ -241,7 +241,7 @@ pub fn generate_module_sudoers_rule(module_id: &str, allowed_commands: &[String]
         .collect();
     let rules = entries.join(", \\\n  ");
     format!(
-        "# Managed by innerwarden-ctl — do not edit manually\n\
+        "# Managed by innerwarden-ctl - do not edit manually\n\
          # Generated for module: {module_id}\n\
          innerwarden ALL=(ALL) NOPASSWD: \\\n  {rules}\n"
     )
@@ -804,7 +804,7 @@ skill    = "my-skill"
             .write_all(toml_b.as_bytes())
             .unwrap();
 
-        // Directory without module.toml — should be skipped
+        // Directory without module.toml - should be skipped
         std::fs::create_dir(root.path().join("not-a-module")).unwrap();
 
         let modules = scan_modules_dir(root.path());

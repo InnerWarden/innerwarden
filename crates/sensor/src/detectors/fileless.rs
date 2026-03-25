@@ -10,11 +10,11 @@ use innerwarden_core::{entities::EntityRef, event::Event, event::Severity, incid
 /// or deleted binaries to evade file-based detection.
 ///
 /// Suspicious paths:
-///   - /memfd:*         — anonymous memory-backed file (memfd_create)
-///   - /dev/fd/*        — file descriptor pseudo-filesystem
-///   - /proc/self/fd/*  — process file descriptor symlinks
-///   - /proc/<pid>/fd/* — another process's file descriptors
-///   - *(deleted)       — binary was deleted after execution started
+///   - /memfd:*         - anonymous memory-backed file (memfd_create)
+///   - /dev/fd/*        - file descriptor pseudo-filesystem
+///   - /proc/self/fd/*  - process file descriptor symlinks
+///   - /proc/<pid>/fd/* - another process's file descriptors
+///   - *(deleted)       - binary was deleted after execution started
 pub struct FilelessDetector {
     window: Duration,
     /// Suppress re-alerts per pid within window
@@ -122,7 +122,7 @@ impl FilelessDetector {
                 "container_id": container_id,
             }]),
             recommended_checks: vec![
-                format!("Investigate process {comm} (pid={pid}) — fileless execution is a strong indicator of malware"),
+                format!("Investigate process {comm} (pid={pid}) - fileless execution is a strong indicator of malware"),
                 format!("Check parent process: ps -o ppid= -p {pid}"),
                 format!("Dump process memory: cat /proc/{pid}/maps"),
                 "Review network connections from this process: ss -tunp | grep {pid}".to_string(),
@@ -340,7 +340,7 @@ mod tests {
         assert!(det
             .process(&fileless_event("/proc/cpuinfo", "cat", 1234, None, now))
             .is_none());
-        // /proc/net/fd/something — "net" is not a pid
+        // /proc/net/fd/something - "net" is not a pid
         assert!(det
             .process(&fileless_event("/proc/net/fd/1", "cat", 1234, None, now))
             .is_none());

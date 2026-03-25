@@ -31,7 +31,7 @@ Copy snippets from `config/` into your config files.
 
 ## Security
 
-- High false-positive rate possible in environments with legitimate port diversity — tune threshold per baseline
+- High false-positive rate possible in environments with legitimate port diversity - tune threshold per baseline
 - Always validate in `dry_run = true` before enabling auto-block
 
 ## Source code

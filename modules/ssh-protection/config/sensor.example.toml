@@ -1,4 +1,4 @@
-# ssh-protection — sensor config snippet
+# ssh-protection - sensor config snippet
 # Add these sections to your config.toml
 
 [collectors.auth_log]

@@ -14,4 +14,4 @@ docs/assets/screenshots/4A0525*
 docs/assets/screenshots/IMG_*
 trial-report-*.json
 trial-report-*.md
-.claude/
+crates/sensor-ebpf/target/

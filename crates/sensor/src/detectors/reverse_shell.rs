@@ -85,7 +85,7 @@ impl ReverseShellDetector {
         None
     }
 
-    /// Simple hash for cooldown keying — avoids storing full command strings.
+    /// Simple hash for cooldown keying - avoids storing full command strings.
     fn hash_command(cmd: &str) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();

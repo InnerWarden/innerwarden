@@ -1,4 +1,4 @@
-# Inner Warden — smoke-test config for Ollama local testing
+# Inner Warden - smoke-test config for Ollama local testing
 # Usage: innerwarden-agent --data-dir ./data --config agent-ollama-test.toml
 
 [narrative]

@@ -10,7 +10,7 @@ enabled = true
 path = "./testdata/sample-auth.log"
 
 [collectors.macos_log]
-# macOS only — streams real SSH/sudo events via `log stream`.
+# macOS only - streams real SSH/sudo events via `log stream`.
 # On Linux this exits silently (no-op). On macOS may need sudo or
 # Full Disk Access granted in System Preferences → Privacy & Security.
 enabled = true

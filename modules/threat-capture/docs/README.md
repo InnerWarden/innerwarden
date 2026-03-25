@@ -37,7 +37,7 @@ See `config/agent.example.toml` for the full configuration reference.
 
 - Requires `tcpdump` and appropriate sudo permissions
 - Captures up to `max_packets` packets in a `.pcap` file in `data_dir/honeypot/`
-- Hard time limit via `timeout` — bounded by design
+- Hard time limit via `timeout` - bounded by design
 - In `dry_run = true`: logs intent, does not run tcpdump
 
 ### honeypot
@@ -50,9 +50,9 @@ See `config/agent.example.toml` for the full configuration reference.
 
 ## Security
 
-- Both skills have a high confidence threshold (0.9 recommended) — they are invasive
+- Both skills have a high confidence threshold (0.9 recommended) - they are invasive
 - Start with `dry_run = true` always
-- `honeypot` binds to `127.0.0.1` by default — never expose to `0.0.0.0` without explicit `allow_public_listener = true`
+- `honeypot` binds to `127.0.0.1` by default - never expose to `0.0.0.0` without explicit `allow_public_listener = true`
 - Review all forensic artifacts before sharing externally
 
 ## Required sudo permissions

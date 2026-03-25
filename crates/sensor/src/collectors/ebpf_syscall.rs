@@ -1,4 +1,4 @@
-//! eBPF syscall collector — kernel-level visibility via tracepoints.
+//! eBPF syscall collector - kernel-level visibility via tracepoints.
 //!
 //! Replaces (or complements) audit-based collection with zero-latency
 //! kernel-level process execution and network connection monitoring.
@@ -18,7 +18,7 @@ use tracing::{info, warn};
 /// Embedded eBPF bytecode (compiled into the sensor binary).
 /// Built with: cargo +nightly build --target bpfel-unknown-none -Z build-std=core --release
 /// When the feature `ebpf-embedded` is enabled, the bytecode is baked into the binary
-/// via include_bytes! — no separate file needed. `innerwarden upgrade` updates everything.
+/// via include_bytes! - no separate file needed. `innerwarden upgrade` updates everything.
 #[cfg(feature = "ebpf-embedded")]
 const EBPF_BYTECODE_EMBEDDED: &[u8] =
     include_bytes!("../../../sensor-ebpf/target/bpfel-unknown-none/release/innerwarden-ebpf");
@@ -280,7 +280,7 @@ fn file_open_to_event(
     }
 }
 
-/// Processes that legitimately escalate to root — filtered in userspace.
+/// Processes that legitimately escalate to root - filtered in userspace.
 const LEGITIMATE_ESCALATION: &[&str] = &[
     "sudo",
     "su",
@@ -414,7 +414,7 @@ const XDP_ALLOWLIST_PIN: &str = "/sys/fs/bpf/innerwarden/allowlist";
 
 /// Detect the default network interface for XDP attachment.
 fn detect_default_interface() -> Option<String> {
-    // Read /proc/net/route — first non-loopback default route
+    // Read /proc/net/route - first non-loopback default route
     if let Ok(content) = std::fs::read_to_string("/proc/net/route") {
         for line in content.lines().skip(1) {
             let fields: Vec<&str> = line.split_whitespace().collect();
@@ -431,7 +431,7 @@ const LSM_POLICY_PIN: &str = "/sys/fs/bpf/innerwarden/lsm_policy";
 
 /// Attach LSM execution policy and pin the policy map.
 /// Requires `lsm=...,bpf` in kernel boot cmdline.
-/// Non-critical — if LSM is not available, the sensor continues without it.
+/// Non-critical - if LSM is not available, the sensor continues without it.
 #[cfg(feature = "ebpf")]
 fn attach_lsm(bpf: &mut aya::Ebpf) {
     use aya::programs::Lsm;
@@ -458,7 +458,7 @@ fn attach_lsm(bpf: &mut aya::Ebpf) {
             info!("eBPF: innerwarden_lsm_exec → bprm_check_security (LSM enforcement) ✅");
         }
         None => {
-            info!("eBPF: innerwarden_lsm_exec program not found — LSM not available");
+            info!("eBPF: innerwarden_lsm_exec program not found - LSM not available");
             return;
         }
     }
@@ -471,7 +471,7 @@ fn attach_lsm(bpf: &mut aya::Ebpf) {
             }
         } else {
             info!("eBPF: LSM policy map pinned at {LSM_POLICY_PIN}");
-            info!("eBPF: LSM enforcement is OFF by default — enable via: bpftool map update pinned {LSM_POLICY_PIN} key 0 0 0 0 value 1 0 0 0");
+            info!("eBPF: LSM enforcement is OFF by default - enable via: bpftool map update pinned {LSM_POLICY_PIN} key 0 0 0 0 value 1 0 0 0");
         }
     }
 }
@@ -480,7 +480,7 @@ fn attach_lsm(bpf: &mut aya::Ebpf) {
 fn attach_lsm(_bpf: &mut ()) {}
 
 /// Attach XDP firewall program and pin the blocklist map.
-/// Non-critical — if it fails, the sensor continues without XDP.
+/// Non-critical - if it fails, the sensor continues without XDP.
 #[cfg(feature = "ebpf")]
 fn attach_xdp(bpf: &mut aya::Ebpf) {
     use aya::programs::{Xdp, XdpFlags};
@@ -488,7 +488,7 @@ fn attach_xdp(bpf: &mut aya::Ebpf) {
     let iface = match detect_default_interface() {
         Some(i) => i,
         None => {
-            warn!("XDP: no default network interface found — skipping XDP firewall");
+            warn!("XDP: no default network interface found - skipping XDP firewall");
             return;
         }
     };
@@ -515,7 +515,7 @@ fn attach_xdp(bpf: &mut aya::Ebpf) {
             info!(iface = %iface, "eBPF: innerwarden_xdp → {iface} (XDP firewall) ✅");
         }
         None => {
-            info!("eBPF: innerwarden_xdp program not found — XDP firewall not available");
+            info!("eBPF: innerwarden_xdp program not found - XDP firewall not available");
             return;
         }
     }
@@ -554,7 +554,7 @@ fn attach_xdp(_bpf: &mut ()) {}
 ///
 /// Events flow through the same mpsc channel as all other collectors.
 // ---------------------------------------------------------------------------
-// Kernel filter population — Falco-derived allowlists
+// Kernel filter population - Falco-derived allowlists
 // ---------------------------------------------------------------------------
 //
 // Handler bitmask for COMM_ALLOWLIST:
@@ -589,7 +589,7 @@ fn populate_kernel_filters(bpf: &mut aya::Ebpf) {
         // bit 7 = memfd
         // bit 8 = init_module (never allowlisted)
 
-        // Package managers — noisy on execve, openat, connect
+        // Package managers - noisy on execve, openat, connect
         for comm in [
             "apt", "apt-get", "dpkg", "dnf", "yum", "rpm", "snap", "apk", "pip", "pip3", "conda",
             "npm", "gem",
@@ -597,7 +597,7 @@ fn populate_kernel_filters(bpf: &mut aya::Ebpf) {
             let _ = map.insert(key(comm), EXECVE | OPENAT | CONNECT, 0);
         }
 
-        // Build tools — noisy on execve, openat
+        // Build tools - noisy on execve, openat
         for comm in [
             "cargo", "rustc", "gcc", "g++", "cc1", "cc1plus", "clang", "ld", "ar", "make", "cmake",
             "ninja", "javac", "go",
@@ -605,7 +605,7 @@ fn populate_kernel_filters(bpf: &mut aya::Ebpf) {
             let _ = map.insert(key(comm), EXECVE | OPENAT, 0);
         }
 
-        // Coreutils — noisy on openat, execve (spawned constantly by scripts)
+        // Coreutils - noisy on openat, execve (spawned constantly by scripts)
         for comm in [
             "cat", "ls", "cp", "mv", "rm", "mkdir", "chmod", "chown", "ln", "head", "tail", "wc",
             "sort", "cut", "tr", "sed", "awk", "grep", "find", "xargs", "tee", "touch", "date",
@@ -615,7 +615,7 @@ fn populate_kernel_filters(bpf: &mut aya::Ebpf) {
             let _ = map.insert(key(comm), EXECVE | OPENAT, 0);
         }
 
-        // System daemons — allowed on setuid, connect, openat, bind
+        // System daemons - allowed on setuid, connect, openat, bind
         for comm in [
             "systemd",
             "systemd-logind",
@@ -626,12 +626,12 @@ fn populate_kernel_filters(bpf: &mut aya::Ebpf) {
             let _ = map.insert(key(comm), SETUID | CONNECT | OPENAT | BIND, 0);
         }
 
-        // SSH daemons — allowed on setuid (legitimate priv change), bind
+        // SSH daemons - allowed on setuid (legitimate priv change), bind
         for comm in ["sshd", "sshd-session"] {
             let _ = map.insert(key(comm), SETUID | BIND, 0);
         }
 
-        // Auth/login — allowed on setuid
+        // Auth/login - allowed on setuid
         for comm in [
             "sudo",
             "su",
@@ -644,7 +644,7 @@ fn populate_kernel_filters(bpf: &mut aya::Ebpf) {
             let _ = map.insert(key(comm), SETUID, 0);
         }
 
-        // Web/DB servers — allowed on bind (they legitimately bind ports)
+        // Web/DB servers - allowed on bind (they legitimately bind ports)
         for comm in [
             "nginx",
             "apache2",
@@ -658,7 +658,7 @@ fn populate_kernel_filters(bpf: &mut aya::Ebpf) {
             let _ = map.insert(key(comm), BIND, 0);
         }
 
-        // Container runtimes — allowed on bind, connect, openat
+        // Container runtimes - allowed on bind, connect, openat
         for comm in [
             "dockerd",
             "containerd",
@@ -670,12 +670,12 @@ fn populate_kernel_filters(bpf: &mut aya::Ebpf) {
             let _ = map.insert(key(comm), BIND | CONNECT | OPENAT, 0);
         }
 
-        // Debuggers — allowed on ptrace (their whole purpose)
+        // Debuggers - allowed on ptrace (their whole purpose)
         for comm in ["gdb", "strace", "ltrace", "lldb", "perf", "valgrind"] {
             let _ = map.insert(key(comm), PTRACE, 0);
         }
 
-        // Monitoring agents — noisy on openat, connect
+        // Monitoring agents - noisy on openat, connect
         for comm in [
             "prometheus",
             "node_exporter",
@@ -688,14 +688,14 @@ fn populate_kernel_filters(bpf: &mut aya::Ebpf) {
             let _ = map.insert(key(comm), OPENAT | CONNECT, 0);
         }
 
-        // Log rotation / coreutils — allowed on unlink, rename
+        // Log rotation / coreutils - allowed on unlink, rename
         const UNLINK: u32 = 1 << 13;
         const RENAME: u32 = 1 << 14;
         for comm in ["logrotate", "journald", "rsyslogd", "systemd-journal"] {
             let _ = map.insert(key(comm), UNLINK | RENAME | OPENAT, 0);
         }
 
-        // JIT runtimes — allowed on mprotect (they make memory executable legitimately)
+        // JIT runtimes - allowed on mprotect (they make memory executable legitimately)
         const MPROTECT: u32 = 1 << 11;
         for comm in [
             "node", "python3", "python", "java", "ruby", "php", "dotnet", "mono", "v8", "wasmtime",
@@ -703,7 +703,7 @@ fn populate_kernel_filters(bpf: &mut aya::Ebpf) {
             let _ = map.insert(key(comm), MPROTECT, 0);
         }
 
-        // Container runtimes — also allowed on clone, dup, listen, accept
+        // Container runtimes - also allowed on clone, dup, listen, accept
         const DUP: u32 = 1 << 9;
         const LISTEN: u32 = 1 << 10;
         const CLONE: u32 = 1 << 12;
@@ -723,12 +723,12 @@ fn populate_kernel_filters(bpf: &mut aya::Ebpf) {
             );
         }
 
-        // Shells — allowed on dup, clone (normal shell behavior)
+        // Shells - allowed on dup, clone (normal shell behavior)
         for comm in ["bash", "sh", "zsh", "dash", "ash", "fish", "tcsh", "ksh"] {
             let _ = map.insert(key(comm), DUP | CLONE, 0);
         }
 
-        // Inner Warden itself — skip everything except mount + init_module
+        // Inner Warden itself - skip everything except mount + init_module
         let all_but_critical = EXECVE
             | CONNECT
             | OPENAT
@@ -754,11 +754,11 @@ fn populate_kernel_filters(bpf: &mut aya::Ebpf) {
         let count = map.keys().count();
         tracing::info!(count, "eBPF: COMM_ALLOWLIST populated");
     } else {
-        tracing::warn!("eBPF: COMM_ALLOWLIST map not found — kernel filters disabled");
+        tracing::warn!("eBPF: COMM_ALLOWLIST map not found - kernel filters disabled");
     }
 }
 
-/// Attach a typed tracepoint program — helper to eliminate repetition.
+/// Attach a typed tracepoint program - helper to eliminate repetition.
 /// Returns true if the program was found, loaded, and attached successfully.
 #[cfg(feature = "ebpf")]
 fn attach_tp(bpf: &mut aya::Ebpf, name: &str, category: &str, tp_name: &str) -> bool {
@@ -779,7 +779,7 @@ fn attach_tp(bpf: &mut aya::Ebpf, name: &str, category: &str, tp_name: &str) -> 
     false
 }
 
-/// Attach the syscall dispatcher — single raw_tracepoint on sys_enter that
+/// Attach the syscall dispatcher - single raw_tracepoint on sys_enter that
 /// tail-calls per-syscall handlers via a SYSCALL_DISPATCH ProgramArray.
 ///
 /// This is more efficient than 18 individual typed tracepoints because the
@@ -827,7 +827,7 @@ fn attach_dispatcher(bpf: &mut aya::Ebpf) -> bool {
         return false;
     }
 
-    // --- 2. Load each dispatch_* handler as RawTracePoint (no attach — called via tail_call) ---
+    // --- 2. Load each dispatch_* handler as RawTracePoint (no attach - called via tail_call) ---
     // (name_in_elf, syscall_nr on aarch64)
     let handlers: &[(&str, u32)] = &[
         ("dispatch_execve", 221),
@@ -862,7 +862,7 @@ fn attach_dispatcher(bpf: &mut aya::Ebpf) -> bool {
     }
 
     // --- 3. Wire handlers into SYSCALL_DISPATCH ProgramArray ---
-    // Use take_map() to transfer ownership — avoids borrow conflict with bpf.program()
+    // Use take_map() to transfer ownership - avoids borrow conflict with bpf.program()
     let mut dispatch_map = match bpf.take_map("SYSCALL_DISPATCH") {
         Some(map) => match ProgramArray::try_from(map) {
             Ok(arr) => arr,
@@ -917,7 +917,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     use std::os::fd::{AsRawFd, FromRawFd};
 
     if !is_ebpf_available() {
-        warn!("eBPF not available — falling back to audit-based collection");
+        warn!("eBPF not available - falling back to audit-based collection");
         return;
     }
 
@@ -936,7 +936,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         let obj_path = match find_ebpf_obj() {
             Some(p) => p,
             None => {
-                warn!("eBPF bytecode not found — skipping eBPF collector");
+                warn!("eBPF bytecode not found - skipping eBPF collector");
                 return;
             }
         };
@@ -953,7 +953,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     // CO-RE loader: use BTF relocations when available for cross-kernel portability
     let btf = aya::Btf::from_sys_fs().ok();
     if btf.is_some() {
-        info!("eBPF: BTF available — CO-RE relocations enabled");
+        info!("eBPF: BTF available - CO-RE relocations enabled");
     }
     let mut bpf = match aya::EbpfLoader::new().btf(btf.as_ref()).load(&bytes) {
         Ok(b) => b,
@@ -965,18 +965,18 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
 
     // --- Attach syscall handlers: dispatcher mode or individual tracepoints ---
     let using_dispatcher = if bpf.program("innerwarden_dispatcher").is_some() {
-        info!("eBPF: dispatcher program found — attempting dispatcher mode");
+        info!("eBPF: dispatcher program found - attempting dispatcher mode");
         attach_dispatcher(&mut bpf)
     } else {
         false
     };
 
     if using_dispatcher {
-        info!("eBPF: dispatcher mode active — single sys_enter hook with tail calls");
+        info!("eBPF: dispatcher mode active - single sys_enter hook with tail calls");
     } else {
-        // Typed tracepoint mode — attach each handler individually
+        // Typed tracepoint mode - attach each handler individually
         if !using_dispatcher && bpf.program("innerwarden_dispatcher").is_some() {
-            info!("eBPF: dispatcher attach failed — falling back to typed tracepoints");
+            info!("eBPF: dispatcher attach failed - falling back to typed tracepoints");
         }
 
         // Core tracepoints (execve, connect, openat)
@@ -999,7 +999,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
             "sys_enter_openat",
         );
 
-        // v2 syscall handlers (non-critical — each is independent)
+        // v2 syscall handlers (non-critical - each is independent)
         attach_tp(
             &mut bpf,
             "innerwarden_ptrace",
@@ -1064,7 +1064,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
 
     // --- Always attach non-tracepoint programs individually ---
 
-    // Attach commit_creds kprobe (privilege escalation detection — non-critical)
+    // Attach commit_creds kprobe (privilege escalation detection - non-critical)
     if let Some(prog) = bpf.program_mut("innerwarden_privesc") {
         use aya::programs::KProbe;
         if let Ok(kp) = TryInto::<&mut KProbe>::try_into(prog) {
@@ -1078,7 +1078,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     }
 
-    // Attach sched_process_exit tracepoint (rootkit lifecycle tracking — non-critical)
+    // Attach sched_process_exit tracepoint (rootkit lifecycle tracking - non-critical)
     if let Some(prog) = bpf.program_mut("innerwarden_process_exit") {
         if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
             if tp.load().is_ok() {
@@ -1091,10 +1091,10 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     }
 
-    // Attach LSM execution policy (non-critical — requires lsm=bpf in kernel cmdline)
+    // Attach LSM execution policy (non-critical - requires lsm=bpf in kernel cmdline)
     attach_lsm(&mut bpf);
 
-    // Attach XDP firewall (non-critical — continues without it)
+    // Attach XDP firewall (non-critical - continues without it)
     attach_xdp(&mut bpf);
 
     // Populate kernel-level noise filters BEFORE taking ring buffer borrow
@@ -1109,7 +1109,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     };
 
-    info!("eBPF collector active — kernel-level syscall monitoring (22 hooks)");
+    info!("eBPF collector active - kernel-level syscall monitoring (22 hooks)");
 
     // Setup epoll-based wakeup via AsyncFd wrapping the ring buffer's raw fd.
     // Falls back to 100ms sleep polling if fd duplication or AsyncFd fails.
@@ -1126,12 +1126,12 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                     Some(afd)
                 }
                 Err(e) => {
-                    warn!(error = %e, "eBPF: AsyncFd creation failed — falling back to poll");
+                    warn!(error = %e, "eBPF: AsyncFd creation failed - falling back to poll");
                     None
                 }
             }
         } else {
-            warn!("eBPF: dup() failed — falling back to poll");
+            warn!("eBPF: dup() failed - falling back to poll");
             None
         }
     };
@@ -1289,7 +1289,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         &host,
                     )
                 }
-                // LSM blocked execution — uses ExecveEvent layout but kind=6
+                // LSM blocked execution - uses ExecveEvent layout but kind=6
                 // Same offsets as ExecveEvent: kind(4) pid(4) tgid(4) uid(4) gid(4) ppid(4) cgroup_id(8) comm(64) filename(256)
                 6 if data.len() >= 352 => {
                     let pid = read_u32!(data, 4..8);
@@ -1430,7 +1430,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         kind: "privilege.setuid".to_string(),
                         severity: Severity::High,
                         summary: format!(
-                            "{comm} (PID {pid}, uid {uid}) called setuid(0) — escalating to root"
+                            "{comm} (PID {pid}, uid {uid}) called setuid(0) - escalating to root"
                         ),
                         details,
                         tags: vec!["ebpf".to_string(), "privesc".to_string()],
@@ -1662,7 +1662,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         ts: chrono::Utc::now(), host: host.to_string(), source: "ebpf".to_string(),
                         kind: "memory.mprotect_exec".to_string(),
                         severity: if rwx { Severity::Critical } else { Severity::High },
-                        summary: format!("{comm} (PID {pid}) mprotect → executable memory at 0x{addr:x} ({len} bytes){}", if rwx { " [RWX — shellcode indicator]" } else { "" }),
+                        summary: format!("{comm} (PID {pid}) mprotect → executable memory at 0x{addr:x} ({len} bytes){}", if rwx { " [RWX - shellcode indicator]" } else { "" }),
                         details: serde_json::json!({"pid": pid, "uid": uid, "prot": prot, "addr": format!("0x{addr:x}"), "len": len, "rwx": rwx, "comm": comm}),
                         tags: vec!["ebpf".to_string(), "shellcode".to_string()], entities: vec![],
                     })
@@ -1808,7 +1808,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                     guard.clear_ready();
                 }
                 Err(_) => {
-                    // epoll error — fall back to short sleep this iteration
+                    // epoll error - fall back to short sleep this iteration
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             }
@@ -1825,7 +1825,7 @@ pub async fn run(_tx: mpsc::Sender<Event>, _host: String) {
         info!("eBPF is available but the sensor was compiled without --features ebpf");
         info!("Rebuild with: cargo build --features ebpf -p innerwarden-sensor");
     }
-    // Silently return — other collectors handle detection
+    // Silently return - other collectors handle detection
 }
 
 // ---------------------------------------------------------------------------

@@ -82,7 +82,7 @@ impl CloudflareClient {
     /// Push an IP block to Cloudflare's edge via IP Access Rules.
     ///
     /// Returns the Cloudflare rule ID on success, or `None` on any error.
-    /// The method is fail-silent — errors are logged with `warn!` and swallowed.
+    /// The method is fail-silent - errors are logged with `warn!` and swallowed.
     pub async fn push_block(&self, ip: &str, reason: &str) -> Option<String> {
         if !self.is_configured() {
             warn!("Cloudflare push_block called but client is not configured");

@@ -668,7 +668,7 @@ Fail2ban blocks IPs based on regex patterns. Inner Warden has 36 detectors, 22 e
 Most host intrusion detection systems only observe. They write alerts for a human to act on. Inner Warden observes AND blocks. LSM hooks stop reverse shells at the kernel's execve before the process runs. XDP drops attack traffic at wire speed. Kill chain detection blocks 7 generic exploit patterns without CVE signatures, catching zero-day exploits by behavior rather than known hashes.
 
 **Can I add custom detectors or skills?**
-Yes. See [module authoring guide](docs/module-authoring.md).
+Yes. See [module authoring guide](https://github.com/InnerWarden/innerwarden/wiki/Module-Authoring).
 
 ---
 
@@ -697,8 +697,8 @@ The authors are not responsible for downtime, data loss, or service disruption c
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
-- [Documentation](docs/index.md)
-- [Module authoring](docs/module-authoring.md)
+- [Documentation](https://github.com/InnerWarden/innerwarden/wiki)
+- [Module authoring](https://github.com/InnerWarden/innerwarden/wiki/Module-Authoring)
 
 ## License
 

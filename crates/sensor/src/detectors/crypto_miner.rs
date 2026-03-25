@@ -147,9 +147,9 @@ impl CryptoMinerDetector {
             }]),
             recommended_checks: vec![
                 format!("Kill process {comm} (pid={pid}) immediately"),
-                "Check how the miner was installed — review process tree and parent".to_string(),
+                "Check how the miner was installed - review process tree and parent".to_string(),
                 "Scan for persistence mechanisms (crontab, systemd services)".to_string(),
-                "Check for lateral movement — the attacker may have compromised other hosts"
+                "Check for lateral movement - the attacker may have compromised other hosts"
                     .to_string(),
             ],
             tags: vec!["crypto-miner".to_string(), "process".to_string()],
@@ -225,10 +225,10 @@ impl CryptoMinerDetector {
                             "connection_count": conn_count,
                         }]),
                         recommended_checks: vec![
-                            format!("Investigate process {comm} (pid={pid}) — likely a crypto miner"),
+                            format!("Investigate process {comm} (pid={pid}) - likely a crypto miner"),
                             format!("Block outbound connections to {dst_ip}:{dst_port}"),
                             "Review process tree to find installation vector".to_string(),
-                            "Check CPU usage — mining causes sustained high CPU".to_string(),
+                            "Check CPU usage - mining causes sustained high CPU".to_string(),
                         ],
                         tags: vec![
                             "crypto-miner".to_string(),
@@ -252,7 +252,7 @@ impl CryptoMinerDetector {
                         "Crypto mining: {comm} connecting to mining pool {dst_ip}:{dst_port}"
                     ),
                     summary: format!(
-                        "Process {} (pid={}) connected to {}:{} — known mining pool port",
+                        "Process {} (pid={}) connected to {}:{} - known mining pool port",
                         comm, pid, dst_ip, dst_port
                     ),
                     evidence: serde_json::json!([{
@@ -264,7 +264,7 @@ impl CryptoMinerDetector {
                         "dst_port": dst_port,
                     }]),
                     recommended_checks: vec![
-                        format!("Investigate process {comm} (pid={pid}) — possible crypto miner"),
+                        format!("Investigate process {comm} (pid={pid}) - possible crypto miner"),
                         format!("Check if {dst_ip}:{dst_port} is a known mining pool"),
                         "Review CPU/GPU usage on the host".to_string(),
                         "Consider blocking the process and the destination IP".to_string(),
@@ -585,7 +585,7 @@ mod tests {
         let inc = det.process(&connect_event("miner", "45.33.32.1", 3333, now));
         assert!(inc.is_some());
 
-        // Same process+IP within cooldown — suppressed
+        // Same process+IP within cooldown - suppressed
         let inc = det.process(&connect_event(
             "miner",
             "45.33.32.1",
@@ -594,7 +594,7 @@ mod tests {
         ));
         assert!(inc.is_none(), "should be suppressed within cooldown");
 
-        // After cooldown expires — triggers again
+        // After cooldown expires - triggers again
         let inc = det.process(&connect_event(
             "miner",
             "45.33.32.1",
@@ -669,7 +669,7 @@ mod tests {
         let inc = inc.expect("first connection should trigger");
         assert_eq!(inc.severity, Severity::High);
 
-        // Second connection — suppressed by cooldown on mining_port key
+        // Second connection - suppressed by cooldown on mining_port key
         let _inc2 = det2.process(&connect_event(
             "worker",
             "5.6.7.8",
@@ -770,7 +770,7 @@ mod tests {
         let mut det = CryptoMinerDetector::new("test", 300);
         let now = Utc::now();
 
-        // Process name with path prefix — basename extraction should catch it
+        // Process name with path prefix - basename extraction should catch it
         let inc = det.process(&exec_event("/tmp/.hidden/xmrig", now));
         assert!(inc.is_some());
         let inc = inc.unwrap();
@@ -786,11 +786,11 @@ mod tests {
         let inc = det.process(&exec_event("xmrig", now));
         assert!(inc.is_some());
 
-        // Within cooldown — suppressed
+        // Within cooldown - suppressed
         let inc = det.process(&exec_event("xmrig", now + Duration::seconds(10)));
         assert!(inc.is_none());
 
-        // After cooldown — triggers again
+        // After cooldown - triggers again
         let inc = det.process(&exec_event("xmrig", now + Duration::seconds(301)));
         assert!(inc.is_some());
     }

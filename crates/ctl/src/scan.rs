@@ -1,4 +1,4 @@
-//! `innerwarden scan` — system probe + module advisor
+//! `innerwarden scan` - system probe + module advisor
 //!
 //! Scans the local machine, scores each built-in module, and shows a
 //! prioritised recommendation list.  After printing the list it drops into
@@ -232,7 +232,7 @@ impl Tier {
 /// Whether a module is fully built into InnerWarden or requires an external tool/service.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IntegrationKind {
-    /// Built into InnerWarden — reads logs/events already present on the host.
+    /// Built into InnerWarden - reads logs/events already present on the host.
     /// Zero external dependencies, zero additional RAM or network cost.
     Native,
     /// Connects to an external tool or service that must be installed, configured,
@@ -276,7 +276,7 @@ fn stars(n: u8) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Security audit probes (fail-silent — never panic, never require root)
+// Security audit probes (fail-silent - never panic, never require root)
 // ---------------------------------------------------------------------------
 
 /// Inspect all running Docker containers for security misconfigurations.
@@ -381,7 +381,7 @@ fn audit_docker() -> Vec<ScanFinding> {
                 resource: name.clone(),
                 title: "docker.sock mounted inside container".to_string(),
                 detail: "Mounting the Docker socket gives the container full control over the \
-                         Docker daemon — it can create new privileged containers, stop others, \
+                         Docker daemon - it can create new privileged containers, stop others, \
                          and access any volume on the host. This is a common container escape \
                          vector."
                     .to_string(),
@@ -449,7 +449,7 @@ pub(crate) fn parse_ssh_config(config: &str) -> Vec<ScanFinding> {
             title: "SSH password authentication is enabled".to_string(),
             detail: "Your SSH server accepts password logins. InnerWarden already blocks \
                      brute-force attempts, but disabling password auth eliminates the attack \
-                     surface entirely — only key-based logins work."
+                     surface entirely - only key-based logins work."
                 .to_string(),
             iw_handles: false,
             admin_action: Some(
@@ -506,7 +506,7 @@ pub(crate) fn parse_ssh_config(config: &str) -> Vec<ScanFinding> {
         });
     }
 
-    // MaxAuthTries — default 6 if not set; emit if > 4
+    // MaxAuthTries - default 6 if not set; emit if > 4
     let max_auth_tries: u32 = active_lines
         .iter()
         .find_map(|l| {
@@ -537,7 +537,7 @@ pub(crate) fn parse_ssh_config(config: &str) -> Vec<ScanFinding> {
         });
     }
 
-    // AllowTcpForwarding — emit unless explicitly set to "no"
+    // AllowTcpForwarding - emit unless explicitly set to "no"
     let tcp_fwd_disabled = active_lines.iter().any(|l| {
         let l = l.trim();
         l.starts_with("allowtcpforwarding") && l.contains("no")
@@ -636,7 +636,7 @@ fn audit_nginx() -> Vec<ScanFinding> {
 
     let mut findings = vec![];
 
-    // server_tokens — emit if "server_tokens off" is NOT found anywhere
+    // server_tokens - emit if "server_tokens off" is NOT found anywhere
     if !config.contains("server_tokens off") {
         findings.push(ScanFinding {
             severity: FindingSeverity::Low,
@@ -655,7 +655,7 @@ fn audit_nginx() -> Vec<ScanFinding> {
         });
     }
 
-    // No SSL/HTTPS — emit if ssl_certificate directive is NOT found anywhere
+    // No SSL/HTTPS - emit if ssl_certificate directive is NOT found anywhere
     if !config.contains("ssl_certificate") {
         findings.push(ScanFinding {
             severity: FindingSeverity::Medium,
@@ -676,7 +676,7 @@ fn audit_nginx() -> Vec<ScanFinding> {
         });
     }
 
-    // No rate limiting — emit if limit_req_zone is NOT found anywhere
+    // No rate limiting - emit if limit_req_zone is NOT found anywhere
     if !config.contains("limit_req_zone") {
         findings.push(ScanFinding {
             severity: FindingSeverity::Low,
@@ -736,7 +736,7 @@ fn audit_fail2ban() -> Vec<ScanFinding> {
             ),
         });
     } else {
-        // sshd jail exists — check bantime
+        // sshd jail exists - check bantime
         let bantime_out = Command::new("fail2ban-client")
             .args(["get", "sshd", "bantime"])
             .output()
@@ -745,7 +745,7 @@ fn audit_fail2ban() -> Vec<ScanFinding> {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_default();
 
-        // Parse bantime value — may be a plain number or have extra text
+        // Parse bantime value - may be a plain number or have extra text
         let bantime_secs: i64 = bantime_out
             .split_whitespace()
             .find_map(|tok| tok.parse().ok())
@@ -818,7 +818,7 @@ fn audit_ufw() -> Vec<ScanFinding> {
             ),
         });
     } else {
-        // UFW is active — check if outgoing is all-allowed (default allow outgoing)
+        // UFW is active - check if outgoing is all-allowed (default allow outgoing)
         let all_outgoing_allowed = status_out.contains("Default: allow (outgoing)");
         if all_outgoing_allowed {
             findings.push(ScanFinding {
@@ -840,7 +840,7 @@ fn audit_ufw() -> Vec<ScanFinding> {
                      \x20 sudo ufw allow out 443/tcp\n\
                      \x20 sudo ufw allow out 53/udp\n\
                      \x20 sudo ufw allow out 25/tcp  # if sending email\n\
-                     This is advanced — only apply if you understand your app's network needs."
+                     This is advanced - only apply if you understand your app's network needs."
                         .to_string(),
                 ),
             });
@@ -869,7 +869,7 @@ pub(crate) fn audit_system() -> Vec<ScanFinding> {
             title: "Automatic security updates are not configured".to_string(),
             detail: "Without automatic updates, security patches must be applied manually. Most \
                      server compromises exploit known vulnerabilities that have patches available \
-                     — often for weeks or months before the attack."
+                     - often for weeks or months before the attack."
                 .to_string(),
             iw_handles: false,
             admin_action: Some(
@@ -1053,7 +1053,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
             docs_path: "file-integrity/docs/README.md",
             findings: vec![],
             kind: IntegrationKind::Native,
-            cost_note: "Zero cost. SHA-256 polling — minimal CPU every 60s, no external dependencies.",
+            cost_note: "Zero cost. SHA-256 polling - minimal CPU every 60s, no external dependencies.",
         },
         // container-security
         {
@@ -1064,7 +1064,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                     "No privilege escalation issues found in running containers.".to_string()
                 } else {
                     format!(
-                        "{n} security issue{} found — see findings below.",
+                        "{n} security issue{} found - see findings below.",
                         if n == 1 { "" } else { "s" }
                     )
                 };
@@ -1089,10 +1089,10 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 docs_path: "container-security/docs/README.md",
                 findings: docker_findings,
                 kind: IntegrationKind::Native,
-                cost_note: "Zero cost. Reads Docker Events API — Docker must already be running.",
+                cost_note: "Zero cost. Reads Docker Events API - Docker must already be running.",
             }
         },
-        // search-protection (owns the nginx audit findings — nginx-error-monitor skips to avoid dups)
+        // search-protection (owns the nginx audit findings - nginx-error-monitor skips to avoid dups)
         {
             let nginx_findings_search = if p.has_nginx { audit_nginx() } else { vec![] };
             let (tier, why, s) = if p.has_nginx_access_log {
@@ -1128,7 +1128,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 cost_note: "Zero cost. Reads nginx access.log already written by nginx.",
             }
         },
-        // nginx-error-monitor (no nginx audit here — findings already shown under search-protection)
+        // nginx-error-monitor (no nginx audit here - findings already shown under search-protection)
         {
             let nginx_findings_error: Vec<ScanFinding> = vec![];
             let (tier, why, s) = if p.has_nginx_error_log {
@@ -1195,7 +1195,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 kind: IntegrationKind::Native,
                 cost_note: "Zero external cost, but high privacy impact: every shell command is captured. \
                             Enable only with explicit host-owner consent. \
-                            If Falco is active, prefer it for exec monitoring — Falco has lower privacy impact.",
+                            If Falco is active, prefer it for exec monitoring - Falco has lower privacy impact.",
             }
         },
         // fail2ban-integration
@@ -1250,7 +1250,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
         ModuleRec {
             id: "geoip-enrichment",
             name: "IP Geolocation Enrichment",
-            description: "Adds country/ISP context to AI decisions — free, no API key needed.",
+            description: "Adds country/ISP context to AI decisions - free, no API key needed.",
             why: "Free enrichment layer. Adds country/ISP context to every AI decision."
                 .to_string(),
             enable_hint: "innerwarden integrate geoip",
@@ -1315,7 +1315,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 kind: IntegrationKind::External,
                 cost_note: "Free and open-source. Adds ~50MB RAM (eBPF probe) or ~100MB (kernel module). \
                             Very high value for syscall/container monitoring. \
-                            If you enable Falco, disable execution-guard — they overlap on exec detection \
+                            If you enable Falco, disable execution-guard - they overlap on exec detection \
                             and will flood you with duplicate incidents.",
             }
         },
@@ -1355,7 +1355,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 kind: IntegrationKind::External,
                 cost_note: "Free and open-source. Adds ~100–200MB RAM. Requires a network tap or span port. \
                             Very high value for network-layer detection (IDS signatures, protocol anomalies). \
-                            Suricata's port-scan detection overlaps with InnerWarden's syslog_firewall detector — \
+                            Suricata's port-scan detection overlaps with InnerWarden's syslog_firewall detector - \
                             you can safely disable syslog_firewall once Suricata is active.",
             }
         },
@@ -1395,7 +1395,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 kind: IntegrationKind::External,
                 cost_note: "Free and lightweight (~30MB RAM). Good for host-level queries \
                             (open ports, crontabs, user accounts, listening services). \
-                            No incident passthrough — provides context and observability, not automated response.",
+                            No incident passthrough - provides context and observability, not automated response.",
             }
         },
         // wazuh-integration
@@ -1430,7 +1430,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 cost_note: "Free (self-hosted) but heavyweight: Wazuh agent adds ~100MB RAM; \
                             the Wazuh manager server requires a separate machine (~2GB RAM). \
                             Best for compliance-driven environments (PCI-DSS, HIPAA). \
-                            Note: Wazuh's SSH rules overlap with InnerWarden's ssh-protection — \
+                            Note: Wazuh's SSH rules overlap with InnerWarden's ssh-protection - \
                             you may get duplicate SSH brute-force alerts. Consider disabling \
                             Wazuh's sshd rules or InnerWarden's auth_log collector when both are active.",
             }
@@ -1470,9 +1470,9 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 findings: vec![],
                 kind: IntegrationKind::External,
                 cost_note: "Free (community plan). CrowdSec agent is lightweight (~20MB RAM). \
-                            Shares threat intelligence across the community — if an IP attacks \
+                            Shares threat intelligence across the community - if an IP attacks \
                             another CrowdSec user, it's pre-blocked for you. \
-                            Overlaps with AbuseIPDB enrichment on IP reputation — pick one or use both \
+                            Overlaps with AbuseIPDB enrichment on IP reputation - pick one or use both \
                             with different thresholds.",
             }
         },
@@ -1492,7 +1492,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
             kind: IntegrationKind::External,
             cost_note: "Free (requires a Slack workspace). Adds another notification channel. \
                         Caution: if you already have Telegram enabled, activating Slack doubles \
-                        your alert volume — you'll get the same incident on both channels. \
+                        your alert volume - you'll get the same incident on both channels. \
                         Use Slack for team channels, Telegram for personal real-time response.",
         },
         // threat-capture
@@ -1510,7 +1510,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
             findings: vec![],
             kind: IntegrationKind::Native,
             cost_note: "Premium tier. tcpdump capture requires root or CAP_NET_RAW. \
-                        Honeypot listener adds ~10MB RAM. Produces forensic .pcap files — \
+                        Honeypot listener adds ~10MB RAM. Produces forensic .pcap files - \
                         configure forensics_max_total_mb to prevent disk exhaustion.",
         },
     ];
@@ -1790,7 +1790,7 @@ fn detect_conflicts(recs: &[ModuleRec]) -> Vec<ConflictPair> {
             module_a: "wazuh-integration",
             module_b: "ssh-protection",
             overlap: "Wazuh's sshd detection rules overlap with InnerWarden's auth_log SSH \
-                      brute-force detector — both produce SSH incident alerts",
+                      brute-force detector - both produce SSH incident alerts",
             recommendation: "Both can coexist but you will get duplicate SSH alerts. Consider \
                              disabling InnerWarden's auth_log collector ([collectors.auth_log] \
                              enabled = false) and letting Wazuh own SSH detection, or disable \
@@ -1816,7 +1816,7 @@ fn detect_conflicts(recs: &[ModuleRec]) -> Vec<ConflictPair> {
         conflicts.push(ConflictPair {
             module_a: "abuseipdb-enrichment (auto_block_threshold)",
             module_b: "fail2ban-integration",
-            overlap: "Both can automatically block IPs without AI involvement — \
+            overlap: "Both can automatically block IPs without AI involvement - \
                       AbuseIPDB via auto_block_threshold and fail2ban via its ban rules",
             recommendation: "Set abuseipdb.auto_block_threshold = 0 to disable AbuseIPDB \
                              auto-blocking when fail2ban is active. Use AbuseIPDB only for \
@@ -1892,14 +1892,14 @@ fn activation_sequence(probes: &SystemProbes) -> Vec<(&'static str, &'static str
     if probes.has_falco_log {
         seq.push((
             "innerwarden module install falco-integration",
-            "Falco eBPF/syscall alerts (already installed — high value, route into IW)",
+            "Falco eBPF/syscall alerts (already installed - high value, route into IW)",
         ));
     }
 
     if probes.has_suricata_eve {
         seq.push((
             "innerwarden module install suricata-integration",
-            "Suricata IDS alerts (already installed — high value, route into IW)",
+            "Suricata IDS alerts (already installed - high value, route into IW)",
         ));
     }
 

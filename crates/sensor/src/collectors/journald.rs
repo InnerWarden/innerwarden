@@ -43,11 +43,11 @@ impl JournaldCollector {
             .await;
         match check {
             Err(_) => {
-                warn!("journalctl not found — journald collector disabled");
+                warn!("journalctl not found - journald collector disabled");
                 return Ok(());
             }
             Ok(out) if !out.status.success() => {
-                warn!("journalctl returned non-zero (permission denied?) — journald collector disabled");
+                warn!("journalctl returned non-zero (permission denied?) - journald collector disabled");
                 return Ok(());
             }
             _ => {}
@@ -59,7 +59,7 @@ impl JournaldCollector {
             "journald collector starting"
         );
 
-        // Restart loop — if journalctl exits unexpectedly, restart it.
+        // Restart loop - if journalctl exits unexpectedly, restart it.
         let mut current_cursor = self.cursor.clone();
         loop {
             let mut cmd = Command::new("journalctl");
@@ -100,11 +100,11 @@ impl JournaldCollector {
                                         }
                                     }
                                     Some((cursor, None)) => {
-                                        // Valid JSON but not an event we care about — still advance cursor
+                                        // Valid JSON but not an event we care about - still advance cursor
                                         current_cursor = Some(cursor.clone());
                                         *shared_cursor.lock().unwrap() = Some(cursor);
                                     }
-                                    None => {} // Malformed JSON — skip
+                                    None => {} // Malformed JSON - skip
                                 }
                             }
                             Ok(None) => break, // journalctl exited
@@ -128,7 +128,7 @@ impl JournaldCollector {
                 return Ok(());
             }
 
-            warn!("journalctl exited unexpectedly — restarting in 5s");
+            warn!("journalctl exited unexpectedly - restarting in 5s");
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
     }
@@ -141,9 +141,9 @@ impl JournaldCollector {
 /// Parse one JSON line from `journalctl --output=json`.
 ///
 /// Returns:
-/// - `None` — malformed JSON (cursor unknown, skip)
-/// - `Some((cursor, None))` — valid entry but not interesting (advance cursor only)
-/// - `Some((cursor, Some(event)))` — valid entry that should be emitted
+/// - `None` - malformed JSON (cursor unknown, skip)
+/// - `Some((cursor, None))` - valid entry but not interesting (advance cursor only)
+/// - `Some((cursor, Some(event)))` - valid entry that should be emitted
 ///
 /// The cursor is always extracted in a single parse pass, eliminating the
 /// previous pattern of calling a separate `extract_cursor()` for non-matching lines.
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn skips_unknown_identifier() {
-        // Returns Some((cursor, None)) — cursor is advanced but no event is emitted
+        // Returns Some((cursor, None)) - cursor is advanced but no event is emitted
         let line = journal_line("nginx", "GET /health 200");
         let (cursor, ev) = parse_journal_line(&line, "host").unwrap();
         assert_eq!(cursor, "test-cursor-abc");

@@ -1,4 +1,4 @@
-//! `innerwarden upgrade` — fetch latest release from GitHub, validate, install.
+//! `innerwarden upgrade` - fetch latest release from GitHub, validate, install.
 //!
 //! Asset naming convention in releases:
 //!   innerwarden-sensor-linux-{arch}         (binary)
@@ -137,7 +137,7 @@ pub fn fetch_latest_release() -> Result<GithubRelease> {
     let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
     let resp = github_get(&url)
         .call()
-        .context("failed to reach GitHub API — check network connectivity")?;
+        .context("failed to reach GitHub API - check network connectivity")?;
 
     resp.into_body()
         .read_json::<GithubRelease>()
@@ -278,7 +278,7 @@ pub fn verify_signature(binary_bytes: &[u8], signature_b64: &str) -> Result<()> 
     let digest = Sha256::digest(binary_bytes);
     verifying_key
         .verify(&digest, &signature)
-        .context("signature verification FAILED — binary may be tampered")?;
+        .context("signature verification FAILED - binary may be tampered")?;
 
     Ok(())
 }
@@ -402,7 +402,7 @@ mod tests {
     #[test]
     fn detect_arch_returns_known_value() {
         // On CI the arch is either x86_64 or aarch64; either is acceptable.
-        // On unsupported arches it returns None — that's also valid.
+        // On unsupported arches it returns None - that's also valid.
         let arch = detect_arch();
         if let Some(a) = arch {
             assert!(a == "x86_64" || a == "aarch64");
@@ -492,7 +492,7 @@ mod tests {
         // Known SHA-256 of b"hello world" (no newline):
         // b94d27b9934d3e08a52e52d7da7dabfac484efe04294e576dab1a72ccef5e05a2... nope,
         // actual: b94d27b9934d3e08a52e52d7da7dabfac484efe04294e576dab1a72ccef5e05a2 ← 63 chars only
-        // Just verify structure — exact hash is tested implicitly by sha2 crate itself.
+        // Just verify structure - exact hash is tested implicitly by sha2 crate itself.
         assert_eq!(hex.len(), 64);
         assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
         // Verify determinism
@@ -666,7 +666,7 @@ mod tests {
         let signing_key = SigningKey::generate(&mut rand_core::OsRng);
         let verifying_key = signing_key.verifying_key();
 
-        // Temporarily override the public key constant — we can't, so instead
+        // Temporarily override the public key constant - we can't, so instead
         // test the crypto primitives directly to ensure our decoding logic works.
         let message = b"test binary content";
         let signature = signing_key.sign(message);
@@ -730,7 +730,7 @@ mod tests {
     #[test]
     fn verify_signature_rejects_wrong_length_sig() {
         use base64::Engine;
-        // Valid base64 but only 16 bytes — not 64
+        // Valid base64 but only 16 bytes - not 64
         let short_sig = base64::engine::general_purpose::STANDARD.encode([0u8; 16]);
         let result = verify_signature(b"hello", &short_sig);
         assert!(result.is_err());

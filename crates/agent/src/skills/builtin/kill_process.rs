@@ -34,7 +34,7 @@ impl ResponseSkill for KillProcess {
     }
 
     fn description(&self) -> &'static str {
-        "Kills all running processes owned by a user (SIGKILL) in response to suspicious execution activity. TTL is informational — no automatic process restart prevention."
+        "Kills all running processes owned by a user (SIGKILL) in response to suspicious execution activity. TTL is informational - no automatic process restart prevention."
     }
 
     fn tier(&self) -> SkillTier {
@@ -90,7 +90,7 @@ impl ResponseSkill for KillProcess {
 
             match kill_output {
                 Ok(out) => {
-                    // pkill exits with 1 if no processes matched — that is acceptable
+                    // pkill exits with 1 if no processes matched - that is acceptable
                     if out.status.success() || out.status.code() == Some(1) {
                         let meta = ProcessKillMetadata {
                             user: user.clone(),

@@ -1,4 +1,4 @@
-/// Module validator — static analysis of a module package.
+/// Module validator - static analysis of a module package.
 ///
 /// Checks manifest, directory structure, security constraints, docs and tests
 /// without compiling anything. Called by `innerwarden module validate <path>`.
@@ -54,8 +54,8 @@ impl ValidationReport {
             }
             match &check.result {
                 CheckResult::Pass => println!("  ✓  {}", check.name),
-                CheckResult::Warn(msg) => println!("  ⚠  {} — {}", check.name, msg),
-                CheckResult::Fail(msg) => println!("  ✗  {} — {}", check.name, msg),
+                CheckResult::Warn(msg) => println!("  ⚠  {} - {}", check.name, msg),
+                CheckResult::Fail(msg) => println!("  ✗  {} - {}", check.name, msg),
             }
         }
 
@@ -122,7 +122,7 @@ pub fn validate(module_path: &Path, strict: bool) -> Result<ValidationReport> {
     if is_builtin {
         checks.push(Check {
             category: "Structure",
-            name: "tests/ (builtin — tests live in crates/)".into(),
+            name: "tests/ (builtin - tests live in crates/)".into(),
             result: CheckResult::Pass,
         });
     } else {
@@ -287,7 +287,7 @@ fn validate_manifest(doc: &toml_edit::DocumentMut, checks: &mut Vec<Check>) {
                 CheckResult::Pass
             } else {
                 CheckResult::Fail(format!(
-                    "tier '{tier}' is invalid — must be 'open' or 'premium'"
+                    "tier '{tier}' is invalid - must be 'open' or 'premium'"
                 ))
             },
         });
@@ -315,7 +315,7 @@ fn validate_manifest(doc: &toml_edit::DocumentMut, checks: &mut Vec<Check>) {
 fn validate_manifest_rules(doc: &toml_edit::DocumentMut, checks: &mut Vec<Check>) {
     let rules = match doc.get("rules").and_then(|v| v.as_array_of_tables()) {
         Some(r) => r,
-        None => return, // no rules — valid
+        None => return, // no rules - valid
     };
 
     // Collect declared detectors and skills from [provides]
@@ -408,7 +408,7 @@ fn validate_manifest_rules(doc: &toml_edit::DocumentMut, checks: &mut Vec<Check>
                     CheckResult::Pass
                 } else {
                     CheckResult::Warn(
-                        "auto_execute = true — verify this is intentional; it enables autonomous execution".into(),
+                        "auto_execute = true - verify this is intentional; it enables autonomous execution".into(),
                     )
                 },
             });
@@ -430,7 +430,7 @@ fn validate_readme(readme_path: &Path, checks: &mut Vec<Check>) -> Result<()> {
         result: if content.len() >= 300 {
             CheckResult::Pass
         } else {
-            CheckResult::Fail(format!("{} chars — must be at least 300", content.len()))
+            CheckResult::Fail(format!("{} chars - must be at least 300", content.len()))
         },
     });
 
@@ -455,7 +455,7 @@ fn validate_readme(readme_path: &Path, checks: &mut Vec<Check>) -> Result<()> {
             CheckResult::Pass
         } else {
             CheckResult::Warn(
-                "no ```toml or ```bash block found — consider adding a config example".into(),
+                "no ```toml or ```bash block found - consider adding a config example".into(),
             )
         },
     });
@@ -486,7 +486,7 @@ fn validate_skills_security(
         let src = std::fs::read_to_string(file)?;
         let file_name = file.file_name().unwrap_or_default().to_string_lossy();
 
-        // .arg(format!(...)) — shell injection risk
+        // .arg(format!(...)) - shell injection risk
         let arg_format_count = count_pattern(&src, ".arg(format!");
         checks.push(Check {
             category: "Security",
@@ -495,7 +495,7 @@ fn validate_skills_security(
                 CheckResult::Pass
             } else {
                 CheckResult::Fail(format!(
-                    "{arg_format_count} occurrence(s) of .arg(format!(...)) — \
+                    "{arg_format_count} occurrence(s) of .arg(format!(...)) - \
                      dynamic strings in command args are a shell injection risk. \
                      Pass each argument as a separate .arg() call."
                 ))
@@ -514,7 +514,7 @@ fn validate_skills_security(
                 CheckResult::Pass
             } else {
                 CheckResult::Fail(
-                    "shell -c invocation detected — never pass dynamic strings through shell"
+                    "shell -c invocation detected - never pass dynamic strings through shell"
                         .into(),
                 )
             },
@@ -528,7 +528,7 @@ fn validate_skills_security(
                 CheckResult::Pass
             } else {
                 CheckResult::Fail(
-                    "no dry_run check found — skills must check dry_run and return early without executing".into(),
+                    "no dry_run check found - skills must check dry_run and return early without executing".into(),
                 )
             },
         });
@@ -544,7 +544,7 @@ fn validate_skills_security(
                     CheckResult::Pass
                 } else if safety_count >= unsafe_count {
                     CheckResult::Warn(format!(
-                        "{unsafe_count} unsafe block(s) — ensure each has a // SAFETY: comment and has been reviewed"
+                        "{unsafe_count} unsafe block(s) - ensure each has a // SAFETY: comment and has been reviewed"
                     ))
                 } else {
                     CheckResult::Fail(format!(

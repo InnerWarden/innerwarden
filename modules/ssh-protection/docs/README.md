@@ -6,8 +6,8 @@ Detects and responds to SSH brute-force attacks and credential stuffing attempts
 
 This module monitors SSH authentication failures from `/var/log/auth.log` and systemd journal (sshd unit). It uses two independent detectors:
 
-- **ssh-bruteforce**: sliding window per source IP — triggers when a single IP exceeds the failure threshold
-- **credential-stuffing**: sliding window per source IP tracking distinct usernames — triggers when one IP tries many different users (password spray)
+- **ssh-bruteforce**: sliding window per source IP - triggers when a single IP exceeds the failure threshold
+- **credential-stuffing**: sliding window per source IP tracking distinct usernames - triggers when one IP tries many different users (password spray)
 
 When a detector triggers, the agent evaluates the incident with AI and can automatically block the source IP via ufw, iptables, or nftables.
 

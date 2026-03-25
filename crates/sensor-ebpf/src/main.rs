@@ -1,4 +1,4 @@
-//! Inner Warden eBPF programs — kernel-level security monitoring.
+//! Inner Warden eBPF programs - kernel-level security monitoring.
 //!
 //! Tracepoints:
 //!   - sys_enter_execve: captures every process execution
@@ -46,35 +46,35 @@ use innerwarden_ebpf_types::{
 };
 
 // ---------------------------------------------------------------------------
-// Ring buffer — shared between all eBPF programs, read by userspace
+// Ring buffer - shared between all eBPF programs, read by userspace
 // ---------------------------------------------------------------------------
 
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(1024 * 1024, 0); // 1 MB ring buffer (expanded for 13 hooks)
 
 // ---------------------------------------------------------------------------
-// XDP blocklist — IPv4 addresses to drop at wire speed
+// XDP blocklist - IPv4 addresses to drop at wire speed
 // ---------------------------------------------------------------------------
 //
 // Populated by the agent via aya userspace API.
 // Key: IPv4 address as u32 (network byte order)
 // Value: flags (1 = block, 0 = removed/placeholder)
-// Max 10,000 IPs — enough for most threat scenarios.
+// Max 10,000 IPs - enough for most threat scenarios.
 
 #[map]
 static BLOCKLIST: HashMap<u32, u32> = HashMap::with_max_entries(10_000, 0);
 
-/// XDP allowlist — IPs that must NEVER be dropped, regardless of blocklist.
+/// XDP allowlist - IPs that must NEVER be dropped, regardless of blocklist.
 /// Operator IPs, payment gateways, CDN ranges, API partners.
 /// Checked BEFORE blocklist: allowlist wins.
 #[map]
 static ALLOWLIST: HashMap<u32, u32> = HashMap::with_max_entries(1_000, 0);
 
 // ---------------------------------------------------------------------------
-// Kernel-level noise filters — populated by userspace, checked before emit
+// Kernel-level noise filters - populated by userspace, checked before emit
 // ---------------------------------------------------------------------------
 
-/// Comm allowlist — processes that should never trigger alerts.
+/// Comm allowlist - processes that should never trigger alerts.
 /// Key: first 16 bytes of comm name (zero-padded).
 /// Value: bitmask of handlers to skip (bit 0=execve, 1=connect, 2=openat,
 ///   3=ptrace, 4=setuid, 5=bind, 6=mount, 7=memfd, 8=init_module).
@@ -82,13 +82,13 @@ static ALLOWLIST: HashMap<u32, u32> = HashMap::with_max_entries(1_000, 0);
 #[map]
 static COMM_ALLOWLIST: HashMap<[u8; 16], u32> = HashMap::with_max_entries(256, 0);
 
-/// Cgroup allowlist — containers that are known-safe (monitoring, database).
+/// Cgroup allowlist - containers that are known-safe (monitoring, database).
 /// Key: cgroup_id. Value: 1 = skip all non-critical events.
 /// Populated by agent from container inventory.
 #[map]
 static CGROUP_ALLOWLIST: HashMap<u64, u32> = HashMap::with_max_entries(128, 0);
 
-/// Per-PID rate limiter — prevents ring buffer flood from noisy processes.
+/// Per-PID rate limiter - prevents ring buffer flood from noisy processes.
 /// Key: PID. Value: last emission timestamp (ktime_ns).
 /// If a PID emitted within the last RATE_LIMIT_NS, the event is dropped.
 /// Cleaned up periodically by userspace.
@@ -96,7 +96,7 @@ static CGROUP_ALLOWLIST: HashMap<u64, u32> = HashMap::with_max_entries(128, 0);
 static PID_RATE_LIMIT: HashMap<u32, u64> = HashMap::with_max_entries(4096, 0);
 
 // ---------------------------------------------------------------------------
-// Kill Chain Detection — per-PID syscall correlation
+// Kill Chain Detection - per-PID syscall correlation
 // ---------------------------------------------------------------------------
 //
 // Tracks syscall sequences per PID to detect attack patterns in the kernel.
@@ -131,7 +131,7 @@ const CHAIN_MPROTECT: u32 = 1 << 7;
 const PATTERN_REVERSE_SHELL: u32 = CHAIN_SOCKET | CHAIN_DUP_STDIN | CHAIN_DUP_STDOUT;
 const PATTERN_BIND_SHELL: u32 = CHAIN_BIND | CHAIN_LISTEN | CHAIN_DUP_STDIN | CHAIN_DUP_STDOUT;
 const PATTERN_CODE_INJECT: u32 = CHAIN_PTRACE | CHAIN_MPROTECT;
-// Zero-day exploit patterns — generic, no CVE signature needed:
+// Zero-day exploit patterns - generic, no CVE signature needed:
 // Exploit → shellcode: mprotect(RWX) then redirect I/O
 const PATTERN_EXPLOIT_SHELL: u32 = CHAIN_MPROTECT | CHAIN_DUP_STDIN | CHAIN_DUP_STDOUT;
 // Exploit → inject + shell: ptrace into process then spawn shell
@@ -175,9 +175,9 @@ fn chain_clear(pid: u32) {
 /// Prevents cargo, find, grep from flooding the ring buffer during builds.
 const RATE_LIMIT_NS: u64 = 100_000_000;
 
-/// Exception list — specific (comm, handler) pairs to always skip.
+/// Exception list - specific (comm, handler) pairs to always skip.
 /// Key: first 16 bytes of comm. Value: always 1.
-/// More granular than COMM_ALLOWLIST — for processes that are noisy on one
+/// More granular than COMM_ALLOWLIST - for processes that are noisy on one
 /// handler but relevant on others (e.g., sshd is noisy on openat but
 /// critical on connect and setuid).
 #[map]
@@ -219,7 +219,7 @@ fn is_rate_limited(pid: u32) -> bool {
 
     if let Some(&last_ts) = unsafe { PID_RATE_LIMIT.get(&pid) } {
         if now.saturating_sub(last_ts) < RATE_LIMIT_NS {
-            return true; // too soon — skip
+            return true; // too soon - skip
         }
     }
 
@@ -236,7 +236,7 @@ fn is_rate_limited(pid: u32) -> bool {
 // and tail-calls to the appropriate handler via ProgramArray.
 //
 // This replaces the 16 individual typed tracepoints with 1 attach point.
-// The handlers become tail call targets — same program type (raw_tracepoint),
+// The handlers become tail call targets - same program type (raw_tracepoint),
 // each extracting args from pt_regs instead of typed tracepoint context.
 //
 // On aarch64: syscall args in pt_regs->regs[0..5] (offset 0, each 8 bytes)
@@ -246,7 +246,7 @@ fn is_rate_limited(pid: u32) -> bool {
 #[map]
 static SYSCALL_DISPATCH: ProgramArray = ProgramArray::with_max_entries(512, 0);
 
-/// Per-syscall enable flag — checked before tail call.
+/// Per-syscall enable flag - checked before tail call.
 /// Key: syscall number. Value: 1 = enabled, 0 = disabled.
 #[cfg(feature = "dispatcher")]
 #[map]
@@ -270,7 +270,7 @@ unsafe fn read_syscall_arg(ctx: &RawTracePointContext, arg_idx: usize) -> Result
     // args[0] = pt_regs pointer
     let regs_ptr = raw_arg(ctx, 0) as *const u8;
 
-    // BPF compiles for bpfel-unknown-none — use aarch64 layout (our production target).
+    // BPF compiles for bpfel-unknown-none - use aarch64 layout (our production target).
     // aarch64: regs[0..30] at offset 0, each u64 (8 bytes).
     // x86_64 would need different offsets (di=112, si=104, etc.)
     // but we compile per-target anyway so this is fine.
@@ -278,7 +278,7 @@ unsafe fn read_syscall_arg(ctx: &RawTracePointContext, arg_idx: usize) -> Result
     bpf_probe_read_kernel(regs_ptr.add(offset) as *const u64)
 }
 
-/// Main dispatcher — fires on every syscall entry.
+/// Main dispatcher - fires on every syscall entry.
 #[cfg(feature = "dispatcher")]
 #[raw_tracepoint(tracepoint = "sys_enter")]
 pub fn innerwarden_dispatcher(ctx: RawTracePointContext) -> u32 {
@@ -295,7 +295,7 @@ pub fn innerwarden_dispatcher(ctx: RawTracePointContext) -> u32 {
         return 0; // not in map = not monitored
     }
 
-    // Tail call to handler — silently returns if no handler installed
+    // Tail call to handler - silently returns if no handler installed
     unsafe {
         let _ = SYSCALL_DISPATCH.tail_call(&ctx, nr);
     }
@@ -304,7 +304,7 @@ pub fn innerwarden_dispatcher(ctx: RawTracePointContext) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// XDP: innerwarden_xdp — wire-speed IP blocking
+// XDP: innerwarden_xdp - wire-speed IP blocking
 // ---------------------------------------------------------------------------
 //
 // Attached to a network interface. For every incoming packet:
@@ -334,7 +334,7 @@ fn try_xdp_firewall(ctx: &XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    // Parse Ethernet header — check for IPv4 (EtherType 0x0800)
+    // Parse Ethernet header - check for IPv4 (EtherType 0x0800)
     let eth_proto = u16::from_be_bytes(unsafe {
         let ptr = data as *const u8;
         [*ptr.add(12), *ptr.add(13)]
@@ -350,12 +350,12 @@ fn try_xdp_firewall(ctx: &XdpContext) -> Result<u32, ()> {
         [*ptr.add(26), *ptr.add(27), *ptr.add(28), *ptr.add(29)]
     });
 
-    // Allowlist check FIRST — never drop protected IPs
+    // Allowlist check FIRST - never drop protected IPs
     if unsafe { ALLOWLIST.get(&src_ip) }.is_some() {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    // Blocklist check — O(1) hash map lookup
+    // Blocklist check - O(1) hash map lookup
     if unsafe { BLOCKLIST.get(&src_ip) }.is_some() {
         return Ok(xdp_action::XDP_DROP);
     }
@@ -372,7 +372,7 @@ fn try_xdp_firewall(ctx: &XdpContext) -> Result<u32, ()> {
 //   - Filename being executed
 //   - Process comm name
 //
-// This is the most important tracepoint for security — every command
+// This is the most important tracepoint for security - every command
 // execution on the system is visible here.
 
 #[tracepoint]
@@ -409,7 +409,7 @@ fn try_execve(ctx: &TracePointContext) -> Result<(), i64> {
     // Reserve space in ring buffer
     let mut entry = match EVENTS.reserve::<ExecveEvent>(0) {
         Some(e) => e,
-        None => return Ok(()), // ring buffer full — drop silently (fail-open)
+        None => return Ok(()), // ring buffer full - drop silently (fail-open)
     };
 
     let event = unsafe { &mut *entry.as_mut_ptr() };
@@ -606,13 +606,13 @@ fn try_openat(ctx: &TracePointContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
-// Kprobe: commit_creds — privilege escalation detection
+// Kprobe: commit_creds - privilege escalation detection
 // ---------------------------------------------------------------------------
 //
 // Fires when the kernel applies new credentials to a process.
 // Detects: non-root process becoming root through unexpected paths.
 //
-// commit_creds(struct cred *new) — the `cred` struct contains the new uid.
+// commit_creds(struct cred *new) - the `cred` struct contains the new uid.
 // We compare current uid (before) with new uid (from cred arg).
 // If old_uid != 0 && new_uid == 0 → privilege escalation.
 //
@@ -662,7 +662,7 @@ fn try_privesc(ctx: &ProbeContext) -> Result<(), i64> {
 
     let mut entry = match EVENTS.reserve::<PrivEscEvent>(0) {
         Some(e) => e,
-        None => return Ok(()), // ring buffer full — fail-open
+        None => return Ok(()), // ring buffer full - fail-open
     };
 
     let event = unsafe { &mut *entry.as_mut_ptr() };
@@ -685,14 +685,14 @@ fn try_privesc(ctx: &ProbeContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
-// LSM: bprm_check_security — block execution from dangerous paths
+// LSM: bprm_check_security - block execution from dangerous paths
 // ---------------------------------------------------------------------------
 //
 // Enforces execution policy at the kernel level. When enabled via the
 // LSM_POLICY map, blocks binaries executed from:
-//   /tmp/       — common staging area for malware
-//   /dev/shm/   — shared memory, often used for fileless malware
-//   /var/tmp/   — persistent temp, another staging area
+//   /tmp/       - common staging area for malware
+//   /dev/shm/   - shared memory, often used for fileless malware
+//   /var/tmp/   - persistent temp, another staging area
 //
 // Policy map keys:
 //   0 = master switch (1 = enforce, 0 = disabled)
@@ -700,7 +700,7 @@ fn try_privesc(ctx: &ProbeContext) -> Result<(), i64> {
 // Returns 0 to allow, -EPERM (-1) to deny.
 // When policy map is empty or key 0 is not set → allow (fail-open).
 
-/// Policy map — controls LSM enforcement.
+/// Policy map - controls LSM enforcement.
 /// Key 0 = master switch: 0 = disabled (observe only), 1 = enforce (block).
 /// Managed by the agent via bpftool on the pinned map.
 #[map]
@@ -718,7 +718,7 @@ fn try_lsm_exec(ctx: &LsmContext) -> Result<i32, i64> {
     // Check if enforcement is enabled (key 0 in policy map)
     let enabled = unsafe { LSM_POLICY.get(&0u32) };
     if enabled.is_none() || *enabled.unwrap() == 0 {
-        return Ok(0); // policy disabled — allow everything
+        return Ok(0); // policy disabled - allow everything
     }
 
     // Kill chain detection: if this PID accumulated an attack pattern,
@@ -788,7 +788,7 @@ fn try_lsm_exec(ctx: &LsmContext) -> Result<i32, i64> {
         || (buf[0] == b'/' && buf[1] == b'v' && buf[2] == b'a' && buf[3] == b'r' && buf[4] == b'/' && buf[5] == b't' && buf[6] == b'm' && buf[7] == b'p' && buf[8] == b'/');
 
     if !is_dangerous {
-        return Ok(0); // safe path — allow
+        return Ok(0); // safe path - allow
     }
 
     // LSM allowlist: certain processes are always allowed to execute from temp paths.
@@ -854,7 +854,7 @@ fn try_lsm_exec(ctx: &LsmContext) -> Result<i32, i64> {
 }
 
 // ---------------------------------------------------------------------------
-// sched:sched_process_exit — track process exits for rootkit detection
+// sched:sched_process_exit - track process exits for rootkit detection
 // ---------------------------------------------------------------------------
 //
 // By tracking both execve (birth) and exit (death), the rootkit detector
@@ -882,7 +882,7 @@ fn try_process_exit(_ctx: &TracePointContext) -> Result<(), i64> {
 
     let mut entry = match EVENTS.reserve::<ProcessExitEvent>(0) {
         Some(e) => e,
-        None => return Ok(()), // ring buffer full — fail-open
+        None => return Ok(()), // ring buffer full - fail-open
     };
 
     let event = unsafe { &mut *entry.as_mut_ptr() };
@@ -902,14 +902,14 @@ fn try_process_exit(_ctx: &TracePointContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
-// Tracepoint: sys_enter_ptrace — process injection detection
+// Tracepoint: sys_enter_ptrace - process injection detection
 // ---------------------------------------------------------------------------
 //
 // Only emits events for dangerous ptrace operations:
-//   PTRACE_ATTACH (16)    — attach to a running process
-//   PTRACE_SEIZE (0x4206) — modern attach variant
-//   PTRACE_POKETEXT (4)   — write to process memory (code injection)
-//   PTRACE_POKEDATA (5)   — write to process data
+//   PTRACE_ATTACH (16)    - attach to a running process
+//   PTRACE_SEIZE (0x4206) - modern attach variant
+//   PTRACE_POKETEXT (4)   - write to process memory (code injection)
+//   PTRACE_POKEDATA (5)   - write to process data
 //
 // PTRACE_TRACEME (0) is benign (child requesting tracing) and is ignored.
 
@@ -974,11 +974,11 @@ fn try_ptrace(ctx: &TracePointContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
-// Tracepoint: sys_enter_setuid — privilege escalation at kernel level
+// Tracepoint: sys_enter_setuid - privilege escalation at kernel level
 // ---------------------------------------------------------------------------
 //
 // Detects real privilege changes: non-root process setting uid to 0.
-// Covers setuid, setgid, setresuid, setresgid — all route here.
+// Covers setuid, setgid, setresuid, setresgid - all route here.
 // The kprobe on commit_creds catches the final credential application;
 // this tracepoint catches the syscall invocation (earlier in the chain).
 
@@ -995,7 +995,7 @@ fn try_setuid(ctx: &TracePointContext) -> Result<(), i64> {
     if is_comm_allowed(4) {
         return Ok(());
     }
-    // Note: no cgroup filter on setuid — privilege escalation is always relevant
+    // Note: no cgroup filter on setuid - privilege escalation is always relevant
 
     // sys_enter_setuid args: [uid]
     let target_uid: u32 = unsafe { ctx.read_at(16)? };
@@ -1033,11 +1033,11 @@ fn try_setuid(ctx: &TracePointContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
-// Tracepoint: sys_enter_bind — reverse shell setup detection
+// Tracepoint: sys_enter_bind - reverse shell setup detection
 // ---------------------------------------------------------------------------
 //
 // A process calling bind() on 0.0.0.0 with a TCP socket is setting up
-// a listener — a strong indicator of reverse shell or backdoor setup.
+// a listener - a strong indicator of reverse shell or backdoor setup.
 // Combined with listen() detection in userspace for correlation.
 
 #[tracepoint]
@@ -1111,7 +1111,7 @@ fn try_bind(ctx: &TracePointContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
-// Tracepoint: sys_enter_mount — container escape detection
+// Tracepoint: sys_enter_mount - container escape detection
 // ---------------------------------------------------------------------------
 //
 // Inside a container, mount() is almost always malicious. On the host,
@@ -1127,7 +1127,7 @@ pub fn innerwarden_mount(ctx: TracePointContext) -> u32 {
 
 #[inline(always)]
 fn try_mount(ctx: &TracePointContext) -> Result<(), i64> {
-    // No comm/cgroup filter — mount is always security-critical
+    // No comm/cgroup filter - mount is always security-critical
     let pid = bpf_get_current_pid_tgid() as u32;
     if is_rate_limited(pid) {
         return Ok(());
@@ -1184,12 +1184,12 @@ fn try_mount(ctx: &TracePointContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
-// Tracepoint: sys_enter_memfd_create — fileless malware detection
+// Tracepoint: sys_enter_memfd_create - fileless malware detection
 // ---------------------------------------------------------------------------
 //
 // memfd_create() creates an anonymous memory-backed file. Legitimate uses
 // are rare (JIT compilers, some runtimes). Malware uses it to avoid disk.
-// Always emitted — very low frequency in normal operation.
+// Always emitted - very low frequency in normal operation.
 
 #[tracepoint]
 pub fn innerwarden_memfd_create(ctx: TracePointContext) -> u32 {
@@ -1204,7 +1204,7 @@ fn try_memfd_create(ctx: &TracePointContext) -> Result<(), i64> {
     if is_comm_allowed(7) {
         return Ok(());
     }
-    // No cgroup filter — memfd_create is rare and always suspicious
+    // No cgroup filter - memfd_create is rare and always suspicious
 
     // sys_enter_memfd_create args: [uname, flags]
     let name_ptr: *const u8 = unsafe { ctx.read_at(16)? };
@@ -1242,7 +1242,7 @@ fn try_memfd_create(ctx: &TracePointContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
-// Tracepoint: sys_enter_init_module / finit_module — rootkit loading
+// Tracepoint: sys_enter_init_module / finit_module - rootkit loading
 // ---------------------------------------------------------------------------
 //
 // Kernel module loading is one of the most dangerous operations.
@@ -1259,7 +1259,7 @@ pub fn innerwarden_init_module(ctx: TracePointContext) -> u32 {
 
 #[inline(always)]
 fn try_init_module(_ctx: &TracePointContext) -> Result<(), i64> {
-    // No filters — kernel module loading is ALWAYS critical. No exceptions.
+    // No filters - kernel module loading is ALWAYS critical. No exceptions.
     let pid = bpf_get_current_pid_tgid() as u32;
     let uid = bpf_get_current_uid_gid() as u32;
     let ts = unsafe { bpf_ktime_get_ns() };
@@ -1287,7 +1287,7 @@ fn try_init_module(_ctx: &TracePointContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
-// Tracepoint: sys_enter_dup2/dup3 — fd redirection (reverse shell)
+// Tracepoint: sys_enter_dup2/dup3 - fd redirection (reverse shell)
 // ---------------------------------------------------------------------------
 // Reverse shells redirect fd 0/1/2 (stdin/stdout/stderr) to a socket.
 // Only emits when newfd is 0, 1, or 2 (the dangerous redirections).
@@ -1343,7 +1343,7 @@ fn try_dup(ctx: &TracePointContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
-// Tracepoint: sys_enter_listen — confirms reverse shell / backdoor
+// Tracepoint: sys_enter_listen - confirms reverse shell / backdoor
 // ---------------------------------------------------------------------------
 
 #[tracepoint]
@@ -1385,9 +1385,9 @@ fn try_listen(ctx: &TracePointContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
-// Tracepoint: sys_enter_mprotect — shellcode detection (RWX memory)
+// Tracepoint: sys_enter_mprotect - shellcode detection (RWX memory)
 // ---------------------------------------------------------------------------
-// Only emits when PROT_EXEC (0x4) is being added — making memory executable.
+// Only emits when PROT_EXEC (0x4) is being added - making memory executable.
 
 const PROT_EXEC: u64 = 0x4;
 
@@ -1441,9 +1441,9 @@ fn try_mprotect(ctx: &TracePointContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
-// Tracepoint: sys_enter_clone — fork bombs, process tree tracking
+// Tracepoint: sys_enter_clone - fork bombs, process tree tracking
 // ---------------------------------------------------------------------------
-// Rate limited heavily — clone is called very frequently.
+// Rate limited heavily - clone is called very frequently.
 
 #[tracepoint]
 pub fn innerwarden_clone(ctx: TracePointContext) -> u32 {
@@ -1486,7 +1486,7 @@ fn try_clone(ctx: &TracePointContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
-// Tracepoint: sys_enter_unlinkat — evidence destruction / log wipe
+// Tracepoint: sys_enter_unlinkat - evidence destruction / log wipe
 // ---------------------------------------------------------------------------
 // Only emits for sensitive paths: /var/log, /etc, /root
 
@@ -1550,7 +1550,7 @@ fn try_unlink(ctx: &TracePointContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
-// Tracepoint: sys_enter_renameat2 — binary/config replacement
+// Tracepoint: sys_enter_renameat2 - binary/config replacement
 // ---------------------------------------------------------------------------
 
 #[tracepoint]
@@ -1613,7 +1613,7 @@ fn try_rename(ctx: &TracePointContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
-// Tracepoint: sys_enter_kill — killing security processes
+// Tracepoint: sys_enter_kill - killing security processes
 // ---------------------------------------------------------------------------
 // Only emits for SIGKILL(9), SIGTERM(15), SIGSTOP(19).
 
@@ -1661,7 +1661,7 @@ fn try_kill(ctx: &TracePointContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
-// Tracepoint: sys_enter_prctl — process name spoofing, privs manipulation
+// Tracepoint: sys_enter_prctl - process name spoofing, privs manipulation
 // ---------------------------------------------------------------------------
 // Only PR_SET_NAME(15) and PR_SET_NO_NEW_PRIVS(38).
 
@@ -1711,7 +1711,7 @@ fn try_prctl(ctx: &TracePointContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
-// Tracepoint: sys_enter_accept4 — incoming connection accepted
+// Tracepoint: sys_enter_accept4 - incoming connection accepted
 // ---------------------------------------------------------------------------
 
 #[tracepoint]
@@ -1874,9 +1874,9 @@ fn try_dispatch_connect(ctx: &RawTracePointContext) -> Result<(), i64> {
     Ok(())
 }
 
-// Simpler handlers — most only read 0-2 args, trivial to convert.
+// Simpler handlers - most only read 0-2 args, trivial to convert.
 // ptrace, setuid, bind, mount, memfd_create, init_module, dup, listen, mprotect,
-// clone, unlink, rename, kill, prctl, accept — each follows the same pattern:
+// clone, unlink, rename, kill, prctl, accept - each follows the same pattern:
 // read args via read_syscall_arg() instead of ctx.read_at().
 
 #[cfg(feature = "dispatcher")]
@@ -2017,7 +2017,7 @@ pub fn dispatch_kill(ctx: RawTracePointContext) -> u32 {
 
 // For the remaining dispatcher handlers (bind, mount, memfd_create, init_module,
 // dup, listen, clone, unlink, rename, prctl, accept, openat), the pattern is
-// identical — read args via read_syscall_arg and emit to ring buffer.
+// identical - read args via read_syscall_arg and emit to ring buffer.
 // Userspace wires them into SYSCALL_DISPATCH at the correct syscall numbers.
 
 // ---------------------------------------------------------------------------

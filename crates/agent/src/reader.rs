@@ -25,7 +25,7 @@ pub fn read_new_entries<T: DeserializeOwned>(path: &Path, offset: u64) -> Result
 
     let file_len = file.metadata()?.len();
 
-    // File was truncated or rotated — reset to beginning
+    // File was truncated or rotated - reset to beginning
     let start = if offset > file_len { 0 } else { offset };
 
     let mut reader = BufReader::new(file);
@@ -72,7 +72,7 @@ pub struct ReadResult<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Agent cursor — tracks byte offsets per date file
+// Agent cursor - tracks byte offsets per date file
 // ---------------------------------------------------------------------------
 
 /// Persists the agent's read position in each dated JSONL file.
@@ -103,7 +103,7 @@ impl AgentCursor {
             Err(e) => {
                 warn!(
                     path = %path.display(),
-                    "agent-state.json corrupted ({e}) — starting with empty cursor, \
+                    "agent-state.json corrupted ({e}) - starting with empty cursor, \
                      some incidents may be re-analyzed"
                 );
                 Ok(Self::default())
@@ -175,7 +175,7 @@ mod tests {
         writeln!(f, r#"{{"ts":"2026-01-01T00:01:00Z","host":"h","source":"s","kind":"k","severity":"info","summary":"second","details":{{}},"tags":[],"entities":[]}}"#).unwrap();
         f.flush().unwrap();
 
-        // Read from saved offset — should only get the new one
+        // Read from saved offset - should only get the new one
         let r2 =
             read_new_entries::<innerwarden_core::event::Event>(f.path(), r1.new_offset).unwrap();
         assert_eq!(r2.entries.len(), 1);
@@ -224,7 +224,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("agent-state.json");
         std::fs::write(&path, "not valid json at all {{{{").unwrap();
-        // Must not return Err — falls back to empty cursor
+        // Must not return Err - falls back to empty cursor
         let cursor = AgentCursor::load(&path).unwrap();
         assert_eq!(cursor.events_offset("2026-03-13"), 0);
         assert_eq!(cursor.incidents_offset("2026-03-13"), 0);

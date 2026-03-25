@@ -1,4 +1,4 @@
-# sudo-protection — agent config snippet
+# sudo-protection - agent config snippet
 
 [responder]
 enabled        = true

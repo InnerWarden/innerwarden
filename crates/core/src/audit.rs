@@ -37,7 +37,7 @@ pub struct AdminActionEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Standalone append (for CTL — open, write, close)
+// Standalone append (for CTL - open, write, close)
 // ---------------------------------------------------------------------------
 
 /// Append a single admin action to the daily JSONL with hash chaining.

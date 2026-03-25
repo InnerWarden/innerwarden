@@ -52,7 +52,7 @@ const ALLOWLISTED_PROCESSES: &[&str] = &[
     "salt-call",
 ];
 
-/// Suspicious paths in ExecStart — strong indicator of backdoor.
+/// Suspicious paths in ExecStart - strong indicator of backdoor.
 const SUSPICIOUS_EXEC_PATHS: &[&str] = &["/tmp/", "/dev/shm/", "/var/tmp/"];
 
 struct EmitParams<'a> {
@@ -269,7 +269,7 @@ impl SystemdPersistenceDetector {
             severity,
             title: title.to_string(),
             summary: format!(
-                "Systemd persistence detected: {title} — {comm} (pid={pid}, uid={uid})"
+                "Systemd persistence detected: {title} - {comm} (pid={pid}, uid={uid})"
             ),
             evidence: serde_json::json!([{
                 "kind": event.kind,

@@ -1,4 +1,4 @@
-# All false positives — no real secrets
+# All false positives - no real secrets
 
 # OSQUERY_KEY is a public GPG key for package verification
 modules/osquery-integration/docs/README.md:generic-api-key:84

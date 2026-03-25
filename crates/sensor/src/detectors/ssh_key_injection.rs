@@ -91,7 +91,7 @@ impl SshKeyInjectionDetector {
                 target: filename,
                 summary: &format!(
                     "Unauthorized write to {filename} by {comm} (pid={pid}, uid={uid}) \
-                     — possible SSH key injection for persistence"
+                     - possible SSH key injection for persistence"
                 ),
             });
         }
@@ -108,7 +108,7 @@ impl SshKeyInjectionDetector {
                 target: filename,
                 summary: &format!(
                     "Non-root process {comm} (pid={pid}, uid={uid}) modified {filename} \
-                     — possible SSH configuration tampering"
+                     - possible SSH configuration tampering"
                 ),
             });
         }

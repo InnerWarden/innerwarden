@@ -17,9 +17,9 @@ use tracing::info;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SkillTier {
-    /// Free and open-source — community contributions welcome.
+    /// Free and open-source - community contributions welcome.
     Open,
-    /// Premium feature — requires a license or future subscription.
+    /// Premium feature - requires a license or future subscription.
     /// Current premium stubs log a friendly message and return success without acting.
     Premium,
 }
@@ -233,7 +233,7 @@ pub struct SkillResult {
 }
 
 // ---------------------------------------------------------------------------
-// ResponseSkill trait — implement this to add a new skill
+// ResponseSkill trait - implement this to add a new skill
 // ---------------------------------------------------------------------------
 
 /// A response skill is an action Inner Warden can take when an incident is detected.
@@ -364,7 +364,7 @@ pub struct Blocklist {
 }
 
 impl Blocklist {
-    #[allow(dead_code)] // public API — used by algorithm gate and future skills
+    #[allow(dead_code)] // public API - used by algorithm gate and future skills
     pub fn contains(&self, ip: &str) -> bool {
         self.blocked.contains(ip)
     }
@@ -377,7 +377,7 @@ impl Blocklist {
     /// Keeps the most recent entries by clearing and reloading if over limit.
     pub fn trim_if_needed(&mut self, max_entries: usize) {
         if self.blocked.len() > max_entries {
-            // Keep a random subset — in practice the oldest IPs are no longer attacking
+            // Keep a random subset - in practice the oldest IPs are no longer attacking
             let keep: HashSet<String> =
                 self.blocked.iter().take(max_entries / 2).cloned().collect();
             self.blocked = keep;

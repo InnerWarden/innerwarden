@@ -2,7 +2,7 @@
 ///
 /// Watches events whose `source` is `"osquery"`. When an osquery event has
 /// High or Critical severity (sudoers changes, SUID binaries, authorized_keys
-/// changes, crontab modifications), the detector promotes it to an incident —
+/// changes, crontab modifications), the detector promotes it to an incident -
 /// subject to a per-query-kind cooldown to avoid duplicate alerts.
 use std::collections::HashMap;
 
@@ -23,7 +23,7 @@ fn query_tag(kind: &str) -> &'static str {
 
 pub struct OsqueryAnomalyDetector {
     host: String,
-    /// Last alert time per query kind — suppresses re-alerts within the cooldown.
+    /// Last alert time per query kind - suppresses re-alerts within the cooldown.
     alerted: HashMap<String, DateTime<Utc>>,
     cooldown: Duration,
 }
@@ -53,7 +53,7 @@ impl OsqueryAnomalyDetector {
         let kind = &event.kind;
         let now = event.ts;
 
-        // Cooldown check — per query kind
+        // Cooldown check - per query kind
         if let Some(&last) = self.alerted.get(kind.as_str()) {
             if now - last < self.cooldown {
                 return None;
@@ -82,7 +82,7 @@ impl OsqueryAnomalyDetector {
             severity: event.severity.clone(),
             title: format!("Osquery anomaly: {query_name}"),
             summary: format!(
-                "Osquery detected a host state change — query: {query_name}, kind: {kind}"
+                "Osquery detected a host state change - query: {query_name}, kind: {kind}"
             ),
             evidence: serde_json::json!([{
                 "kind": kind,
@@ -90,7 +90,7 @@ impl OsqueryAnomalyDetector {
                 "details": &event.details,
             }]),
             recommended_checks: vec![
-                format!("Investigate osquery result for {query_name} — review columns for unexpected values"),
+                format!("Investigate osquery result for {query_name} - review columns for unexpected values"),
                 "Correlate with recent user activity and login events".to_string(),
                 "Check if the change was part of a legitimate administrative action".to_string(),
             ],
@@ -197,7 +197,7 @@ mod tests {
         assert!(det
             .process(&osquery_event("osquery.sudoers", Sev::High, base))
             .is_some());
-        // Same kind within cooldown — suppressed
+        // Same kind within cooldown - suppressed
         assert!(det
             .process(&osquery_event(
                 "osquery.sudoers",
@@ -214,7 +214,7 @@ mod tests {
         assert!(det
             .process(&osquery_event("osquery.sudoers", Sev::High, base))
             .is_some());
-        // After cooldown — fires again
+        // After cooldown - fires again
         assert!(det
             .process(&osquery_event(
                 "osquery.sudoers",
@@ -231,7 +231,7 @@ mod tests {
         assert!(det
             .process(&osquery_event("osquery.sudoers", Sev::High, base))
             .is_some());
-        // Different kind — fires even though first kind is in cooldown
+        // Different kind - fires even though first kind is in cooldown
         assert!(det
             .process(&osquery_event("osquery.suid_bin", Sev::High, base))
             .is_some());

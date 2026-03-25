@@ -38,7 +38,7 @@ const ALLOWED_MODULES: &[&str] = &[
 /// Prefixes for standard modules that come in families (virtio_*, kvm*, hv_*).
 const ALLOWED_PREFIXES: &[&str] = &["virtio_", "kvm", "hv_", "xen_", "vmw_", "nf_"];
 
-/// Suspicious paths — loading from these indicates a rootkit or exploit.
+/// Suspicious paths - loading from these indicates a rootkit or exploit.
 const SUSPICIOUS_PATHS: &[&str] = &["/tmp/", "/dev/shm/", "/home/", "/var/tmp/"];
 
 /// Detects runtime kernel module loading via insmod/modprobe/rmmod.
@@ -97,7 +97,7 @@ impl KernelModuleLoadDetector {
                     if arg.starts_with('-') {
                         continue;
                     }
-                    // For insmod, the argument is a path — extract the filename
+                    // For insmod, the argument is a path - extract the filename
                     if base == "insmod" {
                         let filename = arg.rsplit('/').next().unwrap_or(arg);
                         return Some(
@@ -200,7 +200,7 @@ impl KernelModuleLoadDetector {
                 "uid": uid,
             }]),
             recommended_checks: vec![
-                format!("Investigate module {module_name} — is it a known system module?"),
+                format!("Investigate module {module_name} - is it a known system module?"),
                 format!("Check who loaded it: ps -o user= -p {pid}"),
                 "List loaded modules: lsmod | grep suspicious".to_string(),
                 format!("Check module file: modinfo {module_name}"),

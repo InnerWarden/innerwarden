@@ -6,12 +6,12 @@ use innerwarden_core::{entities::EntityRef, event::Event, event::Severity, incid
 /// Detects mass file encryption indicators (ransomware behavior).
 ///
 /// Indicators:
-///   - Single process writes to > N files within a time window — mass encryption
+///   - Single process writes to > N files within a time window - mass encryption
 ///   - Files with suspicious extensions: .encrypted, .locked, .crypt, .enc, etc.
 ///   - Ransom note creation: README.txt, DECRYPT.txt, HOW_TO_DECRYPT in multiple dirs
 ///   - Commands using openssl enc or gpg --encrypt on many files
 ///   - Shannon entropy analysis: high-entropy file writes indicate encrypted data
-///     (based on arXiv:2409.06452 — ransomware detection via entropy in the Linux kernel)
+///     (based on arXiv:2409.06452 - ransomware detection via entropy in the Linux kernel)
 pub struct RansomwareDetector {
     host: String,
     cooldown: Duration,
@@ -21,7 +21,7 @@ pub struct RansomwareDetector {
     write_tracker: HashMap<String, VecDeque<DateTime<Utc>>>,
     /// Per-process suspicious extension write count within window.
     suspicious_ext_tracker: HashMap<String, VecDeque<DateTime<Utc>>>,
-    /// Ransom note file creation — track (directory, filename) pairs.
+    /// Ransom note file creation - track (directory, filename) pairs.
     ransom_notes: VecDeque<(String, DateTime<Utc>)>,
     /// Cooldown per (comm, alert_key) to avoid flooding.
     alerted: HashMap<String, DateTime<Utc>>,
@@ -29,7 +29,7 @@ pub struct RansomwareDetector {
     high_entropy_writes: HashMap<String, VecDeque<DateTime<Utc>>>,
     /// Per-process unique file paths written within window (rapid multi-file detection).
     rapid_write_paths: HashMap<String, HashSet<String>>,
-    /// Shannon entropy threshold — bytes with entropy above this are considered encrypted.
+    /// Shannon entropy threshold - bytes with entropy above this are considered encrypted.
     /// Default 7.5 (max is 8.0 for perfectly random data).
     entropy_threshold: f64,
     /// Number of high-entropy writes before triggering a Critical alert.
@@ -115,7 +115,7 @@ const RANSOM_NOTE_NAMES: &[&str] = &[
 
 /// Extensions that indicate encrypted content when appended to an existing file extension
 /// (e.g., original.docx.encrypted). Checked separately from RANSOMWARE_EXTENSIONS because
-/// the pattern is "double extension" — the original extension is preserved.
+/// the pattern is "double extension" - the original extension is preserved.
 const ENCRYPTED_APPEND_EXTENSIONS: &[&str] = &[
     ".encrypted",
     ".locked",
@@ -313,7 +313,7 @@ impl RansomwareDetector {
             // Even a few suspicious extension writes are concerning
             let count = tracker.len();
 
-            // If this is also a double-extension write, boost severity —
+            // If this is also a double-extension write, boost severity -
             // fewer writes needed to trigger (entropy-informed heuristic).
             let effective_threshold = if has_appended_ext { 3 } else { 5 };
 
@@ -408,7 +408,7 @@ impl RansomwareDetector {
     /// - Same process writing to many unique file paths in rapid succession with encrypted extensions
     ///
     /// If a process accumulates >= entropy_count_threshold high-entropy writes within the window,
-    /// emit a Critical incident — this catches ransomware on the first few encrypted files.
+    /// emit a Critical incident - this catches ransomware on the first few encrypted files.
     fn check_entropy(
         &mut self,
         event: &Event,
@@ -420,8 +420,8 @@ impl RansomwareDetector {
     ) -> Option<Incident> {
         // Path 1: Direct entropy measurement from raw data.
         // The data_sample / content_preview field can be:
-        //   - A JSON array of byte values (u8), e.g. [0, 127, 255, ...] — raw eBPF capture
-        //   - A string — measured directly as UTF-8 bytes
+        //   - A JSON array of byte values (u8), e.g. [0, 127, 255, ...] - raw eBPF capture
+        //   - A string - measured directly as UTF-8 bytes
         let mut measured_high_entropy = false;
         if let Some(data_field) = event
             .details
@@ -429,7 +429,7 @@ impl RansomwareDetector {
             .or_else(|| event.details.get("content_preview"))
         {
             if let Some(arr) = data_field.as_array() {
-                // JSON array of byte values — highest fidelity
+                // JSON array of byte values - highest fidelity
                 let bytes: Vec<u8> = arr
                     .iter()
                     .filter_map(|v| v.as_u64().map(|n| n as u8))
@@ -441,7 +441,7 @@ impl RansomwareDetector {
                     }
                 }
             } else if let Some(data_str) = data_field.as_str() {
-                // String — measure entropy of the UTF-8 bytes directly
+                // String - measure entropy of the UTF-8 bytes directly
                 let bytes = data_str.as_bytes();
                 if !bytes.is_empty() {
                     let entropy = shannon_entropy(bytes);
@@ -474,12 +474,12 @@ impl RansomwareDetector {
                 return self.emit_entropy(event, comm, pid, uid, count);
             }
 
-            // Not enough high-entropy writes yet — don't emit, but do return
+            // Not enough high-entropy writes yet - don't emit, but do return
             // to prevent double-counting with extension checks below
             return None;
         }
 
-        // Path 2: Heuristic — double-extension + rapid multi-file writes (no raw data available)
+        // Path 2: Heuristic - double-extension + rapid multi-file writes (no raw data available)
         // When a process writes to many unique file paths with encrypted-looking double
         // extensions (e.g., report.docx.encrypted), treat this as a ransomware entropy signal
         // even without measuring the actual file content.
@@ -569,7 +569,7 @@ impl RansomwareDetector {
                     ),
                     format!("Kill the process immediately: kill -9 {pid}"),
                     "Isolate the host from the network".to_string(),
-                    "Shannon entropy of written data is near 8.0 bits/byte — indicates encryption".to_string(),
+                    "Shannon entropy of written data is near 8.0 bits/byte - indicates encryption".to_string(),
                     "Check backup integrity and begin incident response".to_string(),
                 ],
             },
@@ -622,7 +622,7 @@ impl RansomwareDetector {
             ),
             severity,
             title: title.to_string(),
-            summary: format!("Ransomware indicator: {title} — {comm} (pid={pid}, uid={uid})"),
+            summary: format!("Ransomware indicator: {title} - {comm} (pid={pid}, uid={uid})"),
             evidence: serde_json::json!([{
                 "kind": event.kind,
                 "comm": comm,
@@ -790,7 +790,7 @@ mod tests {
         let mut det = make_detector(50, 30, 60);
         let now = Utc::now();
 
-        // Write 49 files — should not trigger
+        // Write 49 files - should not trigger
         for i in 0..49 {
             let inc = det.process(&file_write_event(
                 "evil",
@@ -1095,10 +1095,10 @@ mod tests {
         let mut det = make_detector_with_entropy(50, 30, 60, 7.5, 3);
         let now = Utc::now();
 
-        // Simulated encrypted data — all 256 byte values uniformly distributed (entropy = 8.0)
+        // Simulated encrypted data - all 256 byte values uniformly distributed (entropy = 8.0)
         let encrypted_bytes = encrypted_byte_sample();
 
-        // Write 3 files with high-entropy data_sample — should trigger on the 3rd
+        // Write 3 files with high-entropy data_sample - should trigger on the 3rd
         for i in 0..2 {
             let inc = det.process(&file_write_event_with_bytes(
                 "cryptor",
@@ -1176,7 +1176,7 @@ mod tests {
         let mut det = make_detector_with_entropy(50, 30, 60, 7.5, 3);
         let now = Utc::now();
 
-        // Normal text data has low entropy (~4-5 bits/byte) — should not trigger
+        // Normal text data has low entropy (~4-5 bits/byte) - should not trigger
         let normal_text = "This is a normal log entry with typical English text content. \
             Nothing encrypted here, just regular application output.";
 
@@ -1252,7 +1252,7 @@ mod tests {
         let encrypted_bytes = encrypted_byte_sample();
         let normal_text = "Just a regular text file with normal content.";
 
-        // Normal process writes normal data — never triggers
+        // Normal process writes normal data - never triggers
         for i in 0..5 {
             let inc = det.process(&file_write_event_with_str_data(
                 "vim",
@@ -1264,7 +1264,7 @@ mod tests {
             assert!(inc.is_none(), "vim should not trigger entropy alert");
         }
 
-        // Evil process writes encrypted data — triggers on 3rd write
+        // Evil process writes encrypted data - triggers on 3rd write
         for i in 0..2 {
             det.process(&file_write_event_with_bytes(
                 "ransomware",
@@ -1300,7 +1300,7 @@ mod tests {
         let mut det = make_detector_with_entropy(50, 30, 60, 7.5, 3);
         let now = Utc::now();
 
-        // Write files with double extensions (file.docx.encrypted) — no data_sample
+        // Write files with double extensions (file.docx.encrypted) - no data_sample
         for i in 0..2 {
             let inc = det.process(&file_write_event(
                 "cryptor",

@@ -61,7 +61,7 @@ pub struct AgentConfig {
     pub redis_stream: Option<String>,
 }
 
-/// Dashboard config — trusted proxy IPs and other dashboard-related settings.
+/// Dashboard config - trusted proxy IPs and other dashboard-related settings.
 #[derive(Debug, Deserialize)]
 pub struct DashboardConfig {
     /// List of trusted reverse-proxy IPs. Only when the connecting IP is in
@@ -94,7 +94,7 @@ fn default_max_sessions() -> usize {
     5
 }
 
-/// Mesh network config — mirrors innerwarden_mesh::MeshConfig
+/// Mesh network config - mirrors innerwarden_mesh::MeshConfig
 /// but decoupled so the agent compiles without the mesh feature.
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -231,7 +231,7 @@ impl WebhookConfig {
             other => {
                 tracing::warn!(
                     min_severity = other,
-                    "unrecognised min_severity — defaulting to 'medium'"
+                    "unrecognised min_severity - defaulting to 'medium'"
                 );
                 Severity::Medium
             }
@@ -811,19 +811,19 @@ pub struct TelegramBotConfig {
 fn default_bot_personality() -> String {
     "You are InnerWarden, a security agent defending a server. \
      Be proportional: low-risk events get a calm one-liner, high-risk gets detailed analysis. \
-     Most SSH brute-force from random IPs is bot noise — say so, don't dramatize. \
+     Most SSH brute-force from random IPs is bot noise - say so, don't dramatize. \
      Only escalate tone for coordinated attacks, successful logins, or privilege escalation. \
      Be concise. No markdown headers. Short sentences. \
      When something is noise, say 'bot noise, handled' and move on. \
      When it's serious, explain the TTPs and give actionable steps. \
-     Never exaggerate severity — the operator trusts your judgment.\n\n\
-     IMPORTANT SECURITY CONSTRAINT: You are an AI advisor — you can see, analyze, and \
+     Never exaggerate severity - the operator trusts your judgment.\n\n\
+     IMPORTANT SECURITY CONSTRAINT: You are an AI advisor - you can see, analyze, and \
      explain what's happening on the server, but you CANNOT execute commands, modify files, \
      change configurations, or take any direct action on the system. You are completely \
      isolated from the server's execution environment by design. When the operator asks \
      you to do something (block an IP, restart a service, change a config), explain that \
      you cannot do it directly and give them the exact command to run. For example: \
-     'I can't run that — use: innerwarden block 1.2.3.4 --reason \"manual block\"'. \
+     'I can't run that - use: innerwarden block 1.2.3.4 --reason \"manual block\"'. \
      This isolation is a security feature, not a limitation."
         .to_string()
 }
@@ -906,7 +906,7 @@ impl TelegramConfig {
             other => {
                 tracing::warn!(
                     min_severity = other,
-                    "unrecognised telegram min_severity — defaulting to 'high'"
+                    "unrecognised telegram min_severity - defaulting to 'high'"
                 );
                 Severity::High
             }
@@ -978,7 +978,7 @@ impl SlackConfig {
             other => {
                 tracing::warn!(
                     min_severity = other,
-                    "unrecognised slack min_severity — defaulting to 'high'"
+                    "unrecognised slack min_severity - defaulting to 'high'"
                 );
                 Severity::High
             }
@@ -1045,7 +1045,7 @@ fn default_cloudflare_notes_prefix() -> String {
 // ---------------------------------------------------------------------------
 
 /// Entities in the allowlist are still logged and notified but skip the AI
-/// gate — no automated response skill is ever executed for them.
+/// gate - no automated response skill is ever executed for them.
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct AllowlistConfig {
     /// IP addresses or CIDR ranges that are never auto-responded to.
@@ -1072,7 +1072,7 @@ pub struct WebPushConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// VAPID subject — must be "mailto:..." or "https://..." for push service contact.
+    /// VAPID subject - must be "mailto:..." or "https://..." for push service contact.
     #[serde(default = "default_vapid_subject")]
     pub vapid_subject: String,
 
@@ -1081,7 +1081,7 @@ pub struct WebPushConfig {
     #[serde(default)]
     pub vapid_private_key: String,
 
-    /// VAPID public key — base64url-encoded uncompressed P-256 point (65 bytes → 87 chars).
+    /// VAPID public key - base64url-encoded uncompressed P-256 point (65 bytes → 87 chars).
     /// This value is served to browsers at GET /api/push/vapid-key.
     #[serde(default)]
     pub vapid_public_key: String,
@@ -1348,7 +1348,7 @@ pub struct DataRetentionConfig {
     #[serde(default = "default_data_incidents_keep_days")]
     pub incidents_keep_days: usize,
 
-    /// Keep daily decisions JSONL for N days — audit trail (default: 90)
+    /// Keep daily decisions JSONL for N days - audit trail (default: 90)
     #[serde(default = "default_data_decisions_keep_days")]
     pub decisions_keep_days: usize,
 
@@ -1468,7 +1468,7 @@ pub struct AbuseIpDbConfig {
     pub enabled: bool,
 
     /// AbuseIPDB API key. Can also be set via ABUSEIPDB_API_KEY env var.
-    /// Free tier: 1,000 checks/day — sufficient for most self-hosted servers.
+    /// Free tier: 1,000 checks/day - sufficient for most self-hosted servers.
     #[serde(default)]
     pub api_key: String,
 
@@ -1512,7 +1512,7 @@ fn default_abuseipdb_max_age_days() -> u32 {
 // Fail2ban
 // ---------------------------------------------------------------------------
 
-/// Deprecated — InnerWarden's native detectors + XDP firewall supersede fail2ban.
+/// Deprecated - InnerWarden's native detectors + XDP firewall supersede fail2ban.
 /// Kept for config compatibility (existing agent.toml files won't break).
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]

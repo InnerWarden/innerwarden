@@ -1,11 +1,11 @@
-# Inner Warden — smoke-test config for local development
+# Inner Warden - smoke-test config for local development
 # Usage: innerwarden-agent --data-dir ./data --config agent-test.toml
 #
 # Expects:
 #   - OPENAI_API_KEY set in .env or environment
 #   - ./data/ populated by `make run-sensor` (or copied sample JSONL)
 #
-# Safety: dry_run = true — never executes real system commands.
+# Safety: dry_run = true - never executes real system commands.
 # You can watch the decisions in: ./data/decisions-YYYY-MM-DD.jsonl
 
 [narrative]
@@ -92,7 +92,7 @@ backend = "iptables"
 
 [responder]
 enabled = true
-dry_run = true              # SAFE: logs "DRY RUN: would execute..." — no real blocks
+dry_run = true              # SAFE: logs "DRY RUN: would execute..." - no real blocks
 # Linux:  block_backend = "ufw"
 # macOS:  block_backend = "pf"
 block_backend = "pf"

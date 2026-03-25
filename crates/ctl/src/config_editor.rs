@@ -99,7 +99,7 @@ fn atomic_write(path: &Path, content: &str) -> Result<()> {
         .with_context(|| format!("failed to persist tmp file to {}", path.display()))?;
     // Ensure the file is readable by the innerwarden service user (runs as
     // User=innerwarden in the systemd unit). chmod 640 + chgrp innerwarden so
-    // root writes don't lock out the daemon. Fail-silent — may not be applicable
+    // root writes don't lock out the daemon. Fail-silent - may not be applicable
     // in all environments (e.g. local dev).
     ensure_service_readable(path);
     Ok(())
@@ -111,7 +111,7 @@ fn ensure_service_readable(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     // chmod 640
     let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o640));
-    // chgrp innerwarden — best-effort via the `chgrp` binary
+    // chgrp innerwarden - best-effort via the `chgrp` binary
     let _ = std::process::Command::new("chgrp")
         .arg("innerwarden")
         .arg(path)
@@ -119,7 +119,7 @@ fn ensure_service_readable(path: &Path) {
 }
 
 // ---------------------------------------------------------------------------
-// Read helpers — navigate without mutating
+// Read helpers - navigate without mutating
 // ---------------------------------------------------------------------------
 
 fn read_item<'doc>(doc: &'doc DocumentMut, section: &str, key: &str) -> Option<&'doc Item> {

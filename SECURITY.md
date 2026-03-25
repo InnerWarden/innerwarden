@@ -33,10 +33,10 @@ Include:
 
 Inner Warden includes:
 
-- **Dependency auditing** — cargo-deny runs on every push (RustSec advisories + license compliance)
-- **Secrets scanning** — gitleaks + GitHub secret scanning with push protection
-- **Automated dependency updates** — Dependabot weekly
-- **GitHub Actions pinned to SHA** — prevents supply chain attacks
-- **Branch protection** — CI + Security checks required before merge
-- **Append-only audit trail** — every decision logged to JSONL, immutable
-- **Safe defaults** — dry_run = true, responder disabled, confidence threshold above max on install
+- **Dependency auditing** - cargo-deny runs on every push (RustSec advisories + license compliance)
+- **Secrets scanning** - gitleaks + GitHub secret scanning with push protection
+- **Automated dependency updates** - Dependabot weekly
+- **GitHub Actions pinned to SHA** - prevents supply chain attacks
+- **Branch protection** - CI + Security checks required before merge
+- **Append-only audit trail** - every decision logged to JSONL, immutable
+- **Safe defaults** - dry_run = true, responder disabled, confidence threshold above max on install

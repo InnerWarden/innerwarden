@@ -189,7 +189,7 @@ fn extract_field(body: &str, prefix: &str) -> Option<String> {
         let end = inner.find('"')?;
         inner[..end].to_string()
     } else {
-        // Bare value — ends at comma or end-of-string
+        // Bare value - ends at comma or end-of-string
         after.split(',').next().unwrap_or("").trim().to_string()
     };
 

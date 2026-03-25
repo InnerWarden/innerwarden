@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// CrowdSec integration — community threat intelligence lookup
+// CrowdSec integration - community threat intelligence lookup
 // ---------------------------------------------------------------------------
 //
 // CrowdSec runs a Local API (LAPI) on each host. This module maintains a
@@ -12,7 +12,7 @@
 //   4. If the IP is in the CrowdSec list → auto-block (same as AbuseIPDB gate)
 //
 // This avoids creating 24k+ firewall rules. Only IPs that actually attack
-// your server get blocked — the list is just intelligence, not enforcement.
+// your server get blocked - the list is just intelligence, not enforcement.
 //
 // Required: CrowdSec LAPI must be running and the API key must be set.
 //   - Default URL: http://localhost:8080
@@ -101,7 +101,7 @@ impl CrowdSecClient {
             .await
             .with_context(|| {
                 format!(
-                    "CrowdSec LAPI unreachable at {url} — is CrowdSec running?\n\
+                    "CrowdSec LAPI unreachable at {url} - is CrowdSec running?\n\
                      Start it with: sudo systemctl start crowdsec"
                 )
             })?;
@@ -164,11 +164,11 @@ impl CrowdSecClient {
 }
 
 // ---------------------------------------------------------------------------
-// Threat list — in-memory lookup table
+// Threat list - in-memory lookup table
 // ---------------------------------------------------------------------------
 
 /// Max IPs to keep in the threat list before stopping additions.
-/// At ~50 bytes per IP string, 50k IPs ≈ 2.5MB — acceptable.
+/// At ~50 bytes per IP string, 50k IPs ≈ 2.5MB - acceptable.
 const THREAT_LIST_MAX: usize = 50_000;
 
 /// CrowdSec state: a lookup table of known-bad IPs, updated via delta stream.

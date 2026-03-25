@@ -1,4 +1,4 @@
-# Integration Recipe — osquery
+# Integration Recipe - osquery
 #
 # osquery can stream differential query results to a log file in JSON format
 # via its "differential" logger. InnerWarden ingests these as observability
@@ -28,7 +28,7 @@ reconnect_secs  = 5
 ts_field       = "unixTime"      # integer unix timestamp
 ts_format      = "unix_sec"
 summary_field  = "name"          # query name (e.g. "pack/incident-response/processes")
-severity_field = "action"        # "added" | "removed" — not a real severity; see severity_map
+severity_field = "action"        # "added" | "removed" - not a real severity; see severity_map
 kind_field     = "name"
 extra_fields   = ["action", "columns", "decorations", "diffResults"]
 
@@ -56,7 +56,7 @@ raw = '''
 }
 '''
 
-# osquery's "action" is not a severity — map it to coarse severity.
+# osquery's "action" is not a severity - map it to coarse severity.
 # The actual severity should come from a query name → severity mapping
 # (see severity_by_query_prefix below).
 [severity_map]

@@ -25,7 +25,7 @@ pub enum AiAction {
     /// `skill_id` is the skill the AI selected (e.g. "block-ip-ufw").
     BlockIp { ip: String, skill_id: String },
 
-    /// Shadow-monitor the IP — log all its activity without blocking.
+    /// Shadow-monitor the IP - log all its activity without blocking.
     /// Premium feature stub; community can implement full tracking.
     Monitor { ip: String },
 
@@ -53,7 +53,7 @@ pub enum AiAction {
     /// Send a confirmation request to the operator webhook before acting.
     RequestConfirmation { summary: String },
 
-    /// No action required — false positive or already handled.
+    /// No action required - false positive or already handled.
     Ignore { reason: String },
 }
 
@@ -141,7 +141,7 @@ pub struct SkillInfo {
 }
 
 // ---------------------------------------------------------------------------
-// AiProvider trait — implement this to add a new provider
+// AiProvider trait - implement this to add a new provider
 // ---------------------------------------------------------------------------
 
 /// Implement this trait to add a new AI provider to Inner Warden.
@@ -161,7 +161,7 @@ pub trait AiProvider: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// Algorithm gate — runs BEFORE calling the AI (no I/O, no cost)
+// Algorithm gate - runs BEFORE calling the AI (no I/O, no cost)
 // ---------------------------------------------------------------------------
 
 /// Returns true if the incident is worth sending to the AI provider.
@@ -202,7 +202,7 @@ pub fn should_invoke_ai(
             return false;
         }
 
-        // Skip RFC1918 / loopback / link-local — these are internal and
+        // Skip RFC1918 / loopback / link-local - these are internal and
         // should not be auto-blocked without deeper investigation
         if let Ok(addr) = ip_str.parse::<IpAddr>() {
             if is_private_or_loopback(addr) {
@@ -230,7 +230,7 @@ fn is_private_or_loopback(addr: IpAddr) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Factory — creates the right provider based on config
+// Factory - creates the right provider based on config
 // ---------------------------------------------------------------------------
 
 /// Known OpenAI-compatible providers and their default base URLs + models.
@@ -359,7 +359,7 @@ pub fn build_provider(cfg: &AiConfig) -> Result<Box<dyn AiProvider>> {
             )))
         }
         other => {
-            // Unknown provider name — if base_url is set, treat as OpenAI-compatible.
+            // Unknown provider name - if base_url is set, treat as OpenAI-compatible.
             // This lets users connect any compatible API without code changes.
             if !cfg.base_url.is_empty() {
                 validate_ai_base_url(&cfg.base_url)?;
@@ -376,7 +376,7 @@ pub fn build_provider(cfg: &AiConfig) -> Result<Box<dyn AiProvider>> {
             } else {
                 tracing::warn!(
                     provider = other,
-                    "unknown AI provider and no base_url — falling back to openai"
+                    "unknown AI provider and no base_url - falling back to openai"
                 );
                 Ok(Box::new(openai::OpenAiProvider::new(
                     cfg.resolved_api_key(),

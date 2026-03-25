@@ -8,18 +8,18 @@ use super::{AiDecision, AiProvider, DecisionContext};
 use crate::ai::openai::{build_prompt_pub, parse_decision_pub, system_prompt};
 
 // ---------------------------------------------------------------------------
-// Ollama provider — cloud API or local instance
+// Ollama provider - cloud API or local instance
 // ---------------------------------------------------------------------------
 //
 // Supports two modes:
 //
-// 1. Ollama Cloud (recommended) — https://ollama.com free tier
+// 1. Ollama Cloud (recommended) - https://ollama.com free tier
 //    - Set base_url = "https://api.ollama.com"
 //    - Set api_key  = your Ollama API key (or OLLAMA_API_KEY env var)
 //    - Recommended model: qwen3-coder:480b (100% accuracy in benchmarks)
 //    - No local GPU required; no model download needed
 //
-// 2. Local instance — http://localhost:11434 (self-hosted)
+// 2. Local instance - http://localhost:11434 (self-hosted)
 //    - Leave api_key empty; no authentication required
 //    - Compatible models: llama3.2, mistral, gemma2, qwen2.5, etc.
 //    - Install a model locally: `ollama pull <model>`
@@ -77,10 +77,10 @@ impl AiProvider for OllamaProvider {
 
         let resp = req.send().await.with_context(|| {
             if self.api_key.is_some() {
-                format!("Ollama cloud chat request to {url} failed — check network connectivity")
+                format!("Ollama cloud chat request to {url} failed - check network connectivity")
             } else {
                 format!(
-                    "Ollama chat request to {url} failed — is Ollama running? \
+                    "Ollama chat request to {url} failed - is Ollama running? \
                      Start it with: ollama serve"
                 )
             }
@@ -139,10 +139,10 @@ impl AiProvider for OllamaProvider {
 
         let resp = req.send().await.with_context(|| {
             if self.api_key.is_some() {
-                format!("Ollama cloud request to {url} failed — check network connectivity")
+                format!("Ollama cloud request to {url} failed - check network connectivity")
             } else {
                 format!(
-                    "Ollama request to {url} failed — is Ollama running? \
+                    "Ollama request to {url} failed - is Ollama running? \
                          Start it with: ollama serve"
                 )
             }

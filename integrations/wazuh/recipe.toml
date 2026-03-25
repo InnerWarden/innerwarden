@@ -1,4 +1,4 @@
-# Integration Recipe — Wazuh HIDS
+# Integration Recipe - Wazuh HIDS
 #
 # Wazuh writes alerts to /var/ossec/logs/alerts/alerts.json (JSON per line).
 # InnerWarden ingests these as events; Wazuh's own rule engine performs detection,
@@ -28,7 +28,7 @@ ts_field       = "timestamp"     # ISO 8601 with timezone offset
 ts_format      = "rfc3339"
 summary_field  = "rule.description"
 severity_field = "rule.level"    # integer 0–15; see severity_map below
-kind_field     = "rule.groups"   # array — join with "." or use first element
+kind_field     = "rule.groups"   # array - join with "." or use first element
 extra_fields   = ["rule", "agent", "data", "location"]
 
 [event_schema.example]
@@ -154,7 +154,7 @@ struct_name = "WazuhAlertsCollector"
 run_signature = "pub async fn run(self, tx: mpsc::Sender<Event>) -> Result<()>"
 state_fields  = ["host: String", "path: PathBuf"]
 
-# rule.level is an integer in the JSON — parse it as u8 then look it up in
+# rule.level is an integer in the JSON - parse it as u8 then look it up in
 # the severity map using its string representation.
 severity_parse_note = "Parse rule.level as u64, convert to string (\"10\"), look up in severity_map"
 

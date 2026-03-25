@@ -1,6 +1,6 @@
 /// Web scan detector.
 ///
-/// Detects HTTP error flooding from a single IP — the hallmark of automated
+/// Detects HTTP error flooding from a single IP - the hallmark of automated
 /// vulnerability scanners and path traversal / LFI probes.
 ///
 /// Listens for `http.error` events (emitted by the nginx_error collector) and
@@ -17,7 +17,7 @@ pub struct WebScanDetector {
     window: Duration,
     /// Per-IP sliding window of http.error timestamps.
     windows: HashMap<String, VecDeque<DateTime<Utc>>>,
-    /// Last incident time per IP — suppresses re-alerts within the same window.
+    /// Last incident time per IP - suppresses re-alerts within the same window.
     alerted: HashMap<String, DateTime<Utc>>,
 }
 
@@ -95,7 +95,7 @@ impl WebScanDetector {
             severity,
             title: format!("Possible web scan / probe from {ip}"),
             summary: format!(
-                "{count} HTTP errors from {ip} in the last {} seconds — likely automated scan or probe",
+                "{count} HTTP errors from {ip} in the last {} seconds - likely automated scan or probe",
                 self.window.num_seconds()
             ),
             evidence: serde_json::json!([{
@@ -107,7 +107,7 @@ impl WebScanDetector {
                 "last_request": last_request,
             }]),
             recommended_checks: vec![
-                format!("Review nginx error log for {ip} — look for path traversal or LFI patterns"),
+                format!("Review nginx error log for {ip} - look for path traversal or LFI patterns"),
                 "Check if requests target admin, config, or sensitive endpoints".to_string(),
                 "Consider blocking IP or enabling rate-limit-nginx skill".to_string(),
             ],
@@ -227,7 +227,7 @@ mod tests {
         let base = Utc::now();
         det.process(&error_event("1.2.3.4", base - Duration::seconds(20)));
         det.process(&error_event("1.2.3.4", base - Duration::seconds(15)));
-        // Both old — only 1 new event → below threshold
+        // Both old - only 1 new event → below threshold
         assert!(det.process(&error_event("1.2.3.4", base)).is_none());
         assert!(det
             .process(&error_event("1.2.3.4", base + Duration::seconds(1)))

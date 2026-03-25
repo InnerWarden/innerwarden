@@ -111,7 +111,7 @@ pub fn extract_tarball(tarball: &Path, dest_dir: &Path) -> Result<()> {
             dest_dir.to_str().unwrap(),
         ])
         .output()
-        .context("failed to run tar — is it installed?")?;
+        .context("failed to run tar - is it installed?")?;
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);

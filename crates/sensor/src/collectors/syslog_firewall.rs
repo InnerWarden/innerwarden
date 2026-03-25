@@ -63,7 +63,7 @@ impl SyslogFirewallCollector {
             loop {
                 let mut line = String::new();
                 match reader.read_line(&mut line) {
-                    Ok(0) => break, // EOF — re-open to handle rotation
+                    Ok(0) => break, // EOF - re-open to handle rotation
                     Ok(n) => {
                         offset += n as u64;
                         shared_offset.store(offset, Ordering::Relaxed);
@@ -127,7 +127,7 @@ pub(crate) fn parse_firewall_line(line: &str) -> Option<FirewallDrop> {
     let proto = extract_field(line, "PROTO=").unwrap_or("TCP").to_string();
     let in_iface = extract_field(line, "IN=").unwrap_or("").to_string();
 
-    // DPT= is absent for ICMP — skip those (no port to track for port-scan detection)
+    // DPT= is absent for ICMP - skip those (no port to track for port-scan detection)
     let dst_port: u16 = extract_field(line, "DPT=")?.parse().ok()?;
 
     // Basic sanity: SRC must look like an IP (contains dots or colons for IPv6)
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn ignores_icmp_lines_without_dpt() {
-        // ICMP has no DPT= — we skip it (no port concept for port-scan detection)
+        // ICMP has no DPT= - we skip it (no port concept for port-scan detection)
         assert!(parse_firewall_line(ICMP_LINE).is_none());
     }
 
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn extract_field_handles_end_of_line() {
-        // Value is last token — no trailing space
+        // Value is last token - no trailing space
         assert_eq!(extract_field("SRC=1.2.3.4", "SRC="), Some("1.2.3.4"));
     }
 }

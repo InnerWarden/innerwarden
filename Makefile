@@ -60,7 +60,7 @@ ops-check:
 .PHONY: build-linux
 build-linux:
 	@$(dir $(CARGO))cargo-zigbuild --version >/dev/null 2>&1 || \
-		{ echo "cargo-zigbuild not found — install with: cargo install cargo-zigbuild"; exit 1; }
+		{ echo "cargo-zigbuild not found - install with: cargo install cargo-zigbuild"; exit 1; }
 	@rustup target add $(TARGET_LINUX) 2>/dev/null || true
 	$(CARGO) zigbuild -p innerwarden-sensor -p innerwarden-agent -p innerwarden-ctl \
 		--target $(TARGET_LINUX) --release
@@ -77,8 +77,8 @@ HOST ?= user@your-server
 # Usage: make update HOST=ubuntu@1.2.3.4
 #
 # Steps:
-#   1. make test      — all tests must pass (fails fast if any break)
-#   2. make build-linux — cross-compile release binaries for arm64 Linux
+#   1. make test      - all tests must pass (fails fast if any break)
+#   2. make build-linux - cross-compile release binaries for arm64 Linux
 #   3. Stop agent + sensor gracefully (sensor last so no events are lost)
 #   4. SCP both binaries to /tmp, install to /usr/local/bin atomically
 #   5. Restart sensor → agent (sensor first so agent finds fresh data)
@@ -120,7 +120,7 @@ update: test build-linux
 # ── deploy: binaries only, no test run (faster, use when tests already passed) ─
 .PHONY: deploy
 deploy: build-linux
-	@echo "Deploying to $(HOST) (no test run — use 'make update' for full pipeline)..."
+	@echo "Deploying to $(HOST) (no test run - use 'make update' for full pipeline)..."
 	ssh $(HOST) "sudo systemctl stop innerwarden-agent  2>/dev/null || true"
 	ssh $(HOST) "sudo systemctl stop innerwarden-sensor 2>/dev/null || true"
 	scp $(RELEASE_DIR)/innerwarden-sensor $(HOST):/tmp/innerwarden-sensor
@@ -129,7 +129,7 @@ deploy: build-linux
 	ssh $(HOST) "sudo install -o root -g root -m 755 /tmp/innerwarden-agent  /usr/local/bin/innerwarden-agent"
 	ssh $(HOST) "sudo systemctl daemon-reload && sudo systemctl start innerwarden-sensor"
 	ssh $(HOST) "sudo systemctl start innerwarden-agent 2>/dev/null || true"
-	@echo "Deploy complete — checking status:"
+	@echo "Deploy complete - checking status:"
 	ssh $(HOST) "sudo systemctl status innerwarden-sensor innerwarden-agent --no-pager"
 
 .PHONY: deploy-config

@@ -10,7 +10,7 @@ use tracing::warn;
 /// Sends incident alerts to a Slack channel via an Incoming Webhook URL.
 ///
 /// Uses Block Kit for a structured, readable message.
-/// Failure is logged as a warning and swallowed — a dead Slack webhook must
+/// Failure is logged as a warning and swallowed - a dead Slack webhook must
 /// never stop the agent from processing events (fail-open policy).
 pub struct SlackClient {
     /// Slack Incoming Webhook URL.
@@ -91,7 +91,7 @@ impl SlackClient {
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": format!("{emoji} *{severity_str} — {title}*\n{summary}",
+                    "text": format!("{emoji} *{severity_str} - {title}*\n{summary}",
                         emoji = emoji,
                         severity_str = severity_str.to_uppercase(),
                         title = &incident.title,

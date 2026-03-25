@@ -76,12 +76,12 @@ impl SuspiciousLoginDetector {
         }
 
         if prior_failures == 0 {
-            // First-time IP with no failures — add to known-good baseline
+            // First-time IP with no failures - add to known-good baseline
             self.known_good_ips.insert(ip);
             return None;
         }
 
-        // Brute-force followed by success — possible compromise
+        // Brute-force followed by success - possible compromise
         self.alerted.insert(ip.clone(), now);
         self.known_good_ips.insert(ip.clone());
 
@@ -219,10 +219,10 @@ mod tests {
         let mut det = SuspiciousLoginDetector::new("test", 300);
         let now = Utc::now();
 
-        // First login — becomes known-good
+        // First login - becomes known-good
         det.process(&success_event("1.1.1.1", "ubuntu", now));
 
-        // Failures then success from known-good — no alert
+        // Failures then success from known-good - no alert
         det.process(&failed_event("1.1.1.1", now + Duration::seconds(100)));
         assert!(det
             .process(&success_event(

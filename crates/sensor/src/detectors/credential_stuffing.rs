@@ -8,7 +8,7 @@ pub struct CredentialStuffingDetector {
     window: Duration,
     /// Per-IP ring of (timestamp, username) entries within the current window.
     windows: HashMap<String, VecDeque<(DateTime<Utc>, String)>>,
-    /// Last incident emission time per IP — suppresses re-alerts in the same window.
+    /// Last incident emission time per IP - suppresses re-alerts in the same window.
     alerted: HashMap<String, DateTime<Utc>>,
     host: String,
 }

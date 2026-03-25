@@ -1,4 +1,4 @@
-# file-integrity — agent config snippet
+# file-integrity - agent config snippet
 # This module relies on webhook for alerting. No responder skill needed.
 
 [webhook]

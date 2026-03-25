@@ -34,7 +34,7 @@ fn pagerduty_payload(incident: &Incident, routing_key: &str) -> serde_json::Valu
         "event_action": "trigger",
         "dedup_key": incident.incident_id,
         "payload": {
-            "summary": format!("[{}] {} — {}", incident.host, incident.title, incident.summary),
+            "summary": format!("[{}] {} - {}", incident.host, incident.title, incident.summary),
             "source": incident.host,
             "severity": severity,
             "component": "innerwarden",
@@ -77,14 +77,14 @@ fn opsgenie_payload(incident: &Incident) -> serde_json::Value {
 /// POST an incident notification to `url`.
 ///
 /// `format` controls the payload shape:
-/// - `"default"` — InnerWarden native format
-/// - `"pagerduty"` — PagerDuty Events API v2
-/// - `"opsgenie"` — Opsgenie Alert API
+/// - `"default"` - InnerWarden native format
+/// - `"pagerduty"` - PagerDuty Events API v2
+/// - `"opsgenie"` - Opsgenie Alert API
 ///
 /// For PagerDuty, `url` should be "https://events.pagerduty.com/v2/enqueue"
 /// and the routing key goes in the webhook URL or is extracted from it.
 ///
-/// Failures are logged as warnings and swallowed — fail-open policy.
+/// Failures are logged as warnings and swallowed - fail-open policy.
 pub async fn send_incident(
     url: &str,
     timeout_secs: u64,

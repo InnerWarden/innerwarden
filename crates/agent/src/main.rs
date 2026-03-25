@@ -1,4 +1,4 @@
-// Use jemalloc on Linux — the default glibc allocator fragments memory and
+// Use jemalloc on Linux - the default glibc allocator fragments memory and
 // never returns it to the OS, causing apparent "leaks" under sustained load.
 // jemalloc aggressively returns unused pages via madvise(MADV_DONTNEED).
 #[cfg(not(target_os = "macos"))]
@@ -50,7 +50,7 @@ use crate::dashboard::AdvisoryEntry;
 #[command(
     name = "innerwarden-agent",
     version,
-    about = "Interpretive layer — reads sensor JSONL, generates narratives, and auto-responds to incidents"
+    about = "Interpretive layer - reads sensor JSONL, generates narratives, and auto-responds to incidents"
 )]
 struct Cli {
     /// Path to the sensor data directory (where events-*.jsonl and incidents-*.jsonl live)
@@ -77,7 +77,7 @@ struct Cli {
     #[arg(long)]
     dashboard: bool,
 
-    /// Bind address for dashboard mode (default: all interfaces — use with reverse proxy + auth)
+    /// Bind address for dashboard mode (default: all interfaces - use with reverse proxy + auth)
     #[arg(long, default_value = "0.0.0.0:8787")]
     dashboard_bind: String,
 
@@ -118,7 +118,7 @@ struct NarrativeAccumulator {
     user_counts: HashMap<String, usize>,
     /// Total events seen today
     total_events: usize,
-    /// All incidents seen today (small — typically <100)
+    /// All incidents seen today (small - typically <100)
     incidents: Vec<innerwarden_core::incident::Incident>,
     /// Date this accumulator is for (resets on date change)
     date: String,
@@ -145,7 +145,7 @@ impl NarrativeAccumulator {
 
     fn ingest_incidents(&mut self, incidents: &[innerwarden_core::incident::Incident]) {
         self.incidents.extend_from_slice(incidents);
-        // Cap at 500 incidents — narrative only needs recent ones for the report
+        // Cap at 500 incidents - narrative only needs recent ones for the report
         if self.incidents.len() > 500 {
             let drain = self.incidents.len() - 500;
             self.incidents.drain(..drain);
@@ -291,16 +291,16 @@ struct AgentState {
     /// XDP blocklist entries with timestamps and per-IP TTL for adaptive expiration.
     /// Periodically cleaned: IPs older than their individual TTL are removed.
     xdp_block_times: HashMap<String, (chrono::DateTime<chrono::Utc>, i64)>,
-    /// AbuseIPDB report queue — IPs are held for ABUSEIPDB_REPORT_DELAY_SECS
+    /// AbuseIPDB report queue - IPs are held for ABUSEIPDB_REPORT_DELAY_SECS
     /// before reporting, giving time for false-positive correction.
     abuseipdb_report_queue: Vec<(String, String, String, chrono::DateTime<chrono::Utc>)>,
-    /// Incremental narrative accumulator — avoids re-reading events file.
+    /// Incremental narrative accumulator - avoids re-reading events file.
     narrative_acc: NarrativeAccumulator,
     /// Byte offset for incremental incident reading (narrative accumulator).
     narrative_incidents_offset: u64,
-    /// Forensics capture — grabs /proc state for High/Critical process incidents.
+    /// Forensics capture - grabs /proc state for High/Critical process incidents.
     forensics: forensics::ForensicsCapture,
-    /// Persistent state store (redb) — cooldowns, block_counts, ip_reputations,
+    /// Persistent state store (redb) - cooldowns, block_counts, ip_reputations,
     /// xdp_block_times, trust_rules. Primary source of truth for reads.
     store: state_store::StateStore,
     /// Redis stream reader for events (None when redis_url is not configured).
@@ -318,7 +318,7 @@ struct PendingHoneypotChoice {
 }
 
 // ---------------------------------------------------------------------------
-// Local IP reputation — adaptive blocking
+// Local IP reputation - adaptive blocking
 // ---------------------------------------------------------------------------
 
 /// Per-IP reputation tracking for adaptive block TTL.
@@ -407,9 +407,9 @@ const DECISION_COOLDOWN_SECS: i64 = 3600;
 /// same detector+entity within this window. Prevents alert spam when the same attacker
 /// triggers multiple incidents in rapid succession.
 const NOTIFICATION_COOLDOWN_SECS: i64 = 600;
-/// Max block actions per minute — prevents false-positive cascades.
+/// Max block actions per minute - prevents false-positive cascades.
 const MAX_BLOCKS_PER_MINUTE: usize = 20;
-/// Default XDP blocklist TTL (24h) — retained as reference; adaptive TTL now per-IP.
+/// Default XDP blocklist TTL (24h) - retained as reference; adaptive TTL now per-IP.
 #[allow(dead_code)]
 const XDP_BLOCK_TTL_SECS: i64 = 86400;
 /// AbuseIPDB reports are delayed by this many seconds to allow false-positive correction.
@@ -449,7 +449,7 @@ fn build_agent_context(cfg: &config::AgentConfig, data_dir: &Path) -> String {
     let block_backend = &cfg.responder.block_backend;
     let ai_status = if cfg.ai.enabled {
         format!(
-            "ENABLED — provider={}, model={}",
+            "ENABLED - provider={}, model={}",
             cfg.ai.provider, cfg.ai.model
         )
     } else {
@@ -458,9 +458,9 @@ fn build_agent_context(cfg: &config::AgentConfig, data_dir: &Path) -> String {
     let responder_status = if !cfg.responder.enabled {
         "DISABLED (watch-only mode)".to_string()
     } else if cfg.responder.dry_run {
-        "ENABLED — dry-run (simulates actions, no real execution)".to_string()
+        "ENABLED - dry-run (simulates actions, no real execution)".to_string()
     } else {
-        format!("ENABLED — live mode (backend={block_backend})")
+        format!("ENABLED - live mode (backend={block_backend})")
     };
     let telegram_status = if cfg.telegram.enabled {
         "ENABLED"
@@ -497,7 +497,7 @@ fn build_agent_context(cfg: &config::AgentConfig, data_dir: &Path) -> String {
         "=== INNERWARDEN SYSTEM STATE ===\n\
          Host: {host}\n\
          Version: {version}\n\
-         Mode: {mode_label} — {mode_desc}\n\
+         Mode: {mode_label} - {mode_desc}\n\
          Data dir: {data_dir}\n\
          \n\
          Today ({today}): {incident_count} intrusion attempts, {decision_count} actions taken\n\
@@ -596,7 +596,7 @@ fn format_capabilities(cfg: &config::AgentConfig) -> String {
             "live"
         };
         format!(
-            "{on} <b>Block IP</b>  {} backend — {mode}",
+            "{on} <b>Block IP</b>  {} backend - {mode}",
             cfg.responder.block_backend
         )
     } else {
@@ -618,31 +618,31 @@ fn format_capabilities(cfg: &config::AgentConfig) -> String {
     let abuseipdb_line = if cfg.abuseipdb.enabled {
         format!("{on} <b>AbuseIPDB</b>  IP reputation enrichment")
     } else {
-        format!("{off} <b>AbuseIPDB</b>  disabled — <i>/enable abuseipdb</i>")
+        format!("{off} <b>AbuseIPDB</b>  disabled - <i>/enable abuseipdb</i>")
     };
 
     let geoip_line = if cfg.geoip.enabled {
         format!("{on} <b>GeoIP</b>  ip-api.com (free)")
     } else {
-        format!("{off} <b>GeoIP</b>  disabled — <i>/enable geoip</i>")
+        format!("{off} <b>GeoIP</b>  disabled - <i>/enable geoip</i>")
     };
 
     let fail2ban_line = if cfg.fail2ban.enabled {
         format!("{on} <b>Fail2ban</b>  ban sync active")
     } else {
-        format!("{off} <b>Fail2ban</b>  disabled — <i>/enable fail2ban</i>")
+        format!("{off} <b>Fail2ban</b>  disabled - <i>/enable fail2ban</i>")
     };
 
     let slack_line = if cfg.slack.enabled {
         format!("{on} <b>Slack</b>  notifications enabled")
     } else {
-        format!("{off} <b>Slack</b>  disabled — <i>/enable slack</i>")
+        format!("{off} <b>Slack</b>  disabled - <i>/enable slack</i>")
     };
 
     let cloudflare_line = if cfg.cloudflare.enabled {
         format!("{on} <b>Cloudflare</b>  edge block push active")
     } else {
-        format!("{off} <b>Cloudflare</b>  disabled — <i>/enable cloudflare</i>")
+        format!("{off} <b>Cloudflare</b>  disabled - <i>/enable cloudflare</i>")
     };
 
     format!(
@@ -721,7 +721,7 @@ fn capabilities_keyboard(cfg: &config::AgentConfig) -> serde_json::Value {
     }
 
     if buttons.is_empty() {
-        // All enabled — show a status button only
+        // All enabled - show a status button only
         return serde_json::json!([[{
             "text": "✅ All capabilities active",
             "callback_data": "menu:status"
@@ -755,7 +755,7 @@ async fn probe_and_suggest(cfg: &config::AgentConfig, tg: Option<&telegram::Tele
         .unwrap_or(false);
 
         if is_available {
-            let text = "🔍 <b>Fail2ban detected!</b>\n\nFail2ban is running on this server but not integrated with InnerWarden.\n\nIntegrating it means InnerWarden will automatically sync all fail2ban bans — no duplicate work, full audit trail.\n\n<i>Want me to enable the integration?</i>";
+            let text = "🔍 <b>Fail2ban detected!</b>\n\nFail2ban is running on this server but not integrated with InnerWarden.\n\nIntegrating it means InnerWarden will automatically sync all fail2ban bans - no duplicate work, full audit trail.\n\n<i>Want me to enable the integration?</i>";
             let keyboard = serde_json::json!([[
                 {"text": "✅ Enable Fail2ban sync", "callback_data": "enable:fail2ban"},
                 {"text": "❌ Not now", "callback_data": "menu:dismiss"}
@@ -999,7 +999,7 @@ fn load_last_narrative_instant(data_dir: &Path) -> Option<std::time::Instant> {
 }
 
 // ---------------------------------------------------------------------------
-// Trust rules — data_dir/trust-rules.json
+// Trust rules - data_dir/trust-rules.json
 // ---------------------------------------------------------------------------
 
 const TRUST_RULES_FILE: &str = "trust-rules.json";
@@ -1071,10 +1071,10 @@ fn is_trusted(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Load .env file if present (fail-silent — production uses real env vars)
+    // Load .env file if present (fail-silent - production uses real env vars)
     match dotenvy::dotenv() {
         Ok(path) => debug!("loaded env from {}", path.display()),
-        Err(dotenvy::Error::Io(_)) => {} // no .env file — that's fine
+        Err(dotenvy::Error::Io(_)) => {} // no .env file - that's fine
         Err(e) => warn!("could not parse .env file: {e}"),
     }
 
@@ -1126,7 +1126,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Load config (optional — all fields have sensible defaults).
+    // Load config (optional - all fields have sensible defaults).
     // Done before dashboard check so action config can be wired in.
     let cfg = match &cli.config {
         Some(path) => config::load(path)?,
@@ -1265,7 +1265,7 @@ async fn main() -> Result<()> {
         let token = cfg.telegram.resolved_bot_token();
         let chat_id = cfg.telegram.resolved_chat_id();
         if token.is_empty() || chat_id.is_empty() {
-            warn!("telegram.enabled = true but bot_token/chat_id not configured — disabling");
+            warn!("telegram.enabled = true but bot_token/chat_id not configured - disabling");
             None
         } else {
             let dashboard_url = if cfg.telegram.dashboard_url.is_empty() {
@@ -1292,7 +1292,7 @@ async fn main() -> Result<()> {
     let slack_client: Option<slack::SlackClient> = if cfg.slack.enabled {
         let url = cfg.slack.resolved_webhook_url();
         if url.is_empty() {
-            warn!("slack.enabled = true but webhook_url not configured — disabling");
+            warn!("slack.enabled = true but webhook_url not configured - disabling");
             None
         } else {
             match slack::SlackClient::new(&url) {
@@ -1310,12 +1310,12 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Create approval channel — polling task is spawned after state is built (continuous mode only)
+    // Create approval channel - polling task is spawned after state is built (continuous mode only)
     let (approval_tx, approval_rx_for_state) =
         tokio::sync::mpsc::channel::<telegram::ApprovalResult>(64);
 
     let store = state_store::StateStore::open(&cli.data_dir).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "state store open failed — using fresh store");
+        tracing::warn!(error = %e, "state store open failed - using fresh store");
         state_store::StateStore::open(&std::env::temp_dir()).expect("fallback store")
     });
 
@@ -1378,7 +1378,7 @@ async fn main() -> Result<()> {
         abuseipdb: if cfg.abuseipdb.enabled {
             let key = abuseipdb::resolve_api_key(&cfg.abuseipdb.api_key);
             if key.is_empty() {
-                warn!("abuseipdb.enabled=true but no API key found — disabling enrichment");
+                warn!("abuseipdb.enabled=true but no API key found - disabling enrichment");
                 None
             } else {
                 info!(
@@ -1410,7 +1410,7 @@ async fn main() -> Result<()> {
             let token = cloudflare::resolve_api_token(&cfg.cloudflare.api_token);
             if token.is_empty() || cfg.cloudflare.zone_id.is_empty() {
                 warn!(
-                    "cloudflare.enabled=true but api_token or zone_id not configured — disabling"
+                    "cloudflare.enabled=true but api_token or zone_id not configured - disabling"
                 );
                 None
             } else {
@@ -1459,7 +1459,7 @@ async fn main() -> Result<()> {
         let redis_cfg = redis_reader::agent_config(url, cfg.redis_stream.as_deref());
         match redis_reader::RedisStreamReader::connect(redis_cfg).await {
             Ok(r) => {
-                info!("Redis stream reader connected — events from Redis");
+                info!("Redis stream reader connected - events from Redis");
                 state.redis_reader = Some(r);
             }
             Err(e) => {
@@ -1622,7 +1622,7 @@ async fn main() -> Result<()> {
             let shutdown = tokio::select! {
                 _ = incident_ticker.tick() => {
                     process_incidents(&cli.data_dir, &mut cursor, &cfg, &mut state, &advisory_cache).await;
-                    // Persist cursor after every incident tick — prevents double-processing on restart
+                    // Persist cursor after every incident tick - prevents double-processing on restart
                     if let Err(e) = cursor.save(&state_path) {
                         warn!("failed to save cursor after incident tick: {e:#}");
                     }
@@ -1659,7 +1659,7 @@ async fn main() -> Result<()> {
                     }
                     persist_ip_reputations(&cli.data_dir, &state.ip_reputations);
 
-                    // ── Safeguard: XDP TTL — expire old blocklist entries ──
+                    // ── Safeguard: XDP TTL - expire old blocklist entries ──
                     {
                         let now_utc = chrono::Utc::now();
                         let expired_ips: Vec<String> = state.xdp_block_times
@@ -1681,7 +1681,7 @@ async fn main() -> Result<()> {
                                         &b[2].to_string(), &b[3].to_string()])
                                     .output().await;
                                 let ttl_secs = state.xdp_block_times.get(ip).map(|(_, t)| *t).unwrap_or(0);
-                                info!(ip, ttl_secs, "XDP adaptive TTL expired — removed from blocklist");
+                                info!(ip, ttl_secs, "XDP adaptive TTL expired - removed from blocklist");
                             }
                             state.xdp_block_times.remove(ip);
                         }
@@ -1714,7 +1714,7 @@ async fn main() -> Result<()> {
                     false
                 }
                 _ = tokio::signal::ctrl_c() => {
-                    info!("SIGINT received — shutting down");
+                    info!("SIGINT received - shutting down");
                     true
                 }
                 _ = crowdsec_ticker.tick() => {
@@ -1751,7 +1751,7 @@ async fn main() -> Result<()> {
                                     "🌐 <b>MESH NETWORK</b>\n\n\
                                      Peer node detected threat from <code>{ip}</code>\n\
                                      Action: blocked for {}h (auto-revert)\n\n\
-                                     ⚡ <i>Experimental — collaborative defense network</i>\n\
+                                     ⚡ <i>Experimental - collaborative defense network</i>\n\
                                      <i>Nodes sharing threat intelligence in real time.</i>\n\
                                      <i>Coming soon: mesh dashboard, trust scores, collective blocklist.</i>",
                                     ttl / 3600
@@ -1773,7 +1773,7 @@ async fn main() -> Result<()> {
                     false
                 }
                 _ = sigterm.recv() => {
-                    info!("SIGTERM received — shutting down");
+                    info!("SIGTERM received - shutting down");
                     true
                 }
             };
@@ -1857,7 +1857,7 @@ async fn main() -> Result<()> {
                                     "🌐 <b>MESH NETWORK</b>\n\n\
                                      Peer node detected threat from <code>{ip}</code>\n\
                                      Action: blocked for {}h (auto-revert)\n\n\
-                                     ⚡ <i>Experimental — collaborative defense network</i>\n\
+                                     ⚡ <i>Experimental - collaborative defense network</i>\n\
                                      <i>Nodes sharing threat intelligence in real time.</i>\n\
                                      <i>Coming soon: mesh dashboard, trust scores, collective blocklist.</i>",
                                     ttl / 3600
@@ -1873,7 +1873,7 @@ async fn main() -> Result<()> {
                     false
                 }
                 _ = tokio::signal::ctrl_c() => {
-                    info!("SIGINT received — shutting down");
+                    info!("SIGINT received - shutting down");
                     true
                 }
             };
@@ -1899,7 +1899,7 @@ async fn main() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Incident tick — runs every 2s
+// Incident tick - runs every 2s
 //
 // Responsibilities (in order, for every new incident):
 //   1. Webhook: notify immediately for all incidents above min_severity
@@ -2029,7 +2029,7 @@ async fn process_incidents(
         return 0;
     }
 
-    // Advance cursor before any async work — prevents double-processing on crash/restart
+    // Advance cursor before any async work - prevents double-processing on crash/restart
     cursor.set_incidents_offset(&today, new_incidents.new_offset);
 
     // Pre-compute webhook threshold once (None = webhook disabled)
@@ -2059,7 +2059,7 @@ async fn process_incidents(
             info!(
                 until = %until,
                 incident_count = new_incidents.entries.len(),
-                "AI circuit breaker open — skipping AI analysis for this tick"
+                "AI circuit breaker open - skipping AI analysis for this tick"
             );
             // Still process webhooks/notifications below, just skip AI
         } else {
@@ -2080,7 +2080,7 @@ async fn process_incidents(
             threshold = cfg.ai.circuit_breaker_threshold,
             cooldown_secs = cfg.ai.circuit_breaker_cooldown_secs,
             until = %until,
-            "AI circuit breaker TRIPPED — high-volume incident burst detected, skipping AI"
+            "AI circuit breaker TRIPPED - high-volume incident burst detected, skipping AI"
         );
         state.circuit_breaker_until = Some(until);
         true
@@ -2098,7 +2098,7 @@ async fn process_incidents(
                     .map(|r| r.entries)
                     .unwrap_or_default();
             let infos = state.skill_registry.infos();
-            // Clone the Arc — owned handle, no borrow of `state`
+            // Clone the Arc - owned handle, no borrow of `state`
             let prov: Arc<dyn ai::AiProvider> = state.ai_provider.as_ref().unwrap().clone();
             let pname = prov.name();
             let blocked = state.blocklist.as_vec();
@@ -2128,7 +2128,7 @@ async fn process_incidents(
         }
 
         // Forensics capture: for High/Critical incidents with a PID in evidence,
-        // grab /proc state before the process disappears. Best-effort — the
+        // grab /proc state before the process disappears. Best-effort - the
         // process may have already exited by the time we read.
         if matches!(
             incident.severity,
@@ -2167,19 +2167,19 @@ async fn process_incidents(
             state.correlator.observe(incident);
         }
 
-        // 0. LSM auto-enable — when we see a high-severity execution incident
+        // 0. LSM auto-enable - when we see a high-severity execution incident
         //    (download+execute, reverse shell, /tmp execution), automatically enable
         //    LSM enforcement to block future execution from dangerous paths.
         //    This is a one-way escalation: once enabled, stays on until reboot.
         if should_auto_enable_lsm(incident) && !state.lsm_enabled {
             info!(
                 incident_id = %incident.incident_id,
-                "LSM auto-enable: high-severity execution threat detected — activating kernel enforcement"
+                "LSM auto-enable: high-severity execution threat detected - activating kernel enforcement"
             );
             match enable_lsm_enforcement().await {
                 Ok(()) => {
                     state.lsm_enabled = true;
-                    info!("LSM enforcement activated — /tmp, /dev/shm, /var/tmp execution now blocked at kernel level");
+                    info!("LSM enforcement activated - /tmp, /dev/shm, /var/tmp execution now blocked at kernel level");
                 }
                 Err(e) => {
                     warn!(error = %e, "LSM auto-enable failed (BPF LSM may not be available)");
@@ -2187,7 +2187,7 @@ async fn process_incidents(
             }
         }
 
-        // 1. Notification cooldown — suppress duplicate alerts for the same entity
+        // 1. Notification cooldown - suppress duplicate alerts for the same entity
         //    within a 10-minute window. Prevents alert spam during sustained attacks.
         let notify_cutoff =
             chrono::Utc::now() - chrono::Duration::seconds(NOTIFICATION_COOLDOWN_SECS);
@@ -2206,7 +2206,7 @@ async fn process_incidents(
             );
         }
 
-        // 1a. Webhook — fires for ALL incidents above configured threshold, regardless of AI gate
+        // 1a. Webhook - fires for ALL incidents above configured threshold, regardless of AI gate
         if !notify_suppressed {
             if let Some(min_rank) = webhook_min_rank {
                 if webhook::severity_rank(&incident.severity) >= min_rank {
@@ -2224,7 +2224,7 @@ async fn process_incidents(
                 }
             }
 
-            // 1b. Telegram T.1 — push notification for High/Critical incidents
+            // 1b. Telegram T.1 - push notification for High/Critical incidents
             if let Some(min_rank) = telegram_min_rank {
                 if webhook::severity_rank(&incident.severity) >= min_rank {
                     // Clone the Arc to avoid holding a borrow on state during the await
@@ -2238,7 +2238,7 @@ async fn process_incidents(
                 }
             }
 
-            // 1c. Slack — push notification via Incoming Webhook
+            // 1c. Slack - push notification via Incoming Webhook
             if let Some(min_rank) = slack_min_rank {
                 if webhook::severity_rank(&incident.severity) >= min_rank {
                     if let Some(ref sc) = state.slack_client {
@@ -2254,7 +2254,7 @@ async fn process_incidents(
                 }
             }
 
-            // 1d. Web Push — browser notification for High/Critical incidents
+            // 1d. Web Push - browser notification for High/Critical incidents
             web_push::notify_incident(incident, data_dir, &cfg.web_push).await;
 
             // Mark notification cooldown for all entities in this incident
@@ -2266,7 +2266,7 @@ async fn process_incidents(
             }
         } // end if !notify_suppressed
 
-        // 1e. Advisory correlation — check if this execution incident matches
+        // 1e. Advisory correlation - check if this execution incident matches
         //     a recent advisory denial from the /api/advisor/check-command endpoint.
         //     If so, the AI agent ignored Inner Warden's security recommendation.
         if incident.tags.contains(&"execution".to_string())
@@ -2308,14 +2308,14 @@ async fn process_incidents(
             }
         }
 
-        // 2. AI analysis — only when AI is enabled and incident passes the gate
+        // 2. AI analysis - only when AI is enabled and incident passes the gate
 
         // Pipeline test: recognise `innerwarden test` incidents by tag and
         // write an acknowledgement decision without calling the AI provider.
         if incident.tags.contains(&"pipeline-test".to_string()) {
             info!(
                 incident_id = %incident.incident_id,
-                "pipeline test incident detected — writing acknowledgement decision"
+                "pipeline test incident detected - writing acknowledgement decision"
             );
             let test_ip = incident
                 .entities
@@ -2334,7 +2334,7 @@ async fn process_incidents(
                 confidence: 1.0,
                 auto_executed: false,
                 dry_run: true,
-                reason: "Pipeline test acknowledged — sensor → agent → decision path is working"
+                reason: "Pipeline test acknowledged - sensor → agent → decision path is working"
                     .to_string(),
                 estimated_threat: "none".to_string(),
                 execution_result: "test-ok".to_string(),
@@ -2354,7 +2354,7 @@ async fn process_incidents(
             continue;
         }
 
-        // 2a. Allowlist gate — skip AI for explicitly trusted IPs and users
+        // 2a. Allowlist gate - skip AI for explicitly trusted IPs and users
         {
             use innerwarden_core::entities::EntityType;
             let ip_allowlisted = incident
@@ -2391,7 +2391,7 @@ async fn process_incidents(
             continue;
         }
 
-        // Decision cooldown — suppress repeated AI decisions for the same
+        // Decision cooldown - suppress repeated AI decisions for the same
         // action:detector:entity scope within a 1-hour window.  This prevents
         // redundant API calls when the same attacker triggers multiple
         // incidents in rapid succession.
@@ -2421,7 +2421,7 @@ async fn process_incidents(
                 incident_id = %incident.incident_id,
                 ai_calls_this_tick,
                 max_calls,
-                "AI gate: skipping (max_ai_calls_per_tick reached — deferred to next tick)"
+                "AI gate: skipping (max_ai_calls_per_tick reached - deferred to next tick)"
             );
             handled += 1;
             continue;
@@ -2429,7 +2429,7 @@ async fn process_incidents(
 
         state.telemetry.observe_gate_pass();
 
-        // ai_provider is Some when ai_enabled — safe to unwrap
+        // ai_provider is Some when ai_enabled - safe to unwrap
         let provider = ai_provider.as_ref().unwrap();
 
         info!(
@@ -2439,7 +2439,7 @@ async fn process_incidents(
             "sending incident to AI for analysis"
         );
 
-        // Build context — filter events to those involving the same incident IPs/users
+        // Build context - filter events to those involving the same incident IPs/users
         let entity_ips: HashSet<&str> = incident
             .entities
             .iter()
@@ -2503,7 +2503,7 @@ async fn process_incidents(
                         warn!(
                             ip = %ip,
                             incident_id = %incident.incident_id,
-                            "AbuseIPDB auto-block tried to block protected IP {ip} — skipped"
+                            "AbuseIPDB auto-block tried to block protected IP {ip} - skipped"
                         );
                     } else {
                         info!(
@@ -2622,7 +2622,7 @@ async fn process_incidents(
                     info!(
                         incident_id = %incident.incident_id,
                         ip,
-                        "CrowdSec threat list match — auto-blocking, skipping AI"
+                        "CrowdSec threat list match - auto-blocking, skipping AI"
                     );
                     let skill_id = format!("block-ip-{}", cfg.responder.block_backend);
                     let auto_decision = ai::AiDecision {
@@ -2713,7 +2713,7 @@ async fn process_incidents(
                         confidence: 0.95,
                         auto_execute: true,
                         reason: format!(
-                            "Smart routing: {} — interesting attacker redirected to honeypot for intel gathering",
+                            "Smart routing: {} - interesting attacker redirected to honeypot for intel gathering",
                             detector
                         ),
                         alternatives: vec![],
@@ -2839,7 +2839,7 @@ async fn process_incidents(
                 warn!(
                     ip = %ip,
                     incident_id = %incident.incident_id,
-                    "AI tried to block protected IP {ip} — downgraded to ignore"
+                    "AI tried to block protected IP {ip} - downgraded to ignore"
                 );
                 decision = ai::AiDecision {
                     action: ai::AiAction::Ignore {
@@ -2881,7 +2881,7 @@ async fn process_incidents(
         // ticks don't re-evaluate the same IP even when the responder is disabled or
         // dry_run is true. Without this, state.blocklist is only updated inside
         // execute_decision (which is skipped when responder.enabled = false), leaving
-        // cross-tick deduplication to the cooldown alone — which breaks on restart if
+        // cross-tick deduplication to the cooldown alone - which breaks on restart if
         // the decision was not yet flushed to the decisions file.
         if let ai::AiAction::BlockIp { ip, .. } = &decision.action {
             state.blocklist.insert(ip.clone());
@@ -2891,7 +2891,7 @@ async fn process_incidents(
             // reason so it surfaces in the audit trail and notifications.
             let block_count = state.store.increment_block_count(ip);
 
-            // Update local IP reputation — record incident + block.
+            // Update local IP reputation - record incident + block.
             let rep = state
                 .ip_reputations
                 .entry(ip.clone())
@@ -2919,7 +2919,7 @@ async fn process_incidents(
                     "repeat offender detected"
                 );
                 decision.reason = format!(
-                    "{} [repeat offender — blocked {} times, TTL {}]",
+                    "{} [repeat offender - blocked {} times, TTL {}]",
                     decision.reason, block_count, ttl_label
                 );
             }
@@ -2973,7 +2973,7 @@ async fn process_incidents(
             let should_auto =
                 decision.auto_execute && decision.confidence >= cfg.ai.confidence_threshold;
             if should_auto {
-                // Auto-execute honeypot — same as operator clicking "Honeypot"
+                // Auto-execute honeypot - same as operator clicking "Honeypot"
                 info!(
                     ip = %ip,
                     confidence = decision.confidence,
@@ -3029,7 +3029,7 @@ async fn process_incidents(
                     Err(e) => {
                         warn!(
                             incident_id = %incident.incident_id,
-                            "Telegram honeypot suggestion failed: {e:#} — falling through to auto-execute"
+                            "Telegram honeypot suggestion failed: {e:#} - falling through to auto-execute"
                         );
                     }
                 }
@@ -3110,9 +3110,9 @@ async fn process_incidents(
                     AiAction::BlockContainer { container_id, .. } => {
                         ("Paused container".to_string(), container_id.clone())
                     }
-                    AiAction::Ignore { .. } => ("Ignored".to_string(), "—".to_string()),
+                    AiAction::Ignore { .. } => ("Ignored".to_string(), "-".to_string()),
                     AiAction::RequestConfirmation { .. } => {
-                        ("Requested confirmation for".to_string(), "—".to_string())
+                        ("Requested confirmation for".to_string(), "-".to_string())
                     }
                 };
                 let tg = tg.clone();
@@ -3180,10 +3180,10 @@ async fn execute_decision(
             //   3. Cloudflare edge block (stops traffic before it reaches us)
             //   4. AbuseIPDB report (contributes to community intelligence)
             //
-            // Each layer is independent — failure in one doesn't stop the others.
+            // Each layer is independent - failure in one doesn't stop the others.
 
             // ── Safeguard: rate limit ──────────────────────────────────
-            // Prevent false-positive cascades — max N blocks per minute.
+            // Prevent false-positive cascades - max N blocks per minute.
             let now_utc = chrono::Utc::now();
             let one_minute_ago = now_utc - chrono::Duration::seconds(60);
             state.recent_blocks.retain(|ts| *ts > one_minute_ago);
@@ -3238,7 +3238,7 @@ async fn execute_decision(
                 }
             }
 
-            // Layer 2: Firewall rule (ufw/iptables/nftables — configured backend)
+            // Layer 2: Firewall rule (ufw/iptables/nftables - configured backend)
             let effective_id: String = if cfg.responder.allowed_skills.contains(skill_id) {
                 skill_id.clone()
             } else {
@@ -3281,7 +3281,7 @@ async fn execute_decision(
                 }
             }
 
-            // Layer 4: AbuseIPDB community report (delayed — 5 min grace period)
+            // Layer 4: AbuseIPDB community report (delayed - 5 min grace period)
             // Reports are queued and sent after ABUSEIPDB_REPORT_DELAY_SECS to allow
             // false-positive correction before permanently marking an IP as malicious.
             if any_success && cfg.abuseipdb.enabled && cfg.abuseipdb.report_blocks {
@@ -3519,7 +3519,7 @@ async fn execute_decision(
             }
         }
         AiAction::RequestConfirmation { summary } => {
-            // T.2 — send inline keyboard approval request via Telegram when enabled
+            // T.2 - send inline keyboard approval request via Telegram when enabled
             let tg = state.telegram_client.clone();
             let req_detector = incident_detector(&incident.incident_id).to_string();
             let req_action = decision.action.name();
@@ -3843,7 +3843,7 @@ async fn process_telegram_approval(
                 "All quiet. No threat actors in the logs today.".to_string()
             } else if decision_count == 0 {
                 format!(
-                    "{incident_count} intrusion attempt{} detected — none acted on yet.",
+                    "{incident_count} intrusion attempt{} detected - none acted on yet.",
                     if incident_count == 1 { "" } else { "s" }
                 )
             } else {
@@ -3853,7 +3853,7 @@ async fn process_telegram_approval(
                 )
             };
             let text = format!(
-                "👾 <b>InnerWarden</b> — <b>{host}</b>\n\
+                "👾 <b>InnerWarden</b> - <b>{host}</b>\n\
                  ━━━━━━━━━━━━━━━━\n\
                  Mode: <b>{mode_label}</b>\n\
                  <i>{mode_desc}</i>\n\
@@ -3894,30 +3894,30 @@ async fn process_telegram_approval(
     if result.incident_id == "__help__" {
         info!(operator = %result.operator_name, "Telegram /help command received");
         if cfg.telegram.bot.enabled {
-            let text = "👾 <b>InnerWarden — Operator Playbook</b>\n\n\
+            let text = "👾 <b>InnerWarden - Operator Playbook</b>\n\n\
                 <b>Intel</b>\n\
-                /status — mode, AI, today's threat intel\n\
-                /threats — recent intrusion attempts\n\
-                /decisions — actions I've taken\n\
-                /blocked — threat actors contained\n\
+                /status - mode, AI, today's threat intel\n\
+                /threats - recent intrusion attempts\n\
+                /decisions - actions I've taken\n\
+                /blocked - threat actors contained\n\
                 \n\
                 <b>Configuration</b>\n\
-                /capabilities — list all capabilities + status\n\
-                /enable &lt;id&gt; — activate a capability\n\
-                /disable &lt;id&gt; — deactivate a capability\n\
-                /doctor — full health check with fix hints\n\
+                /capabilities - list all capabilities + status\n\
+                /enable &lt;id&gt; - activate a capability\n\
+                /disable &lt;id&gt; - deactivate a capability\n\
+                /doctor - full health check with fix hints\n\
                 \n\
                 <b>Mode</b>\n\
-                /guard — auto-defend (I act autonomously)\n\
-                /watch — passive (I alert, you decide)\n\
+                /guard - auto-defend (I act autonomously)\n\
+                /watch - passive (I alert, you decide)\n\
                 \n\
                 <b>AI</b>\n\
-                /ask &lt;question&gt; — ask anything, I know my config\n\
-                <i>or just type — I'll understand</i>\n\
+                /ask &lt;question&gt; - ask anything, I know my config\n\
+                <i>or just type - I'll understand</i>\n\
                 \n\
                 <b>On threat alerts:</b>\n\
-                🛡 <b>Block</b> — drop this actor now\n\
-                🙈 <b>Ignore</b> — false positive, stand down";
+                🛡 <b>Block</b> - drop this actor now\n\
+                🙈 <b>Ignore</b> - false positive, stand down";
             tg_reply!(text);
         }
         return;
@@ -3998,17 +3998,17 @@ async fn process_telegram_approval(
             let text = match mode {
                 telegram::GuardianMode::Guard => "🟢 <b>Already in GUARD mode.</b>\n\
                      I see a threat, I drop it. You get the action report after.\n\
-                     High-confidence targets get neutralized — no questions asked.\n\n\
+                     High-confidence targets get neutralized - no questions asked.\n\n\
                      Switch to passive: <code>innerwarden configure responder</code> → option 1"
                     .to_string(),
                 _ => {
                     format!(
-                        "🟢 <b>GUARD mode</b> — full autonomous defense.\n\
+                        "🟢 <b>GUARD mode</b> - full autonomous defense.\n\
                          When I'm confident, I act. You sleep, I don't.\n\n\
                          Activate on your server:\n\
                          <code>innerwarden configure responder</code>\n\
                          Pick option 3 (Live mode).\n\n\
-                         Current: {} — <i>{}</i>",
+                         Current: {} - <i>{}</i>",
                         mode.label(),
                         mode.description()
                     )
@@ -4025,18 +4025,18 @@ async fn process_telegram_approval(
             let mode = guardian_mode(cfg);
             let text = match mode {
                 telegram::GuardianMode::Watch => "🔵 <b>Already in WATCH mode.</b>\n\
-                     Eyes on everything, hands off. I detect and log — you call the shots.\n\
+                     Eyes on everything, hands off. I detect and log - you call the shots.\n\
                      Good for baselining before going live.\n\n\
                      Go autonomous: <code>innerwarden configure responder</code> → option 3"
                     .to_string(),
                 _ => {
                     format!(
-                        "🔵 <b>WATCH mode</b> — passive recon, active alerts.\n\
+                        "🔵 <b>WATCH mode</b> - passive recon, active alerts.\n\
                          Every IOC flagged, every anomaly logged. Your call on what gets dropped.\n\n\
                          Activate on your server:\n\
                          <code>innerwarden configure responder</code>\n\
                          Pick option 1 (Observe only).\n\n\
-                         Current: {} — <i>{}</i>",
+                         Current: {} - <i>{}</i>",
                         mode.label(),
                         mode.description()
                     )
@@ -4052,7 +4052,7 @@ async fn process_telegram_approval(
         if cfg.telegram.bot.enabled {
             let blocked: Vec<String> = state.blocklist.as_vec();
             let text = if blocked.is_empty() {
-                "🛡 No kills this session — perimeter's been clean.\n\
+                "🛡 No kills this session - perimeter's been clean.\n\
                  <i>Previous firewall rules still active.</i>"
                     .to_string()
             } else {
@@ -4064,7 +4064,7 @@ async fn process_telegram_approval(
                     .collect::<Vec<_>>()
                     .join("\n");
                 format!(
-                    "🛡 <b>Kill list</b> — {} contained this session\n\n{list}",
+                    "🛡 <b>Kill list</b> - {} contained this session\n\n{list}",
                     sorted.len()
                 )
             };
@@ -4077,7 +4077,7 @@ async fn process_telegram_approval(
         info!(operator = %result.operator_name, "Telegram unknown command received");
         if cfg.telegram.bot.enabled {
             tg_reply!(
-                "Didn't catch that. /help for the full playbook — or just type what you need, I'll figure it out."
+                "Didn't catch that. /help for the full playbook - or just type what you need, I'll figure it out."
             );
         }
         return;
@@ -4131,14 +4131,14 @@ async fn process_telegram_approval(
                 });
             } else {
                 tg_reply!(
-                    "No AI brain connected yet — I need one to answer questions.\n\nActivate:\n<code>innerwarden enable ai</code>\nor via /enable ai"
+                    "No AI brain connected yet - I need one to answer questions.\n\nActivate:\n<code>innerwarden enable ai</code>\nor via /enable ai"
                 );
             }
         }
         return;
     }
 
-    // /enable <capability> — run innerwarden enable <cap> as subprocess
+    // /enable <capability> - run innerwarden enable <cap> as subprocess
     if let Some(cap_args) = result.incident_id.strip_prefix("__enable__:") {
         let cap_args = cap_args.trim().to_string();
         info!(operator = %result.operator_name, cap = %cap_args, "Telegram /enable command received");
@@ -4172,7 +4172,7 @@ async fn process_telegram_approval(
         return;
     }
 
-    // /disable <capability> — run innerwarden disable <cap> as subprocess
+    // /disable <capability> - run innerwarden disable <cap> as subprocess
     if let Some(cap_args) = result.incident_id.strip_prefix("__disable__:") {
         let cap_args = cap_args.trim().to_string();
         info!(operator = %result.operator_name, cap = %cap_args, "Telegram /disable command received");
@@ -4205,7 +4205,7 @@ async fn process_telegram_approval(
         return;
     }
 
-    // /doctor — run innerwarden doctor and show output
+    // /doctor - run innerwarden doctor and show output
     if result.incident_id == "__doctor__" {
         info!(operator = %result.operator_name, "Telegram /doctor command received");
         if cfg.telegram.bot.enabled {
@@ -4227,7 +4227,7 @@ async fn process_telegram_approval(
         return;
     }
 
-    // /capabilities — list capabilities and integrations with inline enable buttons
+    // /capabilities - list capabilities and integrations with inline enable buttons
     if result.incident_id == "__capabilities__" {
         info!(operator = %result.operator_name, "Telegram /capabilities command received");
         if cfg.telegram.bot.enabled {
@@ -4243,7 +4243,7 @@ async fn process_telegram_approval(
         return;
     }
 
-    // enable:<id> callback — from capabilities inline keyboard buttons
+    // enable:<id> callback - from capabilities inline keyboard buttons
     if let Some(cap_id) = result.incident_id.strip_prefix("enable:") {
         let cap_id = cap_id.trim().to_string();
         info!(operator = %result.operator_name, cap = %cap_id, "Telegram enable callback received");
@@ -4277,7 +4277,7 @@ async fn process_telegram_approval(
         return;
     }
 
-    // Quick-block sentinel: "quick:block:<ip>" — initiated from the inline keyboard on T.1 alerts
+    // Quick-block sentinel: "quick:block:<ip>" - initiated from the inline keyboard on T.1 alerts
     if let Some(ip) = result.incident_id.strip_prefix("__quick_block__:") {
         let ip = ip.to_string();
         let operator = result.operator_name.clone();
@@ -4377,9 +4377,9 @@ async fn process_telegram_approval(
         }
 
         let reply = if cfg.responder.dry_run {
-            format!("🧪 Simulated — would've dropped {ip} at the firewall. Enable live mode to make it real.")
+            format!("🧪 Simulated - would've dropped {ip} at the firewall. Enable live mode to make it real.")
         } else if exec_result.success {
-            format!("🛡 Threat actor {ip} neutralized — dropped at the firewall. They won't pivot from there.")
+            format!("🛡 Threat actor {ip} neutralized - dropped at the firewall. They won't pivot from there.")
         } else {
             format!("❌ Failed to contain {ip}: {}", exec_result.message)
         };
@@ -4472,7 +4472,7 @@ async fn process_telegram_approval(
                         }
                     }
                     let reply = if cfg.responder.dry_run {
-                        format!("🧪 Dry run — {ip} would be sent to the honeypot. Enable live mode to execute for real.")
+                        format!("🧪 Dry run - {ip} would be sent to the honeypot. Enable live mode to execute for real.")
                     } else if exec_result.success {
                         format!("🍯 {ip} sent to honeypot. Now let's see what they try to do.")
                     } else {
@@ -4533,7 +4533,7 @@ async fn process_telegram_approval(
                         }
                     }
                     let reply = if cfg.responder.dry_run {
-                        format!("🧪 Dry run — {ip} would be blocked in the firewall.")
+                        format!("🧪 Dry run - {ip} would be blocked in the firewall.")
                     } else if exec_result.success {
                         format!("🛡 {ip} blocked in the firewall. Done with this one.")
                     } else {
@@ -4568,7 +4568,7 @@ async fn process_telegram_approval(
                     }
                 }
                 tg_reply!(format!(
-                    "👁 Silent monitoring active on {ip} — collecting intel."
+                    "👁 Silent monitoring active on {ip} - collecting intel."
                 ));
             }
             _ => {
@@ -4608,12 +4608,12 @@ async fn process_telegram_approval(
     else {
         debug!(
             incident_id = %result.incident_id,
-            "Telegram approval for unknown or expired incident — ignoring"
+            "Telegram approval for unknown or expired incident - ignoring"
         );
         return;
     };
 
-    // If "Always" — save trust rule before executing
+    // If "Always" - save trust rule before executing
     if result.always {
         info!(
             detector = %pending.detector,
@@ -4697,13 +4697,13 @@ fn read_last_incidents(data_dir: &Path, today: &str, n: usize) -> String {
     let path = data_dir.join(format!("incidents-{today}.jsonl"));
     let contents = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => return "🔇 Clean slate — no intrusion attempts today.".to_string(),
+        Err(_) => return "🔇 Clean slate - no intrusion attempts today.".to_string(),
     };
 
     let lines: Vec<&str> = contents.lines().filter(|l| !l.trim().is_empty()).collect();
 
     if lines.is_empty() {
-        return "🔇 Clean slate — no intrusion attempts today.".to_string();
+        return "🔇 Clean slate - no intrusion attempts today.".to_string();
     }
 
     let last_n: Vec<&str> = lines.iter().rev().take(n).copied().collect::<Vec<_>>();
@@ -4767,13 +4767,13 @@ fn read_last_decisions(data_dir: &Path, today: &str, n: usize) -> String {
     let path = data_dir.join(format!("decisions-{today}.jsonl"));
     let contents = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => return "⚖️ No decisions yet today — standing by.".to_string(),
+        Err(_) => return "⚖️ No decisions yet today - standing by.".to_string(),
     };
 
     let lines: Vec<&str> = contents.lines().filter(|l| !l.trim().is_empty()).collect();
 
     if lines.is_empty() {
-        return "⚖️ No decisions yet today — standing by.".to_string();
+        return "⚖️ No decisions yet today - standing by.".to_string();
     }
 
     let last_n: Vec<&str> = lines.iter().rev().take(n).copied().collect::<Vec<_>>();
@@ -4853,7 +4853,7 @@ fn read_last_incidents_raw(data_dir: &Path, today: &str, n: usize) -> String {
                 .ok()
                 .map(|v| {
                     format!(
-                        "[{}] {} — {}",
+                        "[{}] {} - {}",
                         v["severity"].as_str().unwrap_or("?"),
                         v["title"].as_str().unwrap_or("?"),
                         v["summary"]
@@ -4872,7 +4872,7 @@ fn read_last_incidents_raw(data_dir: &Path, today: &str, n: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Narrative tick — runs every 30s
+// Narrative tick - runs every 30s
 //
 // Responsibility: regenerate the daily Markdown summary when new events arrive.
 // Webhook and incident processing have been moved to process_incidents so that
@@ -5008,7 +5008,7 @@ async fn process_narrative_tick(
                         if let Some(tg) = &state.telegram_client {
                             let preview: String = md.chars().take(3800).collect();
                             let text = format!(
-                                "📋 <b>Daily report — {today}</b>\n\n<pre>{}</pre>",
+                                "📋 <b>Daily report - {today}</b>\n\n<pre>{}</pre>",
                                 html_escape(&preview)
                             );
                             match tg.send_text_message(&text).await {
@@ -5426,9 +5426,9 @@ async fn handle_always_on_connection(
         .unwrap_or_else(|_| "Analysis unavailable.".to_string())
     } else {
         if evidence.auth_attempts.is_empty() {
-            "Connection without authentication attempts — likely automated scanner.".to_string()
+            "Connection without authentication attempts - likely automated scanner.".to_string()
         } else {
-            "AI not configured — no verdict available.".to_string()
+            "AI not configured - no verdict available.".to_string()
         }
     };
 
@@ -5598,7 +5598,7 @@ async fn run_always_on_honeypot(
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
-            warn!(addr, error = %e, "always-on honeypot: failed to bind listener — mode disabled");
+            warn!(addr, error = %e, "always-on honeypot: failed to bind listener - mode disabled");
             return;
         }
     };
@@ -5617,11 +5617,11 @@ async fn run_always_on_honeypot(
 
                 let ip = peer.ip().to_string();
 
-                // Filter 1: already in filter blocklist — drop silently.
+                // Filter 1: already in filter blocklist - drop silently.
                 {
                     let bl = filter_blocklist.lock().unwrap_or_else(|e| e.into_inner());
                     if bl.contains(&ip) {
-                        debug!(ip, "always-on honeypot: IP in blocklist — dropping silently");
+                        debug!(ip, "always-on honeypot: IP in blocklist - dropping silently");
                         continue;
                     }
                 }
@@ -5634,7 +5634,7 @@ async fn run_always_on_honeypot(
                                 info!(
                                     ip,
                                     score = rep.confidence_score,
-                                    "always-on honeypot: AbuseIPDB gate — blocking and dropping"
+                                    "always-on honeypot: AbuseIPDB gate - blocking and dropping"
                                 );
                                 // Add to filter blocklist so future connections are dropped cheaply.
                                 filter_blocklist
@@ -5834,7 +5834,7 @@ fn should_auto_enable_lsm(incident: &innerwarden_core::incident::Incident) -> bo
             || summary_lower.contains("wget");
     }
 
-    // LSM blocked event (kind=6) means someone already tried — keep enforcement on
+    // LSM blocked event (kind=6) means someone already tried - keep enforcement on
     if detector == "lsm" {
         return true;
     }
@@ -5886,7 +5886,7 @@ async fn enable_lsm_enforcement() -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
-// Advisory correlation — match execution incidents against recent advisory
+// Advisory correlation - match execution incidents against recent advisory
 // denials from the /api/advisor/check-command endpoint.
 // ---------------------------------------------------------------------------
 
@@ -5927,7 +5927,7 @@ mod tests {
     use tempfile::TempDir;
 
     // ------------------------------------------------------------------
-    // Minimal mock AI provider — returns a fixed decision, no network I/O
+    // Minimal mock AI provider - returns a fixed decision, no network I/O
     // ------------------------------------------------------------------
 
     struct MockAiProvider {
@@ -6068,7 +6068,7 @@ mod tests {
                 },
                 confidence: 0.97,
                 auto_execute: true,
-                reason: "9 SSH failures, no success, external IP — classic brute force".to_string(),
+                reason: "9 SSH failures, no success, external IP - classic brute force".to_string(),
                 alternatives: vec!["monitor".to_string()],
                 estimated_threat: "high".to_string(),
             },
@@ -6166,7 +6166,7 @@ mod tests {
             .format("%Y-%m-%d")
             .to_string();
 
-        // Use a routable external IP — TEST-NET ranges (203.0.113.x) are filtered by the gate
+        // Use a routable external IP - TEST-NET ranges (203.0.113.x) are filtered by the gate
         let attacker_ip = "5.6.7.8";
         let incidents_path = dir.path().join(format!("incidents-{today}.jsonl"));
         let mut f = std::fs::File::create(&incidents_path).unwrap();
@@ -6184,7 +6184,7 @@ mod tests {
                 enabled: true,
                 dry_run: true,
                 block_backend: "ufw".to_string(),
-                // Only ufw is allowed; AI picks iptables — should fall back silently
+                // Only ufw is allowed; AI picks iptables - should fall back silently
                 allowed_skills: vec!["block-ip-ufw".to_string()],
             },
             ..config::AgentConfig::default()
@@ -6251,7 +6251,7 @@ mod tests {
         )
         .await;
 
-        // Still handled (not skipped entirely) — fell back to ufw
+        // Still handled (not skipped entirely) - fell back to ufw
         assert_eq!(handled, 1);
 
         if let Some(w) = &mut state.decision_writer {
@@ -6678,13 +6678,13 @@ mod tests {
         .await;
 
         // Both incidents are "handled" (counted), but the AI should be called
-        // only ONCE — the second incident is suppressed by the decision
+        // only ONCE - the second incident is suppressed by the decision
         // cooldown that was recorded after the first decision.
         assert_eq!(handled, 2);
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,
-            "AI should be called once — second incident suppressed by cooldown"
+            "AI should be called once - second incident suppressed by cooldown"
         );
 
         // Verify the cooldown entry was recorded in the persistent store

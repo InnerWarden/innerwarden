@@ -94,7 +94,7 @@ impl PrivescDetector {
                 "container_id": container_id,
             }]),
             recommended_checks: vec![
-                format!("Investigate process {comm} (pid={pid}) — how did it gain root?"),
+                format!("Investigate process {comm} (pid={pid}) - how did it gain root?"),
                 format!("Check parent process: ps -o ppid= -p {pid}"),
                 "Review /var/log/auth.log for corresponding sudo/su entries".to_string(),
                 "If unexpected: kill the process and investigate the attack vector".to_string(),

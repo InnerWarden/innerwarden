@@ -2,7 +2,7 @@
 id          = "openclaw-protection"
 name        = "AI Agent Protection"
 version     = "0.1.0"
-description = "Monitor and protect servers running OpenClaw, n8n, Langchain, or any autonomous AI agent — detects dangerous commands, suspicious execution patterns, and config tampering"
+description = "Monitor and protect servers running OpenClaw, n8n, Langchain, or any autonomous AI agent - detects dangerous commands, suspicious execution patterns, and config tampering"
 authors     = ["InnerWarden Contributors"]
 license     = "Apache-2.0"
 tier        = "open"
@@ -12,7 +12,7 @@ min_innerwarden = "0.1.26"
 [provides]
 collectors = ["exec-audit", "journald", "integrity"]
 detectors  = ["execution-guard"]
-skills     = []   # observe mode — incidents go to AI pipeline and agent API for review
+skills     = []   # observe mode - incidents go to AI pipeline and agent API for review
 
 [requires]
 event_sources = ["exec_audit", "journald.sudo", "integrity"]

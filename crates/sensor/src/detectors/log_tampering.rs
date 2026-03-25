@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use chrono::{DateTime, Duration, Utc};
 use innerwarden_core::{entities::EntityRef, event::Event, event::Severity, incident::Incident};
 
-/// Log files that are sensitive — any non-standard write is suspicious.
+/// Log files that are sensitive - any non-standard write is suspicious.
 const SENSITIVE_LOG_PATHS: &[&str] = &[
     "/var/log/auth.log",
     "/var/log/secure",
@@ -27,7 +27,7 @@ const SENSITIVE_LOG_PATHS: &[&str] = &[
     "/var/log/lastlog",
 ];
 
-/// Processes that are legitimate log writers — never alert on these.
+/// Processes that are legitimate log writers - never alert on these.
 /// The `comm` field from eBPF is truncated to 15 chars (TASK_COMM_LEN),
 /// so we list both the full name and the truncated form where relevant.
 const KNOWN_LOG_WRITERS: &[&str] = &[
@@ -103,7 +103,7 @@ impl LogTamperingDetector {
 
         let now = event.ts;
 
-        // Cooldown check — keyed on (comm, path) to avoid flooding
+        // Cooldown check - keyed on (comm, path) to avoid flooding
         let key = (comm.to_string(), filename.to_string());
         if let Some(&last) = self.alerted.get(&key) {
             if now - last < self.cooldown {
@@ -125,7 +125,7 @@ impl LogTamperingDetector {
 
         let access_type = if is_write { "wrote to" } else { "accessed" };
 
-        // Write access to log files is more severe — Critical
+        // Write access to log files is more severe - Critical
         let severity = if is_write {
             Severity::Critical
         } else {
@@ -145,7 +145,7 @@ impl LogTamperingDetector {
             title: format!("Log tampering: {comm} {access_type} {filename}"),
             summary: format!(
                 "Non-standard process {comm} (pid={pid}, uid={uid}) {access_type} \
-                 sensitive log file {filename} — possible log tampering or evidence destruction"
+                 sensitive log file {filename} - possible log tampering or evidence destruction"
             ),
             evidence: serde_json::json!([{
                 "kind": event.kind,
@@ -297,7 +297,7 @@ mod tests {
         assert!(det
             .process(&file_access_event("vim", "/var/log/auth.log", true, base))
             .is_some());
-        // Within cooldown — suppressed
+        // Within cooldown - suppressed
         assert!(det
             .process(&file_access_event(
                 "vim",
@@ -315,7 +315,7 @@ mod tests {
         assert!(det
             .process(&file_access_event("vim", "/var/log/auth.log", true, base))
             .is_some());
-        // After cooldown — fires
+        // After cooldown - fires
         assert!(det
             .process(&file_access_event(
                 "vim",
@@ -333,7 +333,7 @@ mod tests {
         assert!(det
             .process(&file_access_event("vim", "/var/log/auth.log", true, base))
             .is_some());
-        // Different process — fires even though same path is in cooldown
+        // Different process - fires even though same path is in cooldown
         assert!(det
             .process(&file_access_event("nano", "/var/log/auth.log", true, base))
             .is_some());
@@ -346,7 +346,7 @@ mod tests {
         assert!(det
             .process(&file_access_event("vim", "/var/log/auth.log", true, base))
             .is_some());
-        // Same process, different path — fires
+        // Same process, different path - fires
         assert!(det
             .process(&file_access_event("vim", "/var/log/syslog", true, base))
             .is_some());

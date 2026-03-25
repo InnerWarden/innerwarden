@@ -9,7 +9,7 @@ InnerWarden posts a structured Block Kit message to the configured Slack
 channel:
 
 ```
-🔴 HIGH — SSH Brute-Force Detected
+🔴 HIGH - SSH Brute-Force Detected
 9 failed login attempts from 203.0.113.10 within 5 minutes
 
 Host: `web-01`  |  IP: `203.0.113.10`  |  `ssh_bruteforce:203.0.113.10`
@@ -18,7 +18,7 @@ Host: `web-01`  |  IP: `203.0.113.10`  |  `ssh_bruteforce:203.0.113.10`
 ```
 
 The message includes:
-- **Severity badge + emoji** — coloured sidebar line (🚨 critical, 🔴 high, 🟠 medium, 🟡 low)
+- **Severity badge + emoji** - coloured sidebar line (🚨 critical, 🔴 high, 🟠 medium, 🟡 low)
 - **Title and summary** from the incident
 - **Host, entity, and incident ID** in a context row
 - **Deep-link button** to the InnerWarden dashboard (optional)
@@ -27,7 +27,7 @@ The message includes:
 
 - You want real-time security alerts in a Slack channel alongside your team
 - You want to complement Telegram approvals (T.2) with passive Slack visibility
-- Free Incoming Webhooks — no Slack API token, no OAuth, no rate-limit issues
+- Free Incoming Webhooks - no Slack API token, no OAuth, no rate-limit issues
 
 ## Setup
 
@@ -36,7 +36,7 @@ The message includes:
 1. Go to your Slack workspace → **Apps** → search **Incoming Webhooks**
 2. Click **Add to Slack**
 3. Choose a channel (e.g. `#security-alerts`)
-4. Copy the **Webhook URL** — it looks like:
+4. Copy the **Webhook URL** - it looks like:
    `https://hooks.slack.com/services/T.../B.../...`
 
 ### 2. Configure InnerWarden
@@ -75,5 +75,5 @@ included in the notification.
 ## What it does NOT do
 
 - Does not send T.2-style approvals (use Telegram for interactive approvals)
-- Does not report decisions back to Slack — only incident notifications
+- Does not report decisions back to Slack - only incident notifications
 - Does not affect detection or AI triage

@@ -6,26 +6,26 @@ use innerwarden_core::{event::Event, event::Severity, incident::Incident};
 /// Detects rootkit indicators via eBPF events and filesystem checks.
 ///
 /// Detection patterns:
-/// 1. **Hidden process** — eBPF sees a PID executing but /proc/{pid}/ doesn't exist.
+/// 1. **Hidden process** - eBPF sees a PID executing but /proc/{pid}/ doesn't exist.
 ///    Rootkits hide processes from userspace tools (ps, top) but eBPF tracepoints
 ///    see everything at kernel level.
 ///
-/// 2. **Known rootkit artifacts** — files/paths that rootkits typically create:
+/// 2. **Known rootkit artifacts** - files/paths that rootkits typically create:
 ///    /dev/.hidden, /dev/shm/.hidden, /usr/lib/libprocesshider.so, /etc/ld.so.preload
 ///    with suspicious entries, files in /tmp or /dev/shm with suspicious names.
 ///
-/// 3. **LD_PRELOAD hijacking** — process loads a library via LD_PRELOAD from an
+/// 3. **LD_PRELOAD hijacking** - process loads a library via LD_PRELOAD from an
 ///    unusual location (not /usr/lib, /lib, /usr/local/lib).
 ///
-/// 4. **Kernel module rootkit** — insmod/modprobe/rmmod for a non-standard module.
+/// 4. **Kernel module rootkit** - insmod/modprobe/rmmod for a non-standard module.
 ///
-/// 5. **Syscall table reconnaissance** — process reads /boot/System.map or
+/// 5. **Syscall table reconnaissance** - process reads /boot/System.map or
 ///    /proc/kallsyms (used by rootkits to find syscall table addresses).
 ///
-/// 6. **Process name spoofing** — eBPF sees the real binary path via execve but
+/// 6. **Process name spoofing** - eBPF sees the real binary path via execve but
 ///    the comm field doesn't match the binary name.
 ///
-/// 7. **Kernel function timing analysis** — tracks inter-event timing per syscall kind
+/// 7. **Kernel function timing analysis** - tracks inter-event timing per syscall kind
 ///    using Welford's online algorithm. Rootkits that hook kernel functions (e.g.,
 ///    getdents64 to hide files/processes) add measurable latency. Consecutive timing
 ///    anomalies beyond a configurable z-score threshold raise an incident.
@@ -406,7 +406,7 @@ impl RootkitDetector {
             }
         }
 
-        // Kernel function timing analysis — runs for every event to build profiles
+        // Kernel function timing analysis - runs for every event to build profiles
         if self.timing_enabled {
             if let Some(inc) = self.check_timing_anomaly(event, now) {
                 return Some(inc);
@@ -439,7 +439,7 @@ impl RootkitDetector {
             }
         }
 
-        // Hidden process check — now tracks both execve AND exit events.
+        // Hidden process check - now tracks both execve AND exit events.
         // Only flags PIDs that were born (execve) but never died (no exit event)
         // AND are missing from /proc. Short-lived processes are removed by exit events.
         if now - self.last_check >= self.check_interval {
@@ -497,7 +497,7 @@ impl RootkitDetector {
         let _short_lived_cutoff = now - Duration::seconds(2);
 
         for (&pid, info) in &self.pids {
-            // Skip short-lived processes (< 5s since last seen) — normal exits
+            // Skip short-lived processes (< 5s since last seen) - normal exits
             let five_sec_cutoff = now - chrono::Duration::seconds(5);
             if info.last_seen > five_sec_cutoff {
                 continue;
@@ -537,7 +537,7 @@ impl RootkitDetector {
                         "last_seen": info.last_seen.to_rfc3339(),
                     }]),
                     recommended_checks: vec![
-                        format!("CRITICAL: PID {pid} is hidden from userspace — this is a strong rootkit indicator"),
+                        format!("CRITICAL: PID {pid} is hidden from userspace - this is a strong rootkit indicator"),
                         "Check for loaded kernel modules: lsmod | diff - <(cat /proc/modules)".to_string(),
                         "Check for LD_PRELOAD rootkits: cat /etc/ld.so.preload".to_string(),
                         "Run rkhunter or chkrootkit for full rootkit scan".to_string(),
@@ -612,7 +612,7 @@ impl RootkitDetector {
             }]),
             recommended_checks: vec![
                 format!("Investigate rootkit artifact: {filename}"),
-                format!("Check process {comm} (pid={pid}) — what created this file?"),
+                format!("Check process {comm} (pid={pid}) - what created this file?"),
                 "Check for LD_PRELOAD: cat /etc/ld.so.preload".to_string(),
                 "Run: rkhunter --check --skip-keypress".to_string(),
                 "Run: chkrootkit".to_string(),
@@ -806,7 +806,7 @@ impl RootkitDetector {
             severity: Severity::Critical,
             title: format!("Suspicious kernel module operation: {op} {module_base}"),
             summary: format!(
-                "Suspicious kernel module operation: {comm} (pid={pid}) — {op} {module_name}"
+                "Suspicious kernel module operation: {comm} (pid={pid}) - {op} {module_name}"
             ),
             evidence: serde_json::json!([{
                 "kind": "kernel_module_operation",
@@ -820,7 +820,7 @@ impl RootkitDetector {
                 format!("Investigate kernel module: {module_name}"),
                 "Check loaded modules: lsmod".to_string(),
                 "Compare with known-good module list".to_string(),
-                format!("Check process {comm} (pid={pid}) — who initiated this?"),
+                format!("Check process {comm} (pid={pid}) - who initiated this?"),
                 "If unexpected: rmmod the module and investigate".to_string(),
             ],
             tags: vec![
@@ -1026,7 +1026,7 @@ impl RootkitDetector {
         let z_threshold = self.timing_z_threshold;
         let consecutive_threshold = self.timing_consecutive_threshold;
 
-        // Snapshot needed for incident generation — extracted before releasing borrow
+        // Snapshot needed for incident generation - extracted before releasing borrow
         let anomaly_info = {
             let stats = self
                 .syscall_timing
@@ -1044,7 +1044,7 @@ impl RootkitDetector {
             }
             let delta_ns = delta_ns as u64;
 
-            // Check anomaly BEFORE updating stats — so the baseline is not
+            // Check anomaly BEFORE updating stats - so the baseline is not
             // contaminated by the potentially anomalous sample.
             //
             // When stddev is near-zero (all samples nearly identical), we use
@@ -1103,7 +1103,7 @@ impl RootkitDetector {
 
         let (actual_us, expected_us, stddev_us, z_score, total_samples) = anomaly_info?;
 
-        // Now we can access self freely — the mutable borrow on syscall_timing is released
+        // Now we can access self freely - the mutable borrow on syscall_timing is released
         let alert_key = format!("timing:{kind}");
         if self.is_cooled_down(&alert_key, now) {
             return None;
@@ -1117,10 +1117,10 @@ impl RootkitDetector {
 
         // Map event kind to suspected kernel hook
         let hook_hint = match kind.as_str() {
-            "file.read_access" => " (possible getdents64 hook — hiding files/processes)",
+            "file.read_access" => " (possible getdents64 hook - hiding files/processes)",
             "shell.command_exec" => " (possible execve hook)",
             "network.connection" | "network.outbound_connect" => {
-                " (possible connect hook — hiding network connections)"
+                " (possible connect hook - hiding network connections)"
             }
             _ => "",
         };
@@ -1172,7 +1172,7 @@ impl RootkitDetector {
         })
     }
 
-    /// Check cooldown — returns true if the alert is still in cooldown.
+    /// Check cooldown - returns true if the alert is still in cooldown.
     fn is_cooled_down(&self, key: &str, now: DateTime<Utc>) -> bool {
         if let Some(&last) = self.alerted.get(key) {
             now - last < self.cooldown
@@ -1508,7 +1508,7 @@ mod tests {
         let inc = det.process(&file_event("cat", "/dev/.hidden", 100, false, now));
         assert!(inc.is_some());
 
-        // Second alert within cooldown — suppressed
+        // Second alert within cooldown - suppressed
         let inc2 = det.process(&file_event(
             "cat",
             "/dev/.hidden",
@@ -1518,7 +1518,7 @@ mod tests {
         ));
         assert!(inc2.is_none());
 
-        // After cooldown — should alert again
+        // After cooldown - should alert again
         let inc3 = det.process(&file_event(
             "cat",
             "/dev/.hidden",
@@ -1556,13 +1556,13 @@ mod tests {
         let mut det = RootkitDetector::new("test", 10, 600).with_pid_exists_fn(never_exists);
         let now = Utc::now();
 
-        // Add a PID that was just seen (< 2s ago) — should be excluded
+        // Add a PID that was just seen (< 2s ago) - should be excluded
         det.pids.insert(
             1234,
             PidInfo {
                 comm: "malware".to_string(),
                 binary_path: "/tmp/malware".to_string(),
-                last_seen: now - Duration::seconds(1), // 1s ago — still short-lived
+                last_seen: now - Duration::seconds(1), // 1s ago - still short-lived
                 uid: 0,
                 seen_count: 5,
             },
@@ -1671,7 +1671,7 @@ mod tests {
         let mut det = RootkitDetector::new("test", 10, 600).with_pid_exists_fn(never_exists);
         let now = Utc::now();
 
-        // PID seen only once — should NOT be flagged
+        // PID seen only once - should NOT be flagged
         det.pids.insert(
             5555,
             PidInfo {
@@ -1741,10 +1741,10 @@ mod tests {
         let mut det = RootkitDetector::new("test", 10, 600);
         let now = Utc::now();
 
-        // Reading /etc/ld.so.preload is normal — only writing should trigger
+        // Reading /etc/ld.so.preload is normal - only writing should trigger
         let inc = det.process(&file_event("cat", "/etc/ld.so.preload", 810, false, now));
         // This should not trigger the modification check (but may trigger artifact check
-        // only if the path is in the artifact list — it's not, so should be None)
+        // only if the path is in the artifact list - it's not, so should be None)
         assert!(inc.is_none());
     }
 
@@ -1819,7 +1819,7 @@ mod tests {
         let mut det = timing_detector(10, 4.0, 5);
         let base = Utc::now();
 
-        // Feed 20 events at regular 100ms intervals — all normal, no anomaly
+        // Feed 20 events at regular 100ms intervals - all normal, no anomaly
         for i in 0..20 {
             let ts = base + Duration::milliseconds(i * 100);
             let ev = timing_event("file.read_access", ts);
@@ -1841,7 +1841,7 @@ mod tests {
             det.process(&timing_event("file.read_access", ts));
         }
 
-        // One big spike (10 seconds) — should NOT trigger (need 5 consecutive)
+        // One big spike (10 seconds) - should NOT trigger (need 5 consecutive)
         let spike_ts = base + Duration::milliseconds(15 * 100) + Duration::seconds(10);
         let inc = det.process(&timing_event("file.read_access", spike_ts));
         assert!(
@@ -2038,7 +2038,7 @@ mod tests {
         let inc = det.process(&timing_event("file.read_access", last_ts));
         assert!(
             inc.is_none(),
-            "Should not trigger immediately after reset — needs consecutive threshold again"
+            "Should not trigger immediately after reset - needs consecutive threshold again"
         );
     }
 

@@ -194,7 +194,7 @@ impl ResponseSkill for RateLimitNginx {
 }
 
 // ---------------------------------------------------------------------------
-// TTL cleanup — called from the agent slow loop (30s)
+// TTL cleanup - called from the agent slow loop (30s)
 // ---------------------------------------------------------------------------
 
 pub async fn cleanup_expired_nginx_blocks(data_dir: &Path, dry_run: bool) -> Result<usize> {
@@ -319,7 +319,7 @@ fn write_blocklist_atomic(path: &Path, deny_lines: &[String]) -> Result<()> {
     ));
 
     let mut content =
-        "# InnerWarden nginx blocklist — managed automatically, do not edit\n".to_string();
+        "# InnerWarden nginx blocklist - managed automatically, do not edit\n".to_string();
     for line in deny_lines {
         content.push_str(line);
         content.push('\n');

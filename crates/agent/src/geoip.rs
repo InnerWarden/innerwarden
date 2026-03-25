@@ -102,7 +102,7 @@ impl GeoIpClient {
         };
 
         if resp.status().as_u16() == 429 {
-            warn!("ip-api.com rate limit hit — skipping geolocation enrichment");
+            warn!("ip-api.com rate limit hit - skipping geolocation enrichment");
             return None;
         }
 

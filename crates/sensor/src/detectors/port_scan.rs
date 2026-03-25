@@ -8,7 +8,7 @@ pub struct PortScanDetector {
     window: Duration,
     /// Per-source-IP ring of (timestamp, destination_port) entries in the current window.
     windows: HashMap<String, VecDeque<(DateTime<Utc>, u16)>>,
-    /// Last incident emission time per source IP — suppresses re-alerts in the same window.
+    /// Last incident emission time per source IP - suppresses re-alerts in the same window.
     alerted: HashMap<String, DateTime<Utc>>,
     host: String,
 }

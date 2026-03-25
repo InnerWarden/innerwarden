@@ -41,7 +41,7 @@ innerwarden enable openclaw-protection
 This activates:
 
 ```toml
-# sensor.toml — activated automatically
+# sensor.toml - activated automatically
 [collectors.exec_audit]
 enabled = true
 path    = "/var/log/audit/audit.log"
@@ -80,7 +80,7 @@ paths = [
 ]
 ```
 
-## Agent API — Let your AI ask before acting
+## Agent API - Let your AI ask before acting
 
 Inner Warden exposes HTTP endpoints on the dashboard that any AI agent can call.
 These are the recommended integration points for OpenClaw, n8n, or custom agents.
@@ -110,7 +110,7 @@ Use in your agent:
 ```python
 ctx = requests.get("http://localhost:8787/api/agent/security-context").json()
 if ctx["threat_level"] in ("high", "critical"):
-    print("Server under active attack — pausing risky operations")
+    print("Server under active attack - pausing risky operations")
 ```
 
 ### `GET /api/agent/check-ip?ip=1.2.3.4`
@@ -164,9 +164,9 @@ curl -s -X POST http://localhost:8787/api/advisor/check-command \
 ```
 
 **Recommendation values:**
-- `allow` — risk score < 20, no dangerous patterns detected. No advisory_id returned.
-- `review` — risk score 20-39, suspicious but not clearly dangerous. Advisory tracked.
-- `deny` — risk score >= 40, dangerous pattern detected. Advisory tracked.
+- `allow` - risk score < 20, no dangerous patterns detected. No advisory_id returned.
+- `review` - risk score 20-39, suspicious but not clearly dangerous. Advisory tracked.
+- `deny` - risk score >= 40, dangerous pattern detected. Advisory tracked.
 
 ### The Trusted Advisor model
 
@@ -249,6 +249,6 @@ AI Agent (OpenClaw/n8n/custom)
     └─── receives SSE alerts ◄── /api/events/stream
 ```
 
-The agent does NOT need to be modified to be monitored — auditd captures all
+The agent does NOT need to be modified to be monitored - auditd captures all
 command execution on the host. The API integration is optional but recommended
 for proactive safety.

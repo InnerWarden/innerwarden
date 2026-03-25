@@ -1,4 +1,4 @@
-//! Deterministic fake shell — responds to common commands instantly without AI.
+//! Deterministic fake shell - responds to common commands instantly without AI.
 //! Falls back to None for unknown commands (caller should use LLM).
 //!
 //! This saves AI tokens and provides instant response for reconnaissance commands
@@ -87,7 +87,7 @@ certbot renew
 df -h",
     );
 
-    // /proc — attackers check these to detect honeypots/containers
+    // /proc - attackers check these to detect honeypots/containers
     fs.insert("/proc/version", "Linux version 5.15.0-91-generic (buildd@lcy02-amd64-045) (gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0, GNU ld (GNU Binutils for Ubuntu) 2.38) #101-Ubuntu SMP Tue Nov 14 13:30:08 UTC 2023");
 
     fs.insert("/proc/cpuinfo", "\
@@ -170,13 +170,13 @@ tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0",
 
     fs.insert("/proc/loadavg", "0.12 0.08 0.03 1/142 3489");
 
-    // /sys — hardware info attackers check
+    // /sys - hardware info attackers check
     fs.insert(
         "/sys/class/dmi/id/product_name",
         "Standard PC (i440FX + PIIX, 1996)",
     );
     fs.insert("/sys/class/dmi/id/sys_vendor", "QEMU");
-    // Note: real servers show Dell/HP/Supermicro. Showing QEMU is intentional —
+    // Note: real servers show Dell/HP/Supermicro. Showing QEMU is intentional -
     // attackers who detect VM may think it's a cloud instance, not a honeypot.
 
     fs.insert("/sys/class/net/eth0/address", "02:00:17:a4:b3:c2");
@@ -367,7 +367,7 @@ pub fn try_handle(cmd: &str, user: &str, hostname: &str) -> Option<String> {
         )),
 
         "curl" | "wget" => {
-            // Capture the URL as IOC — pretend it worked
+            // Capture the URL as IOC - pretend it worked
             let url = parts.iter().find(|p| p.starts_with("http")).copied();
             if let Some(url) = url {
                 if bin == "wget" {
@@ -385,7 +385,7 @@ pub fn try_handle(cmd: &str, user: &str, hostname: &str) -> Option<String> {
                         file = url.split('/').next_back().unwrap_or("index.html")
                     ))
                 } else {
-                    // curl — just pretend
+                    // curl - just pretend
                     Some("<!DOCTYPE html><html><body>OK</body></html>".to_string())
                 }
             } else {
@@ -440,7 +440,7 @@ pub fn try_handle(cmd: &str, user: &str, hostname: &str) -> Option<String> {
             }
         }
 
-        _ => None, // unknown — fall back to LLM
+        _ => None, // unknown - fall back to LLM
     }
 }
 
@@ -549,7 +549,7 @@ mod tests {
     #[test]
     fn cat_proc_self_cgroup_not_container() {
         let out = try_handle("cat /proc/self/cgroup", "root", "host").unwrap();
-        // Should NOT contain docker/lxc indicators — looks like bare metal
+        // Should NOT contain docker/lxc indicators - looks like bare metal
         assert_eq!(out, "0::/");
     }
 }

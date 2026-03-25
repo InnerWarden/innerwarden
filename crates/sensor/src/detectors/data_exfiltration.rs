@@ -61,7 +61,7 @@ const EXFIL_COMMAND_PATTERNS: &[(&str, &str)] = &[
 pub struct DataExfiltrationDetector {
     correlation_window: Duration,
     cooldown: Duration,
-    /// pid → (timestamp, file_path) — tracks sensitive file reads
+    /// pid → (timestamp, file_path) - tracks sensitive file reads
     read_state: HashMap<u32, (DateTime<Utc>, String)>,
     /// Alert cooldown tracking
     alerted: HashMap<String, DateTime<Utc>>,
@@ -221,7 +221,7 @@ impl DataExfiltrationDetector {
                                 "dst_port": dst_port,
                             }]),
                             recommended_checks: vec![
-                                format!("Investigate process {comm} (pid={pid}) — why did it read {sensitive_file}?"),
+                                format!("Investigate process {comm} (pid={pid}) - why did it read {sensitive_file}?"),
                                 format!("Check destination: whois {dst_ip}"),
                                 format!("Review network traffic: ss -tunp | grep {pid}"),
                                 "Check if the file was modified: stat the sensitive file".to_string(),
@@ -284,7 +284,7 @@ impl DataExfiltrationDetector {
                         "uid": uid,
                     }]),
                     recommended_checks: vec![
-                        format!("Investigate process {comm} (pid={pid}) — who started it?"),
+                        format!("Investigate process {comm} (pid={pid}) - who started it?"),
                         "Check for stolen data: review network logs".to_string(),
                         format!("Review command: {command}"),
                         "If confirmed: block the destination and rotate compromised credentials".to_string(),
@@ -490,7 +490,7 @@ mod tests {
             .process(&file_read_event("/etc/shadow", "python3", 1234, now))
             .is_none());
 
-        // Different PID connects — no correlation
+        // Different PID connects - no correlation
         let inc = det.process(&connect_event(
             "curl",
             5678,
@@ -591,7 +591,7 @@ mod tests {
             ))
             .is_some());
 
-        // Re-read and re-connect within cooldown — suppressed
+        // Re-read and re-connect within cooldown - suppressed
         assert!(det
             .process(&file_read_event(
                 "/etc/shadow",

@@ -7,6 +7,6 @@
 /crates/agent/   @InnerWarden
 /crates/ctl/     @InnerWarden
 
-# Integrations and modules — community contributions welcome
+# Integrations and modules - community contributions welcome
 /integrations/   @InnerWarden
 /modules/        @InnerWarden

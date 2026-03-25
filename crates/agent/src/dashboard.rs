@@ -36,7 +36,7 @@ use innerwarden_core::event::Severity;
 use innerwarden_core::incident::Incident;
 
 // ---------------------------------------------------------------------------
-// D6 — SSE types
+// D6 - SSE types
 // ---------------------------------------------------------------------------
 
 /// Minimal SSE payload pushed to connected clients.
@@ -175,7 +175,7 @@ struct DashboardState {
     last_activity: Arc<std::sync::atomic::AtomicU64>,
     /// Cached sensor API response (30s TTL) to avoid re-reading events file on every request.
     sensor_cache: Arc<tokio::sync::Mutex<(u64, serde_json::Value)>>,
-    /// Trusted reverse-proxy IPs — only honour X-Forwarded-For / X-Real-IP
+    /// Trusted reverse-proxy IPs - only honour X-Forwarded-For / X-Real-IP
     /// when the connecting socket IP is in this set.
     trusted_proxies: Arc<Vec<IpAddr>>,
     /// Active sessions: token → Session.
@@ -203,7 +203,7 @@ impl DashboardAuth {
         let hash = std::env::var("INNERWARDEN_DASHBOARD_PASSWORD_HASH").ok();
 
         match (user, hash) {
-            (None, None) => Ok(None), // no auth configured — open access
+            (None, None) => Ok(None), // no auth configured - open access
             (Some(username), Some(password_hash_raw)) => {
                 if username.trim().is_empty() {
                     anyhow::bail!("INNERWARDEN_DASHBOARD_USER cannot be empty");
@@ -289,7 +289,7 @@ fn generate_session_token() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Advisory cache — stores deny/review command analysis results
+// Advisory cache - stores deny/review command analysis results
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
@@ -304,14 +304,14 @@ pub struct AdvisoryEntry {
 }
 
 // ---------------------------------------------------------------------------
-// D3 — action request / response structs
+// D3 - action request / response structs
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 struct BlockIpRequest {
     /// Target IP address to block.
     ip: String,
-    /// Operator-supplied reason (mandatory — becomes the audit trail entry).
+    /// Operator-supplied reason (mandatory - becomes the audit trail entry).
     reason: String,
     /// Optional incident ID to associate this action with.
     incident_id: Option<String>,
@@ -408,7 +408,7 @@ struct ReportQuery {
 }
 
 // ---------------------------------------------------------------------------
-// Response structs — existing
+// Response structs - existing
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize)]
@@ -472,7 +472,7 @@ struct DecisionView {
 }
 
 // ---------------------------------------------------------------------------
-// Response structs — D2 journey
+// Response structs - D2 journey
 // ---------------------------------------------------------------------------
 
 /// Summarizes an attacker (IP with at least one incident) for the left panel.
@@ -519,7 +519,7 @@ struct JourneySummary {
     hints: Vec<String>,
 }
 
-/// D5 — High-level attack assessment derived from the journey entries.
+/// D5 - High-level attack assessment derived from the journey entries.
 #[derive(Debug, Serialize)]
 struct JourneyVerdict {
     /// Detected attack vector: "ssh_bruteforce" | "credential_stuffing" |
@@ -537,7 +537,7 @@ struct JourneyVerdict {
     confidence: String,
 }
 
-/// D5 — A logical phase of the attack story derived from consecutive entries.
+/// D5 - A logical phase of the attack story derived from consecutive entries.
 #[derive(Debug, Serialize)]
 struct JourneyChapter {
     /// Stage label: "reconnaissance" | "initial_access_attempt" | "access_success" |
@@ -563,9 +563,9 @@ struct JourneyResponse {
     last_seen: Option<chrono::DateTime<Utc>>,
     outcome: String,
     summary: JourneySummary,
-    /// D5 — high-level attack assessment
+    /// D5 - high-level attack assessment
     verdict: JourneyVerdict,
-    /// D5 — logical attack chapters derived from entries
+    /// D5 - logical attack chapters derived from entries
     chapters: Vec<JourneyChapter>,
     entries: Vec<JourneyEntry>,
 }
@@ -724,7 +724,7 @@ pub async fn serve(
 ) -> Result<()> {
     if auth.is_none() {
         warn!(
-            "dashboard is running WITHOUT authentication — \
+            "dashboard is running WITHOUT authentication - \
              set INNERWARDEN_DASHBOARD_USER and INNERWARDEN_DASHBOARD_PASSWORD_HASH \
              in agent.env to require a login"
         );
@@ -745,7 +745,7 @@ pub async fn serve(
         }
     }
 
-    // D6: broadcast channel — capacity 64 is plenty; lagged receivers are dropped.
+    // D6: broadcast channel - capacity 64 is plenty; lagged receivers are dropped.
     let (event_tx, _) = broadcast::channel::<SsePayload>(64);
 
     let insecure_http = auth.is_some() && {
@@ -755,7 +755,7 @@ pub async fn serve(
         !is_localhost
     };
 
-    // Parse trusted proxy IPs at startup — only these connecting IPs may
+    // Parse trusted proxy IPs at startup - only these connecting IPs may
     // set X-Forwarded-For / X-Real-IP headers.
     let trusted_proxies: Vec<IpAddr> = trusted_proxy_strs
         .iter()
@@ -815,7 +815,7 @@ pub async fn serve(
             next.run(req).await
         }
     });
-    // Global rate limiter — rejects requests from IPs exceeding 120/min with 429.
+    // Global rate limiter - rejects requests from IPs exceeding 120/min with 429.
     // Prevents memory exhaustion from bot traffic when dashboard is internet-facing.
     let rate_limit_proxies = state.trusted_proxies.clone();
     let rate_limit_layer = middleware::from_fn(move |req: Request<Body>, next: Next| {
@@ -834,7 +834,7 @@ pub async fn serve(
         }
     });
 
-    // Agent API routes — no auth required (localhost service-to-service)
+    // Agent API routes - no auth required (localhost service-to-service)
     // These are used by AI agents (OpenClaw, n8n, etc.) to query security state.
     let agent_api = Router::new()
         .route(
@@ -850,12 +850,12 @@ pub async fn serve(
         .route("/metrics", get(api_prometheus_metrics))
         .with_state(state.clone());
 
-    // Auth login route — public (no auth required; this IS the auth endpoint)
+    // Auth login route - public (no auth required; this IS the auth endpoint)
     let auth_login = Router::new()
         .route("/api/auth/login", post(api_auth_login))
         .with_state(state.clone());
 
-    // Dashboard routes — auth required
+    // Dashboard routes - auth required
     let dashboard = Router::new()
         .route("/", get(index))
         .route("/api/overview", get(api_overview))
@@ -871,17 +871,17 @@ pub async fn serve(
         .route("/api/quickwins", get(api_quickwins))
         // Sensors activity
         .route("/api/sensors", get(api_sensors))
-        // E6 — system status
+        // E6 - system status
         .route("/api/status", get(api_status))
         .route("/api/collectors", get(api_collectors))
-        // D3 — operator-initiated actions (POST, require auth, respect dry_run)
+        // D3 - operator-initiated actions (POST, require auth, respect dry_run)
         .route("/api/action/block-ip", post(api_action_block_ip))
         .route("/api/action/suspend-user", post(api_action_suspend_user))
         .route("/api/action/config", get(api_action_config))
         // Honeypot tab
         .route("/api/honeypot/sessions", get(api_honeypot_sessions))
         .route("/api/action/honeypot", post(api_action_honeypot))
-        // D6 — SSE live event stream
+        // D6 - SSE live event stream
         .route("/api/events/stream", get(api_events_stream))
         // Web Push
         .route("/sw.js", get(service_worker_js))
@@ -896,7 +896,7 @@ pub async fn serve(
         .layer(auth_layer)
         .with_state(state.clone());
 
-    // Public live-feed routes — CORS-enabled, no auth, read-only
+    // Public live-feed routes - CORS-enabled, no auth, read-only
     let live_api = Router::new()
         .route("/api/live-feed", get(api_live_feed))
         .route("/api/live-feed/stream", get(api_live_feed_stream))
@@ -993,7 +993,7 @@ static LOGIN_RATE_LIMITER: LazyLock<Mutex<HashMap<String, Vec<std::time::Instant
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // ---------------------------------------------------------------------------
-// Global request rate limiter — prevents memory exhaustion from bot traffic
+// Global request rate limiter - prevents memory exhaustion from bot traffic
 // ---------------------------------------------------------------------------
 
 /// Max requests per IP per minute before returning 429.
@@ -1141,14 +1141,14 @@ async fn require_auth(
                     false
                 }
             } else {
-                // Token not found — fall through to return error
+                // Token not found - fall through to return error
                 return (StatusCode::UNAUTHORIZED, "session expired or invalid").into_response();
             }
         };
         if valid {
             return next.run(req).await;
         }
-        // Expired — remove session
+        // Expired - remove session
         sessions
             .write()
             .unwrap_or_else(|e| e.into_inner())
@@ -1186,7 +1186,7 @@ async fn require_auth(
         return unauthorized_response();
     }
 
-    // Successful auth — clear any prior failed attempts for this IP
+    // Successful auth - clear any prior failed attempts for this IP
     clear_rate_limit(&client_ip);
     next.run(req).await
 }
@@ -1227,7 +1227,7 @@ fn rate_limited_response() -> Response {
 // Session auth endpoints
 // ---------------------------------------------------------------------------
 
-/// POST /api/auth/login — authenticate with Basic Auth header, returns a session token.
+/// POST /api/auth/login - authenticate with Basic Auth header, returns a session token.
 async fn api_auth_login(State(state): State<DashboardState>, req: Request<Body>) -> Response {
     // Auth must be configured for session login to work
     let auth = match DashboardAuth::try_from_env() {
@@ -1275,7 +1275,7 @@ async fn api_auth_login(State(state): State<DashboardState>, req: Request<Body>)
         return unauthorized_response();
     }
 
-    // Successful authentication — clear rate limit
+    // Successful authentication - clear rate limit
     clear_rate_limit(&client_ip);
 
     // Generate session token and store session
@@ -1332,7 +1332,7 @@ async fn api_auth_login(State(state): State<DashboardState>, req: Request<Body>)
     .into_response()
 }
 
-/// POST /api/auth/logout — invalidate the current session.
+/// POST /api/auth/logout - invalidate the current session.
 async fn api_auth_logout(State(state): State<DashboardState>, req: Request<Body>) -> Response {
     let token = match extract_bearer_token(&req) {
         Some(t) => t.to_string(),
@@ -1367,7 +1367,7 @@ async fn api_auth_logout(State(state): State<DashboardState>, req: Request<Body>
     StatusCode::OK.into_response()
 }
 
-/// GET /api/auth/sessions — list active sessions (does not expose tokens).
+/// GET /api/auth/sessions - list active sessions (does not expose tokens).
 async fn api_auth_sessions(State(state): State<DashboardState>) -> impl IntoResponse {
     let map = state.sessions.read().unwrap_or_else(|e| e.into_inner());
     let items: Vec<serde_json::Value> = map
@@ -1393,7 +1393,7 @@ async fn api_auth_sessions(State(state): State<DashboardState>) -> impl IntoResp
 }
 
 // ---------------------------------------------------------------------------
-// D6 — SSE file watcher and stream handler
+// D6 - SSE file watcher and stream handler
 // ---------------------------------------------------------------------------
 
 /// Polls today's incidents and decisions JSONL files every 2 s.
@@ -1436,7 +1436,7 @@ async fn watch_for_new_entries(data_dir: PathBuf, tx: EventTx) {
             });
         }
 
-        // D8 — read new incident lines and emit `alert` for High/Critical.
+        // D8 - read new incident lines and emit `alert` for High/Critical.
         let inc_name = format!("incidents-{today}.jsonl");
         let inc_path = data_dir.join(&inc_name);
         let alert_key = format!("alert:{inc_name}");
@@ -1486,7 +1486,7 @@ async fn watch_for_new_entries(data_dir: PathBuf, tx: EventTx) {
                     }
                 }
             } else {
-                // File shrunk (rotation) — reset offset.
+                // File shrunk (rotation) - reset offset.
                 if file_len < *alert_offset {
                     *alert_offset = 0;
                 }
@@ -1495,7 +1495,7 @@ async fn watch_for_new_entries(data_dir: PathBuf, tx: EventTx) {
     }
 }
 
-/// CORS middleware — injects headers on every response for live-feed routes.
+/// CORS middleware - injects headers on every response for live-feed routes.
 async fn cors_middleware(req: Request<Body>, next: Next) -> Response {
     if req.method() == Method::OPTIONS {
         return axum::http::Response::builder()
@@ -1591,7 +1591,7 @@ struct LiveFeedResponse {
     items: Vec<LiveFeedItem>,
 }
 
-/// `GET /api/live-feed` — last 30 incidents with totals for the day (public).
+/// `GET /api/live-feed` - last 30 incidents with totals for the day (public).
 async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResponse> {
     let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let incidents = read_jsonl::<Incident>(&dated_path(&state.data_dir, "incidents", &date));
@@ -1689,7 +1689,7 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResp
     })
 }
 
-/// `GET /api/live-feed/stream` — SSE stream of alerts for public live page.
+/// `GET /api/live-feed/stream` - SSE stream of alerts for public live page.
 async fn api_live_feed_stream(
     State(state): State<DashboardState>,
 ) -> Result<
@@ -1717,7 +1717,7 @@ async fn api_live_feed_stream(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
-/// `GET /api/live-feed/geoip?ips=1.2.3.4,5.6.7.8` — batch GeoIP lookup (public proxy).
+/// `GET /api/live-feed/geoip?ips=1.2.3.4,5.6.7.8` - batch GeoIP lookup (public proxy).
 async fn api_live_feed_geoip(Query(query): Query<GeoIpQuery>) -> Json<Vec<GeoIpResult>> {
     let ips: Vec<&str> = query
         .ips
@@ -1767,7 +1767,7 @@ struct HoneypotSession {
     commands: Vec<String>,
 }
 
-/// `GET /api/live-feed/honeypot` — recent honeypot sessions (public).
+/// `GET /api/live-feed/honeypot` - recent honeypot sessions (public).
 async fn api_live_feed_honeypot(State(state): State<DashboardState>) -> Json<Vec<HoneypotSession>> {
     let honeypot_dir = state.data_dir.join("honeypot");
     let mut sessions = Vec::new();
@@ -1865,7 +1865,7 @@ struct MitreSummaryResponse {
     tactics: Vec<MitreTacticSummary>,
 }
 
-/// `GET /api/live-feed/mitre` — MITRE ATT&CK tactic/technique summary for today.
+/// `GET /api/live-feed/mitre` - MITRE ATT&CK tactic/technique summary for today.
 async fn api_live_feed_mitre(State(state): State<DashboardState>) -> Json<MitreSummaryResponse> {
     let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let incidents = read_jsonl::<Incident>(&dated_path(&state.data_dir, "incidents", &date));
@@ -1916,7 +1916,7 @@ struct GeoIpResult {
     country: String,
 }
 
-/// `GET /api/events/stream` — SSE live event stream (D6).
+/// `GET /api/events/stream` - SSE live event stream (D6).
 async fn api_events_stream(
     State(state): State<DashboardState>,
 ) -> Result<
@@ -2270,7 +2270,7 @@ async fn api_export(
 }
 
 // ---------------------------------------------------------------------------
-// D10 — Report API
+// D10 - Report API
 // ---------------------------------------------------------------------------
 
 /// GET /api/report[?date=YYYY-MM-DD]
@@ -2314,10 +2314,10 @@ async fn api_report_dates(State(state): State<DashboardState>) -> Json<Vec<Strin
 }
 
 // ---------------------------------------------------------------------------
-// D3 — action handlers
+// D3 - action handlers
 // ---------------------------------------------------------------------------
 
-/// GET /api/action/config — exposes the current action mode to the UI (read-only).
+/// GET /api/action/config - exposes the current action mode to the UI (read-only).
 async fn api_action_config(State(state): State<DashboardState>) -> Json<serde_json::Value> {
     let cfg = &state.action_cfg;
     let mode = if cfg.enabled {
@@ -2341,7 +2341,7 @@ async fn api_action_config(State(state): State<DashboardState>) -> Json<serde_js
     }))
 }
 
-/// GET /api/quickwins — return actionable suggestions based on recent unblocked threats.
+/// GET /api/quickwins - return actionable suggestions based on recent unblocked threats.
 async fn api_quickwins(State(state): State<DashboardState>) -> Json<serde_json::Value> {
     let data_dir = &state.data_dir;
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
@@ -2411,7 +2411,7 @@ async fn api_quickwins(State(state): State<DashboardState>) -> Json<serde_json::
     }))
 }
 
-/// GET /api/honeypot/sessions — list honeypot sessions from the honeypot/ subdirectory.
+/// GET /api/honeypot/sessions - list honeypot sessions from the honeypot/ subdirectory.
 async fn api_honeypot_sessions(State(state): State<DashboardState>) -> Json<serde_json::Value> {
     let honeypot_dir = state.data_dir.join("honeypot");
 
@@ -2551,7 +2551,7 @@ async fn api_honeypot_sessions(State(state): State<DashboardState>) -> Json<serd
         }));
     }
 
-    // Process .jsonl-only sessions (always_on mode — no .json metadata file)
+    // Process .jsonl-only sessions (always_on mode - no .json metadata file)
     for session_id in &jsonl_sessions {
         if json_sessions.contains(session_id) {
             continue; // already processed above
@@ -2587,7 +2587,7 @@ async fn api_honeypot_sessions(State(state): State<DashboardState>) -> Json<serd
     Json(serde_json::json!({ "sessions": sessions }))
 }
 
-/// GET /api/sensors — sensor activity time-series for dashboard graphs.
+/// GET /api/sensors - sensor activity time-series for dashboard graphs.
 /// Returns event counts bucketed by 5-minute intervals, grouped by source.
 /// Cached for 30 seconds to avoid re-reading the events file on every request.
 async fn api_sensors(State(state): State<DashboardState>) -> Json<serde_json::Value> {
@@ -2778,7 +2778,7 @@ async fn api_sensors_inner(state: &DashboardState) -> serde_json::Value {
     })
 }
 
-/// GET /api/status — E6: system status including data files and responder config.
+/// GET /api/status - E6: system status including data files and responder config.
 async fn api_status(State(state): State<DashboardState>) -> Json<serde_json::Value> {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let data_dir = &state.data_dir;
@@ -2850,7 +2850,7 @@ async fn api_status(State(state): State<DashboardState>) -> Json<serde_json::Val
     }))
 }
 
-/// GET /api/collectors — sensor collector detection (file existence + recency).
+/// GET /api/collectors - sensor collector detection (file existence + recency).
 /// Fail-silent: never requires root, never panics.
 async fn api_collectors(State(state): State<DashboardState>) -> Json<serde_json::Value> {
     let data_dir = &state.data_dir;
@@ -2948,7 +2948,7 @@ async fn api_collectors(State(state): State<DashboardState>) -> Json<serde_json:
             "detected": file_exists(nginx_acc),
             "active": recent(file_age_secs(nginx_acc)),
             "events_today": count_source("nginx_access"),
-            "desc": "nginx access log — search abuse, UA scanner detection"
+            "desc": "nginx access log - search abuse, UA scanner detection"
         },
         {
             "id": "nginx_error",
@@ -2958,7 +2958,7 @@ async fn api_collectors(State(state): State<DashboardState>) -> Json<serde_json:
             "detected": file_exists(nginx_err),
             "active": recent(file_age_secs(nginx_err)),
             "events_today": count_source("nginx_error"),
-            "desc": "nginx error log — web scanner and probe detection"
+            "desc": "nginx error log - web scanner and probe detection"
         },
         {
             "id": "exec_audit",
@@ -2968,7 +2968,7 @@ async fn api_collectors(State(state): State<DashboardState>) -> Json<serde_json:
             "detected": file_exists(audit_log),
             "active": recent(file_age_secs(audit_log)),
             "events_today": count_source("exec_audit"),
-            "desc": "auditd EXECVE events — execution guard and shell command trail"
+            "desc": "auditd EXECVE events - execution guard and shell command trail"
         },
         {
             "id": "ebpf",
@@ -3015,7 +3015,7 @@ async fn api_collectors(State(state): State<DashboardState>) -> Json<serde_json:
     Json(serde_json::json!({ "collectors": collectors }))
 }
 
-/// POST /api/action/block-ip — operator-initiated IP block with mandatory reason.
+/// POST /api/action/block-ip - operator-initiated IP block with mandatory reason.
 async fn api_action_block_ip(
     State(state): State<DashboardState>,
     Json(body): Json<BlockIpRequest>,
@@ -3024,7 +3024,7 @@ async fn api_action_block_ip(
         return Json(ActionResponse {
             success: false,
             dry_run: state.action_cfg.dry_run,
-            message: "actions disabled — dashboard is exposed over HTTP without TLS. \
+            message: "actions disabled - dashboard is exposed over HTTP without TLS. \
                       Use a reverse proxy with TLS or bind to 127.0.0.1."
                 .to_string(),
             skill_id: String::new(),
@@ -3035,7 +3035,7 @@ async fn api_action_block_ip(
         return Json(ActionResponse {
             success: false,
             dry_run: state.action_cfg.dry_run,
-            message: "dashboard actions are disabled — set responder.enabled = true in agent.toml"
+            message: "dashboard actions are disabled - set responder.enabled = true in agent.toml"
                 .to_string(),
             skill_id: String::new(),
         });
@@ -3100,7 +3100,7 @@ async fn api_action_block_ip(
     }
 }
 
-/// POST /api/action/suspend-user — operator-initiated sudo suspension with mandatory reason.
+/// POST /api/action/suspend-user - operator-initiated sudo suspension with mandatory reason.
 async fn api_action_suspend_user(
     State(state): State<DashboardState>,
     Json(body): Json<SuspendUserRequest>,
@@ -3111,7 +3111,7 @@ async fn api_action_suspend_user(
         return Json(ActionResponse {
             success: false,
             dry_run: state.action_cfg.dry_run,
-            message: "dashboard actions are disabled — set responder.enabled = true in agent.toml"
+            message: "dashboard actions are disabled - set responder.enabled = true in agent.toml"
                 .to_string(),
             skill_id,
         });
@@ -3174,7 +3174,7 @@ async fn api_action_suspend_user(
     }
 }
 
-/// POST /api/action/honeypot — operator-initiated honeypot test session.
+/// POST /api/action/honeypot - operator-initiated honeypot test session.
 async fn api_action_honeypot(
     State(state): State<DashboardState>,
     Json(body): Json<HoneypotTestRequest>,
@@ -3185,7 +3185,7 @@ async fn api_action_honeypot(
         return Json(ActionResponse {
             success: false,
             dry_run: state.action_cfg.dry_run,
-            message: "dashboard actions are disabled — set responder.enabled = true in agent.toml"
+            message: "dashboard actions are disabled - set responder.enabled = true in agent.toml"
                 .to_string(),
             skill_id,
         });
@@ -3209,7 +3209,7 @@ async fn api_action_honeypot(
         return Json(ActionResponse {
             success: false,
             dry_run: state.action_cfg.dry_run,
-            message: "skill 'honeypot' is not in allowed_skills — add it to responder.allowed_skills in agent.toml".to_string(),
+            message: "skill 'honeypot' is not in allowed_skills - add it to responder.allowed_skills in agent.toml".to_string(),
             skill_id,
         });
     }
@@ -3279,7 +3279,7 @@ async fn api_action_honeypot(
                 success: true,
                 dry_run: state.action_cfg.dry_run,
                 message: format!(
-                    "{mode_prefix}Test honeypot incident injected — the agent will pick it up \
+                    "{mode_prefix}Test honeypot incident injected - the agent will pick it up \
                      in the next tick (≤2 s). Connect via: ssh -p 2222 -o StrictHostKeyChecking=no root@<host>"
                 ),
                 skill_id,
@@ -3295,7 +3295,7 @@ async fn api_action_honeypot(
 }
 
 // ---------------------------------------------------------------------------
-// D3 — execution helpers
+// D3 - execution helpers
 // ---------------------------------------------------------------------------
 
 /// Execute a block-ip skill and write the decision to the audit trail.
@@ -3573,7 +3573,7 @@ async fn inject_honeypot_test_incident(
         "host": hostname(),
         "incident_id": format!("honeypot_test:{}", now.timestamp()),
         "severity": "high",
-        "title": format!("Manual honeypot test — {} ({}s)", reason, duration_secs),
+        "title": format!("Manual honeypot test - {} ({}s)", reason, duration_secs),
         "summary": format!(
             "50 failed SSH login attempts from 1.2.3.4 in the last 300 seconds (manual test via dashboard)"
         ),
@@ -3601,10 +3601,10 @@ fn hostname() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Agent API — security context for AI agents (OpenClaw, n8n, etc.)
+// Agent API - security context for AI agents (OpenClaw, n8n, etc.)
 // ---------------------------------------------------------------------------
 
-/// GET /api/agent/security-context — threat overview for AI agents
+/// GET /api/agent/security-context - threat overview for AI agents
 async fn api_agent_security_context(
     State(state): State<DashboardState>,
 ) -> Json<serde_json::Value> {
@@ -3658,8 +3658,8 @@ async fn api_agent_security_context(
     };
 
     let recommendation = match threat_level {
-        "critical" => "server under active attack — avoid risky operations",
-        "high" => "elevated threat level — proceed with caution",
+        "critical" => "server under active attack - avoid risky operations",
+        "high" => "elevated threat level - proceed with caution",
         _ => "safe to proceed",
     };
 
@@ -3680,7 +3680,7 @@ struct CheckIpQuery {
     ip: String,
 }
 
-/// GET /api/agent/check-ip?ip=X — check if an IP is known threat
+/// GET /api/agent/check-ip?ip=X - check if an IP is known threat
 async fn api_agent_check_ip(
     State(state): State<DashboardState>,
     Query(query): Query<CheckIpQuery>,
@@ -3765,7 +3765,7 @@ fn analyze_command(command: &str) -> serde_json::Value {
     let mut signals = Vec::new();
     let mut score: u32 = 0;
 
-    // Reverse shell indicators — always deny (score 60+)
+    // Reverse shell indicators - always deny (score 60+)
     const REVERSE_SHELL: &[&str] = &[
         "/dev/tcp/",
         "/dev/udp/",
@@ -3984,12 +3984,12 @@ fn analyze_command(command: &str) -> serde_json::Value {
     })
 }
 
-/// POST /api/agent/check-command — analyze a command for dangerous patterns (stateless, backward compat)
+/// POST /api/agent/check-command - analyze a command for dangerous patterns (stateless, backward compat)
 async fn api_agent_check_command(Json(body): Json<CheckCommandRequest>) -> Json<serde_json::Value> {
     Json(analyze_command(&body.command))
 }
 
-/// POST /api/advisor/check-command — analyze + cache advisory for deny/review results
+/// POST /api/advisor/check-command - analyze + cache advisory for deny/review results
 async fn api_advisor_check_command(
     State(state): State<DashboardState>,
     Json(body): Json<CheckCommandRequest>,
@@ -4141,7 +4141,7 @@ async fn api_prometheus_metrics(State(state): State<DashboardState>) -> axum::re
 }
 
 // ---------------------------------------------------------------------------
-// Business logic — overview
+// Business logic - overview
 // ---------------------------------------------------------------------------
 
 fn compute_overview(data_dir: &Path, date: &str) -> OverviewResponse {
@@ -4195,7 +4195,7 @@ fn count_file_lines(path: &Path) -> usize {
 use std::io::BufRead;
 
 // ---------------------------------------------------------------------------
-// Business logic — D2 entities / journey
+// Business logic - D2 entities / journey
 // ---------------------------------------------------------------------------
 
 /// Build the attacker list for a given date.
@@ -4710,7 +4710,7 @@ fn build_pivot_shortcuts(
     shortcuts
 }
 
-// ── D5 — Story derivation ──────────────────────────────────────────────────
+// ── D5 - Story derivation ──────────────────────────────────────────────────
 
 /// Derive a high-level attack verdict from the assembled journey entries.
 fn derive_verdict(entries: &[JourneyEntry], outcome: &str) -> JourneyVerdict {
@@ -4970,9 +4970,9 @@ fn describe_chapter(stage: &str, entries: &[JourneyEntry]) -> (String, String, V
                     .unwrap_or(false)
             });
             let title = if is_dry {
-                format!("AI decision — {} (dry run)", action)
+                format!("AI decision - {} (dry run)", action)
             } else {
-                format!("AI decision — {}", action)
+                format!("AI decision - {}", action)
             };
             let conf = entries
                 .iter()
@@ -5435,7 +5435,7 @@ fn dated_path(data_dir: &Path, prefix: &str, date: &str) -> PathBuf {
     data_dir.join(safe_filename)
 }
 
-/// File content cache entry — avoids re-reading + re-parsing JSONL on every request.
+/// File content cache entry - avoids re-reading + re-parsing JSONL on every request.
 struct FileCache {
     raw: String,
     size: u64,
@@ -5468,7 +5468,7 @@ fn read_jsonl<T: DeserializeOwned>(path: &Path) -> Vec<T> {
                 && entry.modified == file_modified
                 && entry.cached_at.elapsed().as_secs() < JSONL_CACHE_TTL_SECS
             {
-                // Cache hit — parse from cached string (avoids file I/O)
+                // Cache hit - parse from cached string (avoids file I/O)
                 return entry
                     .raw
                     .lines()
@@ -5484,7 +5484,7 @@ fn read_jsonl<T: DeserializeOwned>(path: &Path) -> Vec<T> {
         }
     }
 
-    // Cache miss — read only the tail of the file (last 256KB ≈ 500 entries).
+    // Cache miss - read only the tail of the file (last 256KB ≈ 500 entries).
     // Dashboard lists show max 50-100 items; reading the full file wastes memory.
     const MAX_READ_BYTES: u64 = 256 * 1024;
     let content = if file_size > MAX_READ_BYTES {
@@ -5581,7 +5581,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       --accent: #78e5ff;
       --orange: #ff8c42;
     }
-    /* Ambient cyber grid — matches site's cyber-shell */
+    /* Ambient cyber grid - matches site's cyber-shell */
     body::before {
       content: "";
       position: fixed;
@@ -5693,7 +5693,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       padding: 12px 10px;
     }
 
-    /* KPI grid — 5 equal columns */
+    /* KPI grid - 5 equal columns */
     .kpi-grid {
       display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px;
       margin-bottom: 12px;
@@ -6197,7 +6197,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
 
     /* ── Mobile toggle button (shown only on small screens) ─────── */
-    /* D10 — main nav (Investigate / Report) */
+    /* D10 - main nav (Investigate / Report) */
     .main-nav {
       display: flex; gap: 4px; margin-left: 6px;
     }
@@ -6216,7 +6216,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     .main-nav-btn:hover:not(.active) {
       background: rgba(120,229,255,0.06); color: var(--fg);
     }
-    /* D10 — report view */
+    /* D10 - report view */
     .report-view {
       flex: 1; overflow-y: auto; padding: 20px 24px;
       display: flex; flex-direction: column; gap: 16px;
@@ -6469,7 +6469,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       .main-nav-btn { padding: 8px 8px; font-size: 0.66rem; min-width: 56px; }
     }
 
-    /* ── D3 — action buttons ─────────────────────────────────────── */
+    /* ── D3 - action buttons ─────────────────────────────────────── */
     .journey-btn.action-block {
       color: var(--danger); border-color: rgba(244,63,94,0.33);
       background: rgba(244,63,94,0.09);
@@ -6487,7 +6487,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       border-color: rgba(255,184,77,0.45);
     }
 
-    /* ── D3 — modal overlay ──────────────────────────────────────── */
+    /* ── D3 - modal overlay ──────────────────────────────────────── */
     .modal-overlay {
       display: none; position: fixed; inset: 0; z-index: 100;
       background: rgba(4,8,20,0.86); backdrop-filter: blur(4px);
@@ -6548,7 +6548,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     .dry-run-badge.on  { background: rgba(255,184,77,0.16);  color: var(--warn);   border: 1px solid rgba(255,184,77,0.28); }
     .dry-run-badge.off { background: rgba(244,63,94,0.16);   color: var(--danger); border: 1px solid rgba(244,63,94,0.28); }
 
-    /* ── D3 — toast ──────────────────────────────────────────────── */
+    /* ── D3 - toast ──────────────────────────────────────────────── */
     .toast {
       position: fixed; top: 16px; right: 16px; z-index: 200;
       background: var(--bg1); border: 1px solid var(--line2);
@@ -6561,7 +6561,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     .toast.visible { opacity: 1; transform: translateY(0); pointer-events: auto; }
     .toast.ok  { border-left: 3px solid var(--ok);    color: var(--text); }
     .toast.err { border-left: 3px solid var(--danger); color: var(--text); }
-    /* D9 — inline entity search */
+    /* D9 - inline entity search */
     .search-wrap { padding: 6px 12px 2px; }
     #entitySearch {
       width: 100%; box-sizing: border-box;
@@ -6572,7 +6572,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     #entitySearch:focus { border-color: var(--accent); }
     #entitySearch::placeholder { color: var(--muted); }
     .attacker-card.hidden { display: none; }
-    /* D7 — live timeline animations */
+    /* D7 - live timeline animations */
     @keyframes cardSlideIn {
       from { opacity: 0; transform: translateY(-12px); box-shadow: 0 0 0 1px var(--accent); }
       60%  { box-shadow: 0 0 12px 2px rgba(120,229,255,0.25); }
@@ -6625,7 +6625,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     .badge-cs { background: rgba(58,194,126,0.08); color: var(--ok); border: 1px solid rgba(58,194,126,0.15); }
     .badge-op { background: rgba(139,157,184,0.12); color: var(--text); border: 1px solid var(--line); }
 
-    /* ── E2 — Home state ─────────────────────────────────────────── */
+    /* ── E2 - Home state ─────────────────────────────────────────── */
     #homeState { padding: 0; }
     .home-kpi-row {
       display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
@@ -6726,7 +6726,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       .home-kpi-val { font-size: 1.3rem; }
     }
 
-    /* ── E4 — Journey sticky footer ──────────────────────────────── */
+    /* ── E4 - Journey sticky footer ──────────────────────────────── */
     .journey-sticky-footer {
       position: sticky; bottom: 0; z-index: 10;
       background: linear-gradient(to top, var(--bg0) 60%, transparent);
@@ -6756,7 +6756,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
     .action-btn-export:hover { background: rgba(120,229,255,0.15); border-color: rgba(120,229,255,0.4); }
 
-    /* ── E5 — Report nav/export buttons ──────────────────────────── */
+    /* ── E5 - Report nav/export buttons ──────────────────────────── */
     .report-nav-btn {
       padding: 5px 10px; background: rgba(139,157,184,0.08);
       border: 1px solid var(--line); color: var(--muted);
@@ -6823,7 +6823,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     </button>
   </header>
 
-  <!-- ── Sensors view (default home — hacker HUD) ── -->
+  <!-- ── Sensors view (default home - hacker HUD) ── -->
   <style>
     @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&family=Space+Grotesk:wght@400;600;700&display=swap');
     /* Site design system tokens */
@@ -6918,7 +6918,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
       <!-- Today summary strip -->
       <div class="kpi-grid" style="grid-template-columns: repeat(4,1fr)">
-        <div class="kpi-card"><div class="kpi-label">Date</div><div class="kpi-value" id="kpi-date" style="font-size:0.7rem">—</div></div>
+        <div class="kpi-card"><div class="kpi-label">Date</div><div class="kpi-value" id="kpi-date" style="font-size:0.7rem">-</div></div>
         <div class="kpi-card"><div class="kpi-label">Events</div><div class="kpi-value" id="kpi-events">0</div></div>
         <div class="kpi-card"><div class="kpi-label">Incidents</div><div class="kpi-value" id="kpi-incidents" style="color:var(--ok)">0</div></div>
         <div class="kpi-card"><div class="kpi-label">Contained</div><div class="kpi-value" id="kpi-decisions" style="color:var(--ok)">100%</div></div>
@@ -7019,7 +7019,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
   </div>
 
-  <!-- D10 — Report view -->
+  <!-- D10 - Report view -->
   <div class="report-view" id="viewReport" style="display:none">
     <div class="report-toolbar">
       <label class="report-label">Date</label>
@@ -7035,7 +7035,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     </div>
   </div>
 
-  <!-- E6 — Status view -->
+  <!-- E6 - Status view -->
   <div class="report-view" id="viewStatus" style="display:none">
     <div class="report-toolbar">
       <button type="button" class="report-refresh-btn" onclick="loadStatus()">↻ Refresh</button>
@@ -7057,7 +7057,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     </div>
   </div>
 
-  <!-- D3 — action modal -->
+  <!-- D3 - action modal -->
   <div class="modal-overlay" id="actionModal" onclick="handleModalBg(event)">
     <div class="modal-box" onclick="event.stopPropagation()">
       <div class="modal-title" id="modalTitle">Action</div>
@@ -7065,7 +7065,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       <div class="modal-field">
         <label class="modal-label" for="modalReason">Reason <span style="color:var(--danger)">*</span></label>
         <textarea class="modal-textarea" id="modalReason" rows="3"
-          placeholder="Describe why you are taking this action — recorded in the audit trail…"></textarea>
+          placeholder="Describe why you are taking this action - recorded in the audit trail…"></textarea>
       </div>
       <div class="modal-field" id="modalDurationField" style="display:none">
         <label class="modal-label" for="modalDuration">Duration (seconds)</label>
@@ -7078,7 +7078,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     </div>
   </div>
 
-  <!-- D3 — toast notification -->
+  <!-- D3 - toast notification -->
   <div class="toast" id="toast"></div>
 
 </div>
@@ -7096,7 +7096,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     if (icon) icon.textContent = leftPanelOpen ? '▲' : '▼';
   }
 
-  // ── D10 — View switcher ──────────────────────────────────────────────────
+  // ── D10 - View switcher ──────────────────────────────────────────────────
   function showView(name) {
     const views = { sensors: 'viewSensors', investigate: 'viewInvestigate', report: 'viewReport', status: 'viewStatus', honeypot: 'viewHoneypot' };
     const btns  = { sensors: 'navSensors', investigate: 'navInvestigate', report: 'navReport', status: 'navStatus', honeypot: 'navHoneypot' };
@@ -7114,7 +7114,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     if (name === 'honeypot') loadHoneypot();
   }
 
-  // ── E2 — Home state ─────────────────────────────────────────────────────
+  // ── E2 - Home state ─────────────────────────────────────────────────────
   async function loadHomeState() {
     try {
       const [overview, decisions, pivots] = await Promise.all([
@@ -7207,7 +7207,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     if (openThreats > 0 && openThreats >= totalThreats / 2) {
       hero.className = 'status-hero danger';
       icon.textContent = '🛡️';
-      title.textContent = 'Defending — ' + openThreats + ' unresolved';
+      title.textContent = 'Defending - ' + openThreats + ' unresolved';
       sub.textContent = blockedCount + ' attacks blocked · ' + containmentRate + '% contained · investigating remaining threats';
     } else if (totalThreats > 0) {
       hero.className = 'status-hero safe';
@@ -7266,7 +7266,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       } else if (isResolved && outcome === 'suspended') {
         icon = '🔒'; actionText = 'Sudo suspended' + (ip ? ' for ' + ip : ''); rowStyle = 'opacity:0.7';
       } else if (isResolved && outcome === 'ignored') {
-        icon = '✓'; actionText = 'Reviewed — no action needed'; rowStyle = 'opacity:0.5';
+        icon = '✓'; actionText = 'Reviewed - no action needed'; rowStyle = 'opacity:0.5';
       } else if (isResolved) {
         icon = '✓'; actionText = 'Contained' + (ip ? ' ' + ip : ''); rowStyle = 'opacity:0.7';
       } else if (sev === 'critical' || sev === 'high') {
@@ -7292,7 +7292,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
   }
 
-  // ── D10 — Report tab ────────────────────────────────────────────────────
+  // ── D10 - Report tab ────────────────────────────────────────────────────
   async function loadReportDates() {
     try {
       const dates = await loadJson('/api/report/dates');
@@ -7366,7 +7366,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     } catch(e) { console.error('loadSensors', e); }
   }
 
-  // Chart.js global config — match site design system
+  // Chart.js global config - match site design system
   let timelineChart = null;
   let detectorChart = null;
   let gaugeChart = null;
@@ -7400,7 +7400,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     return g;
   }
 
-  // ── 1. AREA CHART — Event Timeline (smooth curves + gradient fills) ──
+  // ── 1. AREA CHART - Event Timeline (smooth curves + gradient fills) ──
   function drawTimelineChart(timeline, sources) {
     const canvas = document.getElementById('sensorChart');
     if (!canvas || !CJ) return;
@@ -7471,7 +7471,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     });
   }
 
-  // ── 2. THREAT GAUGE — Doughnut speedometer ──
+  // ── 2. THREAT GAUGE - Doughnut speedometer ──
   function drawThreatGauge(incidents, events) {
     const canvas = document.getElementById('threatGauge');
     if (!canvas || !CJ) return;
@@ -7551,7 +7551,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     });
   }
 
-  // ── 3. POLAR AREA — Detector activity (radial, colorful) ──
+  // ── 3. POLAR AREA - Detector activity (radial, colorful) ──
   function drawDetectorChart(detectors) {
     const canvas = document.getElementById('detectorChart');
     if (!canvas || !CJ || detectors.length === 0) return;
@@ -7657,7 +7657,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     const hints = r.anomaly_hints || [];
     const suggestions = r.suggested_improvements || [];
 
-    const pct = (v) => v == null ? '—' : (v > 0 ? '+' : '') + v.toFixed(1) + '%';
+    const pct = (v) => v == null ? '-' : (v > 0 ? '+' : '') + v.toFixed(1) + '%';
     const deltaClass = (d) => d > 0 ? 'up' : (d < 0 ? 'down' : '');
     const deltaSign = (d) => d > 0 ? '+' : '';
     const confColor = (v) => v >= 0.85 ? 'good' : v >= 0.7 ? 'warn' : 'bad';
@@ -7665,7 +7665,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
     // KPI row
     let html = `<div class="report-section">
-      <div class="report-section-title">Summary — ${esc(r.analyzed_date)}</div>
+      <div class="report-section-title">Summary - ${esc(r.analyzed_date)}</div>
       <div class="report-kpi-row">
         <div class="report-kpi"><div class="report-kpi-label">Events</div><div class="report-kpi-value">${ds.total_events ?? 0}</div></div>
         <div class="report-kpi"><div class="report-kpi-label">Incidents</div><div class="report-kpi-value">${ds.total_incidents ?? 0}</div></div>
@@ -7758,12 +7758,12 @@ const INDEX_HTML: &str = r##"<!doctype html>
       <div class="report-section-title">Operational Health</div>
       <table class="report-table"><thead><tr><th>File</th><th>Exists</th><th>Valid</th><th>Lines</th><th>Size</th></tr></thead><tbody>`;
     (oh.files || []).forEach(f => {
-      const valid = f.jsonl_valid == null ? '—' : (f.jsonl_valid ? '<span class="health-ok">✓</span>' : '<span class="health-fail">✗</span>');
+      const valid = f.jsonl_valid == null ? '-' : (f.jsonl_valid ? '<span class="health-ok">✓</span>' : '<span class="health-fail">✗</span>');
       html += `<tr>
         <td>${esc(f.file)}</td>
         <td>${f.exists ? '<span class="health-ok">✓</span>' : '<span class="health-fail">✗</span>'}</td>
         <td>${valid}</td>
-        <td>${f.lines ?? '—'}</td>
+        <td>${f.lines ?? '-'}</td>
         <td>${f.size_bytes > 0 ? (f.size_bytes > 1048576 ? (f.size_bytes/1048576).toFixed(1)+'MB' : (f.size_bytes/1024).toFixed(1)+'KB') : '0B'}</td>
       </tr>`;
     });
@@ -7808,7 +7808,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
     // Agent liveness
     const tSecs = s.last_telemetry_secs;
-    let liveStr = '—';
+    let liveStr = '-';
     if (tSecs != null) {
       if (tSecs < 60)        liveStr = tSecs + 's ago';
       else if (tSecs < 3600) liveStr = Math.floor(tSecs/60) + 'm ago';
@@ -7822,26 +7822,26 @@ const INDEX_HTML: &str = r##"<!doctype html>
     if (s.mode === 'guard') {
       guardIcon = '🛡';
       guardLabel = 'PROTECTED';
-      guardDesc = 'Active protection — AI is blocking threats with live firewall rules';
+      guardDesc = 'Active protection - AI is blocking threats with live firewall rules';
       guardColor = 'var(--ok)';
       guardBorderColor = 'rgba(58,194,126,0.5)';
       guardBg = 'rgba(58,194,126,0.06)';
     } else if (s.mode === 'watch') {
       guardIcon = '👁';
       guardLabel = 'WATCHING';
-      guardDesc = 'Dry-run — AI is analysing threats but actions need manual approval or config change';
+      guardDesc = 'Dry-run - AI is analysing threats but actions need manual approval or config change';
       guardColor = 'var(--warn)';
       guardBorderColor = 'rgba(255,184,77,0.4)';
       guardBg = 'rgba(255,184,77,0.04)';
     } else {
       guardIcon = '📖';
       guardLabel = 'MONITOR ONLY';
-      guardDesc = 'Responder disabled — events are logged and reported, no automated response';
+      guardDesc = 'Responder disabled - events are logged and reported, no automated response';
       guardColor = 'var(--muted)';
       guardBorderColor = 'var(--line)';
       guardBg = 'transparent';
     }
-    const aiLabel = s.ai_enabled ? '🤖 ' + esc(s.ai_provider || '') + ' / ' + esc(s.ai_model || '') : '— off';
+    const aiLabel = s.ai_enabled ? '🤖 ' + esc(s.ai_provider || '') + ' / ' + esc(s.ai_model || '') : '- off';
 
     let html = '<div class="report-section">' +
       '<div class="report-section-title">Protection Status</div>' +
@@ -7912,26 +7912,26 @@ const INDEX_HTML: &str = r##"<!doctype html>
       '@media(max-width:640px){.integ-grid{grid-template-columns:1fr}}' +
       '</style>' +
       '<div class="integ-grid">' +
-      card('🤖', 'AI Analysis',   s.ai_enabled,       'Analyzes threats and selects the best response action',         s.ai_enabled ? 'ON' : 'OFF',  'native',   'Built into InnerWarden — no external service needed.',                                       'innerwarden enable ai') +
+      card('🤖', 'AI Analysis',   s.ai_enabled,       'Analyzes threats and selects the best response action',         s.ai_enabled ? 'ON' : 'OFF',  'native',   'Built into InnerWarden - no external service needed.',                                       'innerwarden enable ai') +
       card('🛡️', 'IP Blocker',    resp.enabled,       'Automatically blocks IPs via UFW/iptables when AI decides',     resp.enabled ? 'ON' : 'OFF',  'native',   'Zero cost. Uses your existing firewall.',                                                    'innerwarden enable block-ip') +
       card('🪤', 'Honeypot',      hpMode !== 'off',   'Decoy server that captures and logs attacker behavior',         hpBadge,                      'native',   'Built-in. listener mode activates on AI demand; always_on keeps it permanently open.',      '') +
-      card('🌍', 'GeoIP',         integ.geoip,        'Adds country/ISP info to every threat — free, no key needed',  integ.geoip ? 'ON' : 'OFF',   'native',   'Free. Calls ip-api.com (45 req/min). Best first enrichment to enable.',                      'innerwarden integrate geoip') +
+      card('🌍', 'GeoIP',         integ.geoip,        'Adds country/ISP info to every threat - free, no key needed',  integ.geoip ? 'ON' : 'OFF',   'native',   'Free. Calls ip-api.com (45 req/min). Best first enrichment to enable.',                      'innerwarden integrate geoip') +
       card('🔍', 'AbuseIPDB',     integ.abuseipdb,    'IP reputation + delayed community reporting (5min grace)',      integ.abuseipdb ? 'ON' : 'OFF','external', 'Free plan: 1,000 req/day. Reports delayed 5 min to allow false-positive correction.', 'innerwarden integrate abuseipdb') +
-      card('⚡', 'XDP Firewall',  true,               'Wire-speed IP blocking at network driver — 10M+ pps drop rate', 'ON',  'native',  'Active when eBPF sensor runs. Layered: XDP + firewall + Cloudflare + AbuseIPDB in one action.', '') +
-      card('🔔', 'Telegram',      integ.telegram,     'Real-time alerts + inline approval buttons on your phone',     integ.telegram ? 'ON' : 'OFF', 'external', 'Free. Best solo-operator channel — supports bidirectional approve/reject.',                  'innerwarden notify telegram') +
+      card('⚡', 'XDP Firewall',  true,               'Wire-speed IP blocking at network driver - 10M+ pps drop rate', 'ON',  'native',  'Active when eBPF sensor runs. Layered: XDP + firewall + Cloudflare + AbuseIPDB in one action.', '') +
+      card('🔔', 'Telegram',      integ.telegram,     'Real-time alerts + inline approval buttons on your phone',     integ.telegram ? 'ON' : 'OFF', 'external', 'Free. Best solo-operator channel - supports bidirectional approve/reject.',                  'innerwarden notify telegram') +
       card('💬', 'Slack',         integ.slack,        'Incident notifications to a Slack team channel',               integ.slack ? 'ON' : 'OFF',   'external', 'Free (requires workspace). Activating alongside Telegram doubles alert volume for same incident.', 'innerwarden notify slack') +
       card('☁️', 'Cloudflare',    integ.cloudflare,   'Pushes blocked IPs to Cloudflare edge after block-ip fires',   integ.cloudflare ? 'ON' : 'OFF','external', 'Free plan supports IP Access Rules. Effective for DDoS edge-layer defense.',               'innerwarden integrate cloudflare') +
-      card('🌐', 'CrowdSec',     integ.crowdsec||false, 'Community threat intelligence — known-bad IPs looked up on incident', integ.crowdsec ? 'ON' : 'OFF', 'external', 'Free. Requires CrowdSec LAPI running locally. Lookup-only, no preventive blocking.',       'innerwarden integrate crowdsec') +
-      card('📊', 'Prometheus',   true,               'Metrics endpoint at /metrics — scrape with Prometheus, visualize in Grafana', 'ON',  'native',   'Always available when dashboard is active. No config needed.',                               '') +
+      card('🌐', 'CrowdSec',     integ.crowdsec||false, 'Community threat intelligence - known-bad IPs looked up on incident', integ.crowdsec ? 'ON' : 'OFF', 'external', 'Free. Requires CrowdSec LAPI running locally. Lookup-only, no preventive blocking.',       'innerwarden integrate crowdsec') +
+      card('📊', 'Prometheus',   true,               'Metrics endpoint at /metrics - scrape with Prometheus, visualize in Grafana', 'ON',  'native',   'Always available when dashboard is active. No config needed.',                               '') +
       card('🚨', 'PagerDuty',    (s.webhook_format||'') === 'pagerduty', 'On-call alerts via PagerDuty Events API v2',  (s.webhook_format||'') === 'pagerduty' ? 'ON' : 'OFF', 'external', 'Set webhook.format = \"pagerduty\" and webhook.url to PagerDuty enqueue endpoint.',   'innerwarden configure webhook') +
       card('📟', 'Opsgenie',     (s.webhook_format||'') === 'opsgenie',  'On-call alerts via Opsgenie Alert API',       (s.webhook_format||'') === 'opsgenie' ? 'ON' : 'OFF',  'external', 'Set webhook.format = \"opsgenie\" and webhook.url to Opsgenie alert endpoint.',      'innerwarden configure webhook') +
       card('👑', 'Sudo Protection', s.sudo_protection||false, 'Detects privilege abuse and suspends sudo access', s.sudo_protection ? 'ON' : 'OFF', 'native', 'Detects 11 threat categories including SUID manipulation, SSH key injection, log tampering.', 'innerwarden enable sudo-protection') +
-      card('🔫', 'Execution Guard', s.execution_guard||false, 'Structural AST analysis of shell commands — catches obfuscation', s.execution_guard ? 'ON' : 'OFF', 'native', 'tree-sitter-bash analysis. Detects reverse shells, curl|bash, hex obfuscation.', 'innerwarden enable execution-guard') +
+      card('🔫', 'Execution Guard', s.execution_guard||false, 'Structural AST analysis of shell commands - catches obfuscation', s.execution_guard ? 'ON' : 'OFF', 'native', 'tree-sitter-bash analysis. Detects reverse shells, curl|bash, hex obfuscation.', 'innerwarden enable execution-guard') +
       '</div></div>';
 
     // ── Section 2b: Integration advisor ────────────────────────────────────
     const conflicts = [];
-    // (No conflicts to check — fail2ban removed, AbuseIPDB reports delayed)
+    // (No conflicts to check - fail2ban removed, AbuseIPDB reports delayed)
     if (integ.telegram && integ.slack) {
       conflicts.push({
         a: 'Telegram', b: 'Slack',
@@ -7940,10 +7940,10 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
 
     const recommendations = [];
-    if (!integ.geoip)     recommendations.push({ icon:'🌍', text:'Enable GeoIP — free, zero noise, adds country/ISP to every AI decision', cmd:'innerwarden integrate geoip' });
-    if (!integ.telegram)  recommendations.push({ icon:'🔔', text:'Enable Telegram — real-time alerts with approve/reject buttons on your phone', cmd:'innerwarden notify telegram' });
-    if (!integ.abuseipdb) recommendations.push({ icon:'🔍', text:'Enable AbuseIPDB — free API key, enriches AI context with IP reputation score', cmd:'innerwarden integrate abuseipdb' });
-    if (!integ.cloudflare && resp.enabled) recommendations.push({ icon:'☁️', text:'Enable Cloudflare — push blocked IPs to the edge after every block-ip decision', cmd:'innerwarden integrate cloudflare' });
+    if (!integ.geoip)     recommendations.push({ icon:'🌍', text:'Enable GeoIP - free, zero noise, adds country/ISP to every AI decision', cmd:'innerwarden integrate geoip' });
+    if (!integ.telegram)  recommendations.push({ icon:'🔔', text:'Enable Telegram - real-time alerts with approve/reject buttons on your phone', cmd:'innerwarden notify telegram' });
+    if (!integ.abuseipdb) recommendations.push({ icon:'🔍', text:'Enable AbuseIPDB - free API key, enriches AI context with IP reputation score', cmd:'innerwarden integrate abuseipdb' });
+    if (!integ.cloudflare && resp.enabled) recommendations.push({ icon:'☁️', text:'Enable Cloudflare - push blocked IPs to the edge after every block-ip decision', cmd:'innerwarden integrate cloudflare' });
 
     if (conflicts.length > 0 || recommendations.length > 0) {
       html += '<div class="report-section"><div class="report-section-title">Integration Advisor</div>' +
@@ -8041,7 +8041,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
           '<div class="col-body">' +
           '<div class="col-name">' + esc(c.name) + kindBadge + statusBadge + evtBadge + '</div>' +
           '<div class="col-meta">' + esc(c.desc) + '</div>' +
-          ((!c.detected && c.kind === 'external') ? '<div style="font-size:0.58rem;color:var(--accent);margin-top:3px">Not installed — optional external tool</div>' : '') +
+          ((!c.detected && c.kind === 'external') ? '<div style="font-size:0.58rem;color:var(--accent);margin-top:3px">Not installed - optional external tool</div>' : '') +
           '</div></div>';
       });
 
@@ -8049,20 +8049,20 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
 
     // ── Section 4: Data files ──────────────────────────────────────────────
-    html += '<div class="report-section"><div class="report-section-title">Data Files — ' + esc(s.date || '—') + '</div>' +
+    html += '<div class="report-section"><div class="report-section-title">Data Files - ' + esc(s.date || '-') + '</div>' +
       '<table class="report-table"><thead><tr><th>File</th><th>Status</th><th>Size</th></tr></thead><tbody>';
     Object.entries(files).forEach(([k, v]) => {
       const exists = v.exists;
       html += '<tr>' +
         '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.72rem">' + esc(k) + '.jsonl</td>' +
-        '<td>' + (exists ? '<span class="health-ok">✓ Present</span>' : '<span style="color:var(--muted)">— Absent</span>') + '</td>' +
-        '<td style="color:var(--muted)">' + (exists ? fmt(v.size_bytes) : '—') + '</td>' +
+        '<td>' + (exists ? '<span class="health-ok">✓ Present</span>' : '<span style="color:var(--muted)">- Absent</span>') + '</td>' +
+        '<td style="color:var(--muted)">' + (exists ? fmt(v.size_bytes) : '-') + '</td>' +
         '</tr>';
     });
     html += '</tbody></table></div>';
 
     html += '<div class="report-section"><div class="report-section-title">Data Directory</div>' +
-      '<div style="font-family:\'JetBrains Mono\',monospace;font-size:0.78rem;color:var(--muted);padding:4px 0">' + esc(s.data_dir || '—') + '</div></div>';
+      '<div style="font-family:\'JetBrains Mono\',monospace;font-size:0.78rem;color:var(--muted);padding:4px 0">' + esc(s.data_dir || '-') + '</div></div>';
 
     return html;
   }
@@ -8131,7 +8131,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       'onmouseout="this.style.background=\'rgba(120,229,255,0.08)\'">' +
       '🧪 Start test session</button>' +
       '<span style="font-size:0.68rem;color:var(--muted);margin-left:10px">' +
-      'Injects a test incident — the agent evaluates and triggers the honeypot on the next tick (≤2 s).' +
+      'Injects a test incident - the agent evaluates and triggers the honeypot on the next tick (≤2 s).' +
       '</span></div>';
 
     if (sessions.length === 0) {
@@ -8142,10 +8142,10 @@ const INDEX_HTML: &str = r##"<!doctype html>
     html += '<div style="font-size:1.1rem;font-weight:600;color:var(--accent);margin-bottom:16px">🍯 Honeypot Sessions (' + sessions.length + ')</div>';
 
     for (const s of sessions) {
-      const ip = s.target_ip || '—';
-      const sessionId = s.session_id || '—';
-      const startedAt = s.started_at ? new Date(s.started_at).toLocaleString() : '—';
-      const duration = s.duration_secs ? s.duration_secs + 's' : '—';
+      const ip = s.target_ip || '-';
+      const sessionId = s.session_id || '-';
+      const startedAt = s.started_at ? new Date(s.started_at).toLocaleString() : '-';
+      const duration = s.duration_secs ? s.duration_secs + 's' : '-';
       const cmdCount = s.commands_count || 0;
       const authCount = s.auth_attempts || 0;
       const commands = s.commands || [];
@@ -8289,13 +8289,13 @@ const INDEX_HTML: &str = r##"<!doctype html>
     const d = entry.data || {};
     switch (entry.kind) {
       case 'event':
-        return esc((d.event_kind || '') + ' — ' + (d.summary || ''));
+        return esc((d.event_kind || '') + ' - ' + (d.summary || ''));
       case 'incident':
         return esc('[' + (d.severity || '').toUpperCase() + '] ' + (d.title || '') + ': ' + (d.summary || ''));
       case 'decision': {
         const conf = ((d.confidence || 0) * 100).toFixed(0);
         const reason = (d.reason || '').substring(0, 70);
-        return esc(d.action_type + ' (conf: ' + conf + '%) — ' + reason);
+        return esc(d.action_type + ' (conf: ' + conf + '%) - ' + reason);
       }
       case 'honeypot_ssh': {
         const attempts = d.auth_attempts || [];
@@ -8313,7 +8313,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
         return esc(reqs.length + ' request(s)') + (formCreds ? ' · ' + formCreds : '');
       }
       case 'honeypot_banner':
-        return esc('Banner probe — ' + (d.bytes_captured ?? 0) + ' bytes captured');
+        return esc('Banner probe - ' + (d.bytes_captured ?? 0) + ' bytes captured');
       default:
         return esc(entry.kind);
     }
@@ -8481,7 +8481,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     toggleRaw(idx);
   }
 
-  // ── D3 — action state ─────────────────────────────────────────────────
+  // ── D3 - action state ─────────────────────────────────────────────────
   let actionCfg = null;
   let pendingAction = null; // { type: 'block_ip'|'suspend_user', ip, user }
 
@@ -8622,7 +8622,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     });
   }
 
-  // D8b — browser tab title badge: shows unseen incident count when tab is not focused.
+  // D8b - browser tab title badge: shows unseen incident count when tab is not focused.
   let _unseenAlerts = 0;
   const _baseTitle = document.title;
   function updateTabBadge(delta) {
@@ -8640,7 +8640,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
   });
 
-  // D8 — rich push alert toast for High/Critical incidents arriving via SSE.
+  // D8 - rich push alert toast for High/Critical incidents arriving via SSE.
   function showAlertToast(alert) {
     if (document.hidden) updateTabBadge(1);
     const sev = (alert.severity || 'high').toUpperCase();
@@ -8662,7 +8662,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     toast._timer = setTimeout(() => toast.classList.remove('visible'), 8000);
   }
 
-  // D9 — inline entity search filter (client-side, no round-trip)
+  // D9 - inline entity search filter (client-side, no round-trip)
   function applyEntitySearch() {
     const q = (document.getElementById('entitySearch').value || '').trim().toLowerCase();
     const cards = document.querySelectorAll('#attackerList .attacker-card');
@@ -8825,8 +8825,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
         loadJson('/api/journey?' + baseQs),
         shouldCompare ? loadJson('/api/journey?' + compareQs) : Promise.resolve(null),
       ]);
-      const first = j.first_seen ? fmtDateTime(j.first_seen) : '—';
-      const last  = j.last_seen  ? fmtDateTime(j.last_seen)  : '—';
+      const first = j.first_seen ? fmtDateTime(j.first_seen) : '-';
+      const last  = j.last_seen  ? fmtDateTime(j.last_seen)  : '-';
       const summary = j.summary || {};
       const shortcuts = Array.isArray(summary.pivot_shortcuts) ? summary.pivot_shortcuts : [];
       const hints = Array.isArray(summary.hints) ? summary.hints : [];
@@ -8948,7 +8948,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     const sev = item.max_severity || 'unknown';
     const sevCss = sevCls(sev);
     const outcome = item.outcome || 'unknown';
-    const dets = (item.detectors || []).join(', ') || '—';
+    const dets = (item.detectors || []).join(', ') || '-';
 
     // Build badges
     let badges = '';
@@ -9043,7 +9043,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
   }
 
-  // D7 — update a KPI span; flash on change
+  // D7 - update a KPI span; flash on change
   function updateKpi(id, newVal) {
     const el = document.getElementById(id);
     if (!el) return;
@@ -9057,7 +9057,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
   }
 
-  // D7 — soft live refresh: only new cards get animated, existing stay in place.
+  // D7 - soft live refresh: only new cards get animated, existing stay in place.
   async function refreshLeftLive() {
     try {
       syncFiltersFromUi();
@@ -9110,7 +9110,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       }
       if (newItems.length > 0) applyEntitySearch();  // D9: filter newly inserted cards
     } catch (e) {
-      // silent — refreshLeft fallback handles error display
+      // silent - refreshLeft fallback handles error display
     }
   }
 
@@ -9255,7 +9255,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
     loadHomeState();
   });
-  // D6 — SSE live update client (replaces 5 s setInterval).
+  // D6 - SSE live update client (replaces 5 s setInterval).
   // Uses fetch() + ReadableStream so Basic auth credentials flow correctly.
   (function startSse() {
     let fallbackTimer = null;
@@ -9331,7 +9331,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
 // Web Push handlers
 // ---------------------------------------------------------------------------
 
-/// GET /sw.js — Service Worker that handles incoming push events.
+/// GET /sw.js - Service Worker that handles incoming push events.
 async fn service_worker_js() -> impl IntoResponse {
     const SW: &str = r#"
 self.addEventListener('push', function(event) {
@@ -9362,7 +9362,7 @@ self.addEventListener('notificationclick', function(event) {
     )
 }
 
-/// GET /api/push/vapid-key — return the VAPID public key for browser subscription.
+/// GET /api/push/vapid-key - return the VAPID public key for browser subscription.
 async fn api_push_vapid_key(State(state): State<DashboardState>) -> impl IntoResponse {
     Json(serde_json::json!({
         "publicKey": state.web_push_vapid_public_key,
@@ -9387,7 +9387,7 @@ struct PushUnsubscribeBody {
     endpoint: String,
 }
 
-/// POST /api/push/subscribe — register a new browser push subscription.
+/// POST /api/push/subscribe - register a new browser push subscription.
 async fn api_push_subscribe(
     State(state): State<DashboardState>,
     Json(body): Json<PushSubscribeBody>,
@@ -9395,7 +9395,7 @@ async fn api_push_subscribe(
     if state.web_push_vapid_public_key.is_empty() {
         return Json(serde_json::json!({
             "success": false,
-            "message": "web push is not configured — run `innerwarden notify web-push setup`",
+            "message": "web push is not configured - run `innerwarden notify web-push setup`",
         }));
     }
 
@@ -9421,7 +9421,7 @@ async fn api_push_subscribe(
     }
 }
 
-/// DELETE /api/push/subscribe — remove a push subscription by endpoint.
+/// DELETE /api/push/subscribe - remove a push subscription by endpoint.
 async fn api_push_unsubscribe(
     State(state): State<DashboardState>,
     Json(body): Json<PushUnsubscribeBody>,
@@ -9609,7 +9609,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let date = "2026-03-13";
 
-        // Two incidents from the same IP — different detectors.
+        // Two incidents from the same IP - different detectors.
         let inc1 = Incident {
             ts: Utc::now(),
             host: "h".to_string(),
@@ -10092,7 +10092,7 @@ mod tests {
             "active"
         );
 
-        // Failed execution — should not count as blocked.
+        // Failed execution - should not count as blocked.
         let failed = DecisionEntry {
             ts: Utc::now(),
             incident_id: "x".to_string(),
@@ -10248,7 +10248,7 @@ mod tests {
 
     #[test]
     fn chapters_group_entries_by_stage() {
-        // Three incident entries followed by one decision — should produce
+        // Three incident entries followed by one decision - should produce
         // an "initial_access_attempt" chapter and a "response" chapter.
         let entries: Vec<JourneyEntry> = vec![
             JourneyEntry {
@@ -10300,7 +10300,7 @@ mod tests {
         for i in 0..1100 {
             global_rate_check(&format!("prune-test-{i}"));
         }
-        // Should not panic or OOM — the prune ran and cleaned up
+        // Should not panic or OOM - the prune ran and cleaned up
         let map = GLOBAL_RATE_LIMITER
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -10338,7 +10338,7 @@ mod tests {
         let first: Vec<Event> = read_jsonl(&path);
         assert_eq!(first.len(), 1);
 
-        // Append a line — file size changes, cache should invalidate
+        // Append a line - file size changes, cache should invalidate
         use std::io::Write;
         let mut f = std::fs::OpenOptions::new()
             .append(true)

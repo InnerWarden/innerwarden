@@ -4,7 +4,7 @@ Integrates [Suricata](https://suricata.io) network IDS alerts with InnerWarden.
 
 Suricata inspects live network traffic at line rate using a rule-based engine
 (ET Open, ET Pro, custom rules). It detects network-layer threats that
-host-based log analysis cannot see — exploit attempts, C2 beaconing, port
+host-based log analysis cannot see - exploit attempts, C2 beaconing, port
 scans, protocol anomalies, lateral movement.
 
 InnerWarden ingests Suricata's EVE JSON output and provides:
@@ -49,10 +49,10 @@ Suricata uses inverse severity (1 = most severe):
 
 | Type | Default | Description |
 |---|---|---|
-| `alert` | ✅ | Rule-triggered IDS alerts — the main threat signal |
-| `dns` | ✅ | DNS queries/responses — detect C2 domain lookups |
-| `http` | ✅ | HTTP metadata — detect web attacks |
-| `tls` | ✅ | TLS handshake metadata — detect unusual certificates |
+| `alert` | ✅ | Rule-triggered IDS alerts - the main threat signal |
+| `dns` | ✅ | DNS queries/responses - detect C2 domain lookups |
+| `http` | ✅ | HTTP metadata - detect web attacks |
+| `tls` | ✅ | TLS handshake metadata - detect unusual certificates |
 | `anomaly` | ✅ | Protocol anomalies |
 | `flow` | ❌ | Network flow stats (high volume, disable if noisy) |
 | `stats` | ❌ | Internal Suricata stats (skip) |

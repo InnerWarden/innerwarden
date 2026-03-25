@@ -220,7 +220,7 @@ fn parse_record(record: CloudTrailRecord, host: &str) -> Option<Event> {
         .and_then(|u| u.arn.as_deref())
         .unwrap_or("");
 
-    // Root account usage — always critical regardless of event name
+    // Root account usage - always critical regardless of event name
     let is_root = identity_type == "Root";
 
     let (kind, severity) = classify_event(event_name, &record.error_code, is_root);
@@ -245,7 +245,7 @@ fn parse_record(record: CloudTrailRecord, host: &str) -> Option<Event> {
     // Entities
     let mut entities = Vec::new();
 
-    // Source IP (may be an AWS service name like "sts.amazonaws.com" — skip those)
+    // Source IP (may be an AWS service name like "sts.amazonaws.com" - skip those)
     if let Some(ref ip) = record.source_ip_address {
         if is_routable_ip(ip) {
             entities.push(EntityRef::ip(ip.clone()));

@@ -7,11 +7,11 @@ and routes High/Critical severity incidents through InnerWarden's AI triage and 
 
 Wazuh is an open-source HIDS (Host Intrusion Detection System) that delivers:
 
-- **HIDS/FIM** — host intrusion detection and file integrity monitoring
-- **MITRE ATT&CK mapping** — rule groups include MITRE technique identifiers
-- **Vulnerability detection** — CVE scanning for installed packages
-- **Compliance** — PCI-DSS, HIPAA, NIST 800-53, CIS benchmark reporting
-- **Centralized alerts** — multi-agent alerts collected at the Wazuh manager
+- **HIDS/FIM** - host intrusion detection and file integrity monitoring
+- **MITRE ATT&CK mapping** - rule groups include MITRE technique identifiers
+- **Vulnerability detection** - CVE scanning for installed packages
+- **Compliance** - PCI-DSS, HIPAA, NIST 800-53, CIS benchmark reporting
+- **Centralized alerts** - multi-agent alerts collected at the Wazuh manager
 
 ## What InnerWarden does with Wazuh alerts
 

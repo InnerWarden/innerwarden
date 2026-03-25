@@ -8,7 +8,7 @@ type PortSprayMap = HashMap<(String, String), VecDeque<(DateTime<Utc>, u16)>>;
 /// Per-(process, port) ring of (timestamp, ip) for fan-out detection.
 type FanoutMap = HashMap<(String, u16), VecDeque<(DateTime<Utc>, String)>>;
 
-/// Known DDoS tool process names — instant Critical alert on execution.
+/// Known DDoS tool process names - instant Critical alert on execution.
 const DDOS_TOOLS: &[&str] = &[
     "hping3",
     "slowloris",
@@ -25,11 +25,11 @@ const DDOS_TOOLS: &[&str] = &[
 /// or data exfiltration.
 ///
 /// Patterns detected:
-/// 1. Connection flood — process opens many outbound connections in short window
-/// 2. Port spray — process connects to many ports on the same external IP
-/// 3. UDP flood indicator — high-volume UDP connections (common DDoS pattern)
-/// 4. Fan-out — process connects to many unique IPs on the same port (botnet)
-/// 5. Known DDoS tool execution — instant critical alert
+/// 1. Connection flood - process opens many outbound connections in short window
+/// 2. Port spray - process connects to many ports on the same external IP
+/// 3. UDP flood indicator - high-volume UDP connections (common DDoS pattern)
+/// 4. Fan-out - process connects to many unique IPs on the same port (botnet)
+/// 5. Known DDoS tool execution - instant critical alert
 pub struct OutboundAnomalyDetector {
     /// Sliding window for connection flood and UDP flood detection
     flood_window: Duration,
@@ -44,9 +44,9 @@ pub struct OutboundAnomalyDetector {
     fanout_threshold: usize,
     /// Per-process ring of (timestamp, dst_ip, dst_port, protocol) for flood detection
     conn_history: HashMap<String, VecDeque<ConnRecord>>,
-    /// Per-(process, dst_ip) set of ports seen in window — for port spray
+    /// Per-(process, dst_ip) set of ports seen in window - for port spray
     port_spray: PortSprayMap,
-    /// Per-(process, port) set of IPs seen in window — for fan-out
+    /// Per-(process, port) set of IPs seen in window - for fan-out
     fanout: FanoutMap,
     /// Cooldown per alert key
     alerted: HashMap<String, DateTime<Utc>>,
@@ -157,7 +157,7 @@ impl OutboundAnomalyDetector {
             .unwrap_or("tcp")
             .to_lowercase();
 
-        // Skip private/internal IPs — only detect anomalies to external destinations
+        // Skip private/internal IPs - only detect anomalies to external destinations
         if super::is_internal_ip(dst_ip) {
             return None;
         }
@@ -240,7 +240,7 @@ impl OutboundAnomalyDetector {
             })
             .unwrap_or(0);
 
-        // ── Check 3: UDP flood (highest priority — Critical) ───────────────
+        // ── Check 3: UDP flood (highest priority - Critical) ───────────────
         if proto == "udp" && udp_count >= self.udp_flood_threshold {
             let alert_key = format!("udp_flood:{}", proc_key);
             if !self.is_in_cooldown(&alert_key, now) {
@@ -386,7 +386,7 @@ impl OutboundAnomalyDetector {
                 "pid": pid,
             }]),
             recommended_checks: vec![
-                format!("Investigate process {comm} (pid={pid}) — is it compromised or malicious?"),
+                format!("Investigate process {comm} (pid={pid}) - is it compromised or malicious?"),
                 "Check if this host is participating in a DDoS or botnet".to_string(),
                 "Review outbound traffic with tcpdump or ss for confirmation".to_string(),
                 "Consider killing the process and blocking outbound traffic".to_string(),
@@ -524,7 +524,7 @@ mod tests {
         let mut det = OutboundAnomalyDetector::new("test", 50, 200, 200, 200, 60, 300);
         let now = Utc::now();
 
-        // Fire 49 connections — below threshold of 50
+        // Fire 49 connections - below threshold of 50
         for i in 0..49 {
             let ip = format!("5.6.{}.{}", i / 256, i % 256 + 1);
             let result = det.process(&connect_event(
@@ -578,7 +578,7 @@ mod tests {
         let mut det = new_detector();
         let now = Utc::now();
 
-        // Connect to 19 different ports — below threshold of 20
+        // Connect to 19 different ports - below threshold of 20
         for i in 0..19 {
             let port = 2000 + i as u16;
             let result = det.process(&connect_event(
@@ -735,11 +735,11 @@ mod tests {
         let r1 = det.process(&exec_event("hping3", 11000, now));
         assert!(r1.is_some());
 
-        // Same tool within cooldown (300s) — suppressed
+        // Same tool within cooldown (300s) - suppressed
         let r2 = det.process(&exec_event("hping3", 11001, now + Duration::seconds(10)));
         assert!(r2.is_none());
 
-        // After cooldown — triggers again
+        // After cooldown - triggers again
         let r3 = det.process(&exec_event("hping3", 11002, now + Duration::seconds(301)));
         assert!(r3.is_some());
     }
@@ -776,7 +776,7 @@ mod tests {
             assert!(result.is_none());
         }
 
-        // Process A gets 5th connection — triggers
+        // Process A gets 5th connection - triggers
         let r = det.process(&connect_event(
             "proc_a",
             12000,
@@ -788,7 +788,7 @@ mod tests {
         let inc = r.unwrap();
         assert!(inc.summary.contains("proc_a"));
 
-        // Process B still at 4 — shouldn't trigger yet
+        // Process B still at 4 - shouldn't trigger yet
         // (one more will trigger it)
         let r = det.process(&connect_event(
             "proc_b",
@@ -802,7 +802,7 @@ mod tests {
         assert!(inc.summary.contains("proc_b"));
     }
 
-    // ── Test 12: UDP and TCP mixed — only UDP counted for UDP flood ────────
+    // ── Test 12: UDP and TCP mixed - only UDP counted for UDP flood ────────
     #[test]
     fn udp_tcp_mixed_only_udp_counted() {
         let mut det = OutboundAnomalyDetector::new("test", 200, 20, 5, 10, 60, 300);
@@ -831,7 +831,7 @@ mod tests {
             assert!(result.is_none());
         }
 
-        // 2 more UDP brings total to 5 — should trigger UDP flood
+        // 2 more UDP brings total to 5 - should trigger UDP flood
         det.process(&udp_event(
             "mixed",
             13000,
@@ -870,7 +870,7 @@ mod tests {
             ));
         }
 
-        // 1 connection now — total in window = 1 (old ones pruned), should not trigger
+        // 1 connection now - total in window = 1 (old ones pruned), should not trigger
         let result = det.process(&connect_event("old_proc", 14000, "3.3.3.5", 80, now));
         assert!(result.is_none());
     }

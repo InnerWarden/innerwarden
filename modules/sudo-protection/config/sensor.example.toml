@@ -1,10 +1,10 @@
-# sudo-protection — sensor config snippet
+# sudo-protection - sensor config snippet
 
 [collectors.journald]
 enabled = true
 units   = ["sudo"]   # captures all sudo commands
 
-# Optional: full shell audit trail (high privacy impact — explicit consent required)
+# Optional: full shell audit trail (high privacy impact - explicit consent required)
 [collectors.exec_audit]
 enabled     = false
 path        = "/var/log/audit/audit.log"

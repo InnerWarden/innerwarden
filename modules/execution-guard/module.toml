@@ -12,7 +12,7 @@ min_innerwarden = "0.1.0"
 [provides]
 collectors = ["exec-audit", "journald"]
 detectors  = ["execution-guard"]
-skills     = []   # observe mode only — future: suspend-user-sudo (contain), exec-firewall (strict)
+skills     = []   # observe mode only - future: suspend-user-sudo (contain), exec-firewall (strict)
 
 [requires]
 # exec-audit provides shell.command_exec events (auditd EXECVE records)

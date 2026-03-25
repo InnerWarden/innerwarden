@@ -71,7 +71,7 @@ impl AuthLogCollector {
 }
 
 // ---------------------------------------------------------------------------
-// Blocking poll — reads new lines since `offset`, returns (events, new_offset)
+// Blocking poll - reads new lines since `offset`, returns (events, new_offset)
 // ---------------------------------------------------------------------------
 
 fn poll(path: &Path, host: &str, offset: u64) -> Result<(Vec<Event>, u64)> {
@@ -135,7 +135,7 @@ pub fn parse_sshd_message(msg: &str, host: &str, source: &str) -> Option<Event> 
             &meta,
             "ssh.login_failed",
             Severity::Info,
-            format!("Failed login — invalid user {user} from {ip}"),
+            format!("Failed login - invalid user {user} from {ip}"),
             serde_json::json!({ "ip": ip, "user": user, "reason": "invalid_user" }),
             vec!["auth", "ssh"],
             vec![EntityRef::ip(ip), EntityRef::user(user)],

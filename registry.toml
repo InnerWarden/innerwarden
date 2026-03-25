@@ -139,7 +139,7 @@ enables     = ["block-ip"]
 id          = "abuseipdb-enrichment"
 name        = "AbuseIPDB Enrichment"
 version     = "0.1.0"
-description = "Enriches AI triage context with AbuseIPDB crowd-sourced reputation scores — raises AI confidence for known-bad IPs"
+description = "Enriches AI triage context with AbuseIPDB crowd-sourced reputation scores - raises AI confidence for known-bad IPs"
 tags        = ["threat-intelligence", "reputation", "enrichment", "abuseipdb"]
 tier        = "open"
 builtin     = true
@@ -149,7 +149,7 @@ enables     = []
 id          = "crowdsec-integration"
 name        = "CrowdSec Integration"
 version     = "0.1.0"
-description = "Polls the CrowdSec Local API for crowd-sourced ban decisions and enforces them via block skills — no local detection needed"
+description = "Polls the CrowdSec Local API for crowd-sourced ban decisions and enforces them via block skills - no local detection needed"
 tags        = ["crowdsec", "threat-intelligence", "blocklist", "community"]
 tier        = "open"
 builtin     = true
@@ -159,7 +159,7 @@ enables     = []   # configured via [crowdsec] in agent.toml
 id          = "geoip-enrichment"
 name        = "GeoIP Enrichment"
 version     = "0.1.0"
-description = "Enriches AI triage context with country, city, ISP and ASN via ip-api.com — no API key required, free tier 45 req/min"
+description = "Enriches AI triage context with country, city, ISP and ASN via ip-api.com - no API key required, free tier 45 req/min"
 tags        = ["geoip", "enrichment", "threat-intelligence", "geolocation"]
 tier        = "open"
 builtin     = true
@@ -169,14 +169,14 @@ enables     = []
 id          = "slack-notify"
 name        = "Slack Notify"
 version     = "0.1.0"
-description = "Sends incident alerts to a Slack channel via Incoming Webhook — Block Kit messages with severity badge, summary, and optional dashboard deep-link"
+description = "Sends incident alerts to a Slack channel via Incoming Webhook - Block Kit messages with severity badge, summary, and optional dashboard deep-link"
 tags        = ["slack", "notifications", "alerting"]
 tier        = "open"
 builtin     = true
 enables     = []
 
 # ---------------------------------------------------------------------------
-# Community modules — add yours here via pull request
+# Community modules - add yours here via pull request
 # ---------------------------------------------------------------------------
 
 # [[modules]]

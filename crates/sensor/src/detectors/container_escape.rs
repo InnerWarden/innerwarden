@@ -209,7 +209,7 @@ impl ContainerEscapeDetector {
                     pid,
                     comm,
                     severity: severity.clone(),
-                    description: &format!("{description} — {filename}"),
+                    description: &format!("{description} - {filename}"),
                     pattern: "sensitive_file_access",
                     ts: now,
                 }));
@@ -247,7 +247,7 @@ impl ContainerEscapeDetector {
             severity,
             title: format!("Container escape attempt: {description}"),
             summary: format!(
-                "{description} — process {comm} (pid={pid}) in container {container_id}"
+                "{description} - process {comm} (pid={pid}) in container {container_id}"
             ),
             evidence: serde_json::json!([{
                 "kind": "container_escape",

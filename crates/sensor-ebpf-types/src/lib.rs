@@ -55,7 +55,7 @@ pub enum SyscallKind {
     Dup = 14,
     /// Socket listen (confirms reverse shell / backdoor setup)
     Listen = 15,
-    /// Memory protection change (shellcode — mprotect RWX)
+    /// Memory protection change (shellcode - mprotect RWX)
     Mprotect = 16,
     /// Process fork/clone (fork bombs, process tree)
     Clone = 17,
@@ -145,7 +145,7 @@ pub struct FileOpenEvent {
     pub ts_ns: u64,
 }
 
-/// Event emitted by the `commit_creds` kprobe — privilege escalation detection.
+/// Event emitted by the `commit_creds` kprobe - privilege escalation detection.
 ///
 /// Fires when a process's UID transitions from non-root to root
 /// through a path other than legitimate login (sudo, su, sshd, login).
@@ -169,7 +169,7 @@ pub struct PrivEscEvent {
 /// Event emitted by `sched:sched_process_exit` tracepoint.
 ///
 /// Fires when any process exits. Used by the rootkit detector to track
-/// process lifecycle — a process seen by execve but never by exit + missing
+/// process lifecycle - a process seen by execve but never by exit + missing
 /// from /proc is a strong rootkit indicator.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -183,10 +183,10 @@ pub struct ProcessExitEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 2 event types — kernel-level detection expansion
+// Phase 2 event types - kernel-level detection expansion
 // ---------------------------------------------------------------------------
 
-/// Event emitted by `ptrace` tracepoint — process injection detection.
+/// Event emitted by `ptrace` tracepoint - process injection detection.
 ///
 /// Only fires for dangerous operations: PTRACE_ATTACH (16), PTRACE_SEIZE (0x4206),
 /// PTRACE_POKETEXT (4), PTRACE_POKEDATA (5). Ignores PTRACE_TRACEME (benign).
@@ -220,7 +220,7 @@ pub struct SetUidEvent {
     pub ts_ns: u64,
 }
 
-/// Event emitted by `bind` tracepoint — reverse shell setup detection.
+/// Event emitted by `bind` tracepoint - reverse shell setup detection.
 ///
 /// Captures socket bind operations. A process binding to 0.0.0.0 on a port
 /// and then listening is a strong reverse shell indicator.
@@ -240,7 +240,7 @@ pub struct SocketBindEvent {
     pub ts_ns: u64,
 }
 
-/// Event emitted by `mount` tracepoint — container escape detection.
+/// Event emitted by `mount` tracepoint - container escape detection.
 ///
 /// Inside a container, mount syscalls are almost always malicious.
 /// Captures source, target, and filesystem type.
@@ -259,7 +259,7 @@ pub struct MountEvent {
     pub ts_ns: u64,
 }
 
-/// Event emitted by `memfd_create` tracepoint — fileless malware detection.
+/// Event emitted by `memfd_create` tracepoint - fileless malware detection.
 ///
 /// memfd_create creates an anonymous memory-backed file. Legitimate uses are
 /// rare (mainly JIT compilers). Malware uses it to avoid touching disk.
@@ -276,7 +276,7 @@ pub struct MemfdCreateEvent {
     pub ts_ns: u64,
 }
 
-/// Event emitted by `init_module`/`finit_module` tracepoint — rootkit loading.
+/// Event emitted by `init_module`/`finit_module` tracepoint - rootkit loading.
 ///
 /// Kernel module loading is extremely rare in normal operation.
 /// Always security-relevant.
@@ -293,10 +293,10 @@ pub struct ModuleLoadEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3 event types — complete syscall coverage
+// Phase 3 event types - complete syscall coverage
 // ---------------------------------------------------------------------------
 
-/// Event emitted by `dup2`/`dup3` — fd redirection for reverse shells.
+/// Event emitted by `dup2`/`dup3` - fd redirection for reverse shells.
 /// Reverse shells redirect stdin/stdout/stderr to a socket fd.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -311,7 +311,7 @@ pub struct DupEvent {
     pub ts_ns: u64,
 }
 
-/// Event emitted by `listen` — confirms a bind as a server socket.
+/// Event emitted by `listen` - confirms a bind as a server socket.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ListenEvent {
@@ -324,7 +324,7 @@ pub struct ListenEvent {
     pub ts_ns: u64,
 }
 
-/// Event emitted by `mprotect` — making memory executable (shellcode).
+/// Event emitted by `mprotect` - making memory executable (shellcode).
 /// Only fires when adding PROT_EXEC to a page (RWX transition).
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -340,7 +340,7 @@ pub struct MprotectEvent {
     pub ts_ns: u64,
 }
 
-/// Event emitted by `clone`/`clone3` — process creation.
+/// Event emitted by `clone`/`clone3` - process creation.
 /// Filtered: only emits for suspicious flags or high fork rates.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -354,7 +354,7 @@ pub struct CloneEvent {
     pub ts_ns: u64,
 }
 
-/// Event emitted by `unlink`/`unlinkat` — file deletion.
+/// Event emitted by `unlink`/`unlinkat` - file deletion.
 /// Filtered: only sensitive paths (/var/log, /etc, evidence files).
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -369,7 +369,7 @@ pub struct UnlinkEvent {
     pub ts_ns: u64,
 }
 
-/// Event emitted by `rename`/`renameat` — file rename/replacement.
+/// Event emitted by `rename`/`renameat` - file rename/replacement.
 /// Filtered: only sensitive paths.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -385,7 +385,7 @@ pub struct RenameEvent {
     pub ts_ns: u64,
 }
 
-/// Event emitted by `kill`/`tkill` — sending signals to processes.
+/// Event emitted by `kill`/`tkill` - sending signals to processes.
 /// Filtered: only SIGKILL/SIGTERM/SIGSTOP to security-relevant processes.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -400,7 +400,7 @@ pub struct KillEvent {
     pub ts_ns: u64,
 }
 
-/// Event emitted by `prctl` — process control operations.
+/// Event emitted by `prctl` - process control operations.
 /// Filtered: only PR_SET_NAME (name spoofing) and PR_SET_NO_NEW_PRIVS.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -415,7 +415,7 @@ pub struct PrctlEvent {
     pub ts_ns: u64,
 }
 
-/// Event emitted by `accept`/`accept4` — incoming connection accepted.
+/// Event emitted by `accept`/`accept4` - incoming connection accepted.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct AcceptEvent {

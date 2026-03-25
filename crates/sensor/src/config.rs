@@ -908,7 +908,7 @@ pub struct RansomwareConfig {
     #[serde(default = "default_ransomware_entropy_threshold")]
     pub entropy_threshold: f64,
     /// Number of high-entropy writes per process before triggering a Critical alert.
-    /// Default 3 — detect ransomware on the first few encrypted files.
+    /// Default 3 - detect ransomware on the first few encrypted files.
     #[serde(default = "default_ransomware_entropy_count_threshold")]
     pub entropy_count_threshold: usize,
 }

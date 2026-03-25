@@ -1,8 +1,8 @@
 [advisories]
 ignore = [
-    # rsa timing sidechannel via russh — no fix available upstream
+    # rsa timing sidechannel via russh - no fix available upstream
     "RUSTSEC-2023-0071",
-    # libcrux-sha3 XOF output bug — pinned by russh, does not affect our SSH usage
+    # libcrux-sha3 XOF output bug - pinned by russh, does not affect our SSH usage
     "RUSTSEC-2026-0074",
 ]
 

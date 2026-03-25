@@ -11,7 +11,7 @@ pub struct ShellAuditCapability;
 
 const AUDITD_RULE_FILE: &str = "/etc/audit/rules.d/innerwarden-shell-audit.rules";
 const AUDITD_RULES: &str = "\
-# Managed by innerwarden-ctl — do not edit manually
+# Managed by innerwarden-ctl - do not edit manually
 # Captures all execve(2) syscalls for command execution audit trail.
 # PRIVACY: this records all commands run on this host.
 -a always,exit -F arch=b64 -S execve -k innerwarden_exec
@@ -56,7 +56,7 @@ impl ShellAuditCapability {
         if input == "y" || input == "yes" {
             Ok(())
         } else {
-            anyhow::bail!("shell-audit not enabled — explicit authorization required");
+            anyhow::bail!("shell-audit not enabled - explicit authorization required");
         }
     }
 }
@@ -104,7 +104,7 @@ impl Capability for ShellAuditCapability {
         let mut effects = Vec::new();
         let mut warnings = Vec::new();
 
-        // Privacy gate — must happen before any mutation
+        // Privacy gate - must happen before any mutation
         self.confirm_privacy(opts)?;
 
         // 1. Patch sensor config: collectors.exec_audit.enabled = true
@@ -221,7 +221,7 @@ fn load_audit_rules(rule_file: &str, warnings: &mut Vec<String>) -> Result<()> {
         "/usr/bin/auditctl"
     } else {
         warnings.push(
-            "auditctl not found — audit rules written but not loaded. \
+            "auditctl not found - audit rules written but not loaded. \
              Reboot or run 'augenrules --load' manually."
                 .to_string(),
         );
@@ -234,7 +234,7 @@ fn load_audit_rules(rule_file: &str, warnings: &mut Vec<String>) -> Result<()> {
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         warnings.push(format!(
-            "auditctl -R {rule_file} failed: {stderr} — \
+            "auditctl -R {rule_file} failed: {stderr} - \
              rules written but not active until reboot or manual load"
         ));
     }

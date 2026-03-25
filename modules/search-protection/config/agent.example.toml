@@ -1,4 +1,4 @@
-# search-protection — agent config snippet
+# search-protection - agent config snippet
 
 [responder]
 enabled        = true

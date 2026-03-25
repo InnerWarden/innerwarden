@@ -121,13 +121,13 @@ const SUSPICIOUS_LINEAGE: &[(&str, &str, Severity, &str)] = &[
         "java",
         "sh",
         Severity::Critical,
-        "Java process spawned shell — possible RCE",
+        "Java process spawned shell - possible RCE",
     ),
     (
         "java",
         "bash",
         Severity::Critical,
-        "Java process spawned shell — possible RCE",
+        "Java process spawned shell - possible RCE",
     ),
     ("node", "sh", Severity::High, "Node.js spawned shell"),
     ("node", "bash", Severity::High, "Node.js spawned shell"),
@@ -397,7 +397,7 @@ mod tests {
         assert!(det
             .process(&exec_event("bash", 200, 100, None, now))
             .is_some());
-        // Second alert within window — suppressed
+        // Second alert within window - suppressed
         assert!(det
             .process(&exec_event(
                 "bash",

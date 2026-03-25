@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 // ---------------------------------------------------------------------------
-// Forensics report — captured from /proc/{pid}/ on High/Critical incidents
+// Forensics report - captured from /proc/{pid}/ on High/Critical incidents
 // ---------------------------------------------------------------------------
 
 /// Maximum number of file descriptors to enumerate per process.
@@ -52,7 +52,7 @@ impl ForensicsCapture {
     /// Attempt forensic capture for a process. Returns `Some(report)` on success,
     /// `None` if the PID is in cooldown or the process has already exited.
     ///
-    /// All /proc reads are best-effort — the process may exit at any point.
+    /// All /proc reads are best-effort - the process may exit at any point.
     pub fn try_capture(&mut self, pid: u32, incident_id: &str) -> Option<ForensicsReport> {
         // Cooldown check: skip if we captured this PID recently
         let now = Utc::now();
@@ -67,7 +67,7 @@ impl ForensicsCapture {
         if !proc_dir.exists() {
             debug!(
                 pid,
-                incident_id, "forensics: /proc/{pid} does not exist — process already exited"
+                incident_id, "forensics: /proc/{pid} does not exist - process already exited"
             );
             return None;
         }
@@ -122,7 +122,7 @@ fn capture_process(pid: u32, incident_id: &str, proc_dir: &Path) -> ForensicsRep
     }
 }
 
-/// Read /proc/{pid}/cmdline — NUL-separated arguments, joined with spaces.
+/// Read /proc/{pid}/cmdline - NUL-separated arguments, joined with spaces.
 fn read_cmdline(proc_dir: &Path) -> Option<String> {
     let data = std::fs::read(proc_dir.join("cmdline")).ok()?;
     if data.is_empty() {

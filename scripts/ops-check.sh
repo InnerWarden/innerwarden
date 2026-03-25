@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ops-check.sh — quick operational health check from the latest trial report JSON.
+# ops-check.sh - quick operational health check from the latest trial report JSON.
 # Reads the most recent trial-report-*.json in IW_DATA_DIR (default: /var/lib/innerwarden).
 #
 # Usage:

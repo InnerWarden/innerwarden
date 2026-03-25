@@ -1,4 +1,4 @@
-# search-protection — sensor config snippet
+# search-protection - sensor config snippet
 
 [collectors.nginx_access]
 enabled = true

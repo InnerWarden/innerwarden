@@ -91,7 +91,7 @@ impl Capability for BlockIpCapability {
 
         if !["ufw", "iptables", "nftables"].contains(&backend) {
             anyhow::bail!(
-                "unsupported backend '{}' — use one of: ufw, iptables, nftables",
+                "unsupported backend '{}' - use one of: ufw, iptables, nftables",
                 backend
             );
         }

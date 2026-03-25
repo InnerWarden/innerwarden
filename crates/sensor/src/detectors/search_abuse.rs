@@ -17,7 +17,7 @@ pub struct SearchAbuseDetector {
     path_prefix: String,
     /// Per-IP sliding window of request timestamps.
     windows: HashMap<String, VecDeque<DateTime<Utc>>>,
-    /// Last incident time per IP — suppresses re-alerts within the same window.
+    /// Last incident time per IP - suppresses re-alerts within the same window.
     alerted: HashMap<String, DateTime<Utc>>,
 }
 
@@ -116,7 +116,7 @@ impl SearchAbuseDetector {
                 "window_seconds": self.window.num_seconds(),
             }]),
             recommended_checks: vec![
-                format!("Review access logs for {ip} — check for automation patterns"),
+                format!("Review access logs for {ip} - check for automation patterns"),
                 "Consider rate-limiting or blocking the source IP".to_string(),
                 "Check if traffic correlates with an SSH or credential-stuffing incident"
                     .to_string(),
@@ -244,7 +244,7 @@ mod tests {
                 base + Duration::seconds(i),
             ));
         }
-        // ip-B only 2 requests — no incident
+        // ip-B only 2 requests - no incident
         for i in 0..2 {
             let r = det.process(&request_event(
                 "2.2.2.2",
@@ -286,7 +286,7 @@ mod tests {
             "/api/search",
             base - Duration::seconds(15),
         ));
-        // 2 new events inside window — total in window = 2, below threshold of 3
+        // 2 new events inside window - total in window = 2, below threshold of 3
         assert!(det
             .process(&request_event("1.2.3.4", "/api/search", base))
             .is_none());

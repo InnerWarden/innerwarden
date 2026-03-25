@@ -4,8 +4,8 @@
 //! capture authentication attempts (password, publickey, none).
 //!
 //! Two interaction modes are supported:
-//! - `RejectAll` — the classic medium mode: captures creds, rejects auth, no shell.
-//! - `LlmShell` — accepts password auth and serves an AI-backed interactive shell.
+//! - `RejectAll` - the classic medium mode: captures creds, rejects auth, no shell.
+//! - `LlmShell` - accepts password auth and serves an AI-backed interactive shell.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -60,7 +60,7 @@ pub struct SshConnectionEvidence {
 
 /// Controls how the SSH honeypot handler behaves after a connection is accepted.
 pub enum SshInteractionMode {
-    /// Capture auth attempts and always reject — no shell granted (medium interaction).
+    /// Capture auth attempts and always reject - no shell granted (medium interaction).
     RejectAll,
     /// Accept password auth and serve an AI-backed interactive shell.
     LlmShell {
@@ -162,7 +162,7 @@ impl Handler for HoneypotSshHandler {
                 ..
             } => {
                 *auth_attempt_count += 1;
-                // Accept on first password attempt — most real attackers try
+                // Accept on first password attempt - most real attackers try
                 // one password per connection and reconnect for the next.
                 // Rejecting would just make them disconnect without entering the shell.
                 *accepted_user = Some(user.to_string());
@@ -375,7 +375,7 @@ impl Handler for HoneypotSshHandler {
 fn build_shell_system_prompt(user: &str, hostname: &str, history: &[(String, String)]) -> String {
     let mut prompt = format!(
         "You are a Ubuntu 22.04.3 LTS Linux terminal. Hostname: {hostname}. Current user: {user}.\n\
-         Reply ONLY with the exact terminal output — no markdown, no code blocks, no explanation.\n\
+         Reply ONLY with the exact terminal output - no markdown, no code blocks, no explanation.\n\
          Make responses realistic with plausible fake data. Be concise.\n\
          If asked for /etc/passwd, /etc/shadow, or similar sensitive files, return realistic-looking fake content.\n\
          If destructive commands run (rm -rf, etc.), pretend they worked with no output.\n"
@@ -523,7 +523,7 @@ mod tests {
             evidence: Arc::clone(&bucket),
             mode: HandlerMode::RejectAll,
         };
-        // Multiple attempts — all must be rejected.
+        // Multiple attempts - all must be rejected.
         for i in 0..4u32 {
             let res = h.auth_password("user", &format!("pass{i}")).await.unwrap();
             assert!(
@@ -583,7 +583,7 @@ mod tests {
                 history: Vec::new(),
             },
         };
-        // Accept first password attempt — attackers try one password per connection
+        // Accept first password attempt - attackers try one password per connection
         let result = h.auth_password("attacker", "hunter2").await.unwrap();
         assert!(
             matches!(result, Auth::Accept),

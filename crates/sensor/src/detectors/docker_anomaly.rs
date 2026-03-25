@@ -14,7 +14,7 @@ pub struct DockerAnomalyDetector {
     window: Duration,
     /// Per-container sliding window of die/oom timestamps.
     windows: HashMap<String, VecDeque<DateTime<Utc>>>,
-    /// Last incident time per container — suppresses re-alerts within the same window.
+    /// Last incident time per container - suppresses re-alerts within the same window.
     alerted: HashMap<String, DateTime<Utc>>,
     /// Track whether any event in the current burst was an OOM.
     saw_oom: HashMap<String, bool>,
@@ -105,7 +105,7 @@ impl DockerAnomalyDetector {
             severity,
             title: format!("Docker anomaly: {anomaly_type} for {container_name}"),
             summary: format!(
-                "{count} die/oom events for container {container_name} ({container_id}) in the last {} seconds — {anomaly_type}",
+                "{count} die/oom events for container {container_name} ({container_id}) in the last {} seconds - {anomaly_type}",
                 self.window.num_seconds()
             ),
             evidence: serde_json::json!([{
@@ -223,7 +223,7 @@ mod tests {
         for i in 0..3 {
             det.process(&docker_die_event("abc123", base + Duration::seconds(i)));
         }
-        // Fourth event in same window — suppressed
+        // Fourth event in same window - suppressed
         assert!(det
             .process(&docker_die_event("abc123", base + Duration::seconds(3)))
             .is_none());
@@ -256,7 +256,7 @@ mod tests {
         for i in 0..3 {
             det.process(&docker_die_event("aaa111", base + Duration::seconds(i)));
         }
-        // Different container — only 2 events, below threshold
+        // Different container - only 2 events, below threshold
         for i in 0..2 {
             assert!(det
                 .process(&docker_die_event("bbb222", base + Duration::seconds(i)))
@@ -270,7 +270,7 @@ mod tests {
         let base = Utc::now();
         det.process(&docker_die_event("abc123", base - Duration::seconds(20)));
         det.process(&docker_die_event("abc123", base - Duration::seconds(15)));
-        // Both old — only 1 new event → below threshold
+        // Both old - only 1 new event → below threshold
         assert!(det.process(&docker_die_event("abc123", base)).is_none());
         assert!(det
             .process(&docker_die_event("abc123", base + Duration::seconds(1)))

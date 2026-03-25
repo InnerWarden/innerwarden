@@ -20,10 +20,10 @@ const STANDARD_RESOLVERS: &[&str] = &[
 /// 2. Volume of unique subdomains to same base domain in window (C2 channel)
 /// 3. Unusually long domain names (data exfiltration payload)
 ///
-/// eBPF fallback (port 53 connect() analysis — works WITHOUT Suricata):
-/// 4. DNS beaconing — same process connects to same DNS server > 20 times in 60s
-/// 5. Non-standard DNS server — connect to port 53 on a non-common resolver
-/// 6. DNS burst — > 50 port 53 connections in 30s from any process
+/// eBPF fallback (port 53 connect() analysis - works WITHOUT Suricata):
+/// 4. DNS beaconing - same process connects to same DNS server > 20 times in 60s
+/// 5. Non-standard DNS server - connect to port 53 on a non-common resolver
+/// 6. DNS burst - > 50 port 53 connections in 30s from any process
 pub struct DnsTunnelingDetector {
     entropy_threshold: f64,
     volume_threshold: usize,
@@ -392,7 +392,7 @@ impl DnsTunnelingDetector {
             }]),
             recommended_checks: vec![
                 format!(
-                    "Investigate process {} (pid={}) — why is it making DNS queries?",
+                    "Investigate process {} (pid={}) - why is it making DNS queries?",
                     comm, pid
                 ),
                 format!("Check if {} is a legitimate DNS server", dst_ip),
@@ -551,7 +551,7 @@ mod tests {
             let domain = format!("sub{}.tunnel.com", i);
             let result = det.process(&dns_event("10.0.0.5", &domain, now + Duration::seconds(i)));
             if i <= 4 {
-                // At or below threshold — none of these should trigger on volume
+                // At or below threshold - none of these should trigger on volume
                 // (they may trigger on entropy, but "sub0" has low entropy)
                 // With threshold=5, count must be >5 to trigger
             }
@@ -575,7 +575,7 @@ mod tests {
         let mut det = DnsTunnelingDetector::new("test", 4.0, 15, 200, 60);
         let now = Utc::now();
 
-        // Send 5 unique subdomains — below threshold of 15
+        // Send 5 unique subdomains - below threshold of 15
         for i in 0..5 {
             let domain = format!("sub{}.normal.com", i);
             let result = det.process(&dns_event("10.0.0.5", &domain, now + Duration::seconds(i)));
@@ -623,7 +623,7 @@ mod tests {
         ));
         assert!(inc.is_some());
 
-        // Second alert within 300s cooldown — suppressed
+        // Second alert within 300s cooldown - suppressed
         let inc = det.process(&dns_event(
             "10.0.0.5",
             "z9y8x7w6v5u4t3s2r1q0p9o8n7m6.evil.com",
@@ -631,7 +631,7 @@ mod tests {
         ));
         assert!(inc.is_none());
 
-        // After cooldown expires — triggers again
+        // After cooldown expires - triggers again
         let inc = det.process(&dns_event(
             "10.0.0.5",
             "f1e2d3c4b5a6z7y8x9w0v1u2t3s4.evil.com",
@@ -706,7 +706,7 @@ mod tests {
     fn two_label_domain_skipped() {
         let mut det = DnsTunnelingDetector::new("test", 4.0, 15, 100, 60);
         let now = Utc::now();
-        // Only 2 labels — no subdomain to analyze
+        // Only 2 labels - no subdomain to analyze
         let inc = det.process(&dns_event("10.0.0.5", "example.com", now));
         assert!(inc.is_none());
     }
@@ -757,7 +757,7 @@ mod tests {
         let mut det = DnsTunnelingDetector::new("test", 4.0, 15, 100, 60);
         let now = Utc::now();
 
-        // Send 10 connects to standard resolver — well below thresholds
+        // Send 10 connects to standard resolver - well below thresholds
         for i in 0..10 {
             let result = det.process(&ebpf_connect_event(
                 "systemd-resolved",
@@ -841,7 +841,7 @@ mod tests {
 
         // Send 51 connects to port 53 within 30s from same process.
         // Rotate across 3 standard resolvers so beaconing (per dst_ip) stays
-        // at ~17 each — below the >20 threshold — while burst (per comm)
+        // at ~17 each - below the >20 threshold - while burst (per comm)
         // accumulates across all destinations.
         let resolvers = ["8.8.8.8", "1.1.1.1", "9.9.9.9"];
         let mut triggered = false;
@@ -882,7 +882,7 @@ mod tests {
         let inc = det.process(&ebpf_connect_event("curl", "45.33.32.156", 53, now));
         assert!(inc.is_some());
 
-        // Same alert within 300s — suppressed
+        // Same alert within 300s - suppressed
         let inc = det.process(&ebpf_connect_event(
             "curl",
             "45.33.32.156",
@@ -891,7 +891,7 @@ mod tests {
         ));
         assert!(inc.is_none());
 
-        // After 300s cooldown — triggers again
+        // After 300s cooldown - triggers again
         let inc = det.process(&ebpf_connect_event(
             "curl",
             "45.33.32.156",
@@ -929,7 +929,7 @@ mod tests {
         assert!(is_standard_resolver("192.168.1.1"));
         assert!(is_standard_resolver("192.168.0.1"));
 
-        // Non-standard — external IPs
+        // Non-standard - external IPs
         assert!(!is_standard_resolver("45.33.32.156"));
         assert!(!is_standard_resolver("203.0.113.1"));
         assert!(!is_standard_resolver("172.32.0.1")); // outside 172.16-31 range

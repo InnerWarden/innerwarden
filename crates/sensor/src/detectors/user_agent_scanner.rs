@@ -4,7 +4,7 @@
 /// User-Agent header against a curated list of scanner signatures.
 ///
 /// Unlike sliding-window detectors, a single request with a scanner UA is
-/// already an actionable signal — no threshold needed.
+/// already an actionable signal - no threshold needed.
 ///
 /// Tagged as MITRE ATT&CK T1595 (Active Scanning) / T1595.002 (Vulnerability Scanning).
 use std::collections::HashMap;
@@ -109,7 +109,7 @@ impl UserAgentScannerDetector {
             severity: Severity::High,
             title: format!("{scanner_name} scanner detected from {ip}"),
             summary: format!(
-                "{scanner_name} security scanner identified from {ip} — User-Agent matched known scanner signature"
+                "{scanner_name} security scanner identified from {ip} - User-Agent matched known scanner signature"
             ),
             evidence: serde_json::json!([{
                 "kind": "http.request",
@@ -122,7 +122,7 @@ impl UserAgentScannerDetector {
             recommended_checks: vec![
                 format!("Review all requests from {ip} in nginx access log"),
                 format!(
-                    "{scanner_name} may be probing for vulnerabilities — check scan results if authorized"
+                    "{scanner_name} may be probing for vulnerabilities - check scan results if authorized"
                 ),
                 "Consider blocking IP if scan is unauthorized".to_string(),
             ],
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn case_insensitive_match() {
         let mut det = UserAgentScannerDetector::new("host");
-        // UA in uppercase — detector lowercases before matching
+        // UA in uppercase - detector lowercases before matching
         let ev = http_request_event("1.2.3.4", "NIKTO/2.1.6", Utc::now());
         assert!(det.process(&ev).is_some());
     }

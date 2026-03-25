@@ -145,7 +145,7 @@ pub fn parse_osquery_event(line: &str, host: &str) -> Option<Event> {
     let action = v["action"].as_str().unwrap_or("snapshot");
     let unix_ts = v["unixTime"].as_i64().unwrap_or(0);
 
-    // Skip "removed" actions — we only care about new rows appearing
+    // Skip "removed" actions - we only care about new rows appearing
     if action == "removed" {
         return None;
     }
@@ -167,7 +167,7 @@ pub fn parse_osquery_event(line: &str, host: &str) -> Option<Event> {
     // Entity extraction
     let mut entities = Vec::new();
 
-    // Network columns — addresses
+    // Network columns - addresses
     for key in &["address", "remote_address", "local_address"] {
         if let Some(addr) = columns[key].as_str() {
             if is_valid_ip(addr) {
@@ -242,7 +242,7 @@ pub fn query_name_slug(name: &str) -> String {
 }
 
 /// Assign severity based on known security-relevant query name substrings.
-/// Checked in order — first match wins. Defaults to Info.
+/// Checked in order - first match wins. Defaults to Info.
 pub fn severity_for_query(name: &str) -> Severity {
     // High-signal security queries
     const HIGH: &[&str] = &["sudoers", "suid_bin", "authorized_keys", "crontab_modified"];
@@ -335,7 +335,7 @@ fn is_valid_ip(addr: &str) -> bool {
     if matches!(addr, "" | "0.0.0.0" | "::" | "127.0.0.1" | "::1" | "<NA>") {
         return false;
     }
-    // Skip private/RFC1918 ranges — these are usually the monitored host's own
+    // Skip private/RFC1918 ranges - these are usually the monitored host's own
     // addresses and add noise to entity extraction
     if addr.starts_with("10.") || addr.starts_with("192.168.") || addr.starts_with("fe80:")
     // link-local IPv6
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn removed_action_returns_none() {
-        // "removed" rows are skipped — we only care about new state
+        // "removed" rows are skipped - we only care about new state
         assert!(parse_osquery_event(removed_action_line(), "host1").is_none());
     }
 

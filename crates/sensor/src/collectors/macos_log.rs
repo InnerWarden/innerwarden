@@ -27,11 +27,11 @@ impl MacosLogCollector {
         let check = Command::new("log").arg("version").output().await;
         match check {
             Err(_) => {
-                warn!("log binary not found — macos_log collector disabled");
+                warn!("log binary not found - macos_log collector disabled");
                 return Ok(());
             }
             Ok(out) if !out.status.success() => {
-                warn!("log version check failed — macos_log collector disabled");
+                warn!("log version check failed - macos_log collector disabled");
                 return Ok(());
             }
             _ => {}
@@ -39,7 +39,7 @@ impl MacosLogCollector {
 
         info!(host = %self.host, "macos_log collector starting");
 
-        // Restart loop — if `log stream` exits unexpectedly, restart it.
+        // Restart loop - if `log stream` exits unexpectedly, restart it.
         loop {
             let mut cmd = Command::new("log");
             cmd.args([
@@ -97,7 +97,7 @@ impl MacosLogCollector {
                 return Ok(());
             }
 
-            warn!("log stream exited unexpectedly — restarting in 5s");
+            warn!("log stream exited unexpectedly - restarting in 5s");
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
     }

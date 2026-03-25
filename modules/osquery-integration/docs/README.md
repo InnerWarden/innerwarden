@@ -3,7 +3,7 @@
 Integrates [osquery](https://osquery.io) differential results with InnerWarden
 as host observability events.
 
-osquery exposes the operating system as a relational database — you write SQL
+osquery exposes the operating system as a relational database - you write SQL
 queries against tables like `listening_ports`, `processes`, `crontab`,
 `sudoers`, `authorized_keys`, and hundreds more. Results are delivered as
 differential logs: when a new row appears (something changed), osquery writes
@@ -17,7 +17,7 @@ InnerWarden ingests these differential results and:
 
 ## Current Limitations
 
-osquery events are **not** incidents by themselves — they are observability
+osquery events are **not** incidents by themselves - they are observability
 signals that enrich the AI context and appear in the dashboard. A new
 listening port or sudoers change becomes significant *in context* of an
 active SSH attack or Falco alert. The dashboard correlates these

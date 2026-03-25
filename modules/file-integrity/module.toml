@@ -17,7 +17,7 @@ skills     = []     # response is via webhook notification; no block/suspend ski
 [requires]
 event_sources = ["integrity"]
 
-# No automated response rules — file integrity changes require human review.
+# No automated response rules - file integrity changes require human review.
 # Use webhook to route alerts to your notification channel.
 # [[rules]] is intentionally empty for this module.
 

@@ -8,7 +8,7 @@ use innerwarden_core::{event::Event, incident::Incident};
 use tracing::warn;
 
 /// Hard ceiling for a single day's events file.  Incidents and decisions
-/// are exempt — they are tiny and operationally critical.
+/// are exempt - they are tiny and operationally critical.
 const MAX_EVENTS_FILE_BYTES: u64 = 200 * 1024 * 1024; // 200 MB
 
 pub struct JsonlWriter {
@@ -54,7 +54,7 @@ impl JsonlWriter {
             if meta.len() >= MAX_EVENTS_FILE_BYTES {
                 if self.events_limit_warned != Some(today) {
                     warn!(
-                        "events file exceeded 200MB — pausing event writes to prevent disk exhaustion"
+                        "events file exceeded 200MB - pausing event writes to prevent disk exhaustion"
                     );
                     self.events_limit_warned = Some(today);
                 }

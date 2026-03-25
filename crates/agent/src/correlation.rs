@@ -200,13 +200,13 @@ fn within_window(a: DateTime<Utc>, b: DateTime<Utc>, window: Duration) -> bool {
 /// Calculate a confidence boost based on cross-detector correlation.
 ///
 /// When the same IP triggers multiple distinct detectors within the correlation
-/// window, this is strong evidence of a real attack — not a false positive.
+/// window, this is strong evidence of a real attack - not a false positive.
 /// The boost multiplies the AI's base confidence:
 ///
 ///   1 detector  → 1.0x (no boost)
 ///   2 detectors → 1.15x (e.g., ssh_bruteforce + port_scan)
 ///   3 detectors → 1.30x (e.g., + credential_stuffing)
-///   4+ detectors → 1.50x (coordinated attack — near certainty)
+///   4+ detectors → 1.50x (coordinated attack - near certainty)
 ///
 /// The result is clamped to [0.0, 1.0].
 pub fn cross_detector_boost(

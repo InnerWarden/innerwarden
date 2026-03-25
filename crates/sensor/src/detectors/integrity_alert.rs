@@ -2,7 +2,7 @@
 ///
 /// Watches `file.changed` events emitted by the integrity collector. Every
 /// change to a monitored path is inherently suspicious (these are critical
-/// system files), so the detector fires an incident for each change — subject
+/// system files), so the detector fires an incident for each change - subject
 /// to a per-path cooldown to avoid duplicate alerts.
 use std::collections::HashMap;
 
@@ -14,7 +14,7 @@ const CRITICAL_PATHS: &[&str] = &["/etc/shadow", "/etc/passwd", "/etc/sudoers"];
 
 pub struct IntegrityAlertDetector {
     host: String,
-    /// Last alert time per path — suppresses re-alerts within the cooldown.
+    /// Last alert time per path - suppresses re-alerts within the cooldown.
     alerted: HashMap<String, DateTime<Utc>>,
     cooldown: Duration,
 }
@@ -74,7 +74,7 @@ impl IntegrityAlertDetector {
             severity,
             title: format!("File integrity change: {path}"),
             summary: format!(
-                "Monitored file {path} was modified — hash changed from {old_hash} to {new_hash}"
+                "Monitored file {path} was modified - hash changed from {old_hash} to {new_hash}"
             ),
             evidence: serde_json::json!([{
                 "kind": "file.changed",
@@ -83,7 +83,7 @@ impl IntegrityAlertDetector {
                 "new_hash": new_hash,
             }]),
             recommended_checks: vec![
-                format!("Investigate who changed {path} — review audit log and recent logins"),
+                format!("Investigate who changed {path} - review audit log and recent logins"),
                 "Check if the change was part of a legitimate update or package install"
                     .to_string(),
                 "Compare file contents with a known-good backup".to_string(),
@@ -166,7 +166,7 @@ mod tests {
         assert!(det
             .process(&file_changed_event("/etc/hosts", base))
             .is_some());
-        // Second change within cooldown — suppressed
+        // Second change within cooldown - suppressed
         assert!(det
             .process(&file_changed_event(
                 "/etc/hosts",
@@ -182,7 +182,7 @@ mod tests {
         assert!(det
             .process(&file_changed_event("/etc/hosts", base))
             .is_some());
-        // After cooldown — fires again
+        // After cooldown - fires again
         assert!(det
             .process(&file_changed_event(
                 "/etc/hosts",
@@ -198,7 +198,7 @@ mod tests {
         assert!(det
             .process(&file_changed_event("/etc/hosts", base))
             .is_some());
-        // Different path — fires even though first path is in cooldown
+        // Different path - fires even though first path is in cooldown
         assert!(det
             .process(&file_changed_event("/etc/resolv.conf", base))
             .is_some());

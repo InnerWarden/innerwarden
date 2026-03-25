@@ -11,7 +11,7 @@ Two components:
 - **nginx-access-log collector** (`nginx_access`): tails the nginx access log in Combined Log Format, emitting `http.request` events per request
 - **search-abuse detector** (`search_abuse`): sliding window per (IP, path prefix), triggers at threshold
 
-The collector uses a byte-offset cursor for resume-on-restart — it picks up from where it left off after a sensor restart.
+The collector uses a byte-offset cursor for resume-on-restart - it picks up from where it left off after a sensor restart.
 
 ## Configuration
 
@@ -46,13 +46,13 @@ allowed_skills = ["block-ip-ufw"]
 
 - Start with `dry_run = true` and observe `decisions-*.jsonl` for 24h before enabling live blocking
 - Lower `threshold` (e.g. 10) if your search route is expensive and even moderate automation causes problems
-- Set `path_prefix = ""` to monitor all routes — useful as a general rate-abuse detector
+- Set `path_prefix = ""` to monitor all routes - useful as a general rate-abuse detector
 - Adjust `window_seconds = 300` (5min) if you want to catch slower but sustained crawling
 
 ## Security
 
 - The collector is read-only (tails a file)
-- Skills only block IPs — no server-side nginx config is modified
+- Skills only block IPs - no server-side nginx config is modified
 - Blocking is done via ufw/iptables/nftables, which requires the sudoers permission for the `innerwarden` user
 - Always validate in `dry_run = true` to avoid blocking legitimate users (e.g. paginated scrapers you've authorized)
 

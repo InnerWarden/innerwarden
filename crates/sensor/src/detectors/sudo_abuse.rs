@@ -157,7 +157,7 @@ fn classify_suspicious(command: &str) -> Vec<String> {
         reasons.push("privilege_policy_change".to_string());
     }
 
-    // SUID/SGID manipulation — classic privilege escalation (T1548.001)
+    // SUID/SGID manipulation - classic privilege escalation (T1548.001)
     if lower.contains("chmod +s")
         || lower.contains("chmod u+s")
         || lower.contains("chmod g+s")
@@ -211,7 +211,7 @@ fn classify_suspicious(command: &str) -> Vec<String> {
         reasons.push("cron_persistence".to_string());
     }
 
-    // /tmp execution — staging area for exploits
+    // /tmp execution - staging area for exploits
     if lower.contains("/tmp/") && (lower.contains("chmod +x") || lower.contains("./")) {
         reasons.push("tmp_execution".to_string());
     }
@@ -226,7 +226,7 @@ fn classify_suspicious(command: &str) -> Vec<String> {
         reasons.push("destructive_command".to_string());
     }
 
-    // Log tampering — covering tracks (T1070)
+    // Log tampering - covering tracks (T1070)
     if lower.contains("/var/log")
         && (lower.contains("rm") || lower.contains("truncate") || lower.contains("> /"))
     {

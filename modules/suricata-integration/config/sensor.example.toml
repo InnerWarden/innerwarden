@@ -1,4 +1,4 @@
-# Suricata integration — sensor config snippet
+# Suricata integration - sensor config snippet
 #
 # 1. Install Suricata: https://suricata.io/download/
 #    Ubuntu: sudo apt-get install suricata

@@ -69,5 +69,5 @@ innerwarden doctor
 ## What it does NOT do
 
 - Does not tail the access log (use `nginx_access` + `search_abuse` for that)
-- Does not block IPs itself — that requires the `block-ip` capability
+- Does not block IPs itself - that requires the `block-ip` capability
 - Debug and notice-level lines are silently skipped

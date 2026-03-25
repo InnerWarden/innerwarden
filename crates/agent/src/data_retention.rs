@@ -94,7 +94,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let today = Local::now().date_naive();
 
-        // events: keep 7 days — write one 8 days old (should be removed)
+        // events: keep 7 days - write one 8 days old (should be removed)
         let old = today - Duration::days(8);
         write_dated_file(tmp.path(), "events-", ".jsonl", old);
 
@@ -121,7 +121,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let today = Local::now().date_naive();
 
-        // decisions: default keep 90 days — write one 60 days old (should be kept)
+        // decisions: default keep 90 days - write one 60 days old (should be kept)
         let recent = today - Duration::days(60);
         write_dated_file(tmp.path(), "decisions-", ".jsonl", recent);
 

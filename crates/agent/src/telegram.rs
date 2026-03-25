@@ -1,7 +1,7 @@
 /// Telegram notification and approval channel for InnerWarden.
 ///
-/// T.1 — Notifications: sends an alert message for every High/Critical incident.
-/// T.2 — Approvals: sends an inline-keyboard message when the AI requests human
+/// T.1 - Notifications: sends an alert message for every High/Critical incident.
+/// T.2 - Approvals: sends an inline-keyboard message when the AI requests human
 ///        confirmation; polls for button presses and sends results back to the
 ///        main loop via a channel.
 use std::time::Duration;
@@ -16,14 +16,14 @@ use tracing::{info, warn};
 // Guardian mode
 // ---------------------------------------------------------------------------
 
-/// Operating mode of the InnerWarden agent — drives notification style.
+/// Operating mode of the InnerWarden agent - drives notification style.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GuardianMode {
-    /// Responder enabled, live — agent acts autonomously and reports decisions.
+    /// Responder enabled, live - agent acts autonomously and reports decisions.
     Guard,
-    /// Responder enabled, dry-run — simulates actions, asks for confirmation.
+    /// Responder enabled, dry-run - simulates actions, asks for confirmation.
     DryRun,
-    /// Responder disabled — monitors and asks operator what to do.
+    /// Responder disabled - monitors and asks operator what to do.
     Watch,
 }
 
@@ -39,8 +39,8 @@ impl GuardianMode {
     pub fn description(&self) -> &'static str {
         match self {
             GuardianMode::Guard => "Threats are blocked automatically. You receive reports.",
-            GuardianMode::DryRun => "Test mode — shows what would be blocked, no real changes.",
-            GuardianMode::Watch => "Monitor only — all actions require your approval.",
+            GuardianMode::DryRun => "Test mode - shows what would be blocked, no real changes.",
+            GuardianMode::Watch => "Monitor only - all actions require your approval.",
         }
     }
 }
@@ -115,14 +115,14 @@ impl TelegramClient {
     }
 
     // -----------------------------------------------------------------------
-    // T.1 — Incident notification
+    // T.1 - Incident notification
     // -----------------------------------------------------------------------
 
     /// Send a notification message for a High/Critical incident.
-    /// In GUARD mode the alert is compact — no action buttons, the agent will
+    /// In GUARD mode the alert is compact - no action buttons, the agent will
     /// act and follow up with send_action_report(). In WATCH/DryRun mode the
     /// alert includes Block/Ignore quick-action buttons.
-    /// Failures are logged as warnings and never propagate — fail-open.
+    /// Failures are logged as warnings and never propagate - fail-open.
     pub async fn send_incident_alert(&self, incident: &Incident, mode: GuardianMode) -> Result<()> {
         let text = format_incident_message(incident, self.dashboard_url.as_deref(), mode);
 
@@ -135,7 +135,7 @@ impl TelegramClient {
 
         match mode {
             GuardianMode::Guard => {
-                // GUARD: agent will act — show investigate button only, no Block/Ignore
+                // GUARD: agent will act - show investigate button only, no Block/Ignore
                 if let Some(ip) = first_ip_entity(incident) {
                     if let Some(ref base_url) = self.dashboard_url {
                         let link = format!(
@@ -152,7 +152,7 @@ impl TelegramClient {
                 }
             }
             GuardianMode::Watch | GuardianMode::DryRun => {
-                // WATCH/DryRun: operator makes the call — add Block/Ignore buttons
+                // WATCH/DryRun: operator makes the call - add Block/Ignore buttons
                 if let Some(ip) = first_ip_entity(incident) {
                     let mut keyboard: Vec<Vec<serde_json::Value>> = vec![vec![
                         serde_json::json!({
@@ -229,7 +229,7 @@ impl TelegramClient {
         }
 
         let cf_line = if cloudflare_pushed {
-            "\n☁️ Pushed to Cloudflare edge too — blocked before they even reach your server."
+            "\n☁️ Pushed to Cloudflare edge too - blocked before they even reach your server."
         } else {
             ""
         };
@@ -239,7 +239,7 @@ impl TelegramClient {
                 "🧪 <b>Simulation</b>\n\
                  Would've {action_label} <code>{target}</code>{enrichment}\n\
                  <i>{incident_title}</i>\n\
-                 Confidence: {pct}% — dry-run, no real action.\n\
+                 Confidence: {pct}% - dry-run, no real action.\n\
                  <i>Want me to start dropping these for real? Enable live mode.</i>{cf_line}",
                 target = escape_html(target),
                 incident_title = escape_html(incident_title),
@@ -248,7 +248,7 @@ impl TelegramClient {
             format!(
                 "📝 <b>Analyzed &amp; dismissed</b>\n\
                  <i>{incident_title}</i>\n\
-                 Confidence: {pct}% — No action needed.{enrichment}",
+                 Confidence: {pct}% - No action needed.{enrichment}",
                 incident_title = escape_html(incident_title),
             )
         } else {
@@ -256,13 +256,13 @@ impl TelegramClient {
                 95..=100 => "Clean kill. Zero doubt.",
                 85..=94 => "Textbook containment.",
                 70..=84 => "Threat actor down. Solid confidence.",
-                _ => "Contained — keeping eyes on it.",
+                _ => "Contained - keeping eyes on it.",
             };
             format!(
                 "🔥 <b>Threat neutralized</b>\n\
                  {action_label} <code>{target}</code>{enrichment}\n\
                  <i>{incident_title}</i>\n\
-                 Confidence: {pct}% — {kill_quip}{cf_line}",
+                 Confidence: {pct}% - {kill_quip}{cf_line}",
                 target = escape_html(target),
                 incident_title = escape_html(incident_title),
             )
@@ -302,7 +302,7 @@ impl TelegramClient {
         let mode_desc = mode.description();
 
         let today_line = if incident_count == 0 {
-            "Perimeter's clean — no threat actors in the logs today.".to_string()
+            "Perimeter's clean - no threat actors in the logs today.".to_string()
         } else {
             format!(
                 "<b>{incident_count}</b> intrusion attempt{} logged, <b>{decision_count}</b> neutralized.",
@@ -311,7 +311,7 @@ impl TelegramClient {
         };
 
         let text = format!(
-            "🛡 <b>InnerWarden</b> — protecting <b>{host}</b>\n\
+            "🛡 <b>InnerWarden</b> - protecting <b>{host}</b>\n\
              \n\
              {today_line}\n\
              \n\
@@ -346,7 +346,7 @@ impl TelegramClient {
     }
 
     // -----------------------------------------------------------------------
-    // T.2 — Confirmation request (inline keyboard: Approve / Reject)
+    // T.2 - Confirmation request (inline keyboard: Approve / Reject)
     // -----------------------------------------------------------------------
 
     /// Send a confirmation-request message with Approve/Reject inline keyboard.
@@ -365,10 +365,10 @@ impl TelegramClient {
         let pct = (confidence * 100.0) as u32;
 
         let confidence_phrase = match pct {
-            90..=100 => "High confidence — this is a real threat",
-            75..=89 => "Strong signal — TTPs check out",
-            60..=74 => "Moderate confidence — worth acting on",
-            _ => "Low signal — could be noise, could be legit",
+            90..=100 => "High confidence - this is a real threat",
+            75..=89 => "Strong signal - TTPs check out",
+            60..=74 => "Moderate confidence - worth acting on",
+            _ => "Low signal - could be noise, could be legit",
         };
         let action_plain = plain_action(action_description);
         let expires_min = expires_secs / 60;
@@ -386,7 +386,7 @@ impl TelegramClient {
              🤖 {confidence_phrase} ({pct}%). Recommended action:\n\
              <code>{action_plain}</code>\n\
              \n\
-             Your call, operator — {expires_label} to respond.",
+             Your call, operator - {expires_label} to respond.",
             title = escape_html(&incident.title),
             action_plain = escape_html(&action_plain),
             entity_line = entity_line,
@@ -515,12 +515,12 @@ impl TelegramClient {
         // Send follow-up result message with hacker personality
         let text = if always {
             format!(
-                "🔁 Trust rule saved, {operator}. This TTP is now auto-contained — no need to ping you next time.",
+                "🔁 Trust rule saved, {operator}. This TTP is now auto-contained - no need to ping you next time.",
                 operator = escape_html(operator)
             )
         } else if approved {
             format!(
-                "✅ Executed. {operator} called the shot — threat actor has been neutralized.",
+                "✅ Executed. {operator} called the shot - threat actor has been neutralized.",
                 operator = escape_html(operator)
             )
         } else {
@@ -538,10 +538,10 @@ impl TelegramClient {
     }
 
     // -----------------------------------------------------------------------
-    // T.5 — Post-session honeypot report
+    // T.5 - Post-session honeypot report
     // -----------------------------------------------------------------------
 
-    /// T.5 — Post-session report sent after a honeypot session ends.
+    /// T.5 - Post-session report sent after a honeypot session ends.
     /// Summarizes commands, extracted IOCs, AI verdict, and offers a Block action.
     #[allow(clippy::too_many_arguments)]
     pub async fn send_honeypot_session_report(
@@ -557,7 +557,7 @@ impl TelegramClient {
     ) -> Result<()> {
         let mut lines = Vec::new();
         lines.push(format!(
-            "🍯 <b>Honeypot debrief</b> — session over\n\n\
+            "🍯 <b>Honeypot debrief</b> - session over\n\n\
              <b>Attacker:</b> <code>{ip}</code>\n\
              <b>Session:</b> <code>{session_id}</code>\n\
              <b>Duration:</b> {duration_secs}s | <b>Commands captured:</b> {}",
@@ -610,7 +610,7 @@ impl TelegramClient {
         lines.push(format!("\n<b>AI verdict:</b> {}", escape_html(ai_verdict)));
 
         if auto_blocked {
-            lines.push("\n✅ IP auto-blocked — they walked right into it.".to_string());
+            lines.push("\n✅ IP auto-blocked - they walked right into it.".to_string());
         }
 
         let text = lines.join("\n");
@@ -659,7 +659,7 @@ impl TelegramClient {
     // -----------------------------------------------------------------------
 
     /// Notify operator when an IP is auto-blocked via AbuseIPDB threshold
-    /// (no AI call was made — pure reputation gate).
+    /// (no AI call was made - pure reputation gate).
     #[allow(clippy::too_many_arguments)]
     pub async fn send_abuseipdb_autoblock(
         &self,
@@ -688,18 +688,18 @@ impl TelegramClient {
         let (action_line, header) = if dry_run {
             (
                 format!(
-                    "Would've dropped <code>{}</code> — dry-run, standing down.",
+                    "Would've dropped <code>{}</code> - dry-run, standing down.",
                     escape_html(ip)
                 ),
-                "🧪 <b>Dry-run</b> — known bad actor flagged",
+                "🧪 <b>Dry-run</b> - known bad actor flagged",
             )
         } else {
             (
                 format!(
-                    "Blocked <code>{}</code> — known threat from reputation database.",
+                    "Blocked <code>{}</code> - known threat from reputation database.",
                     escape_html(ip)
                 ),
-                "🛡 <b>Instant kill</b> — AbuseIPDB reputation gate",
+                "🛡 <b>Instant kill</b> - AbuseIPDB reputation gate",
             )
         };
 
@@ -713,7 +713,7 @@ impl TelegramClient {
              🔍 <i>{incident_title}</i>\n\
              \n\
              {action_line}\n\
-             <i>Score ≥ {threshold} — handled before AI analysis.</i>",
+             <i>Score ≥ {threshold} - handled before AI analysis.</i>",
             ip = escape_html(ip),
             incident_title = escape_html(incident_title),
         );
@@ -739,7 +739,7 @@ impl TelegramClient {
         self.post_json("sendMessage", &body).await
     }
 
-    // T.3 — Daily digest
+    // T.3 - Daily digest
     // -----------------------------------------------------------------------
 
     /// Send a plain HTML text message (used for daily digest).
@@ -773,7 +773,7 @@ impl TelegramClient {
     pub async fn send_menu(&self) -> Result<()> {
         let body = serde_json::json!({
             "chat_id": self.chat_id,
-            "text": "👾 <b>InnerWarden</b> — what do you need, operator?",
+            "text": "👾 <b>InnerWarden</b> - what do you need, operator?",
             "parse_mode": "HTML",
             "reply_markup": {
                 "inline_keyboard": [
@@ -815,17 +815,17 @@ impl TelegramClient {
     pub async fn set_commands(&self) {
         let body = serde_json::json!({
             "commands": [
-                { "command": "status",       "description": "Guardian status — mode, AI, threat intel" },
+                { "command": "status",       "description": "Guardian status - mode, AI, threat intel" },
                 { "command": "threats",      "description": "Recent intrusion attempts" },
                 { "command": "decisions",    "description": "Actions I've taken" },
                 { "command": "blocked",      "description": "Threat actors currently contained" },
                 { "command": "capabilities", "description": "List all capabilities and their status" },
-                { "command": "enable",       "description": "Enable a capability — /enable block-ip" },
-                { "command": "disable",      "description": "Disable a capability — /disable ai" },
+                { "command": "enable",       "description": "Enable a capability - /enable block-ip" },
+                { "command": "disable",      "description": "Disable a capability - /disable ai" },
                 { "command": "doctor",       "description": "Full health check with fix hints" },
                 { "command": "guard",        "description": "Activate auto-defend mode" },
                 { "command": "watch",        "description": "Switch to passive monitor mode" },
-                { "command": "ask",          "description": "Ask me anything — I know my config" },
+                { "command": "ask",          "description": "Ask me anything - I know my config" },
                 { "command": "help",         "description": "Operator command playbook" }
             ]
         });
@@ -837,7 +837,7 @@ impl TelegramClient {
     // -----------------------------------------------------------------------
 
     /// Polls Telegram for updates and sends ApprovalResults to `approval_tx`.
-    /// Designed to run as a background tokio task — exits when `approval_tx` is closed.
+    /// Designed to run as a background tokio task - exits when `approval_tx` is closed.
     ///
     /// Uses long-polling (timeout=25s) so this blocks for up to 25s between updates.
     /// Any errors are logged and the loop continues.
@@ -869,7 +869,7 @@ impl TelegramClient {
 
                             if let Some(data) = &callback.data {
                                 if data == "quick:ignore" {
-                                    // Just ack with toast — no further action needed
+                                    // Just ack with toast - no further action needed
                                     let _ = self
                                         .answer_callback_toast(
                                             &callback.id,
@@ -903,13 +903,13 @@ impl TelegramClient {
                                         let ip = parts[1];
                                         let toast = match action {
                                             "honeypot" => {
-                                                format!("🍯 Routing {ip} to honeypot — let them think they're in...")
+                                                format!("🍯 Routing {ip} to honeypot - let them think they're in...")
                                             }
                                             "block" => {
                                                 format!("🚫 Dropping {ip} at the firewall...")
                                             }
                                             "monitor" => {
-                                                format!("👁 Silent monitoring on {ip} — collecting intel...")
+                                                format!("👁 Silent monitoring on {ip} - collecting intel...")
                                             }
                                             _ => "👍 Logged.".to_string(),
                                         };
@@ -997,12 +997,12 @@ impl TelegramClient {
                                     // Telegram sends /start when user first opens the bot
                                     "__start__".to_string()
                                 } else if !text.starts_with('/') || text.starts_with("/ask ") {
-                                    // Free-form text or /ask <question> — route to AI
+                                    // Free-form text or /ask <question> - route to AI
                                     let question =
                                         text.strip_prefix("/ask ").unwrap_or(&text).to_string();
                                     format!("__ask__:{question}")
                                 } else {
-                                    // Unknown command — send help hint
+                                    // Unknown command - send help hint
                                     "__unknown_cmd__".to_string()
                                 };
 
@@ -1185,14 +1185,14 @@ fn format_incident_message(
             let quip = incident_quip(incident);
             (
                 "⚡",
-                format!("\n{quip}\n<i>Handling it — stand by for action report.</i>"),
+                format!("\n{quip}\n<i>Handling it - stand by for action report.</i>"),
             )
         }
         GuardianMode::DryRun => {
             let quip = incident_quip(incident);
             (
                 "🧪",
-                format!("\n{quip}\n<i>Dry-run — I'd act on this. Enable live mode to let me.</i>"),
+                format!("\n{quip}\n<i>Dry-run - I'd act on this. Enable live mode to let me.</i>"),
             )
         }
         GuardianMode::Watch => {
@@ -1249,31 +1249,31 @@ fn incident_quip(incident: &Incident) -> &'static str {
         return "🎭 Credential spray detected. Threat actor cosplaying as your users.";
     }
     if title.contains("port scan") || title.contains("portscan") {
-        return "🔭 Recon phase active — they're mapping our attack surface. Not on my watch.";
+        return "🔭 Recon phase active - they're mapping our attack surface. Not on my watch.";
     }
     if title.contains("sudo") || title.contains("privilege") {
         return "👑 Privilege escalation attempt. This actor's trying to go root. Hard no.";
     }
     if title.contains("execution") || title.contains("shell") || title.contains("command") {
-        return "💀 Suspicious binary execution. Could be a payload drop — locking it down.";
+        return "💀 Suspicious binary execution. Could be a payload drop - locking it down.";
     }
     if title.contains("rate") || title.contains("search") || title.contains("abuse") {
         return "🤖 Automated scraping detected. Bot's treating your server like an open API.";
     }
     if title.contains("authorized_keys") || title.contains("ssh key") {
-        return "🔑 SSH key tampering — classic persistence play. ATT&CK T1098.004 vibes.";
+        return "🔑 SSH key tampering - classic persistence play. ATT&CK T1098.004 vibes.";
     }
     if title.contains("cron") || title.contains("scheduled") {
-        return "⏰ Cron tampering — threat actor planting a persistent backdoor. ATT&CK T1053.";
+        return "⏰ Cron tampering - threat actor planting a persistent backdoor. ATT&CK T1053.";
     }
     if title.contains("file") || title.contains("integrity") {
-        return "🕵️ File tampered outside expected windows. Could be an IOC — eyes on it.";
+        return "🕵️ File tampered outside expected windows. Could be an IOC - eyes on it.";
     }
     if title.contains("container") || title.contains("docker") {
         return "🐳 Suspicious container spun up. Checking for --privileged escapes.";
     }
     if tags.contains(&"falco") {
-        return "🔬 Falco snagged a kernel-level anomaly. That's deep in the stack — serious.";
+        return "🔬 Falco snagged a kernel-level anomaly. That's deep in the stack - serious.";
     }
     if tags.contains(&"suricata") {
         return "🌐 Suricata flagged dirty traffic. Network-layer IOC confirmed.";
@@ -1281,7 +1281,7 @@ fn incident_quip(incident: &Incident) -> &'static str {
     if tags.contains(&"wazuh") {
         return "🛡 Wazuh HIDS tripped. Host-based intrusion signatures firing.";
     }
-    "👾 Anomaly in the noise. Threat actor or misconfigured bot — investigating."
+    "👾 Anomaly in the noise. Threat actor or misconfigured bot - investigating."
 }
 
 /// Converts a technical action description into hacker-flavored plain language.
@@ -1294,25 +1294,25 @@ fn plain_action(action: &str) -> String {
         || a.contains("pfctl")
     {
         let ip = a.split_whitespace().last().unwrap_or("IP");
-        return format!("Drop {ip} at the firewall — blackhole their traffic");
+        return format!("Drop {ip} at the firewall - blackhole their traffic");
     }
     if a.contains("block") && a.contains("ip") {
         let ip = a.split_whitespace().last().unwrap_or("IP");
-        return format!("Firewall drop {ip} — null route all inbound traffic");
+        return format!("Firewall drop {ip} - null route all inbound traffic");
     }
     // suspend-user-sudo
     if a.contains("sudoers") || a.contains("suspend") {
         let user = a.split_whitespace().last().unwrap_or("user");
-        return format!("Kill sudo privileges for {user} — privilege revoked");
+        return format!("Kill sudo privileges for {user} - privilege revoked");
     }
     // monitor
     if a.contains("tcpdump") || a.contains("monitor") || a.contains("pcap") {
         let ip = a.split_whitespace().last().unwrap_or("IP");
-        return format!("Spin up packet capture on {ip} — collect forensic evidence");
+        return format!("Spin up packet capture on {ip} - collect forensic evidence");
     }
     // honeypot
     if a.contains("honeypot") {
-        return "Redirect threat actor to honeypot — let them think they're in".to_string();
+        return "Redirect threat actor to honeypot - let them think they're in".to_string();
     }
     // fallback
     a.to_string()

@@ -25,9 +25,9 @@ No additional parameters. The collector streams Docker events automatically.
 
 ## Security
 
-- The `innerwarden` user must be in the `docker` group — this grants significant system access
+- The `innerwarden` user must be in the `docker` group - this grants significant system access
 - The collector is read-only (subscribes to events, does not start/stop containers)
-- No automated response is triggered — container events appear in the dashboard and AI correlation context only
+- No automated response is triggered - container events appear in the dashboard and AI correlation context only
 
 ## Prerequisites
 

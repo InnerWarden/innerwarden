@@ -1,4 +1,4 @@
-/// Web Push notifications — RFC 8291 content encryption + RFC 8292 VAPID.
+/// Web Push notifications - RFC 8291 content encryption + RFC 8292 VAPID.
 ///
 /// This module implements the server-side of the Web Push Protocol:
 ///   1. VAPID key generation and JWT signing (EC P-256, ES256)
@@ -114,9 +114,9 @@ fn build_vapid_auth(endpoint: &str, config: &WebPushConfig) -> Result<String> {
 
     // Sign with ES256 (ECDSA P-256, SHA-256)
     let signing_key = SigningKey::from_pkcs8_pem(&config.vapid_private_key)
-        .context("failed to parse VAPID private key — run `innerwarden notify web-push setup`")?;
+        .context("failed to parse VAPID private key - run `innerwarden notify web-push setup`")?;
     let signature: Signature = signing_key.sign(signing_input.as_bytes());
-    // P1363 format (r || s, 64 bytes) — required by JWT ES256
+    // P1363 format (r || s, 64 bytes) - required by JWT ES256
     let sig_bytes = signature.to_bytes();
     let sig_b64 = URL_SAFE_NO_PAD.encode(sig_bytes.as_slice());
 
@@ -125,7 +125,7 @@ fn build_vapid_auth(endpoint: &str, config: &WebPushConfig) -> Result<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Content encryption — RFC 8291 (aes128gcm)
+// Content encryption - RFC 8291 (aes128gcm)
 // ---------------------------------------------------------------------------
 
 fn encrypt_payload(plaintext: &[u8], subscription: &WebPushSubscription) -> Result<Vec<u8>> {
@@ -313,7 +313,7 @@ pub async fn notify_incident(
     }
 
     let severity_str = format!("{:?}", incident.severity);
-    let title = format!("InnerWarden — {} Incident", severity_str);
+    let title = format!("InnerWarden - {} Incident", severity_str);
     let body = incident.summary.clone();
 
     let mut expired_indices: Vec<usize> = Vec::new();

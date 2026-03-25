@@ -2,7 +2,7 @@
 //!
 //! Write flow:
 //! 1. Write content to a secure temp file (O_EXCL, 0600)
-//! 2. Validate with `visudo -cf <tempfile>`  (fails fast — never installs invalid rules)
+//! 2. Validate with `visudo -cf <tempfile>`  (fails fast - never installs invalid rules)
 //! 3. `install -o root -g root -m 440 <tempfile> /etc/sudoers.d/<name>`
 //! 4. Cleanup temp file
 
@@ -147,16 +147,16 @@ pub fn block_ip_rule(backend: &str) -> Option<String> {
         _ => return None,
     };
     Some(format!(
-        "# Managed by innerwarden-ctl — do not edit manually\n\
+        "# Managed by innerwarden-ctl - do not edit manually\n\
          # Generated for capability: block-ip (backend: {backend})\n\
-         # Minimal permissions: deny/delete/status only — no disable, flush, or reset\n\
+         # Minimal permissions: deny/delete/status only - no disable, flush, or reset\n\
          {rule}"
     ))
 }
 
 /// Returns the sudoers rule for the search-protection nginx skill.
 pub fn search_protection_nginx_rule() -> String {
-    "# Managed by innerwarden-ctl — do not edit manually\n\
+    "# Managed by innerwarden-ctl - do not edit manually\n\
      # Generated for capability: search-protection\n\
      innerwarden ALL=(ALL) NOPASSWD: \\\n  \
      /usr/bin/install -o root -g root -m 644 /tmp/innerwarden-nginx-* /etc/nginx/innerwarden-blocklist.conf, \\\n  \
@@ -167,7 +167,7 @@ pub fn search_protection_nginx_rule() -> String {
 
 /// Returns the sudoers rule for suspend-user-sudo skill.
 pub fn suspend_user_sudo_rule() -> String {
-    "# Managed by innerwarden-ctl — do not edit manually\n\
+    "# Managed by innerwarden-ctl - do not edit manually\n\
      # Generated for capability: sudo-protection\n\
      innerwarden ALL=(ALL) NOPASSWD: \\\n  \
      /usr/bin/install -o root -g root -m 440 /tmp/innerwarden-sudoers-* /etc/sudoers.d/innerwarden-*, \\\n  \

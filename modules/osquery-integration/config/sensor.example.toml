@@ -1,4 +1,4 @@
-# osquery integration — sensor config snippet
+# osquery integration - sensor config snippet
 #
 # 1. Install osquery: https://osquery.io/downloads/
 #    Ubuntu: sudo apt-get install osquery

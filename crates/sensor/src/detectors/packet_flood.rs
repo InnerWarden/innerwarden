@@ -812,7 +812,7 @@ mod tests {
             det.process(&syn_event(&ip, now + Duration::milliseconds(i * 10)));
         }
 
-        // Now trigger HTTP flood — should also fire multi-vector
+        // Now trigger HTTP flood - should also fire multi-vector
         let mut multi_triggered = false;
         for i in 0..5 {
             let ip = format!("7.7.7.{}", i + 1);
@@ -1042,7 +1042,7 @@ mod tests {
         }
         assert!(syn_triggered, "SYN should trigger at 5 events");
 
-        // HTTP still at 3 — should not trigger
+        // HTTP still at 3 - should not trigger
         assert_eq!(det.http_events.len(), 3);
     }
 
@@ -1109,7 +1109,7 @@ mod tests {
         }
         assert_eq!(det.syn_events.len(), 8);
 
-        // Advance time past window (31s) and send 2 more — total in window = 2
+        // Advance time past window (31s) and send 2 more - total in window = 2
         let later = now + Duration::seconds(31);
         for i in 0..2 {
             let ip = format!("22.22.22.{}", i + 1);
@@ -1120,7 +1120,7 @@ mod tests {
                 .collect();
             assert!(
                 syn_incidents.is_empty(),
-                "should not trigger — old events expired, only {} in window",
+                "should not trigger - old events expired, only {} in window",
                 det.syn_events.len()
             );
         }
@@ -1183,7 +1183,7 @@ mod tests {
         });
         let now = Utc::now();
 
-        // Send 5 events but all from same IP — unique_ips < 3
+        // Send 5 events but all from same IP - unique_ips < 3
         for i in 0..5 {
             let results = det.process(&syn_event("1.1.1.1", now + Duration::milliseconds(i * 10)));
             let syn_incidents: Vec<_> = results

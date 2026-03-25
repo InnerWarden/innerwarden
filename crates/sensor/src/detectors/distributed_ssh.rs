@@ -3,7 +3,7 @@ use std::collections::{HashSet, VecDeque};
 use chrono::{DateTime, Duration, Utc};
 use innerwarden_core::{entities::EntityRef, event::Event, event::Severity, incident::Incident};
 
-/// Detects distributed SSH attacks — many distinct IPs failing in a short window.
+/// Detects distributed SSH attacks - many distinct IPs failing in a short window.
 /// Unlike ssh_bruteforce (which tracks one IP), this tracks the *aggregate*
 /// pattern: if 10+ different IPs fail SSH in 5 minutes, it's a coordinated scan.
 ///
@@ -15,7 +15,7 @@ pub struct DistributedSshDetector {
     window: Duration,
     /// Ring of (timestamp, IP) pairs within the window
     recent_failures: VecDeque<(DateTime<Utc>, String)>,
-    /// Last alert time — suppress re-alerts within window
+    /// Last alert time - suppress re-alerts within window
     last_alerted: Option<DateTime<Utc>>,
     host: String,
 }
@@ -86,7 +86,7 @@ impl DistributedSshDetector {
             ),
             severity: Severity::High,
             title: format!(
-                "Distributed SSH attack — {count} IPs in {} seconds",
+                "Distributed SSH attack - {count} IPs in {} seconds",
                 self.window.num_seconds()
             ),
             summary: format!(
@@ -158,7 +158,7 @@ mod tests {
         assert!(det.process(&make_event("1.1.1.1", now)).is_none());
         assert!(det.process(&make_event("1.1.1.1", now)).is_none());
         assert!(det.process(&make_event("1.1.1.1", now)).is_none());
-        // Still only 1 distinct IP — should not fire
+        // Still only 1 distinct IP - should not fire
         assert!(det.process(&make_event("1.1.1.1", now)).is_none());
     }
 

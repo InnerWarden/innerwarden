@@ -38,11 +38,11 @@ impl DockerCollector {
         let check = Command::new("docker").arg("version").output().await;
         match check {
             Err(_) => {
-                warn!("docker binary not found — docker collector disabled");
+                warn!("docker binary not found - docker collector disabled");
                 return Ok(());
             }
             Ok(out) if !out.status.success() => {
-                warn!("docker version check failed — docker collector disabled");
+                warn!("docker version check failed - docker collector disabled");
                 return Ok(());
             }
             _ => {}
@@ -114,7 +114,7 @@ impl DockerCollector {
                                     }
 
                                     // On container start, inspect for privilege escalation risks.
-                                    // Fire-and-forget — a failed inspect never disrupts the event loop.
+                                    // Fire-and-forget - a failed inspect never disrupts the event loop.
                                     if is_start && !container_id.is_empty() {
                                         let tx2 = tx.clone();
                                         tokio::spawn(async move {
@@ -150,7 +150,7 @@ impl DockerCollector {
                 return Ok(());
             }
 
-            warn!("docker events exited unexpectedly — restarting in 5s");
+            warn!("docker events exited unexpectedly - restarting in 5s");
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
     }
@@ -376,9 +376,9 @@ async fn inspect_for_risks(container_id: &str, name: &str, image: &str, host: &s
 /// Returns one event per risk type detected.
 ///
 /// Risks checked:
-/// - `HostConfig.Privileged == true` — full host kernel access
-/// - `HostConfig.Binds` contains `/var/run/docker.sock` — daemon socket mount
-/// - `HostConfig.CapAdd` contains `SYS_ADMIN` or `NET_ADMIN` — dangerous capabilities
+/// - `HostConfig.Privileged == true` - full host kernel access
+/// - `HostConfig.Binds` contains `/var/run/docker.sock` - daemon socket mount
+/// - `HostConfig.CapAdd` contains `SYS_ADMIN` or `NET_ADMIN` - dangerous capabilities
 pub(crate) fn parse_inspect_risks(
     info: &serde_json::Value,
     container_id: &str,

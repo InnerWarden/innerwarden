@@ -8,7 +8,7 @@ pub struct SshBruteforceDetector {
     window: Duration,
     /// Per-IP ring of event timestamps within the current window.
     windows: HashMap<String, VecDeque<DateTime<Utc>>>,
-    /// Last incident emission time per IP — used to suppress re-alerts
+    /// Last incident emission time per IP - used to suppress re-alerts
     /// until the full window has elapsed.
     alerted: HashMap<String, DateTime<Utc>>,
     host: String,
@@ -212,7 +212,7 @@ mod tests {
         // 2 old events, outside window
         det.process(&failed_event("1.2.3.4", base - Duration::seconds(20)));
         det.process(&failed_event("1.2.3.4", base - Duration::seconds(15)));
-        // 2 new events inside window — total in window = 2, below threshold
+        // 2 new events inside window - total in window = 2, below threshold
         assert!(det.process(&failed_event("1.2.3.4", base)).is_none());
         assert!(det
             .process(&failed_event("1.2.3.4", base + Duration::seconds(1)))

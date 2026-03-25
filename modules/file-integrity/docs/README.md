@@ -6,7 +6,7 @@ Monitors critical system files for unexpected changes using SHA-256 polling.
 
 The `integrity` collector computes SHA-256 hashes for a configured list of paths on a regular interval. When a hash changes, a `file.changed` event is emitted. The AI assesses the change and routes an alert via webhook.
 
-Unlike other modules, file-integrity does **not** include an automated blocking skill — file changes require human review to determine intent before any response.
+Unlike other modules, file-integrity does **not** include an automated blocking skill - file changes require human review to determine intent before any response.
 
 ## Configuration
 
@@ -30,9 +30,9 @@ paths = [
 
 ## Security
 
-- Polling is read-only — no system modifications
+- Polling is read-only - no system modifications
 - Hash computation runs in a blocking thread pool (does not block the async runtime)
-- Large files are hashed incrementally — no memory spike
+- Large files are hashed incrementally - no memory spike
 
 ## Source code
 

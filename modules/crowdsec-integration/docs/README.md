@@ -8,7 +8,7 @@ CrowdSec is a collaborative security engine: millions of servers share attack
 signals, and CrowdSec distills them into a continuously updated list of
 malicious IPs. This module polls the **CrowdSec Local API (LAPI)** running on
 your host and automatically enforces its ban decisions through InnerWarden's
-block skills — without waiting for local detection.
+block skills - without waiting for local detection.
 
 ```
 CrowdSec LAPI  →  innerwarden-agent (poll every 60s)
@@ -86,7 +86,7 @@ consensus), `cscli` (manual ban), `CAPI` (central API), etc.
 ## What it does NOT do
 
 - It does **not** report InnerWarden's own blocks back to CrowdSec (one-way sync).
-  Bidirectional reporting requires implementing a CrowdSec bouncer — out of scope.
+  Bidirectional reporting requires implementing a CrowdSec bouncer - out of scope.
 - It does **not** replace your existing InnerWarden detectors. Both work in parallel.
 - Private/loopback IPs from CrowdSec are silently skipped.
 - Simulated decisions are skipped.

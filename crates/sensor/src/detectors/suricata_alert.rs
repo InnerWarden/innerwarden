@@ -14,7 +14,7 @@ pub struct SuricataAlertDetector {
     window: Duration,
     /// Per-IP sliding window of alert timestamps.
     windows: HashMap<String, VecDeque<DateTime<Utc>>>,
-    /// Last incident time per IP — suppresses re-alerts within the same window.
+    /// Last incident time per IP - suppresses re-alerts within the same window.
     alerted: HashMap<String, DateTime<Utc>>,
     /// Track whether any alert from a given IP in the current burst had
     /// suricata severity 1 (highest).
@@ -102,7 +102,7 @@ impl SuricataAlertDetector {
             severity,
             title: format!("Suricata IDS: repeated alerts from {ip}"),
             summary: format!(
-                "{count} Suricata alerts from {ip} in the last {} seconds — last signature: {signature} ({category})",
+                "{count} Suricata alerts from {ip} in the last {} seconds - last signature: {signature} ({category})",
                 self.window.num_seconds()
             ),
             evidence: serde_json::json!([{
@@ -114,7 +114,7 @@ impl SuricataAlertDetector {
                 "window_seconds": self.window.num_seconds(),
             }]),
             recommended_checks: vec![
-                format!("Review Suricata eve.json logs for {ip} — check alert signatures and categories"),
+                format!("Review Suricata eve.json logs for {ip} - check alert signatures and categories"),
                 "Correlate with network flow data for lateral movement".to_string(),
                 "Consider blocking IP if attack pattern confirmed".to_string(),
             ],
@@ -200,7 +200,7 @@ mod tests {
         for i in 0..3 {
             det.process(&suricata_event("1.2.3.4", base + Duration::seconds(i), 2));
         }
-        // Fourth event in same window — suppressed
+        // Fourth event in same window - suppressed
         assert!(det
             .process(&suricata_event("1.2.3.4", base + Duration::seconds(3), 2))
             .is_none());
@@ -233,7 +233,7 @@ mod tests {
         for i in 0..3 {
             det.process(&suricata_event("1.1.1.1", base + Duration::seconds(i), 2));
         }
-        // Different IP — only 2 events, below threshold
+        // Different IP - only 2 events, below threshold
         for i in 0..2 {
             assert!(det
                 .process(&suricata_event("2.2.2.2", base + Duration::seconds(i), 2))
@@ -247,7 +247,7 @@ mod tests {
         let base = Utc::now();
         det.process(&suricata_event("1.2.3.4", base - Duration::seconds(20), 2));
         det.process(&suricata_event("1.2.3.4", base - Duration::seconds(15), 2));
-        // Both old — only 1 new event → below threshold
+        // Both old - only 1 new event → below threshold
         assert!(det.process(&suricata_event("1.2.3.4", base, 2)).is_none());
         assert!(det
             .process(&suricata_event("1.2.3.4", base + Duration::seconds(1), 2))

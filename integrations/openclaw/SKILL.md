@@ -1,6 +1,6 @@
 ---
 name: innerwarden-security
-description: Security advisor for Inner Warden — validates commands before execution, monitors server health, diagnoses issues. All operations on localhost only.
+description: Security advisor for Inner Warden - validates commands before execution, monitors server health, diagnoses issues. All operations on localhost only.
 user-invocable: true
 metadata: {"openclaw":{"always":false,"emoji":"🛡️","requires":{"bins":["curl","systemctl","journalctl","grep","find","du"],"anyBins":["innerwarden"],"env":["INNERWARDEN_DASHBOARD_TOKEN"],"config":["innerwarden.agentEnvPath"]},"os":["linux","darwin"],"primaryEnv":"INNERWARDEN_DASHBOARD_TOKEN"}}
 ---

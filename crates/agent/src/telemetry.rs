@@ -165,7 +165,7 @@ impl TelemetryWriter {
 }
 
 pub fn read_latest_snapshot(data_dir: &Path, date: &str) -> Option<TelemetrySnapshot> {
-    // Validate date format strictly — reject anything that isn't YYYY-MM-DD
+    // Validate date format strictly - reject anything that isn't YYYY-MM-DD
     let parsed = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
     let safe_date = parsed.format("%Y-%m-%d").to_string();
     let path = data_dir.join(format!("telemetry-{safe_date}.jsonl"));

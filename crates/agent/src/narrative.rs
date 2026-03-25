@@ -60,7 +60,7 @@ pub fn generate_with_responder(
     let mut out = String::with_capacity(2048);
 
     // Header
-    out.push_str(&format!("# Inner Warden — {date}\n\n"));
+    out.push_str(&format!("# Inner Warden - {date}\n\n"));
 
     // TL;DR summary at the top
     let high_plus = incidents
@@ -69,7 +69,7 @@ pub fn generate_with_responder(
         .count();
     let tldr = if incidents.is_empty() {
         format!(
-            "✅ Quiet day on **{host}** — no threats detected out of {} logged events.",
+            "✅ Quiet day on **{host}** - no threats detected out of {} logged events.",
             events.len()
         )
     } else if high_plus == 0 {
@@ -91,7 +91,7 @@ pub fn generate_with_responder(
     out.push_str(&format!("{tldr}\n\n"));
     out.push_str("---\n\n");
 
-    // Incidents section — group repeated incidents by (first IP, title)
+    // Incidents section - group repeated incidents by (first IP, title)
     if incidents.is_empty() {
         out.push_str("## Threats\n\nNo threats detected today.\n\n");
     } else {
@@ -111,7 +111,7 @@ pub fn generate_with_responder(
             let representative = group.first;
 
             if group.count == 1 {
-                // Single incident — original format
+                // Single incident - original format
                 let time = representative.ts.format("%H:%M UTC").to_string();
                 out.push_str(&format!("### {icon} {}\n\n", representative.title));
                 out.push_str(&format!("- **Severity:** {sev_label}\n"));
@@ -270,7 +270,7 @@ fn human_event_kind(kind: &str) -> std::borrow::Cow<'static, str> {
         _ if kind.starts_with("container.") => Cow::Borrowed("Docker event"),
         _ if kind.starts_with("osquery.") => Cow::Borrowed("osquery result"),
         _ if kind.starts_with("falco.") => Cow::Borrowed("Falco alert"),
-        // Truly unknown — show the raw kind instead of a generic label
+        // Truly unknown - show the raw kind instead of a generic label
         _ => Cow::Owned(format!("event: {kind}")),
     }
 }
@@ -292,7 +292,7 @@ fn human_detector_name(detector: &str) -> String {
 
 fn severity_plain(severity: &Severity) -> &'static str {
     match severity {
-        Severity::Critical => "Critical — immediate attention needed",
+        Severity::Critical => "Critical - immediate attention needed",
         Severity::High => "High",
         Severity::Medium => "Medium",
         Severity::Low => "Low",
@@ -404,7 +404,7 @@ fn group_incidents(incidents: &[Incident]) -> HashMap<(String, String), Incident
 /// Rewrite "What to check" recommendations based on responder configuration.
 fn smart_checks(original: &[String], responder: ResponderHint) -> Vec<String> {
     if !responder.enabled || !responder.has_block_ip {
-        // Responder disabled or block-ip not allowed — keep originals as-is
+        // Responder disabled or block-ip not allowed - keep originals as-is
         return original.to_vec();
     }
 
@@ -545,7 +545,7 @@ mod tests {
         let incidents = vec![make_incident("SSH Brute Force", Severity::High)];
         let md = generate("2026-03-12", "my-server", &events, &incidents, 300);
 
-        assert!(md.contains("# Inner Warden — 2026-03-12"));
+        assert!(md.contains("# Inner Warden - 2026-03-12"));
         assert!(md.contains("my-server"));
         assert!(md.contains("SSH Brute Force"));
         assert!(md.contains("High"));
@@ -573,7 +573,7 @@ mod tests {
         write(dir.path(), &date, &md).unwrap();
         assert!(dir.path().join(format!("summary-{date}.md")).exists());
 
-        // Write an old summary (30 days ago — always older than keep_days=7)
+        // Write an old summary (30 days ago - always older than keep_days=7)
         let old_date = (chrono::Local::now() - chrono::Duration::days(30))
             .date_naive()
             .format("%Y-%m-%d")
@@ -581,7 +581,7 @@ mod tests {
         write(dir.path(), &old_date, "old").unwrap();
         assert!(dir.path().join(format!("summary-{old_date}.md")).exists());
 
-        // Cleanup keeping 7 days — the old file should be removed
+        // Cleanup keeping 7 days - the old file should be removed
         cleanup_old(dir.path(), 7).unwrap();
         assert!(!dir.path().join(format!("summary-{old_date}.md")).exists());
         // Today's file survives

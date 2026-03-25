@@ -18,7 +18,7 @@ pub struct OpenAiProvider {
     /// Set to any OpenAI-compatible endpoint (Groq, DeepSeek, Together,
     /// MiniMax, Mistral, xAI/Grok, Fireworks, etc.).
     base_url: String,
-    /// Shared HTTP client — holds the connection pool across calls.
+    /// Shared HTTP client - holds the connection pool across calls.
     client: reqwest::Client,
 }
 
@@ -178,11 +178,11 @@ const SYSTEM_PROMPT: &str = r#"
 You are a real-time security decision engine for a Linux server running Inner Warden.
 
 Your job is to analyze security incidents and select the most appropriate response skill.
-Be conservative — a false block harms legitimate users. A missed attack harms the server.
+Be conservative - a false block harms legitimate users. A missed attack harms the server.
 
 Rules:
 - Prefer block_ip for clear, external brute-force attacks with high confidence.
-- Prefer honeypot when "honeypot" is in available_skills AND the attacker is persistent (multiple incidents or high attempt count) — honeypot collects attacker TTPs and tools instead of just blocking.
+- Prefer honeypot when "honeypot" is in available_skills AND the attacker is persistent (multiple incidents or high attempt count) - honeypot collects attacker TTPs and tools instead of just blocking.
 - Prefer monitor for ambiguous cases where more data is needed.
 - Prefer ignore for private IPs, already-handled incidents, or low-confidence signals.
 - Never recommend blocking internal/private IPs (10.x, 192.168.x, 172.16-31.x, 127.x).
@@ -392,11 +392,11 @@ fn parse_decision(content: &str) -> Result<AiDecision> {
 
     let action = match raw.action.as_str() {
         "block_ip" => {
-            // target_ip is mandatory for block_ip — a missing IP would produce
+            // target_ip is mandatory for block_ip - a missing IP would produce
             // a bogus `sudo ufw deny from unknown` command. Downgrade to Ignore
             // so the audit trail captures the event without executing a bad command.
             let Some(ip) = raw.target_ip.clone() else {
-                warn!("AI returned block_ip with no target_ip — downgrading to ignore");
+                warn!("AI returned block_ip with no target_ip - downgrading to ignore");
                 return Ok(AiDecision {
                     action: AiAction::Ignore {
                         reason: "block_ip action had no target IP".to_string(),
@@ -428,7 +428,7 @@ fn parse_decision(content: &str) -> Result<AiDecision> {
         },
         "suspend_user_sudo" => {
             let Some(user) = raw.target_user.clone() else {
-                warn!("AI returned suspend_user_sudo with no target_user — downgrading to ignore");
+                warn!("AI returned suspend_user_sudo with no target_user - downgrading to ignore");
                 return Ok(AiDecision {
                     action: AiAction::Ignore {
                         reason: "suspend_user_sudo action had no target user".to_string(),
@@ -448,7 +448,7 @@ fn parse_decision(content: &str) -> Result<AiDecision> {
         }
         "kill_process" => {
             let Some(user) = raw.target_user.clone() else {
-                warn!("AI returned kill_process with no target_user — downgrading to ignore");
+                warn!("AI returned kill_process with no target_user - downgrading to ignore");
                 return Ok(AiDecision {
                     action: AiAction::Ignore {
                         reason: "kill_process action had no target user".to_string(),
@@ -471,7 +471,7 @@ fn parse_decision(content: &str) -> Result<AiDecision> {
                 Some(id) if !id.is_empty() => id.clone(),
                 _ => {
                     warn!(
-                        "AI returned block_container with no container_id — downgrading to ignore"
+                        "AI returned block_container with no container_id - downgrading to ignore"
                     );
                     return Ok(AiDecision {
                         action: AiAction::Ignore {
@@ -498,7 +498,7 @@ fn parse_decision(content: &str) -> Result<AiDecision> {
         },
         _ => {
             if raw.action != "ignore" {
-                warn!(action = %raw.action, "unknown AI action — defaulting to ignore");
+                warn!(action = %raw.action, "unknown AI action - defaulting to ignore");
             }
             AiAction::Ignore {
                 reason: raw.reason.clone(),

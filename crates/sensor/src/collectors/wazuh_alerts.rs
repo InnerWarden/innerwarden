@@ -201,7 +201,7 @@ pub fn parse_wazuh_alert(line: &str, host: &str) -> Option<Event> {
     // Entity extraction
     let mut entities = Vec::new();
 
-    // data.srcip — skip private/loopback
+    // data.srcip - skip private/loopback
     if let Some(ref data) = alert.data {
         if let Some(ref srcip) = data.srcip {
             if is_public_ip(srcip) {
@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn missing_optional_fields_ok() {
-        // No data, no agent fields — should parse successfully
+        // No data, no agent fields - should parse successfully
         let ev = parse_wazuh_alert(minimal_alert(), "host1").unwrap();
         assert_eq!(ev.source, "wazuh");
         assert_eq!(ev.severity, Severity::Low);
@@ -445,7 +445,7 @@ mod tests {
 
     #[test]
     fn private_srcip_not_extracted() {
-        // 192.168.x.x should be filtered out — it's a private address
+        // 192.168.x.x should be filtered out - it's a private address
         let ev = parse_wazuh_alert(private_srcip_alert(), "host1").unwrap();
         let ips: Vec<_> = ev
             .entities

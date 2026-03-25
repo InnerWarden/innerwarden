@@ -8,8 +8,8 @@ use innerwarden_core::{entities::EntityRef, event::Event, event::Severity, incid
 /// Indicators:
 ///   - useradd, adduser, usermod, groupadd, addgroup commands
 ///   - File writes to /etc/passwd, /etc/group, /etc/shadow by non-standard processes
-///   - New user with UID 0 (root equivalent) — Critical
-///   - usermod adding user to sudo/wheel/admin group — Critical
+///   - New user with UID 0 (root equivalent) - Critical
+///   - usermod adding user to sudo/wheel/admin group - Critical
 ///
 /// Allowlist: useradd/adduser/usermod called by apt, dpkg, cloud-init, puppet, chef, ansible
 pub struct UserCreationDetector {
@@ -21,7 +21,7 @@ pub struct UserCreationDetector {
 /// Commands that create or modify users/groups.
 const USER_MGMT_COMMANDS: &[&str] = &["useradd", "adduser", "usermod", "groupadd", "addgroup"];
 
-/// Sensitive identity files — writes by non-standard processes are suspicious.
+/// Sensitive identity files - writes by non-standard processes are suspicious.
 const IDENTITY_FILES: &[&str] = &["/etc/passwd", "/etc/group", "/etc/shadow"];
 
 /// Processes that legitimately write identity files (package managers, config mgmt).
@@ -51,7 +51,7 @@ const ALLOWLISTED_PARENTS: &[&str] = &[
     "vigr",
 ];
 
-/// Privileged groups — adding a user to these is Critical.
+/// Privileged groups - adding a user to these is Critical.
 const PRIVILEGED_GROUPS: &[&str] = &["sudo", "wheel", "admin", "root", "docker"];
 
 struct EmitParams<'a> {
@@ -167,7 +167,7 @@ impl UserCreationDetector {
             }
         }
 
-        // General user/group creation — High
+        // General user/group creation - High
         self.emit(
             event,
             EmitParams {
@@ -283,7 +283,7 @@ impl UserCreationDetector {
             ),
             severity,
             title: title.to_string(),
-            summary: format!("{title} — {comm} (pid={pid}, uid={uid}): {detail}"),
+            summary: format!("{title} - {comm} (pid={pid}, uid={uid}): {detail}"),
             evidence: serde_json::json!([{
                 "kind": event.kind,
                 "comm": comm,

@@ -13,15 +13,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: Build CLI
         run: cargo build --bin innerwarden --release
@@ -45,7 +45,7 @@ jobs:
           for module_id in ${{ steps.changed.outputs.list }}; do
             path="modules/$module_id"
             if [ ! -d "$path" ]; then
-              echo "::warning::$path was removed or renamed — skipping"
+              echo "::warning::$path was removed or renamed - skipping"
               continue
             fi
             echo "::group::Validating $module_id"
@@ -59,4 +59,4 @@ jobs:
 
       - name: No module changes detected
         if: steps.changed.outputs.list == ''
-        run: echo "No module directories changed — skipping validation"
+        run: echo "No module directories changed - skipping validation"

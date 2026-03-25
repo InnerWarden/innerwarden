@@ -1,7 +1,7 @@
 //! Persistent state store backed by redb (embedded Rust key-value database).
 //!
 //! Replaces in-memory HashMaps that grew without limit. Data lives on disk
-//! via memory-mapped I/O — the OS caches hot pages, heap stays fixed.
+//! via memory-mapped I/O - the OS caches hot pages, heap stays fixed.
 //!
 //! Tables:
 //!   - ip_reputations:        IP → JSON (LocalIpReputation)
@@ -16,7 +16,7 @@ use redb::{Database, ReadableTable, TableDefinition};
 use std::path::Path;
 use tracing::{info, warn};
 
-// Table definitions — key and value types must be fixed at compile time.
+// Table definitions - key and value types must be fixed at compile time.
 const IP_REPUTATIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("ip_reputations");
 const DECISION_COOLDOWNS: TableDefinition<&str, i64> = TableDefinition::new("decision_cooldowns");
 const NOTIFICATION_COOLDOWNS: TableDefinition<&str, i64> =

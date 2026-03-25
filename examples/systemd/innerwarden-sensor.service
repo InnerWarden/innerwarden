@@ -17,7 +17,7 @@ TimeoutStopSec=10
 KillSignal=SIGTERM
 SendSIGKILL=yes
 
-# Logging — journald captures stdout/stderr automatically
+# Logging - journald captures stdout/stderr automatically
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=innerwarden-sensor

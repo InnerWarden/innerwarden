@@ -1,4 +1,4 @@
-//! Mesh network integration — wraps innerwarden-mesh for the agent.
+//! Mesh network integration - wraps innerwarden-mesh for the agent.
 //!
 //! Always compiled. Disabled by default via config (`mesh.enabled = false`).
 

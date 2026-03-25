@@ -54,7 +54,7 @@ impl NginxAccessCollector {
                 let mut line = String::new();
                 match reader.read_line(&mut line) {
                     Ok(0) => {
-                        // End of file — wait and re-open to detect rotation
+                        // End of file - wait and re-open to detect rotation
                         break;
                     }
                     Ok(n) => {
@@ -124,7 +124,7 @@ impl NginxAccessCollector {
 }
 
 // ---------------------------------------------------------------------------
-// Known good bots — excluded from abuse detection
+// Known good bots - excluded from abuse detection
 // ---------------------------------------------------------------------------
 
 const KNOWN_GOOD_BOTS: &[&str] = &[
@@ -177,7 +177,7 @@ const BOT_RDNS_PATTERNS: &[(&str, &[&str])] = &[
 
 /// Verify a claimed bot identity via reverse DNS.
 /// Returns true if the bot is verified or if verification is not applicable
-/// (bot not in the rDNS check list — we give benefit of the doubt).
+/// (bot not in the rDNS check list - we give benefit of the doubt).
 /// Returns false if the bot claims to be e.g. Googlebot but rDNS doesn't match.
 fn verify_bot_rdns(user_agent: &str, ip: &str) -> bool {
     let ua = user_agent.to_ascii_lowercase();
@@ -189,7 +189,7 @@ fn verify_bot_rdns(user_agent: &str, ip: &str) -> bool {
         .map(|(_, suffixes)| *suffixes);
 
     let Some(suffixes) = expected_suffixes else {
-        // Bot not in rDNS check list — allow (benefit of the doubt)
+        // Bot not in rDNS check list - allow (benefit of the doubt)
         return true;
     };
 
@@ -203,7 +203,7 @@ fn verify_bot_rdns(user_agent: &str, ip: &str) -> bool {
             let host = hostname.to_lowercase();
             suffixes.iter().any(|s| host.ends_with(s))
         }
-        None => false, // DNS failed or timeout — don't trust the claim
+        None => false, // DNS failed or timeout - don't trust the claim
     }
 }
 
@@ -303,12 +303,12 @@ fn parse_npm_line(line: &str) -> Option<NginxLogEntry> {
     let end_quote = after_quote.find('"')?;
     let path = after_quote[..end_quote].to_string();
 
-    // Extract method — token before "http" or "https" before the hostname
+    // Extract method - token before "http" or "https" before the hostname
     // Format: ... METHOD proto host "/path" ...
     let before_client = &line[..line.find("[Client")?];
     let tokens: Vec<&str> = before_client.split_whitespace().collect();
 
-    // Find method (GET/POST/etc.) — it's the token before "http" or "https"
+    // Find method (GET/POST/etc.) - it's the token before "http" or "https"
     let mut method = String::new();
     let mut status: u16 = 0;
     for (i, t) in tokens.iter().enumerate() {
@@ -318,7 +318,7 @@ fn parse_npm_line(line: &str) -> Option<NginxLogEntry> {
         }
     }
 
-    // Extract status — first numeric 3-digit token after the date bracket
+    // Extract status - first numeric 3-digit token after the date bracket
     for t in &tokens {
         if t.len() == 3 {
             if let Ok(s) = t.parse::<u16>() {

@@ -270,7 +270,7 @@ impl ProcessInjectionDetector {
             severity,
             title: format!("{title_prefix}: {comm} (pid={pid})"),
             summary: format!(
-                "Process injection detected: {detail} — {comm} (pid={pid}, uid={uid})"
+                "Process injection detected: {detail} - {comm} (pid={pid}, uid={uid})"
             ),
             evidence: serde_json::json!([{
                 "kind": event.kind,
@@ -446,7 +446,7 @@ mod tests {
     fn ignores_self_proc_access() {
         let mut det = ProcessInjectionDetector::new("test", 600);
         let now = Utc::now();
-        // pid 1234 accessing /proc/1234/mem — self access, should be ignored
+        // pid 1234 accessing /proc/1234/mem - self access, should be ignored
         let inc = det.process(&file_event("app", "/proc/1234/mem", 1234, false, now));
         assert!(inc.is_none());
     }

@@ -7,7 +7,7 @@ use innerwarden_core::{entities::EntityRef, event::Event, event::Severity, incid
 ///
 /// Patterns detected:
 /// 1. Connections to well-known C2 ports (4444, 1337, 31337, 8888, 9999)
-/// 2. Beaconing — periodic connections to the same IP at regular intervals
+/// 2. Beaconing - periodic connections to the same IP at regular intervals
 /// 3. Unusual processes making outbound connections (sh, bash, python, perl, nc)
 /// 4. Burst of connections to many different IPs in short time (data exfil)
 pub struct C2CallbackDetector {
@@ -137,7 +137,7 @@ impl C2CallbackDetector {
                 && !["sh", "bash", "dash", "nc", "ncat", "netcat", "socat"]
                     .contains(&comm_base.as_str())
             {
-                // curl/wget to 443 is normal — skip
+                // curl/wget to 443 is normal - skip
             } else {
                 self.alerted.insert(alert_key, now);
                 return Some(self.build_incident(IncidentParams {
@@ -149,7 +149,7 @@ impl C2CallbackDetector {
                     pattern: "c2_port",
                     severity: Severity::High,
                     summary: format!(
-                        "Process {comm} (pid={pid}) connected to {dst_ip}:{dst_port} — known C2 port"
+                        "Process {comm} (pid={pid}) connected to {dst_ip}:{dst_port} - known C2 port"
                     ),
                 }));
             }
@@ -246,7 +246,7 @@ impl C2CallbackDetector {
                 "window_seconds": self.window.num_seconds(),
             }]),
             recommended_checks: vec![
-                format!("Investigate process {comm} (pid={pid}) — what triggered this connection?"),
+                format!("Investigate process {comm} (pid={pid}) - what triggered this connection?"),
                 format!("Check if {dst_ip} is a known C2 server (VirusTotal, AbuseIPDB)"),
                 "Review process tree: who spawned this process?".to_string(),
                 "Consider killing the process and blocking the IP".to_string(),

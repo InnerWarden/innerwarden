@@ -18,16 +18,16 @@ const SENSITIVE_PORTS: &[u16] = &[
 /// Detects lateral movement patterns within internal networks.
 ///
 /// Patterns detected:
-/// 1. Internal SSH scanning — process connects to port 22 on multiple internal IPs
-/// 2. Internal port scanning — process connects to same port on many internal IPs
-/// 3. Internal service probing — process connects to sensitive service ports on internal IPs
+/// 1. Internal SSH scanning - process connects to port 22 on multiple internal IPs
+/// 2. Internal port scanning - process connects to same port on many internal IPs
+/// 3. Internal service probing - process connects to sensitive service ports on internal IPs
 pub struct LateralMovementDetector {
     window: Duration,
     ssh_threshold: usize,
     scan_threshold: usize,
     /// Per source process key (comm:pid): ring of (timestamp, dst_ip, dst_port)
     history: HashMap<String, VecDeque<(DateTime<Utc>, String, u16)>>,
-    /// Cooldown per alert key — suppresses re-alerts for 600s
+    /// Cooldown per alert key - suppresses re-alerts for 600s
     alerted: HashMap<String, DateTime<Utc>>,
     host: String,
 }
@@ -239,7 +239,7 @@ impl LateralMovementDetector {
             }]),
             recommended_checks: vec![
                 format!(
-                    "Investigate process {} (pid={}) — is it compromised or malicious?",
+                    "Investigate process {} (pid={}) - is it compromised or malicious?",
                     comm, pid
                 ),
                 format!("Check what {comm} is doing on {dst_ip}:{dst_port}"),
@@ -499,7 +499,7 @@ mod tests {
         let r1 = det.process(&connect_event("python3", 7000, "10.0.0.50", 3306, now));
         assert!(r1.is_some());
 
-        // Same alert within 600s cooldown — suppressed
+        // Same alert within 600s cooldown - suppressed
         let r2 = det.process(&connect_event(
             "python3",
             7000,
@@ -509,7 +509,7 @@ mod tests {
         ));
         assert!(r2.is_none());
 
-        // After 600s cooldown — triggers again
+        // After 600s cooldown - triggers again
         let r3 = det.process(&connect_event(
             "python3",
             7000,
@@ -566,7 +566,7 @@ mod tests {
         let inc = r.unwrap();
         assert!(inc.summary.contains("nmap"));
 
-        // Process B still at 2 — shouldn't trigger
+        // Process B still at 2 - shouldn't trigger
         // (but the 3rd IP for B will trigger)
         let r = det.process(&connect_event(
             "ssh",
@@ -586,7 +586,7 @@ mod tests {
         let mut det = LateralMovementDetector::new("test", 3, 5, 300);
         let now = Utc::now();
 
-        // Event from auth_log, not eBPF — should be ignored
+        // Event from auth_log, not eBPF - should be ignored
         let ev = Event {
             ts: now,
             host: "test".to_string(),

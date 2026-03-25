@@ -3,7 +3,7 @@
 //! Parses real HTTP requests, serves a fake login page, captures POST
 //! form submissions (credentials), and responds with an "invalid credentials"
 //! page. Handles multiple requests per TCP connection (HTTP keep-alive).
-//! No external HTTP crate required — manual parsing of HTTP/1.x.
+//! No external HTTP crate required - manual parsing of HTTP/1.x.
 
 use std::time::Duration;
 
@@ -38,7 +38,7 @@ pub struct HttpConnectionEvidence {
 }
 
 // ---------------------------------------------------------------------------
-// Login page HTML (embedded — no file I/O needed)
+// Login page HTML (embedded - no file I/O needed)
 // ---------------------------------------------------------------------------
 
 const LOGIN_HTML_BODY: &str = r#"<!DOCTYPE html>

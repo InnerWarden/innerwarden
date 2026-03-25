@@ -1,4 +1,4 @@
-//! Redis Streams reader — consumes events from the sensor's Redis stream.
+//! Redis Streams reader - consumes events from the sensor's Redis stream.
 //!
 //! Used instead of JSONL file polling when `redis_url` is configured.
 //! Uses XREAD with a consumer group so multiple consumers (agent, DNA, Shield)
@@ -17,7 +17,7 @@ pub struct RedisReaderConfig {
     pub url: String,
     pub events_stream: String,
     pub incidents_stream: String,
-    /// Consumer group name — each consumer type gets its own group.
+    /// Consumer group name - each consumer type gets its own group.
     pub group: String,
     /// Consumer name within the group (usually the hostname or instance ID).
     pub consumer: String,
@@ -42,7 +42,7 @@ impl RedisStreamReader {
             .await
             .with_context(|| format!("failed to connect to Redis at {}", config.url))?;
 
-        // Create consumer groups (idempotent — ignore error if already exists).
+        // Create consumer groups (idempotent - ignore error if already exists).
         for stream in [&config.events_stream, &config.incidents_stream] {
             let result: redis::RedisResult<()> = redis::cmd("XGROUP")
                 .arg("CREATE")
@@ -55,7 +55,7 @@ impl RedisStreamReader {
             match result {
                 Ok(()) => info!(stream, group = %config.group, "created consumer group"),
                 Err(e) if e.to_string().contains("BUSYGROUP") => {
-                    // Group already exists — fine
+                    // Group already exists - fine
                 }
                 Err(e) => warn!(stream, error = %e, "failed to create consumer group"),
             }

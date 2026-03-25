@@ -28,7 +28,7 @@ use innerwarden_core::audit::{append_admin_action, current_operator, AdminAction
 #[derive(Parser)]
 #[command(
     name = "innerwarden",
-    about = "InnerWarden control plane — manage capabilities",
+    about = "InnerWarden control plane - manage capabilities",
     long_about = "Activate and manage InnerWarden capabilities.\n\n\
                   Run 'innerwarden list' to see available capabilities.\n\
                   Run 'innerwarden enable <id>' to activate one."
@@ -110,7 +110,7 @@ enum Command {
     /// Scan system configuration and suggest security hardening improvements.
     ///
     /// Checks SSH, firewall, kernel, permissions, updates, Docker, and
-    /// services. Prints actionable recommendations — never applies changes.
+    /// services. Prints actionable recommendations - never applies changes.
     ///
     /// Examples:
     ///   innerwarden harden
@@ -398,7 +398,7 @@ enum Command {
         /// IP address to block
         ip: String,
 
-        /// Reason for the block (required — kept in audit trail)
+        /// Reason for the block (required - kept in audit trail)
         #[arg(long)]
         reason: String,
     },
@@ -414,7 +414,7 @@ enum Command {
         /// IP address to unblock
         ip: String,
 
-        /// Reason for removing the block (required — kept in audit trail)
+        /// Reason for removing the block (required - kept in audit trail)
         #[arg(long)]
         reason: String,
     },
@@ -471,7 +471,7 @@ enum Command {
     /// Manage trusted IPs, CIDRs, and users that skip automated response.
     ///
     /// Allowlisted entities are still logged and notified via webhook/Telegram/Slack
-    /// but the AI gate is skipped — no automated skill (block, suspend, etc.) is
+    /// but the AI gate is skipped - no automated skill (block, suspend, etc.) is
     /// ever executed for them.
     ///
     /// Examples:
@@ -489,7 +489,7 @@ enum Command {
     ///
     /// Writes a fake SSH brute-force incident using a documentation-range IP
     /// (RFC 5737: 198.51.100.123) and waits for the agent to produce a
-    /// decision.  Safe to run on production — uses dry-run defaults and a
+    /// decision.  Safe to run on production - uses dry-run defaults and a
     /// non-routable IP.
     ///
     /// Examples:
@@ -588,9 +588,9 @@ enum ConfigureCommand {
     /// Set notification sensitivity level.
     ///
     /// Controls how often you get alerts:
-    ///   quiet   — only Critical (server compromised, privesc)
-    ///   normal  — High + Critical (confirmed attacks, blocks)
-    ///   verbose — everything Medium+ (includes mesh signals, watchlist)
+    ///   quiet   - only Critical (server compromised, privesc)
+    ///   normal  - High + Critical (confirmed attacks, blocks)
+    ///   verbose - everything Medium+ (includes mesh signals, watchlist)
     ///
     /// Examples:
     ///   innerwarden configure sensitivity quiet
@@ -711,7 +711,7 @@ enum NotifyCommand {
     ///   innerwarden notify web-push --subject mailto:admin@example.com
     #[clap(name = "web-push")]
     WebPush {
-        /// VAPID subject — "mailto:..." contact address for the push service (default: mailto:admin@example.com)
+        /// VAPID subject - "mailto:..." contact address for the push service (default: mailto:admin@example.com)
         #[arg(long)]
         subject: Option<String>,
     },
@@ -760,7 +760,7 @@ enum MeshCommand {
     /// Enable the mesh collaborative defense network.
     ///
     /// Starts sharing threat signals with other Inner Warden nodes.
-    /// Disabled by default. Safe — blocks are staged with TTL, never permanent.
+    /// Disabled by default. Safe - blocks are staged with TTL, never permanent.
     Enable,
 
     /// Disable the mesh network.
@@ -820,7 +820,7 @@ enum IntegrateCommand {
     /// Push blocked IPs to Cloudflare edge via IP Access Rules API.
     ///
     /// After every successful block-ip action, the IP is also added to your
-    /// Cloudflare zone's IP Access Rules — blocking it at the CDN edge before
+    /// Cloudflare zone's IP Access Rules - blocking it at the CDN edge before
     /// traffic even reaches your server.
     ///
     /// Requires a Cloudflare API token with Zone > Firewall Services > Edit permission.
@@ -1107,7 +1107,7 @@ fn main() -> Result<()> {
                     config_editor::write_bool(&cli.agent_config, "responder", "dry_run", dr)?;
                     println!(
                         "  [ok] dry_run = {dr}{}",
-                        if dr { "" } else { " — LIVE MODE" }
+                        if dr { "" } else { " - LIVE MODE" }
                     );
                 }
                 systemd::restart_service("innerwarden-agent", false)?;
@@ -1451,7 +1451,7 @@ fn cmd_status_global(
         if let Some((title, when)) = last_incident {
             println!("  Last threat:      {title}  [{when}]");
         } else if incidents_count == 0 {
-            println!("  Last threat:      none — quiet day so far");
+            println!("  Last threat:      none - quiet day so far");
         }
     }
 
@@ -1653,7 +1653,7 @@ fn cmd_enable(
         }
     }
     if any_failed {
-        anyhow::bail!("preflight checks failed — no changes applied");
+        anyhow::bail!("preflight checks failed - no changes applied");
     }
 
     // --- Planned effects ---
@@ -1730,7 +1730,7 @@ fn cmd_module_enable(cli: &Cli, path: &std::path::Path, yes: bool) -> Result<()>
     let report = module_validator::validate(path, false)?;
     if !report.passed() {
         report.print();
-        anyhow::bail!("module validation failed — fix errors before enabling");
+        anyhow::bail!("module validation failed - fix errors before enabling");
     }
 
     // 2. Parse manifest
@@ -1755,7 +1755,7 @@ fn cmd_module_enable(cli: &Cli, path: &std::path::Path, yes: bool) -> Result<()>
         if ok {
             println!("  [ok]   {}", pf.reason);
         } else {
-            println!("  [fail] {} — {}", pf.reason, err_msg);
+            println!("  [fail] {} - {}", pf.reason, err_msg);
             any_failed = true;
         }
     }
@@ -1763,7 +1763,7 @@ fn cmd_module_enable(cli: &Cli, path: &std::path::Path, yes: bool) -> Result<()>
         println!("  (none required)");
     }
     if any_failed {
-        anyhow::bail!("preflight checks failed — no changes applied");
+        anyhow::bail!("preflight checks failed - no changes applied");
     }
 
     // 5. Planned effects
@@ -1910,7 +1910,7 @@ fn cmd_module_status(cli: &Cli, id: &str, modules_dir: &std::path::Path) -> Resu
     let modules = scan_modules_dir(modules_dir);
     let manifest = modules.iter().find(|m| m.id == id).ok_or_else(|| {
         anyhow::anyhow!(
-            "module '{}' not found in {} — check the path or run 'innerwarden module list'",
+            "module '{}' not found in {} - check the path or run 'innerwarden module list'",
             id,
             modules_dir.display()
         )
@@ -2022,7 +2022,7 @@ fn apply_module_disable(cli: &Cli, manifest: &module_manifest::ModuleManifest) -
             config_editor::write_bool(&cli.agent_config, section, "enabled", false)?;
             println!("  [done] [{section}] enabled = false");
         } else {
-            println!("  [warn] unknown notifier '{id}' — skipped");
+            println!("  [warn] unknown notifier '{id}' - skipped");
         }
     }
 
@@ -2088,7 +2088,7 @@ fn apply_module_enable(
             config_editor::write_bool(&cli.sensor_config, section, "enabled", true)?;
             println!("  [done] [{section}] enabled = true");
         } else {
-            println!("  [warn] unknown collector '{id}' — no sensor config section found; skipped");
+            println!("  [warn] unknown collector '{id}' - no sensor config section found; skipped");
         }
     }
 
@@ -2098,7 +2098,7 @@ fn apply_module_enable(
             config_editor::write_bool(&cli.sensor_config, section, "enabled", true)?;
             println!("  [done] [{section}] enabled = true");
         } else {
-            println!("  [warn] unknown detector '{id}' — no sensor config section found; skipped");
+            println!("  [warn] unknown detector '{id}' - no sensor config section found; skipped");
         }
     }
 
@@ -2125,7 +2125,7 @@ fn apply_module_enable(
             config_editor::write_bool(&cli.agent_config, section, "enabled", true)?;
             println!("  [done] [{section}] enabled = true");
         } else {
-            println!("  [warn] unknown notifier '{id}' — no agent config section found; skipped");
+            println!("  [warn] unknown notifier '{id}' - no agent config section found; skipped");
         }
     }
 
@@ -2224,7 +2224,7 @@ fn cmd_disable(cli: &Cli, registry: &CapabilityRegistry, id: &str, yes: bool) ->
 }
 
 // ---------------------------------------------------------------------------
-// Registry — fetched from GitHub raw content at install/search time
+// Registry - fetched from GitHub raw content at install/search time
 // ---------------------------------------------------------------------------
 
 const REGISTRY_URL: &str =
@@ -2261,7 +2261,7 @@ fn fetch_registry() -> Vec<RegistryModule> {
 }
 
 fn parse_registry_toml(raw: &str) -> Vec<RegistryModule> {
-    // Minimal TOML array-of-tables parser — no external dep needed.
+    // Minimal TOML array-of-tables parser - no external dep needed.
     // We parse [[modules]] blocks by splitting on that header.
     let mut modules = vec![];
     for block in raw.split("\n[[modules]]") {
@@ -2322,7 +2322,7 @@ fn parse_registry_toml(raw: &str) -> Vec<RegistryModule> {
     modules
 }
 
-/// Simple blocking HTTP GET — downloads URL to a temp file and reads it.
+/// Simple blocking HTTP GET - downloads URL to a temp file and reads it.
 fn ureq_get(url: &str) -> anyhow::Result<String> {
     use std::io::Read;
     let tmp = tempfile::tempdir()?;
@@ -2419,7 +2419,7 @@ fn cmd_module_install(
         })?;
 
         println!(
-            "Found: {} v{} — {}",
+            "Found: {} v{} - {}",
             entry.name, entry.version, entry.description
         );
         println!();
@@ -2459,14 +2459,14 @@ fn cmd_module_install(
             let cap_registry = CapabilityRegistry::default_all();
             for cap_id in &entry.enables {
                 if cap_registry.get(cap_id).is_none() {
-                    anyhow::bail!("capability '{}' not found — update InnerWarden", cap_id);
+                    anyhow::bail!("capability '{}' not found - update InnerWarden", cap_id);
                 }
                 cmd_enable(cli, &cap_registry, cap_id, HashMap::new(), yes)?;
             }
             return Ok(());
         }
 
-        // External module — install from registry URL.
+        // External module - install from registry URL.
         let url = entry
             .install_url
             .ok_or_else(|| anyhow::anyhow!("Registry entry for '{}' has no install_url", name))?;
@@ -2488,7 +2488,7 @@ fn cmd_module_install(
             verify_sha256(&path, &expected)?;
             println!("ok");
         } else {
-            println!("  (no SHA-256 sidecar found — skipping integrity check)");
+            println!("  (no SHA-256 sidecar found - skipping integrity check)");
         }
         path
     } else {
@@ -2516,7 +2516,7 @@ fn cmd_module_install(
     let report = module_validator::validate(&module_dir, false)?;
     if !report.passed() {
         report.print();
-        anyhow::bail!("module validation failed — package is not installable");
+        anyhow::bail!("module validation failed - package is not installable");
     }
 
     let manifest = ModuleManifest::from_path(&module_dir)?;
@@ -2615,7 +2615,7 @@ fn cmd_module_uninstall(cli: &Cli, id: &str, modules_dir: &Path, yes: bool) -> R
     // Disable first if enabled
     let enabled = is_module_enabled(&cli.sensor_config, &cli.agent_config, &manifest);
     if enabled {
-        println!("  Module is currently enabled — will disable before removing.");
+        println!("  Module is currently enabled - will disable before removing.");
     }
 
     println!("  Will remove: {}", install_dir.display());
@@ -2674,7 +2674,7 @@ fn cmd_module_publish(module_path: &Path, output: Option<&Path>) -> Result<()> {
     let report = module_validator::validate(module_path, false)?;
     if !report.passed() {
         report.print();
-        anyhow::bail!("module validation failed — fix errors before publishing");
+        anyhow::bail!("module validation failed - fix errors before publishing");
     }
 
     let manifest = ModuleManifest::from_path(module_path)?;
@@ -2732,7 +2732,7 @@ fn cmd_module_update_all(cli: &Cli, modules_dir: &Path, check_only: bool, yes: b
         let current = manifest.version.as_deref().unwrap_or("0.0.0");
 
         let Some(ref url) = manifest.update_url else {
-            println!("  {:<24} (no update_url — skipped)", manifest.id);
+            println!("  {:<24} (no update_url - skipped)", manifest.id);
             skipped += 1;
             continue;
         };
@@ -2753,7 +2753,7 @@ fn cmd_module_update_all(cli: &Cli, modules_dir: &Path, check_only: bool, yes: b
         // Validate SHA-256 sidecar if available
         if let Some(expected) = fetch_sha256_sidecar(url) {
             if let Err(e) = verify_sha256(&tarball, &expected) {
-                println!("SHA-256 mismatch — skipping ({})", e);
+                println!("SHA-256 mismatch - skipping ({})", e);
                 continue;
             }
         }
@@ -2761,20 +2761,20 @@ fn cmd_module_update_all(cli: &Cli, modules_dir: &Path, check_only: bool, yes: b
         let extract_dir = tmp.path().join("extracted");
         std::fs::create_dir_all(&extract_dir)?;
         if let Err(e) = extract_tarball(&tarball, &extract_dir) {
-            println!("extract error — skipping ({})", e);
+            println!("extract error - skipping ({})", e);
             continue;
         }
         let module_dir = match find_module_dir(&extract_dir) {
             Ok(d) => d,
             Err(e) => {
-                println!("no module.toml — skipping ({})", e);
+                println!("no module.toml - skipping ({})", e);
                 continue;
             }
         };
         let new_manifest = match ModuleManifest::from_path(&module_dir) {
             Ok(m) => m,
             Err(e) => {
-                println!("manifest parse error — skipping ({})", e);
+                println!("manifest parse error - skipping ({})", e);
                 continue;
             }
         };
@@ -2864,13 +2864,13 @@ fn cmd_module_update_all(cli: &Cli, modules_dir: &Path, check_only: bool, yes: b
         candidates.len()
     );
     if skipped > 0 {
-        println!("({skipped} skipped — no update_url declared)");
+        println!("({skipped} skipped - no update_url declared)");
     }
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// C.5 — Upgrade
+// C.5 - Upgrade
 // ---------------------------------------------------------------------------
 
 fn cmd_upgrade(
@@ -2885,7 +2885,7 @@ fn cmd_upgrade(
     println!("Checking for updates...");
 
     let release =
-        fetch_latest_release().context("could not reach GitHub — check network and try again")?;
+        fetch_latest_release().context("could not reach GitHub - check network and try again")?;
 
     let current = CURRENT_VERSION;
     let latest = strip_v(&release.tag_name);
@@ -2898,7 +2898,7 @@ fn cmd_upgrade(
     println!("  Current version:  {current}");
 
     if !is_newer(current, &release.tag_name) {
-        println!("  Latest release:   {latest}{date_suffix} — already up to date.");
+        println!("  Latest release:   {latest}{date_suffix} - already up to date.");
         return Ok(());
     }
 
@@ -2995,7 +2995,7 @@ fn cmd_upgrade(
     // Detect architecture
     let arch = detect_arch().ok_or_else(|| {
         anyhow::anyhow!(
-            "unsupported CPU architecture '{}' — build from source for your platform",
+            "unsupported CPU architecture '{}' - build from source for your platform",
             std::env::consts::ARCH
         )
     })?;
@@ -3005,7 +3005,7 @@ fn cmd_upgrade(
 
     if plan.is_empty() {
         anyhow::bail!(
-            "no assets found for linux-{arch} in release {} — \
+            "no assets found for linux-{arch} in release {} - \
              check {} for manual download",
             release.tag_name,
             release.html_url
@@ -3095,7 +3095,7 @@ fn cmd_upgrade(
             println!("  sig ok");
         } else {
             println!();
-            println!("  [warn] unsigned release — signature verification skipped for {binary}");
+            println!("  [warn] unsigned release - signature verification skipped for {binary}");
         }
 
         // Install to all target names
@@ -3105,7 +3105,7 @@ fn cmd_upgrade(
         }
     }
 
-    // Fix permissions on existing config files — files written before v0.1.9 may
+    // Fix permissions on existing config files - files written before v0.1.9 may
     // be root:root 600, which prevents innerwarden-agent (User=innerwarden) from
     // reading them. chmod 640 + chgrp innerwarden is fail-silent.
     fix_config_dir_permissions(
@@ -3123,7 +3123,7 @@ fn cmd_upgrade(
             systemd::restart_service(unit, false)?;
             println!("  [done] Restarted {unit}");
         } else if unit_exists {
-            // Unit is installed but stopped — try to start it
+            // Unit is installed but stopped - try to start it
             match systemd::restart_service(unit, false) {
                 Ok(()) => println!("  [done] Started {unit}"),
                 Err(e) => {
@@ -3166,7 +3166,7 @@ fn cmd_upgrade(
 
 /// Fix permissions on all config files in the innerwarden config directory.
 /// chmod 640 + chgrp innerwarden so the service user (User=innerwarden) can read them.
-/// Fail-silent — best-effort in environments where the group doesn't exist.
+/// Fail-silent - best-effort in environments where the group doesn't exist.
 fn fix_config_dir_permissions(config_dir: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let Ok(entries) = std::fs::read_dir(config_dir) else {
@@ -3204,7 +3204,7 @@ fn write_env_key(env_path: &Path, key: &str, value: &str) -> Result<()> {
     std::fs::rename(&tmp, env_path)
         .with_context(|| format!("cannot update {}", env_path.display()))?;
     // Ensure readable by innerwarden service user (chmod 640 + chgrp innerwarden).
-    // Fail-silent — best-effort in case the group doesn't exist (e.g. local dev).
+    // Fail-silent - best-effort in case the group doesn't exist (e.g. local dev).
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -3248,13 +3248,13 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
     let responder_ok = is_enabled("responder");
 
     // ── Welcome ───────────────────────────────────────────────────────────
-    println!("InnerWarden — first-time setup\n");
+    println!("InnerWarden - first-time setup\n");
     println!("Scanning your system to see what's installed...\n");
 
     let probes = scan::run_probes();
     let recs = scan::score_modules(&probes);
 
-    // Print compact scan summary — essential modules only
+    // Print compact scan summary - essential modules only
     let essential: Vec<&scan::ModuleRec> = recs
         .iter()
         .filter(|r| matches!(r.tier, scan::Tier::Essential))
@@ -3268,7 +3268,7 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
         println!("Detected on this host:");
         for r in &essential {
             println!(
-                "  ★ {}  — {}",
+                "  ★ {}  - {}",
                 r.name,
                 r.why.split('.').next().unwrap_or("")
             );
@@ -3279,7 +3279,7 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
         println!("Also available:");
         for r in &recommended {
             println!(
-                "  · {}  — {}",
+                "  · {}  - {}",
                 r.name,
                 r.why.split('.').next().unwrap_or("")
             );
@@ -3291,28 +3291,28 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
 
     println!();
     println!("Now configuring the essentials in 6 steps:");
-    println!("  1. AI provider    — brains for threat analysis");
-    println!("  2. Telegram       — real-time alerts on your phone");
-    println!("  3. Responder      — decide how to react to threats");
-    println!("  4. Modules        — enable essential protections");
-    println!("  5. Sensitivity    — how often you get notified");
-    println!("  6. Mesh network   — collaborative defense with other nodes\n");
+    println!("  1. AI provider    - brains for threat analysis");
+    println!("  2. Telegram       - real-time alerts on your phone");
+    println!("  3. Responder      - decide how to react to threats");
+    println!("  4. Modules        - enable essential protections");
+    println!("  5. Sensitivity    - how often you get notified");
+    println!("  6. Mesh network   - collaborative defense with other nodes\n");
     println!("You can skip any step and run it later with 'innerwarden configure'.\n");
     println!("{}", "─".repeat(56));
 
     // ── Step 1: AI ────────────────────────────────────────────────────────
     println!();
     if ai_ok {
-        println!("Step 1/4 — AI provider   ✅ already configured\n");
+        println!("Step 1/4 - AI provider   ✅ already configured\n");
     } else {
-        println!("Step 1/4 — AI provider\n");
+        println!("Step 1/4 - AI provider\n");
         println!("InnerWarden uses AI to evaluate threats and decide how to respond.");
-        println!("12 providers supported — pick what you have:\n");
-        println!("  1. Ollama    — fully local, free, no API key needed");
-        println!("  2. OpenAI    — gpt-4.1-nano, cheapest ($0.10/1M tokens)");
-        println!("  3. Anthropic — claude-haiku, fast and cheap");
+        println!("12 providers supported - pick what you have:\n");
+        println!("  1. Ollama    - fully local, free, no API key needed");
+        println!("  2. OpenAI    - gpt-4.1-nano, cheapest ($0.10/1M tokens)");
+        println!("  3. Anthropic - claude-haiku, fast and cheap");
         println!(
-            "  4. Advanced  — interactive wizard (Groq, DeepSeek, Mistral, xAI, Gemini, etc.)"
+            "  4. Advanced  - interactive wizard (Groq, DeepSeek, Mistral, xAI, Gemini, etc.)"
         );
         println!("  s. Skip for now\n");
         let choice = prompt("Choose provider [1/2/3/4/s]")?;
@@ -3325,7 +3325,7 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
                 }
             }
             "2" => {
-                println!("OpenAI — enter your API key (get one at platform.openai.com)");
+                println!("OpenAI - enter your API key (get one at platform.openai.com)");
                 match prompt("OPENAI_API_KEY") {
                     Ok(k) if !k.is_empty() => {
                         if let Err(e) = cmd_configure_ai(cli, "openai", Some(&k), None, None) {
@@ -3338,7 +3338,7 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
                 }
             }
             "3" => {
-                println!("Anthropic — enter your API key (get one at console.anthropic.com)");
+                println!("Anthropic - enter your API key (get one at console.anthropic.com)");
                 match prompt("ANTHROPIC_API_KEY") {
                     Ok(k) if !k.is_empty() => {
                         if let Err(e) = cmd_configure_ai(cli, "anthropic", Some(&k), None, None) {
@@ -3366,9 +3366,9 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
     // ── Step 2: Telegram ──────────────────────────────────────────────────
     println!();
     if telegram_ok {
-        println!("Step 2/4 — Telegram alerts   ✅ already configured\n");
+        println!("Step 2/4 - Telegram alerts   ✅ already configured\n");
     } else {
-        println!("Step 2/4 — Telegram alerts\n");
+        println!("Step 2/4 - Telegram alerts\n");
         println!("Get instant alerts on your phone whenever a threat is detected.");
         println!("You'll need a free Telegram account.\n");
         print!("Set up Telegram now? [Y/n] ");
@@ -3402,13 +3402,13 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
         } else {
             "live (executing actions)"
         };
-        println!("Step 3/4 — Responder   ✅ already configured ({mode})\n");
+        println!("Step 3/4 - Responder   ✅ already configured ({mode})\n");
     } else {
-        println!("Step 3/4 — Responder\n");
+        println!("Step 3/4 - Responder\n");
         println!("The responder decides what to do when a threat is confirmed:");
-        println!("  observe — AI analyses threats, logs decisions, never blocks anything");
-        println!("  dry-run — AI decides and shows what it would do (safe for testing)");
-        println!("  live    — AI blocks attackers automatically (requires block skill)\n");
+        println!("  observe - AI analyses threats, logs decisions, never blocks anything");
+        println!("  dry-run - AI decides and shows what it would do (safe for testing)");
+        println!("  live    - AI blocks attackers automatically (requires block skill)\n");
         println!("Recommended for first setup: observe or dry-run.\n");
         print!("Configure now? [Y/n] ");
         std::io::stdout().flush()?;
@@ -3436,11 +3436,11 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
             .collect();
 
         if !essential_unset.is_empty() {
-            println!("Step 4/4 — Enable protection modules\n");
+            println!("Step 4/4 - Enable protection modules\n");
             println!("Based on what's installed on this host, these modules are recommended:\n");
             for (i, r) in essential_unset.iter().enumerate() {
                 println!(
-                    "  {}. {}  — {}",
+                    "  {}. {}  - {}",
                     i + 1,
                     r.name,
                     r.why.split('.').next().unwrap_or("")
@@ -3489,11 +3489,11 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
 
     // ── Step 5: Notification sensitivity ──────────────────────────────────
     println!();
-    println!("Step 5/6 — Notification sensitivity\n");
+    println!("Step 5/6 - Notification sensitivity\n");
     println!("How often do you want to be notified?\n");
-    println!("  1. Quiet   — only Critical (server compromised, privesc)");
-    println!("  2. Normal  — High + Critical (recommended)");
-    println!("  3. Verbose — everything Medium+ (scans, mesh signals)\n");
+    println!("  1. Quiet   - only Critical (server compromised, privesc)");
+    println!("  2. Normal  - High + Critical (recommended)");
+    println!("  3. Verbose - everything Medium+ (scans, mesh signals)\n");
     let sens_choice = prompt("Choose [1/2/3]").unwrap_or_default();
     match sens_choice.trim() {
         "1" => {
@@ -3523,9 +3523,9 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
     println!();
     let mesh_ok = is_enabled("mesh");
     if mesh_ok {
-        println!("Step 6/6 — Mesh network   ✅ already enabled\n");
+        println!("Step 6/6 - Mesh network   ✅ already enabled\n");
     } else {
-        println!("Step 6/6 — Mesh network\n");
+        println!("Step 6/6 - Mesh network\n");
         println!("Connect your Inner Warden nodes together.");
         println!("When one detects a threat, all others block it automatically.");
         println!("Ed25519 signed, game-theory trust, staged with TTL.\n");
@@ -3605,12 +3605,12 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
 
     println!();
     println!("Useful commands:");
-    println!("  innerwarden status                    — overview + last threat");
-    println!("  innerwarden incidents                 — recent threats");
-    println!("  innerwarden configure sensitivity     — quiet / normal / verbose");
-    println!("  innerwarden mesh enable               — join the defense network");
-    println!("  innerwarden mesh add-peer <url>       — connect a node");
-    println!("  innerwarden doctor                    — diagnose issues");
+    println!("  innerwarden status                    - overview + last threat");
+    println!("  innerwarden incidents                 - recent threats");
+    println!("  innerwarden configure sensitivity     - quiet / normal / verbose");
+    println!("  innerwarden mesh enable               - join the defense network");
+    println!("  innerwarden mesh add-peer <url>       - connect a node");
+    println!("  innerwarden doctor                    - diagnose issues");
 
     Ok(())
 }
@@ -3685,7 +3685,7 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
         .map(|o| String::from_utf8_lossy(&o.stdout).contains("innerwarden watchdog"))
         .unwrap_or(false);
 
-    println!("InnerWarden — configure\n");
+    println!("InnerWarden - configure\n");
     println!("Choose what to set up:\n");
     println!("   1. AI provider      {}", status(ai_ok));
     println!("   2. Telegram         {}", status(telegram_ok));
@@ -3732,7 +3732,7 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
     }
 }
 
-/// Interactive AI provider picker — shown when running `innerwarden configure` → 1 (AI)
+/// Interactive AI provider picker - shown when running `innerwarden configure` → 1 (AI)
 /// or from the setup wizard. Lets the user choose a provider and enter their key.
 /// Provider info for the interactive wizard.
 struct WizardProvider {
@@ -3900,7 +3900,7 @@ fn ask_key_and_model(
     custom_base_url: Option<&str>,
 ) -> Result<(String, Option<String>)> {
     println!(
-        "{} — enter your API key (get one at {})",
+        "{} - enter your API key (get one at {})",
         provider.label, provider.signup_url
     );
     let key = prompt("API key")?;
@@ -3950,16 +3950,16 @@ fn ask_key_and_model(
 }
 
 fn cmd_configure_ai_interactive(cli: &Cli) -> Result<()> {
-    println!("InnerWarden — AI provider setup\n");
+    println!("InnerWarden - AI provider setup\n");
     println!("InnerWarden uses AI to evaluate threats and decide how to respond.");
-    println!("Choose a provider — any one works. Pick what you already have:\n");
+    println!("Choose a provider - any one works. Pick what you already have:\n");
     for (i, p) in WIZARD_PROVIDERS.iter().enumerate() {
         println!("  {}. {}", i + 1, p.label);
     }
     let ollama_idx = WIZARD_PROVIDERS.len() + 1;
     let other_idx = WIZARD_PROVIDERS.len() + 2;
-    println!("  {ollama_idx}. Ollama       — local, no API key needed");
-    println!("  {other_idx}. Other        — any OpenAI-compatible API");
+    println!("  {ollama_idx}. Ollama       - local, no API key needed");
+    println!("  {other_idx}. Other        - any OpenAI-compatible API");
     println!("  s. Skip for now\n");
 
     let choice = prompt(&format!("Choose provider [1-{other_idx}/s]"))?;
@@ -4005,7 +4005,7 @@ fn cmd_configure_ai_interactive(cli: &Cli) -> Result<()> {
         if base_url.is_empty() {
             anyhow::bail!("Base URL is required");
         }
-        println!("\n{name} — enter your API key");
+        println!("\n{name} - enter your API key");
         let key = prompt("API key")?;
         if key.is_empty() {
             anyhow::bail!("API key cannot be empty");
@@ -4107,7 +4107,7 @@ fn cmd_configure_ai(
                 Some("GEMINI_API_KEY"),
                 Some("https://generativelanguage.googleapis.com/v1beta/openai"),
             ),
-            // Unknown provider — still works if the user provides base_url + key
+            // Unknown provider - still works if the user provides base_url + key
             _ => (
                 "gpt-4o-mini",
                 Some(&*Box::leak(
@@ -4279,11 +4279,11 @@ fn cmd_configure_responder(
 }
 
 fn cmd_configure_responder_interactive(cli: &Cli) -> Result<()> {
-    println!("InnerWarden — Responder setup\n");
+    println!("InnerWarden - Responder setup\n");
     println!("The responder controls what InnerWarden does when it detects an attack.\n");
-    println!("  1. Observe only (safe)   — logs everything, takes no action");
-    println!("  2. Dry-run mode          — shows what it WOULD do, but doesn't execute");
-    println!("  3. Live (auto-block)     — automatically blocks IPs and suspends users\n");
+    println!("  1. Observe only (safe)   - logs everything, takes no action");
+    println!("  2. Dry-run mode          - shows what it WOULD do, but doesn't execute");
+    println!("  3. Live (auto-block)     - automatically blocks IPs and suspends users\n");
 
     let choice = prompt("Choose [1/2/3]")?;
 
@@ -4291,7 +4291,7 @@ fn cmd_configure_responder_interactive(cli: &Cli) -> Result<()> {
         "1" => {
             if !cli.dry_run {
                 config_editor::write_bool(&cli.agent_config, "responder", "enabled", false)?;
-                println!("  [ok] responder disabled — observe only");
+                println!("  [ok] responder disabled - observe only");
             } else {
                 println!("  [dry-run] would disable responder");
             }
@@ -4343,7 +4343,7 @@ fn cmd_configure_responder_interactive(cli: &Cli) -> Result<()> {
             );
         }
         _ => {
-            anyhow::bail!("invalid choice — enter 1, 2, or 3");
+            anyhow::bail!("invalid choice - enter 1, 2, or 3");
         }
     }
     Ok(())
@@ -4372,8 +4372,8 @@ fn cmd_configure_telegram(
     let token = if let Some(t) = token_arg {
         t.to_string()
     } else {
-        println!("InnerWarden — Telegram setup\n");
-        println!("Step 1 — Create a bot");
+        println!("InnerWarden - Telegram setup\n");
+        println!("Step 1 - Create a bot");
         println!("  1. Open Telegram and message @BotFather");
         println!("  2. Send:  /newbot");
         println!("  3. Choose a name and username for your bot");
@@ -4388,7 +4388,7 @@ fn cmd_configure_telegram(
     // Basic format check: digits : alphanumeric
     if !token.contains(':') || token.split(':').next().is_none_or(|s| s.is_empty()) {
         anyhow::bail!(
-            "token looks wrong — expected format: 123456789:ABCdef...\nGet one from @BotFather on Telegram."
+            "token looks wrong - expected format: 123456789:ABCdef...\nGet one from @BotFather on Telegram."
         );
     }
 
@@ -4420,16 +4420,16 @@ fn cmd_configure_telegram(
                 }
             }
             None => {
-                println!("\nStep 2 — Find your chat ID\n");
+                println!("\nStep 2 - Find your chat ID\n");
                 println!("  Auto-detect (easiest):");
                 println!("    Open Telegram and send any message to your new bot.");
                 println!(
-                    "    Then re-run this command — your chat ID will be detected automatically."
+                    "    Then re-run this command - your chat ID will be detected automatically."
                 );
                 println!();
                 println!("  Or get it manually:");
                 println!(
-                    "    Message @userinfobot on Telegram — it replies with your numeric user ID."
+                    "    Message @userinfobot on Telegram - it replies with your numeric user ID."
                 );
                 println!();
                 let c = prompt("Chat ID (numeric, e.g. 123456789)")?;
@@ -4511,11 +4511,11 @@ fn cmd_configure_telegram(
     println!("Telegram is ready.");
     println!();
     println!("  Your bot sends alerts and responds to commands:");
-    println!("    /menu       — interactive button menu");
-    println!("    /status     — system overview");
-    println!("    /incidents  — last incidents");
-    println!("    /decisions  — last decisions");
-    println!("    /ask <q>    — ask the AI a question");
+    println!("    /menu       - interactive button menu");
+    println!("    /status     - system overview");
+    println!("    /incidents  - last incidents");
+    println!("    /decisions  - last decisions");
+    println!("    /ask <q>    - ask the AI a question");
     println!();
     // Audit log
     let mut audit = AdminActionEntry {
@@ -4537,9 +4537,9 @@ fn cmd_configure_telegram(
     }
 
     println!("Next steps:");
-    println!("  innerwarden status       — check services and active capabilities");
-    println!("  innerwarden doctor       — validate the full setup");
-    println!("  innerwarden test-alert   — send a test alert right now");
+    println!("  innerwarden status       - check services and active capabilities");
+    println!("  innerwarden doctor       - validate the full setup");
+    println!("  innerwarden test-alert   - send a test alert right now");
     Ok(())
 }
 
@@ -4563,7 +4563,7 @@ fn send_telegram_test(token: &str, chat_id: &str) -> Result<()> {
     let url = format!("https://api.telegram.org/bot{token}/sendMessage");
     let body = serde_json::json!({
         "chat_id": chat_id,
-        "text": "✅ <b>InnerWarden connected</b>\n\nYou'll receive alerts here when High or Critical threats are detected on your server.\n\n<b>Commands:</b>\n/menu — interactive button menu\n/status — system overview\n/incidents — last incidents\n/decisions — last decisions\n/ask &lt;question&gt; — ask the AI\n\nOr just type a question in plain text.",
+        "text": "✅ <b>InnerWarden connected</b>\n\nYou'll receive alerts here when High or Critical threats are detected on your server.\n\n<b>Commands:</b>\n/menu - interactive button menu\n/status - system overview\n/incidents - last incidents\n/decisions - last decisions\n/ask &lt;question&gt; - ask the AI\n\nOr just type a question in plain text.",
         "parse_mode": "HTML"
     });
     let resp = ureq::post(&url)
@@ -4603,8 +4603,8 @@ fn cmd_configure_slack(
     let webhook_url = if let Some(u) = webhook_url_arg {
         u.to_string()
     } else {
-        println!("InnerWarden — Slack setup\n");
-        println!("Step 1 — Create an Incoming Webhook");
+        println!("InnerWarden - Slack setup\n");
+        println!("Step 1 - Create an Incoming Webhook");
         println!("  1. Go to https://api.slack.com/apps and click 'Create New App'");
         println!("  2. Choose 'From scratch', name it 'InnerWarden', pick your workspace");
         println!("  3. Click 'Incoming Webhooks' → toggle On → 'Add New Webhook to Workspace'");
@@ -4756,7 +4756,7 @@ fn cmd_configure_webhook(
     let url = if let Some(u) = url_arg {
         u.to_string()
     } else {
-        println!("InnerWarden — Webhook setup\n");
+        println!("InnerWarden - Webhook setup\n");
         println!("Sends a JSON POST to your endpoint for every alert.\n");
         println!("Works with:");
         println!("  PagerDuty, Opsgenie, Discord, Microsoft Teams, Google Chat,");
@@ -4829,7 +4829,7 @@ fn send_webhook_test(url: &str) -> Result<u16> {
         "source": "innerwarden",
         "kind": "test",
         "severity": "low",
-        "summary": "InnerWarden webhook test — configuration successful",
+        "summary": "InnerWarden webhook test - configuration successful",
         "host": hostname()
     });
     let resp = ureq::post(url)
@@ -4875,7 +4875,7 @@ fn cmd_configure_dashboard(cli: &Cli, user: &str, password_arg: Option<&str>) ->
             .or_else(|| which_bin("innerwarden-agent"))
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "innerwarden-agent not found — run ./install.sh first or generate hash manually:\
+                    "innerwarden-agent not found - run ./install.sh first or generate hash manually:\
                     \n  innerwarden-agent --dashboard-generate-password-hash"
                 )
             })?;
@@ -4906,8 +4906,8 @@ fn cmd_configure_dashboard(cli: &Cli, user: &str, password_arg: Option<&str>) ->
             .ok_or_else(|| anyhow::anyhow!("agent binary returned unexpected output"))?
     } else {
         // Interactive path: let the agent binary prompt for password (hidden, with confirm).
-        // This avoids the duplicate-prompt issue — only 2 prompts instead of 3.
-        println!("InnerWarden — Dashboard setup\n");
+        // This avoids the duplicate-prompt issue - only 2 prompts instead of 3.
+        println!("InnerWarden - Dashboard setup\n");
         println!("The dashboard requires a login to protect your security data.");
         println!("Choose a strong password (min 8 chars).\n");
 
@@ -4928,7 +4928,7 @@ fn cmd_configure_dashboard(cli: &Cli, user: &str, password_arg: Option<&str>) ->
             .or_else(|| which_bin("innerwarden-agent"))
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "innerwarden-agent not found — run ./install.sh first or generate hash manually:\
+                    "innerwarden-agent not found - run ./install.sh first or generate hash manually:\
                     \n  innerwarden-agent --dashboard-generate-password-hash"
                 )
             })?;
@@ -5053,7 +5053,7 @@ fn ensure_dashboard_flag_in_service(cli: &Cli) {
         println!("  [ok] --dashboard added to {service_path}");
     } else {
         println!(
-            "  [warn] could not update {service_path} — add --dashboard to ExecStart manually"
+            "  [warn] could not update {service_path} - add --dashboard to ExecStart manually"
         );
     }
 }
@@ -5090,12 +5090,12 @@ fn cmd_configure_abuseipdb(
     let api_key = if let Some(k) = api_key_arg {
         k.to_string()
     } else {
-        println!("InnerWarden — AbuseIPDB setup\n");
+        println!("InnerWarden - AbuseIPDB setup\n");
         println!("AbuseIPDB checks the reputation of every attacking IP before AI analysis.");
         println!("The reputation score (0–100) is injected into the AI prompt so decisions");
         println!("are more confident. IPs with known bad reputation can be blocked instantly");
         println!("without spending an AI token.\n");
-        println!("Free tier: 1,000 lookups/day — enough for most servers.\n");
+        println!("Free tier: 1,000 lookups/day - enough for most servers.\n");
         println!("  1. Go to https://www.abuseipdb.com/register and create a free account");
         println!("  2. Once logged in, go to https://www.abuseipdb.com/account/api");
         println!("  3. Create a new API key and paste it below\n");
@@ -5107,10 +5107,10 @@ fn cmd_configure_abuseipdb(
     };
 
     if api_key.len() < 10 {
-        anyhow::bail!("API key looks too short — copy the full key from abuseipdb.com");
+        anyhow::bail!("API key looks too short - copy the full key from abuseipdb.com");
     }
 
-    // Determine auto-block threshold — wizard or flag
+    // Determine auto-block threshold - wizard or flag
     let threshold: u8 = if let Some(t) = auto_block_arg {
         t
     } else if api_key_arg.is_none() {
@@ -5125,7 +5125,7 @@ fn cmd_configure_abuseipdb(
             80
         } else {
             raw.parse::<u8>().unwrap_or_else(|_| {
-                println!("  Invalid value — using 80");
+                println!("  Invalid value - using 80");
                 80
             })
         }
@@ -5207,7 +5207,7 @@ fn cmd_configure_geoip(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    println!("InnerWarden — GeoIP setup\n");
+    println!("InnerWarden - GeoIP setup\n");
     println!("GeoIP adds country and ISP context to AI analysis. No API key needed.");
     println!("Uses ip-api.com (free, 45 lookups/min).\n");
 
@@ -5221,7 +5221,7 @@ fn cmd_configure_geoip(cli: &Cli) -> Result<()> {
         .call()
     {
         Ok(_) => println!("ok"),
-        Err(_) => println!("unreachable (will enable anyway — retried at runtime)"),
+        Err(_) => println!("unreachable (will enable anyway - retried at runtime)"),
     }
 
     config_editor::write_bool(&cli.agent_config, "geoip", "enabled", true)?;
@@ -5270,14 +5270,14 @@ fn cmd_configure_cloudflare(
     let (zone_id, api_token) = match (zone_id_arg, api_token_arg) {
         (Some(z), Some(t)) => (z.to_string(), t.to_string()),
         (zone_id_arg, api_token_arg) => {
-            println!("InnerWarden — Cloudflare integration setup\n");
+            println!("InnerWarden - Cloudflare integration setup\n");
             println!("When InnerWarden blocks an IP, it will also push that block to Cloudflare's");
             println!(
-                "edge via IP Access Rules — stopping the attacker before they reach your server.\n"
+                "edge via IP Access Rules - stopping the attacker before they reach your server.\n"
             );
             println!("You need:");
-            println!("  1. Zone ID   — right panel of your domain at dash.cloudflare.com");
-            println!("  2. API token — dash.cloudflare.com/profile/api-tokens");
+            println!("  1. Zone ID   - right panel of your domain at dash.cloudflare.com");
+            println!("  2. API token - dash.cloudflare.com/profile/api-tokens");
             println!("     Use template 'Edit zone DNS' or custom with Zone > Firewall Services > Edit\n");
 
             let zid = if let Some(z) = zone_id_arg {
@@ -5305,10 +5305,10 @@ fn cmd_configure_cloudflare(
     };
 
     if zone_id.len() < 10 {
-        anyhow::bail!("Zone ID looks too short — copy it from the Cloudflare dashboard");
+        anyhow::bail!("Zone ID looks too short - copy it from the Cloudflare dashboard");
     }
     if api_token.len() < 10 {
-        anyhow::bail!("API token looks too short — copy the full token from Cloudflare");
+        anyhow::bail!("API token looks too short - copy the full token from Cloudflare");
     }
 
     if cli.dry_run {
@@ -5398,7 +5398,7 @@ fn cmd_configure_fail2ban(cli: &Cli) -> Result<()> {
     if !running {
         println!("  Warning: fail2ban is installed but not running.");
         println!("  Start it with: sudo systemctl start fail2ban");
-        println!("  Enabling the integration anyway — it will activate when fail2ban starts.\n");
+        println!("  Enabling the integration anyway - it will activate when fail2ban starts.\n");
     }
 
     if cli.dry_run {
@@ -5481,7 +5481,7 @@ fn cmd_configure_watchdog(cli: &Cli, interval_mins: u64) -> Result<()> {
         .arg("-")
         .stdin(std::process::Stdio::piped())
         .spawn()
-        .context("failed to run crontab — is it installed?")?;
+        .context("failed to run crontab - is it installed?")?;
     if let Some(stdin) = child.stdin.take() {
         use std::io::Write;
         let mut stdin = stdin;
@@ -5494,7 +5494,7 @@ fn cmd_configure_watchdog(cli: &Cli, interval_mins: u64) -> Result<()> {
 
     println!("  [ok] cron entry added");
     println!();
-    println!("Watchdog configured — checks every {interval_mins} minute(s).");
+    println!("Watchdog configured - checks every {interval_mins} minute(s).");
     println!("If the agent stops responding, you'll get a Telegram alert.");
     println!();
     println!("Cron entry:");
@@ -5571,7 +5571,7 @@ fn cmd_ai_install(cli: &Cli, model: &str, api_key_arg: Option<&str>, yes: bool) 
         prompt_ollama_api_key()?
     };
 
-    println!("InnerWarden AI — Ollama cloud setup");
+    println!("InnerWarden AI - Ollama cloud setup");
     println!();
     println!("  Provider: Ollama cloud (https://api.ollama.com)");
     println!("  Model:    {model}");
@@ -5662,7 +5662,7 @@ fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
         .map(|p| p.join("agent.env"))
         .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
 
-    // Detect permission-denied early — don't check exists() first because
+    // Detect permission-denied early - don't check exists() first because
     // the directory itself may be inaccessible, making exists() return false.
     if let Err(e) = std::fs::read_to_string(&env_file) {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
@@ -5675,7 +5675,7 @@ fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
             eprintln!("  sudo innerwarden {cmd_args}");
             std::process::exit(1);
         }
-        // File not found or other error — fine, load_env_file will return empty map
+        // File not found or other error - fine, load_env_file will return empty map
     }
 
     // Load agent.env for credentials
@@ -5685,7 +5685,7 @@ fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
     let mut any_tested = false;
     let mut any_failed = false;
 
-    println!("InnerWarden — test alert\n");
+    println!("InnerWarden - test alert\n");
 
     // ── Telegram ─────────────────────────────────────────────────────────
     let try_telegram = test_only.is_none_or(|c| c == "telegram");
@@ -5736,7 +5736,7 @@ fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
                 print!("  Slack ...... ");
                 std::io::stdout().flush().ok();
                 let payload = serde_json::json!({
-                    "text": "🔔 *Test alert from InnerWarden* — Slack notifications are working correctly."
+                    "text": "🔔 *Test alert from InnerWarden* - Slack notifications are working correctly."
                 });
                 match ureq::post(&url)
                     .header("Content-Type", "application/json")
@@ -5791,7 +5791,7 @@ fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
                 std::io::stdout().flush().ok();
                 let payload = serde_json::json!({
                     "type": "test",
-                    "message": "Test alert from InnerWarden — webhook notifications are working correctly."
+                    "message": "Test alert from InnerWarden - webhook notifications are working correctly."
                 });
                 match ureq::post(&url)
                     .header("Content-Type", "application/json")
@@ -5825,7 +5825,7 @@ fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
         return Ok(());
     }
     if any_failed {
-        anyhow::bail!("One or more channels failed — run 'innerwarden doctor' for details");
+        anyhow::bail!("One or more channels failed - run 'innerwarden doctor' for details");
     }
     println!("All channels ok.");
     Ok(())
@@ -6013,7 +6013,7 @@ fn cmd_watchdog(
             if notify {
                 maybe_send_watchdog_alert(
                     cli,
-                    "InnerWarden agent appears offline — no telemetry files found.",
+                    "InnerWarden agent appears offline - no telemetry files found.",
                 );
             }
             return Ok(());
@@ -6031,7 +6031,7 @@ fn cmd_watchdog(
         Some(ts) => {
             let age = now_secs.saturating_sub(ts);
             if age > threshold_secs {
-                println!("⚠️  Agent appears unhealthy — last activity {}s ago (threshold: {threshold_secs}s)", age);
+                println!("⚠️  Agent appears unhealthy - last activity {}s ago (threshold: {threshold_secs}s)", age);
                 println!("   Check status: innerwarden status");
                 println!("   Check logs:   journalctl -u innerwarden-agent -n 50");
                 if notify {
@@ -6045,16 +6045,16 @@ fn cmd_watchdog(
                 }
                 std::process::exit(1);
             } else {
-                println!("✅ Agent is healthy — last activity {}s ago", age);
+                println!("✅ Agent is healthy - last activity {}s ago", age);
             }
 
-            // Memory check — restart agent if RSS exceeds 512MB
+            // Memory check - restart agent if RSS exceeds 512MB
             let max_rss_kb: u64 = 512 * 1024;
             if let Some(rss_kb) = get_agent_rss_kb() {
                 let rss_mb = rss_kb / 1024;
                 if rss_kb > max_rss_kb {
                     println!(
-                        "⚠️  Agent memory too high: {}MB (limit: {}MB) — restarting",
+                        "⚠️  Agent memory too high: {}MB (limit: {}MB) - restarting",
                         rss_mb,
                         max_rss_kb / 1024
                     );
@@ -6071,7 +6071,7 @@ fn cmd_watchdog(
                         maybe_send_watchdog_alert(cli, &msg);
                     }
                 } else {
-                    println!("✅ Agent memory OK — {}MB", rss_mb);
+                    println!("✅ Agent memory OK - {}MB", rss_mb);
                 }
             }
         }
@@ -6199,7 +6199,7 @@ fn cmd_watchdog_status(cli: &Cli, data_dir: &Path) -> Result<()> {
 
     match telemetry_path {
         None => {
-            println!("  ⚠️  No telemetry file found — agent may not be running");
+            println!("  ⚠️  No telemetry file found - agent may not be running");
             println!("     Run 'innerwarden status' to check.");
         }
         Some(ref path) => {
@@ -6214,11 +6214,11 @@ fn cmd_watchdog_status(cli: &Cli, data_dir: &Path) -> Result<()> {
                 Some(ts) => {
                     let age = now_secs.saturating_sub(ts);
                     if age < 120 {
-                        println!("  ✅ Agent is healthy — last write {age}s ago");
+                        println!("  ✅ Agent is healthy - last write {age}s ago");
                     } else if age < 300 {
                         println!("  ✅ Agent last wrote telemetry {age}s ago");
                     } else {
-                        println!("  ⚠️  Agent last wrote telemetry {age}s ago — may be stuck");
+                        println!("  ⚠️  Agent last wrote telemetry {age}s ago - may be stuck");
                         println!("     Run 'innerwarden watchdog' to run a full health check.");
                     }
                 }
@@ -6228,9 +6228,9 @@ fn cmd_watchdog_status(cli: &Cli, data_dir: &Path) -> Result<()> {
 
     // ── Quick tip ─────────────────────────────────────────
     println!("\nUseful commands");
-    println!("  innerwarden watchdog            — run a health check now");
-    println!("  innerwarden watchdog --notify   — check and alert via Telegram if unhealthy");
-    println!("  innerwarden configure watchdog  — set up or change the cron schedule");
+    println!("  innerwarden watchdog            - run a health check now");
+    println!("  innerwarden watchdog --notify   - check and alert via Telegram if unhealthy");
+    println!("  innerwarden configure watchdog  - set up or change the cron schedule");
 
     Ok(())
 }
@@ -6242,7 +6242,7 @@ fn cmd_watchdog_status(cli: &Cli, data_dir: &Path) -> Result<()> {
 fn cmd_tune(cli: &Cli, days: u64, yes: bool, data_dir: &Path) -> Result<()> {
     let effective_dir = resolve_data_dir(cli, data_dir);
 
-    println!("InnerWarden Tune — analysing last {days} day(s) of data");
+    println!("InnerWarden Tune - analysing last {days} day(s) of data");
     println!("{}", "─".repeat(56));
 
     let now_secs = std::time::SystemTime::now()
@@ -6365,7 +6365,7 @@ fn cmd_tune(cli: &Cli, days: u64, yes: bool, data_dir: &Path) -> Result<()> {
         // If incident rate is very high (> 5/day) → suggest lowering threshold
         let incidents_per_day = incidents as f64 / days as f64;
         let suggested = if incidents_per_day > 10.0 && current_val > 3 {
-            // Very noisy — lower threshold so we catch earlier
+            // Very noisy - lower threshold so we catch earlier
             (current_val - 1).max(2)
         } else if events_per_day > (current_val * 20) && incidents == 0 {
             // Extremely noisy with zero incidents → raise threshold
@@ -6387,7 +6387,7 @@ fn cmd_tune(cli: &Cli, days: u64, yes: bool, data_dir: &Path) -> Result<()> {
             "lower"
         };
         let reason = format!(
-            "{} events/day, {} incidents in {days} days — {direction} to reduce noise",
+            "{} events/day, {} incidents in {days} days - {direction} to reduce noise",
             events_per_day, incidents
         );
         suggestions.push(Suggestion {
@@ -6753,7 +6753,7 @@ fn cmd_block(cli: &Cli, ip: &str, reason: &str, data_dir: &Path) -> Result<()> {
     };
 
     if !blocked {
-        anyhow::bail!("block command failed — check sudo permissions (run: innerwarden doctor)");
+        anyhow::bail!("block command failed - check sudo permissions (run: innerwarden doctor)");
     }
     println!("  [ok] {ip} blocked via {backend}");
 
@@ -6883,7 +6883,7 @@ fn looks_like_ip(s: &str) -> bool {
 }
 
 /// Check whether the current process can write to the InnerWarden config directory.
-/// If not, print a clear hint and exit — avoids failing mid-operation.
+/// If not, print a clear hint and exit - avoids failing mid-operation.
 fn require_sudo(cli: &Cli) {
     let config_dir = cli
         .agent_config
@@ -6994,7 +6994,7 @@ fn cmd_sensor_status(cli: &Cli, data_dir: &Path) -> Result<()> {
                 .and_then(|line| serde_json::from_str(line).ok())
         });
 
-    println!("InnerWarden — sensor status  ({})\n", today);
+    println!("InnerWarden - sensor status  ({})\n", today);
 
     let Some(snap) = snapshot else {
         println!("  No telemetry data for today.");
@@ -7108,7 +7108,7 @@ fn cmd_backup(cli: &Cli, output: Option<&Path>) -> Result<()> {
         "etc/innerwarden/agent.env",
     ];
 
-    println!("InnerWarden — backup\n");
+    println!("InnerWarden - backup\n");
     println!("Backing up configuration files:");
     for f in &files {
         let abs = Path::new("/").join(f);
@@ -7119,7 +7119,7 @@ fn cmd_backup(cli: &Cli, output: Option<&Path>) -> Result<()> {
     println!("Output: {}", output_path.display());
 
     if cli.dry_run {
-        println!("\n  [dry-run] would create archive — skipping.");
+        println!("\n  [dry-run] would create archive - skipping.");
         return Ok(());
     }
 
@@ -7140,7 +7140,7 @@ fn cmd_backup(cli: &Cli, output: Option<&Path>) -> Result<()> {
         println!("\n  [ok] backup saved to {}", output_path.display());
     } else {
         anyhow::bail!(
-            "tar exited with status {} — some files may be missing from /etc/innerwarden/",
+            "tar exited with status {} - some files may be missing from /etc/innerwarden/",
             status
         );
     }
@@ -7175,13 +7175,13 @@ fn cmd_metrics(cli: &Cli, data_dir: &Path) -> Result<()> {
         .and_then(|line| serde_json::from_str(line).ok());
 
     let Some(snap) = snapshot else {
-        println!("InnerWarden — metrics  ({})\n", today);
+        println!("InnerWarden - metrics  ({})\n", today);
         println!("  No telemetry data for today.");
         println!("  Is the agent running?  innerwarden status");
         return Ok(());
     };
 
-    println!("InnerWarden — metrics  ({})\n", today);
+    println!("InnerWarden - metrics  ({})\n", today);
 
     // --- Events processed today ---
     println!("Events processed today:");
@@ -7498,7 +7498,7 @@ fn cmd_incidents_live(cli: &Cli, severity_filter: &str, data_dir: &Path) -> Resu
     let effective_dir = resolve_data_dir(cli, data_dir);
     let min_sev = parse_severity_filter(severity_filter);
 
-    println!("● LIVE — streaming incidents (Ctrl-C to stop)\n");
+    println!("● LIVE - streaming incidents (Ctrl-C to stop)\n");
 
     let mut offset: u64 = 0;
     let mut current_date = String::new();
@@ -7918,7 +7918,7 @@ fn cmd_completions(shell: &str) -> Result<()> {
         "zsh" => Shell::Zsh,
         "fish" => Shell::Fish,
         other => {
-            anyhow::bail!("unsupported shell '{}' — supported: bash, zsh, fish", other)
+            anyhow::bail!("unsupported shell '{}' - supported: bash, zsh, fish", other)
         }
     };
 
@@ -7926,7 +7926,7 @@ fn cmd_completions(shell: &str) -> Result<()> {
     Ok(())
 }
 
-// C.4 — Doctor
+// C.4 - Doctor
 // ---------------------------------------------------------------------------
 
 fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
@@ -8010,7 +8010,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
         } else {
             Check::fail(
                 "launchctl not found",
-                "unexpected on macOS — check your PATH",
+                "unexpected on macOS - check your PATH",
             )
         });
 
@@ -8025,7 +8025,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
         } else {
             Check::fail(
                 "innerwarden system user missing",
-                "run install.sh — it creates the user via dscl",
+                "run install.sh - it creates the user via dscl",
             )
         });
 
@@ -8046,7 +8046,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
         } else {
             Check::warn(
                 "pfctl not found",
-                "pfctl is built-in on macOS — unexpected. block-ip-pf skill will not work.",
+                "pfctl is built-in on macOS - unexpected. block-ip-pf skill will not work.",
             )
         });
 
@@ -8057,7 +8057,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
         } else {
             Check::fail(
                 "`log` binary not found at /usr/bin/log",
-                "unexpected on macOS — macos_log collector requires Apple Unified Logging",
+                "unexpected on macOS - macos_log collector requires Apple Unified Logging",
             )
         });
     } else {
@@ -8162,7 +8162,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
         } else {
             cfg.push(Check::warn(
                 format!(
-                    "{} config not found ({}) — defaults are in use",
+                    "{} config not found ({}) - defaults are in use",
                     label,
                     path.display()
                 ),
@@ -8171,7 +8171,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
         }
     }
 
-    // AI provider + API key — detect provider from agent config then validate the right key
+    // AI provider + API key - detect provider from agent config then validate the right key
     let env_file = cli
         .agent_config
         .parent()
@@ -8299,7 +8299,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
         }
     }
 
-    // AbuseIPDB enrichment — only when abuseipdb.enabled = true
+    // AbuseIPDB enrichment - only when abuseipdb.enabled = true
     {
         let abuseipdb_enabled = agent_doc
             .as_ref()
@@ -8341,7 +8341,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
         }
     }
 
-    // Fail2ban integration — only when fail2ban.enabled = true
+    // Fail2ban integration - only when fail2ban.enabled = true
     {
         let fail2ban_enabled = agent_doc
             .as_ref()
@@ -8376,7 +8376,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                 Check::ok("fail2ban daemon is responding (ping ok)")
             } else if is_macos {
                 Check::warn(
-                    "fail2ban is Linux-only — integration will not run on macOS",
+                    "fail2ban is Linux-only - integration will not run on macOS",
                     "disable [fail2ban] enabled=false in agent.toml on macOS",
                 )
             } else {
@@ -8534,7 +8534,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
             // If both token and chat_id are valid, suggest a connectivity smoke-test
             if resolved_token.is_some() && resolved_chat.is_some() {
                 tg.push(Check::ok(
-                    "Telegram configured — test it: innerwarden-agent --config /etc/innerwarden/agent.toml --once",
+                    "Telegram configured - test it: innerwarden-agent --config /etc/innerwarden/agent.toml --once",
                 ));
             }
 
@@ -8611,7 +8611,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
 
             if resolved_url.is_some() {
                 sl.push(Check::ok(
-                    "Slack configured — test it: innerwarden-agent --config /etc/innerwarden/agent.toml --once",
+                    "Slack configured - test it: innerwarden-agent --config /etc/innerwarden/agent.toml --once",
                 ));
             }
 
@@ -8809,7 +8809,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
     }
 
     if !any_enabled {
-        println!("  (no capabilities enabled — run 'innerwarden list' to see options)");
+        println!("  (no capabilities enabled - run 'innerwarden list' to see options)");
     }
 
     // ── Integrations ──────────────────────────────────────
@@ -8931,7 +8931,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     Check::ok("Falco json_output is enabled")
                 } else {
                     Check::warn(
-                        "Falco json_output not enabled — events will not be parseable",
+                        "Falco json_output not enabled - events will not be parseable",
                         falco_json_hint,
                     )
                 });
@@ -9111,7 +9111,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     )
                 });
 
-                // readability — can the current user read it?
+                // readability - can the current user read it?
                 if log_exists {
                     let readable = std::fs::File::open(&err_log).is_ok();
                     nginx_err.push(if readable {
@@ -9130,7 +9130,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     Check::ok("web_scan detector is enabled")
                 } else {
                     Check::warn(
-                        "web_scan detector is disabled — http.error events are collected but not triaged",
+                        "web_scan detector is disabled - http.error events are collected but not triaged",
                         "Add to sensor config:\n\n  [detectors.web_scan]\n  enabled = true\n  threshold = 15\n  window_seconds = 60",
                     )
                 });
@@ -9166,18 +9166,18 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                         if age > 300 {
                             liveness.push(Check::warn(
                                 format!("last telemetry write was {}s ago", age),
-                                "agent may be stuck — check: journalctl -u innerwarden-agent -n 50",
+                                "agent may be stuck - check: journalctl -u innerwarden-agent -n 50",
                             ));
                         } else {
                             liveness
-                                .push(Check::ok(format!("agent active — last write {}s ago", age)));
+                                .push(Check::ok(format!("agent active - last write {}s ago", age)));
                         }
                     }
                 }
             } else {
                 liveness.push(Check::warn(
                     "no telemetry file for today",
-                    "agent has not written telemetry yet — is it running? innerwarden status",
+                    "agent has not written telemetry yet - is it running? innerwarden status",
                 ));
             }
         }
@@ -9188,9 +9188,9 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
     println!();
     println!("{}", "─".repeat(48));
     if total_issues == 0 {
-        println!("All checks passed — system looks healthy.");
+        println!("All checks passed - system looks healthy.");
     } else {
-        println!("{total_issues} issue(s) found — review hints above.");
+        println!("{total_issues} issue(s) found - review hints above.");
         // If configs are missing, offer a one-command path forward
         let configs_missing = !cli.sensor_config.exists() || !cli.agent_config.exists();
         if configs_missing {
@@ -9221,7 +9221,7 @@ fn parse_params(raw: &[String]) -> Result<HashMap<String, String>> {
     let mut map = HashMap::new();
     for item in raw {
         let (k, v) = item.split_once('=').ok_or_else(|| {
-            anyhow::anyhow!("invalid param '{}' — expected KEY=VALUE format", item)
+            anyhow::anyhow!("invalid param '{}' - expected KEY=VALUE format", item)
         })?;
         map.insert(k.to_string(), v.to_string());
     }
@@ -9230,7 +9230,7 @@ fn parse_params(raw: &[String]) -> Result<HashMap<String, String>> {
 
 fn unknown_cap_error(id: &str) -> anyhow::Error {
     anyhow::anyhow!(
-        "unknown capability '{}' — run 'innerwarden list' to see available capabilities",
+        "unknown capability '{}' - run 'innerwarden list' to see available capabilities",
         id
     )
 }
@@ -9348,7 +9348,7 @@ fn cmd_allowlist_list(cli: &Cli) -> Result<()> {
     let users = read_str_array(&cli.agent_config, "allowlist", "trusted_users");
 
     if ips.is_empty() && users.is_empty() {
-        println!("Allowlist is empty — no trusted IPs or users configured.");
+        println!("Allowlist is empty - no trusted IPs or users configured.");
         println!("Add entries with: innerwarden allowlist add --ip <cidr>");
         return Ok(());
     }
@@ -9402,7 +9402,7 @@ fn cmd_notify_web_push_setup(cli: &Cli, subject: Option<&str>) -> Result<()> {
     }
 
     // Generate VAPID key pair
-    // We use p256 here via the agent crate's web_push module — but since ctl
+    // We use p256 here via the agent crate's web_push module - but since ctl
     // is a separate binary, we implement key generation inline using the same
     // algorithm so we don't need to depend on the agent crate.
     let (private_pem, public_b64) = generate_vapid_keys_ctl()?;
@@ -9533,7 +9533,7 @@ fn cmd_pipeline_test(cli: &Cli, wait_secs: u64, data_dir: &Path) -> Result<()> {
     // Count existing decisions to detect new ones
     let baseline = count_jsonl_lines(&decisions_path);
 
-    // Use RFC 5737 documentation IP — safe, never routable
+    // Use RFC 5737 documentation IP - safe, never routable
     let test_ip = "198.51.100.123";
     let now_iso = {
         let secs = std::time::SystemTime::now()
@@ -9606,7 +9606,7 @@ fn cmd_pipeline_test(cli: &Cli, wait_secs: u64, data_dir: &Path) -> Result<()> {
         }],
         "recommended_checks": [
             format!("This is a pipeline test using RFC 5737 documentation IP {test_ip}"),
-            "No real threat — safe to ignore"
+            "No real threat - safe to ignore"
         ],
         "tags": ["auth", "ssh", "bruteforce", "pipeline-test"],
         "entities": [{
@@ -9642,7 +9642,7 @@ fn cmd_pipeline_test(cli: &Cli, wait_secs: u64, data_dir: &Path) -> Result<()> {
         println!("        Agent process not detected.");
         println!("        The test incident was written but nobody is reading it.");
         println!("        Start the agent: sudo systemctl start innerwarden-agent\n");
-        println!("  Result: PARTIAL — incident written, agent not running");
+        println!("  Result: PARTIAL - incident written, agent not running");
         return Ok(());
     }
     println!("        Agent is running.\n");
@@ -9700,7 +9700,7 @@ fn cmd_pipeline_test(cli: &Cli, wait_secs: u64, data_dir: &Path) -> Result<()> {
                         println!("        Reason: {reason}");
                     }
                     if dry {
-                        println!("        (safe — no real firewall changes)");
+                        println!("        (safe - no real firewall changes)");
                     }
                 }
             }
@@ -9712,7 +9712,7 @@ fn cmd_pipeline_test(cli: &Cli, wait_secs: u64, data_dir: &Path) -> Result<()> {
         println!("          - Agent is running but AI provider is not configured");
         println!("          - Agent hasn't reached this incident in its read cycle");
         println!("          - Try again with --wait 30");
-        println!("\n  Result: TIMEOUT — check `innerwarden doctor` for diagnostics");
+        println!("\n  Result: TIMEOUT - check `innerwarden doctor` for diagnostics");
     }
 
     Ok(())
@@ -10175,7 +10175,7 @@ mod tests {
             "{\"ts\":\"2026-03-16T10:00:00Z\",\"action\":\"ignore\",\"target_ip\":\"1.2.3.4\",\"confidence\":0.3,\"dry_run\":false,\"ai_provider\":\"openai\"}\n",
         ).unwrap();
         let cli = make_cli(dir.path());
-        // Filter for block_ip — should return Ok (0 matching)
+        // Filter for block_ip - should return Ok (0 matching)
         let result = cmd_decisions(&cli, 1, Some("block_ip"), dir.path());
         assert!(result.is_ok());
     }
@@ -10229,7 +10229,7 @@ mod tests {
     fn tune_no_data() {
         let dir = TempDir::new().unwrap();
         let cli = make_cli(dir.path());
-        // No JSONL files — should return Ok with a "no data" message
+        // No JSONL files - should return Ok with a "no data" message
         let result = cmd_tune(&cli, 7, true, dir.path());
         assert!(result.is_ok());
     }
@@ -10238,7 +10238,7 @@ mod tests {
     fn tune_no_suggestions_when_calibrated() {
         let dir = TempDir::new().unwrap();
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        // Write a modest event count that matches default thresholds — no suggestion expected
+        // Write a modest event count that matches default thresholds - no suggestion expected
         let events_path = dir.path().join(format!("events-{today}.jsonl"));
         let mut content = String::new();
         for _ in 0..5 {
@@ -10262,7 +10262,7 @@ mod tests {
 
     #[test]
     fn completions_bash_succeeds() {
-        // Just verify it doesn't panic/error — output goes to stdout
+        // Just verify it doesn't panic/error - output goes to stdout
         let result = cmd_completions("bash");
         assert!(result.is_ok());
     }
@@ -10388,7 +10388,7 @@ mod tests {
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(!content.contains("1.2.3.4"));
-        // Remaining lines should have recomputed prev_hash — first line should have null
+        // Remaining lines should have recomputed prev_hash - first line should have null
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 2);
         let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();

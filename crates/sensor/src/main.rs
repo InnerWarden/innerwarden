@@ -174,7 +174,7 @@ async fn main() -> Result<()> {
     let mut writer = JsonlWriter::new(data_dir, write_events_jsonl)?;
     let (tx, mut rx) = mpsc::channel(1024);
 
-    // Shared state — updated by collectors, read on shutdown for persistence.
+    // Shared state - updated by collectors, read on shutdown for persistence.
     let shared_auth_offset = Arc::new(AtomicU64::new(0));
     let shared_integrity_hashes: Arc<Mutex<HashMap<String, String>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -308,7 +308,7 @@ async fn main() -> Result<()> {
         );
         OsqueryAnomalyDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
     });
-    // Distributed SSH detector — always on when ssh_bruteforce is on
+    // Distributed SSH detector - always on when ssh_bruteforce is on
     let distributed_ssh_detector = cfg.detectors.ssh_bruteforce.enabled.then(|| {
         info!(
             threshold = 8,
@@ -841,7 +841,7 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Spawn eBPF collector (optional — requires Linux 5.8+, CAP_BPF)
+    // Spawn eBPF collector (optional - requires Linux 5.8+, CAP_BPF)
     {
         let tx_ebpf = tx.clone();
         let host_id = cfg.agent.host_id.clone();
@@ -859,7 +859,7 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Drop the original tx — each collector holds its own clone.
+    // Drop the original tx - each collector holds its own clone.
     // When all collector tasks finish, all senders drop and rx.recv() returns None.
     drop(tx);
 
@@ -883,11 +883,11 @@ async fn main() -> Result<()> {
         let received = tokio::select! {
             event = rx.recv() => event,
             _ = tokio::signal::ctrl_c() => {
-                info!("SIGINT received — shutting down");
+                info!("SIGINT received - shutting down");
                 break 'main;
             }
             _ = sigterm.recv() => {
-                info!("SIGTERM received — shutting down");
+                info!("SIGTERM received - shutting down");
                 break 'main;
             }
             _ = flush_ticker.tick() => {
@@ -902,7 +902,7 @@ async fn main() -> Result<()> {
         let received = tokio::select! {
             event = rx.recv() => event,
             _ = tokio::signal::ctrl_c() => {
-                info!("SIGINT received — shutting down");
+                info!("SIGINT received - shutting down");
                 break 'main;
             }
             _ = flush_ticker.tick() => {
@@ -1018,7 +1018,7 @@ fn process_event(
                 write_incident(writer, stats, incident);
             }
         }
-        // Passthrough sources don't need InnerWarden detectors — return early.
+        // Passthrough sources don't need InnerWarden detectors - return early.
         return;
     }
 

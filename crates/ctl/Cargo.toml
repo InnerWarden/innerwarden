@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-description = "InnerWarden control plane — manage capabilities and system configuration."
+description = "InnerWarden control plane - manage capabilities and system configuration."
 keywords = ["security", "linux", "capabilities", "rust"]
 categories = ["command-line-utilities"]
 

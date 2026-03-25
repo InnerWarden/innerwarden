@@ -1,4 +1,4 @@
-/// Allowlist — trusted IPs, CIDRs, and users that skip automated AI response.
+/// Allowlist - trusted IPs, CIDRs, and users that skip automated AI response.
 ///
 /// Incidents involving allowlisted entities are still logged, still sent to
 /// webhook/Telegram/Slack, but are not forwarded to the AI gate and will

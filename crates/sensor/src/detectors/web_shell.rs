@@ -130,7 +130,7 @@ impl WebShellDetector {
             target: filename,
             summary: &format!(
                 "Suspicious web shell file written by {comm} (pid={pid}, uid={uid}): \
-                 {filename} — script file created in web directory"
+                 {filename} - script file created in web directory"
             ),
         })
     }

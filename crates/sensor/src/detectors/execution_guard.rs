@@ -1,4 +1,4 @@
-/// Execution Guard Detector — structural command analysis + behavioral risk scoring.
+/// Execution Guard Detector - structural command analysis + behavioral risk scoring.
 ///
 /// Monitors command execution events and detects suspicious patterns using:
 /// - Structural AST analysis via tree-sitter-bash (for pipeline/script patterns)
@@ -6,8 +6,8 @@
 /// - Per-user command timeline correlation (sequence: download → chmod → execute)
 ///
 /// # Event sources
-/// - `shell.command_exec` — from exec_audit collector (auditd EXECVE records)
-/// - `sudo.command` — from journald collector
+/// - `shell.command_exec` - from exec_audit collector (auditd EXECVE records)
+/// - `sudo.command` - from journald collector
 ///
 /// # Incident type
 /// `suspicious_execution`
@@ -18,7 +18,7 @@
 /// - **`contain` mode** (future): on Critical incidents, invoke `suspend-user-sudo`
 ///   and attempt to isolate the user session.
 /// - **`strict` mode** (future): pre-execution command interception via eBPF or
-///   LSM hooks — deny execution *before* it runs.
+///   LSM hooks - deny execution *before* it runs.
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 
@@ -164,8 +164,8 @@ pub enum ExecutionMode {
     /// Detect, emit incidents, send to AI pipeline, log to audit. No blocking.
     #[default]
     Observe,
-    // FUTURE: Contain — suspend-user-sudo + isolate-user-session on Critical incidents
-    // FUTURE: Strict — pre-execution interception via eBPF / LSM (deny before run)
+    // FUTURE: Contain - suspend-user-sudo + isolate-user-session on Critical incidents
+    // FUTURE: Strict - pre-execution interception via eBPF / LSM (deny before run)
 }
 
 impl ExecutionMode {
@@ -463,7 +463,7 @@ fn check_command_node(node: tree_sitter::Node, source: &[u8], signals: &mut Vec<
 }
 
 // ---------------------------------------------------------------------------
-// Argv-based analysis (fast path — no parser overhead)
+// Argv-based analysis (fast path - no parser overhead)
 // ---------------------------------------------------------------------------
 
 /// Analyze a command based on its argv vector.
@@ -538,7 +538,7 @@ fn inspect_script_file(
 
     let content = match std::fs::read(path) {
         Ok(c) => c,
-        Err(_) => return, // file not accessible — fail-open
+        Err(_) => return, // file not accessible - fail-open
     };
     let slice = if content.len() > MAX_BYTES {
         &content[..MAX_BYTES]
@@ -576,12 +576,12 @@ fn detect_timeline_kind(argv0_base: &str, argv: &[String]) -> Option<TimelineKin
         }
     }
     if let Some(first) = argv.first() {
-        // Relative path execution (./payload, ../something) — suggests running something
+        // Relative path execution (./payload, ../something) - suggests running something
         // that was recently downloaded or made executable
         if first.starts_with("./") || first.starts_with("../") {
             return Some(TimelineKind::Execute);
         }
-        // Absolute execution from world-writable temp directories — also tracked so
+        // Absolute execution from world-writable temp directories - also tracked so
         // that a download→chmod→execute sequence using /tmp/payload absolute path
         // is correctly detected by the timeline correlator.
         for prefix in TMP_PREFIXES {
@@ -676,7 +676,7 @@ fn truncate_cmd(s: &str, max: usize) -> &str {
 }
 
 // ---------------------------------------------------------------------------
-// Incident builder (free function — avoids &mut self double-borrow)
+// Incident builder (free function - avoids &mut self double-borrow)
 // ---------------------------------------------------------------------------
 
 struct IncidentCtx<'a> {
@@ -854,10 +854,10 @@ impl ExecutionGuardDetector {
         // Phase 1: argv-based signals (no self borrow except the call itself)
         let mut signals = analyze_argv(&argv);
 
-        // Phase 2: AST analysis — only when a shell is executing inline or script content
+        // Phase 2: AST analysis - only when a shell is executing inline or script content
         {
             if SHELL_EXECUTORS.contains(&argv0_base.as_str()) {
-                // Shell with `-c "script"` — analyze the inline script structurally
+                // Shell with `-c "script"` - analyze the inline script structurally
                 let inline: Option<String> = argv.windows(2).find_map(|w| {
                     if w[0] == "-c" {
                         Some(w[1].clone())
@@ -870,7 +870,7 @@ impl ExecutionGuardDetector {
                     signals.extend(ast_signals);
                 }
 
-                // Shell executing a script file — read and analyze
+                // Shell executing a script file - read and analyze
                 let script_path = argv
                     .iter()
                     .skip(1)

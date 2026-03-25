@@ -20,7 +20,7 @@ using **structural command analysis (AST)** and **lightweight behavioral scoring
 
 | Score | Severity | Action |
 |-------|----------|--------|
-| < 30 | — | Ignored |
+| < 30 | - | Ignored |
 | 30–59 | Low | Incident emitted, logged |
 | 60–79 | High | Incident emitted, AI pipeline notified |
 | ≥ 80 | Critical | Incident emitted, AI pipeline notified |
@@ -46,9 +46,9 @@ The detector walks this tree, finds a **pipeline** containing a downloader (`cur
 `DownloadAndExecute` signal (+40 points).
 
 AST analysis is applied to:
-- `bash -c "..."` / `sh -c "..."` — inline script in argument
-- `bash script.sh` — local script file content (up to 8 KB)
-- `sudo <command>` — full command text from journald
+- `bash -c "..."` / `sh -c "..."` - inline script in argument
+- `bash script.sh` - local script file content (up to 8 KB)
+- `sudo <command>` - full command text from journald
 
 ### 2. Argv-based analysis (fast path)
 
@@ -135,7 +135,7 @@ read, the event is still analyzed via argv-based rules. No event is dropped due
 to a parser error.
 
 **Observe mode only (v0.1).** This version detects and alerts. No automatic
-blocking or user suspension occurs. This is intentional — execution events
+blocking or user suspension occurs. This is intentional - execution events
 require human review before automated response.
 
 **Privacy-safe defaults.** TTY input capture (`include_tty`) is disabled by

@@ -25,5 +25,5 @@ if command -v bpftool >/dev/null 2>&1; then
     rm /sys/fs/bpf/innerwarden_test || \
     echo "  ❌ Load failed (may need sudo or different program section)"
 else
-  echo "bpftool not installed — install with: sudo apt install linux-tools-common"
+  echo "bpftool not installed - install with: sudo apt install linux-tools-common"
 fi

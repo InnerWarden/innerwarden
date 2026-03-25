@@ -151,7 +151,7 @@ impl CredentialHarvestDetector {
                 comm,
                 pid,
                 uid,
-                detail: &format!("{comm} reading /proc/{target_pid}/{subpath} — {description}"),
+                detail: &format!("{comm} reading /proc/{target_pid}/{subpath} - {description}"),
                 title: &format!("Credential harvest: {comm} reading /proc/{target_pid}/{subpath}"),
                 alert_key: &format!("proc_{subpath}_read"),
                 recommended_checks: vec![
@@ -301,7 +301,7 @@ impl CredentialHarvestDetector {
             ),
             severity,
             title: title.to_string(),
-            summary: format!("Credential harvesting: {title} — {comm} (pid={pid}, uid={uid})"),
+            summary: format!("Credential harvesting: {title} - {comm} (pid={pid}, uid={uid})"),
             evidence: serde_json::json!([{
                 "kind": event.kind,
                 "comm": comm,

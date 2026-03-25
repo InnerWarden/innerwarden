@@ -1,4 +1,4 @@
-# network-defense — agent config snippet
+# network-defense - agent config snippet
 
 [responder]
 enabled        = true

@@ -1,4 +1,4 @@
-//! Fail2ban integration — DEPRECATED.
+//! Fail2ban integration - DEPRECATED.
 //!
 //! Inner Warden's native detectors + XDP firewall supersede fail2ban.
 //! This module is kept as a no-op stub for config compatibility.
@@ -10,12 +10,12 @@ pub struct Fail2BanState {
 
 impl Fail2BanState {
     pub fn new(_cfg: &crate::config::Fail2BanConfig) -> Self {
-        tracing::info!("Fail2ban integration is deprecated — InnerWarden's native detectors + XDP firewall are superior");
+        tracing::info!("Fail2ban integration is deprecated - InnerWarden's native detectors + XDP firewall are superior");
         Self { _private: () }
     }
 }
 
-/// No-op sync tick — fail2ban integration is deprecated.
+/// No-op sync tick - fail2ban integration is deprecated.
 #[allow(clippy::too_many_arguments)]
 pub async fn sync_tick(
     _state: &mut Fail2BanState,

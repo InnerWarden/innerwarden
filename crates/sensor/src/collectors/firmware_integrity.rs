@@ -1,15 +1,15 @@
-//! Firmware & boot integrity collector — detects firmware-level threats.
+//! Firmware & boot integrity collector - detects firmware-level threats.
 //!
 //! Monitors signals that indicate BIOS/UEFI compromise, bootkit installation,
 //! or firmware tampering. Runs periodically (default: every 5 minutes).
 //!
 //! Detection techniques from:
-//!   - Peacock (arxiv:2601.07402, Jan 2025) — UEFI runtime observability
+//!   - Peacock (arxiv:2601.07402, Jan 2025) - UEFI runtime observability
 //!   - UEFI Memory Forensics (arxiv:2501.16962, Jan 2025)
 //!   - SoK: Security Below the OS (arxiv:2311.03809)
 //!   - ESET: BlackLotus, LoJax, MosaicRegressor analysis
 //!
-//! No hardware dependency — all checks read /sys/, /proc/, /boot/efi/.
+//! No hardware dependency - all checks read /sys/, /proc/, /boot/efi/.
 
 use std::collections::HashMap;
 use std::fs;
@@ -71,12 +71,12 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     loop {
         interval.tick().await;
 
-        // 1. ESP integrity — detect new/modified .efi binaries
+        // 1. ESP integrity - detect new/modified .efi binaries
         let new_esp = scan_esp_hashes();
         for (path, hash) in &new_esp {
             match esp_hashes.get(path) {
                 None => {
-                    // New file appeared — possible bootkit installation
+                    // New file appeared - possible bootkit installation
                     let ev = make_event(
                         &host,
                         Severity::Critical,
@@ -88,7 +88,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                     let _ = tx.send(ev).await;
                 }
                 Some(old_hash) if old_hash != hash => {
-                    // File modified — possible bootkit or unauthorized update
+                    // File modified - possible bootkit or unauthorized update
                     let ev = make_event(
                         &host,
                         Severity::Critical,
@@ -122,7 +122,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
         esp_hashes = new_esp;
 
-        // 2. UEFI variable monitoring — detect SecureBoot/DBX tampering
+        // 2. UEFI variable monitoring - detect SecureBoot/DBX tampering
         let new_efivars = scan_efivar_hashes();
         for (name, hash) in &new_efivars {
             if let Some(old_hash) = efivar_hashes.get(name) {
@@ -150,7 +150,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
         efivar_hashes = new_efivars;
 
-        // 3. ACPI table integrity — detect malicious AML injection
+        // 3. ACPI table integrity - detect malicious AML injection
         let new_acpi = scan_acpi_hashes();
         for (table, hash) in &new_acpi {
             if let Some(old_hash) = acpi_hashes.get(table) {
@@ -169,7 +169,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
         acpi_hashes = new_acpi;
 
-        // 4. Firmware version — detect BIOS downgrade/replacement
+        // 4. Firmware version - detect BIOS downgrade/replacement
         let new_dmi = read_dmi_info();
         if !dmi_baseline.is_empty() && new_dmi != dmi_baseline {
             let ev = make_event(
@@ -184,7 +184,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
             dmi_baseline = new_dmi;
         }
 
-        // 5. Kernel tainted flag — detect new taint (unsigned module loaded)
+        // 5. Kernel tainted flag - detect new taint (unsigned module loaded)
         let new_tainted = read_tainted();
         if new_tainted != kernel_tainted_baseline && new_tainted > kernel_tainted_baseline {
             let added = new_tainted & !kernel_tainted_baseline;

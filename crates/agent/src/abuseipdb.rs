@@ -139,15 +139,15 @@ impl AbuseIpDbClient {
         };
 
         if resp.status().as_u16() == 429 {
-            warn!("AbuseIPDB rate limit hit — skipping report");
+            warn!("AbuseIPDB rate limit hit - skipping report");
             return false;
         }
 
         if resp.status().as_u16() == 422 {
-            // Duplicate report or validation error — not a failure worth retrying
+            // Duplicate report or validation error - not a failure worth retrying
             debug!(
                 ip,
-                "AbuseIPDB report rejected (422) — likely duplicate or invalid"
+                "AbuseIPDB report rejected (422) - likely duplicate or invalid"
             );
             return false;
         }
@@ -192,7 +192,7 @@ impl AbuseIpDbClient {
         };
 
         if resp.status().as_u16() == 429 {
-            warn!("AbuseIPDB rate limit hit — skipping enrichment");
+            warn!("AbuseIPDB rate limit hit - skipping enrichment");
             return None;
         }
 

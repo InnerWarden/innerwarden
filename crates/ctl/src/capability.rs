@@ -85,7 +85,7 @@ pub trait Capability: Send + Sync {
     /// One-line description shown in `innerwarden list`
     fn description(&self) -> &'static str;
 
-    /// Prerequisite checks — all must pass before any mutation.
+    /// Prerequisite checks - all must pass before any mutation.
     /// Receives `opts` so checks can depend on params (e.g. which backend to use).
     fn preflights(&self, opts: &ActivationOptions) -> Vec<Box<dyn Preflight>>;
 

@@ -83,7 +83,7 @@ struct SessionRuntime {
     ssh_max_auth_attempts: usize,
     http_max_requests: usize,
     /// AI provider used when `interaction = "llm_shell"`.
-    /// Not serialized — only available in the direct (non-sandbox) listener path.
+    /// Not serialized - only available in the direct (non-sandbox) listener path.
     ai_provider: Option<std::sync::Arc<dyn crate::ai::AiProvider>>,
 }
 
@@ -957,7 +957,7 @@ pub(crate) async fn run_sandbox_worker(spec_path: &Path, result_path: &Path) -> 
             interaction: normalize_interaction(&spec.interaction),
             ssh_max_auth_attempts: spec.ssh_max_auth_attempts,
             http_max_requests: spec.http_max_requests,
-            // Sandbox workers run in a subprocess — AI provider is not available.
+            // Sandbox workers run in a subprocess - AI provider is not available.
             // llm_shell interaction falls back to RejectAll in the sandbox path.
             ai_provider: None,
         };
@@ -1999,7 +1999,7 @@ async fn run_listener(
                                 hostname: "srv-prod-01".to_string(),
                             }
                         } else {
-                            // No AI provider available — fall back to RejectAll.
+                            // No AI provider available - fall back to RejectAll.
                             ssh_interact::SshInteractionMode::RejectAll
                         }
                     } else {

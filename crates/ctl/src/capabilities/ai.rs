@@ -68,12 +68,12 @@ impl Preflight for ApiKeyAvailable {
                 Ok(())
             }
             "ollama" => {
-                // Ollama doesn't need an API key — just needs to be reachable.
+                // Ollama doesn't need an API key - just needs to be reachable.
                 // We don't check connectivity here (preflight should be fast/offline).
                 Ok(())
             }
             _ => Err(PreflightError::new(format!(
-                "unknown provider '{}' — use one of: {}",
+                "unknown provider '{}' - use one of: {}",
                 self.provider,
                 VALID_PROVIDERS.join(", ")
             ))),
@@ -158,7 +158,7 @@ impl Capability for AiCapability {
 
         if !VALID_PROVIDERS.contains(&provider) {
             anyhow::bail!(
-                "unsupported provider '{}' — use one of: {}",
+                "unsupported provider '{}' - use one of: {}",
                 provider,
                 VALID_PROVIDERS.join(", ")
             );

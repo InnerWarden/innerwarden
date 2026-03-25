@@ -16,7 +16,7 @@ collectors = ["wazuh-alerts"]
 event_sources = ["wazuh_alerts"]
 
 [security]
-# No privileged commands — this is a read-only collector
+# No privileged commands - this is a read-only collector
 allowed_commands        = []
 require_sudo_validation = false
 forbid_shell_expansion  = true

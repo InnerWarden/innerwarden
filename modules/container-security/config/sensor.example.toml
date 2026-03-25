@@ -1,4 +1,4 @@
-# container-security — sensor config snippet
+# container-security - sensor config snippet
 
 [collectors.docker]
 enabled = true

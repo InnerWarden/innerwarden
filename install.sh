@@ -4,7 +4,7 @@ set -euo pipefail
 # Inner Warden installer (production trial profile)
 #
 # Default mode: downloads pre-built binaries from GitHub Releases (~10 s).
-# Source mode:  INNERWARDEN_BUILD_FROM_SOURCE=1 — builds from source with cargo.
+# Source mode:  INNERWARDEN_BUILD_FROM_SOURCE=1 - builds from source with cargo.
 #
 # One-liner:
 #   curl -fsSL https://github.com/InnerWarden/innerwarden/releases/latest/download/install.sh | sudo bash
@@ -151,7 +151,7 @@ install_from_stdin() {
   rm -f "${tmp}"
 }
 
-# AI provider is optional — can be configured after install.
+# AI provider is optional - can be configured after install.
 # Supported: openai (cloud), anthropic (cloud), ollama (local, no key needed).
 OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
@@ -257,7 +257,7 @@ download_asset() {
     fi
     log "SHA-256 ok"
   else
-    log "warning: no SHA-256 sidecar for ${asset} — skipping integrity check"
+    log "warning: no SHA-256 sidecar for ${asset} - skipping integrity check"
   fi
 }
 
@@ -385,7 +385,7 @@ if [[ "$OS_TYPE" == "Linux" ]]; then
       run_root yum install -y -q bpftool 2>/dev/null \
         || log "warning: could not install bpftool (XDP/LSM management unavailable)"
     else
-      log "warning: could not detect package manager — install bpftool manually for XDP/LSM support"
+      log "warning: could not detect package manager - install bpftool manually for XDP/LSM support"
     fi
   fi
   if command -v bpftool >/dev/null 2>&1; then
@@ -396,13 +396,13 @@ fi
 HOST_ID="$(hostname -f 2>/dev/null || hostname)"
 
 # ── Preserve existing configs on upgrade ──────────────────────────────────
-# If config files already exist, this is an upgrade — skip overwriting.
+# If config files already exist, this is an upgrade - skip overwriting.
 # Only binaries and systemd units are updated.
 EXISTING_INSTALL=false
 if [[ -f "${SENSOR_CONFIG}" && -f "${AGENT_CONFIG}" ]]; then
   EXISTING_INSTALL=true
   BAKSUFFIX="$(date +%Y%m%d%H%M%S)"
-  log "existing installation detected — preserving configs"
+  log "existing installation detected - preserving configs"
   log "backup created: ${SENSOR_CONFIG}.bak.${BAKSUFFIX}"
   run_root cp "${SENSOR_CONFIG}" "${SENSOR_CONFIG}.bak.${BAKSUFFIX}"
   run_root cp "${AGENT_CONFIG}" "${AGENT_CONFIG}.bak.${BAKSUFFIX}"
@@ -410,7 +410,7 @@ if [[ -f "${SENSOR_CONFIG}" && -f "${AGENT_CONFIG}" ]]; then
 fi
 
 if [[ "${EXISTING_INSTALL}" == "true" ]]; then
-  log "configs preserved — skipping config overwrite (upgrade mode)"
+  log "configs preserved - skipping config overwrite (upgrade mode)"
 else
 log "writing sensor config: ${SENSOR_CONFIG}"
 if [[ "$OS_TYPE" == "Darwin" ]]; then
@@ -544,11 +544,11 @@ provider = "${AI_PROVIDER}"
 model = "${AI_MODEL}"
 context_events = 20
 # confidence_threshold: minimum confidence for auto-execution (0.0–1.0).
-# 1.01 means AI runs and logs decisions but never auto-executes — safe for trial.
+# 1.01 means AI runs and logs decisions but never auto-executes - safe for trial.
 # Lower to 0.8 when you are ready to enable autonomous response.
 confidence_threshold = 1.01
 incident_poll_secs = 2
-# base_url = "http://localhost:11434"  # Ollama only — override endpoint
+# base_url = "http://localhost:11434"  # Ollama only - override endpoint
 
 [honeypot]
 mode = "demo"
@@ -623,7 +623,7 @@ elif [[ -n "${ANTHROPIC_API_KEY}" ]]; then
   printf 'ANTHROPIC_API_KEY=%s\n' "${ANTHROPIC_API_KEY}" > "${tmp_env}"
 else
   cat > "${tmp_env}" <<'ENVEOF'
-# AI provider — uncomment and fill ONE option, then restart innerwarden-agent.
+# AI provider - uncomment and fill ONE option, then restart innerwarden-agent.
 #
 # Option 1: OpenAI (cloud)
 #   OPENAI_API_KEY=sk-...
@@ -903,7 +903,7 @@ _append_integration_collector() {
   local section="$1"   # TOML section text to append
   local marker="$2"    # unique string to check before appending (idempotent)
   if run_root grep -q "$marker" "${SENSOR_CONFIG}" 2>/dev/null; then
-    log "sensor config already contains $marker — skipping"
+    log "sensor config already contains $marker - skipping"
     return
   fi
   local tmp
@@ -960,7 +960,7 @@ path = \"${OSQUERY_LOG_PATH}\"" \
     if run_root systemctl is-active --quiet innerwarden-sensor; then
       log "innerwarden-sensor restarted successfully"
     else
-      log "WARNING: innerwarden-sensor failed to restart — check: sudo journalctl -u innerwarden-sensor -n 50"
+      log "WARNING: innerwarden-sensor failed to restart - check: sudo journalctl -u innerwarden-sensor -n 50"
     fi
   else
     log "no integration collectors were added"
@@ -1011,7 +1011,7 @@ fi
 log "installation complete."
 echo
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo " Inner Warden installed — services running in safe trial mode"
+echo " Inner Warden installed - services running in safe trial mode"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo
 echo "  responder.enabled = false  (no actions taken)"
@@ -1022,12 +1022,12 @@ echo "── AI provider ──────────────────�
 if [[ "${AI_ENABLED}" == "true" ]]; then
 echo "  ✓ Configured: ${AI_PROVIDER} / ${AI_MODEL}"
 else
-echo "  ✗ Not configured — AI analysis is disabled."
+echo "  ✗ Not configured - AI analysis is disabled."
 echo
 echo "  To enable, edit ${AGENT_ENV} and uncomment one of:"
 echo
-echo "    OPENAI_API_KEY=sk-...          (OpenAI — fastest to set up)"
-echo "    ANTHROPIC_API_KEY=sk-ant-...   (Anthropic — also set provider in agent.toml)"
+echo "    OPENAI_API_KEY=sk-...          (OpenAI - fastest to set up)"
+echo "    ANTHROPIC_API_KEY=sk-ant-...   (Anthropic - also set provider in agent.toml)"
 echo
 echo "  Or use Ollama (local, no key needed):"
 echo "    curl -fsSL https://ollama.ai/install.sh | sh"
@@ -1036,7 +1036,7 @@ echo "    # then set in ${AGENT_CONFIG}:"
 echo "    #   provider = \"ollama\""
 echo "    #   model    = \"llama3.2\""
 echo
-echo "  Run 'innerwarden doctor' after configuring — it validates your setup."
+echo "  Run 'innerwarden doctor' after configuring - it validates your setup."
 fi
 echo
 echo "── Enable response skills ───────────────────────────────────────"
@@ -1053,14 +1053,14 @@ echo "  Then open http://localhost:8787 in your browser."
 fi
 echo
 echo "── Getting started ─────────────────────────────────────────────"
-echo "  innerwarden setup    — interactive first-time wizard (AI + Telegram + modules)"
+echo "  innerwarden setup    - interactive first-time wizard (AI + Telegram + modules)"
 echo
 echo "── Useful commands ─────────────────────────────────────────────"
-echo "  innerwarden status   — system overview"
-echo "  innerwarden doctor   — diagnose issues with fix hints"
-echo "  innerwarden scan     — detect what's on your server, recommend modules"
-echo "  innerwarden list     — show available capabilities"
-echo "  innerwarden upgrade  — update to the latest release"
+echo "  innerwarden status   - system overview"
+echo "  innerwarden doctor   - diagnose issues with fix hints"
+echo "  innerwarden scan     - detect what's on your server, recommend modules"
+echo "  innerwarden list     - show available capabilities"
+echo "  innerwarden upgrade  - update to the latest release"
 if [[ "$OS_TYPE" == "Darwin" ]]; then
 echo
 echo "  sudo tail -f ${LOG_DIR}/sensor.log"

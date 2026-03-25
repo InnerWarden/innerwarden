@@ -8,11 +8,11 @@ data from [AbuseIPDB](https://www.abuseipdb.com/).
 Before sending an incident to the AI provider, InnerWarden queries the
 AbuseIPDB API for the primary IP in the incident. The response includes:
 
-- **Abuse confidence score** (0–100) — percentage of reporters who flagged
+- **Abuse confidence score** (0–100) - percentage of reporters who flagged
   this IP as abusive
-- **Total reports** — lifetime report count from the community
-- **Distinct reporters** — number of independent users who reported this IP
-- **Country** and **ISP** — geolocation metadata
+- **Total reports** - lifetime report count from the community
+- **Distinct reporters** - number of independent users who reported this IP
+- **Country** and **ISP** - geolocation metadata
 - **Tor exit node** flag
 
 This data is injected into the AI prompt as additional context, helping the
@@ -77,6 +77,6 @@ or as an environment variable.
 ## What it does NOT do
 
 - Does not report InnerWarden's own blocks back to AbuseIPDB
-- Does not affect detection — only enriches the AI context
+- Does not affect detection - only enriches the AI context
 - Private / loopback IPs are never queried (the algorithm gate filters them
   before this module runs)

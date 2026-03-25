@@ -24,13 +24,13 @@ The detector classifies commands by risk pattern (e.g., `passwd`, `chown`, `chmo
 |-----------|---------|---------|
 | `sudo_abuse.threshold` | 3 | Suspicious sudo commands per user before triggering |
 | `sudo_abuse.window_seconds` | 300 | Sliding window duration |
-| `ai.confidence_threshold` | 0.85 | Higher than default — privilege actions are sensitive |
+| `ai.confidence_threshold` | 0.85 | Higher than default - privilege actions are sensitive |
 
 ## Security
 
 - Recommend `dry_run = true` until you understand the noise level on your host
 - Ensure the `innerwarden` system user has sudoers permission to manage `/etc/sudoers.d/`
-- The `exec_audit` collector (shell trail) is optional — enable only with explicit host owner consent
+- The `exec_audit` collector (shell trail) is optional - enable only with explicit host owner consent
 
 ## Source code
 

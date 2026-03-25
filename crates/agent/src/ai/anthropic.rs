@@ -7,7 +7,7 @@ use tracing::debug;
 use super::{AiDecision, AiProvider, DecisionContext};
 
 // ---------------------------------------------------------------------------
-// Anthropic (Claude) provider — real implementation
+// Anthropic (Claude) provider - real implementation
 // ---------------------------------------------------------------------------
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -158,20 +158,20 @@ impl AiProvider for AnthropicProvider {
         let json_str = extract_json(&content)
             .with_context(|| format!("no JSON found in Anthropic response: {content}"))?;
 
-        // Reuse the same decision parser as OpenAI — identical schema.
+        // Reuse the same decision parser as OpenAI - identical schema.
         super::openai::parse_decision_pub(json_str)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Prompt (same structure as OpenAI — identical system prompt + user prompt)
+// Prompt (same structure as OpenAI - identical system prompt + user prompt)
 // ---------------------------------------------------------------------------
 
 const SYSTEM_PROMPT: &str = r#"
 You are a real-time security decision engine for a Linux server running Inner Warden.
 
 Your job is to analyze security incidents and select the most appropriate response skill.
-Be conservative — a false block harms legitimate users. A missed attack harms the server.
+Be conservative - a false block harms legitimate users. A missed attack harms the server.
 
 Rules:
 - Prefer block_ip for clear, external brute-force attacks with high confidence.
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn extract_json_strips_surrounding_prose() {
-        let text = r#"Here is my decision: {"action":"ignore","confidence":0.5} — done."#;
+        let text = r#"Here is my decision: {"action":"ignore","confidence":0.5} - done."#;
         assert_eq!(
             extract_json(text),
             Some(r#"{"action":"ignore","confidence":0.5}"#)

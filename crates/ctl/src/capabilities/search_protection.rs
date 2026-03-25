@@ -256,7 +256,7 @@ impl Capability for SearchProtectionCapability {
 /// Create an empty placeholder at `path` via `sudo install` so nginx can
 /// include the file before any block rules have been written.
 fn create_nginx_placeholder(path: &str) -> Result<()> {
-    let comment = "# Managed by innerwarden — do not edit manually\n\
+    let comment = "# Managed by innerwarden - do not edit manually\n\
                    # Block rules populated automatically by the rate-limit-nginx skill\n";
     let tmp = tempfile::Builder::new()
         .prefix("innerwarden-nginx-placeholder-")

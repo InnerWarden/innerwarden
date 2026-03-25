@@ -1,4 +1,4 @@
-# network-defense — sensor config snippet
+# network-defense - sensor config snippet
 # Requires kernel firewall logs via journald (netfilter/iptables LOG target)
 
 [collectors.journald]

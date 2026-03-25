@@ -1,11 +1,11 @@
-# Execution Guard — sensor configuration snippet
+# Execution Guard - sensor configuration snippet
 # Copy relevant sections into your config.toml
 
 # ── exec_audit collector (required for shell.command_exec events) ─────────────
 [collectors.exec_audit]
 enabled = true
 path    = "/var/log/audit/audit.log"
-# include_tty: captures terminal input line-by-line — high privacy impact.
+# include_tty: captures terminal input line-by-line - high privacy impact.
 # Only enable with explicit host owner authorization.
 include_tty = false
 
@@ -19,10 +19,10 @@ units   = ["sshd", "sudo", "kernel"]
 enabled = true
 
 # mode controls detector response behavior.
-# "observe" — detect and emit incidents only. No blocking actions taken.
+# "observe" - detect and emit incidents only. No blocking actions taken.
 #             Safe for production; recommended starting point.
-# "contain" — FUTURE: automatically suspend sudo + isolate user session.
-# "strict"  — FUTURE: pre-execution interception (deny before command runs).
+# "contain" - FUTURE: automatically suspend sudo + isolate user session.
+# "strict"  - FUTURE: pre-execution interception (deny before command runs).
 mode = "observe"
 
 # Sliding window (seconds) for per-user command timeline correlation.

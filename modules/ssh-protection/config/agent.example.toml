@@ -1,4 +1,4 @@
-# ssh-protection — agent config snippet
+# ssh-protection - agent config snippet
 # Add these sections to your agent.toml
 
 [responder]

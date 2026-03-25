@@ -1,4 +1,4 @@
-# threat-capture — agent config snippet
+# threat-capture - agent config snippet
 
 [responder]
 enabled        = true
