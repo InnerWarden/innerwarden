@@ -3,6 +3,7 @@ pub mod cloudtrail;
 pub mod docker;
 pub mod ebpf_syscall;
 pub mod exec_audit;
+pub mod firmware_integrity;
 pub mod integrity;
 pub mod journald;
 pub mod macos_log;

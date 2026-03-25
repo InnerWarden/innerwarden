@@ -850,6 +850,15 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Spawn firmware integrity collector (monitors ESP, UEFI vars, ACPI, DMI, tainted)
+    {
+        let tx_firmware = tx.clone();
+        let host_id = cfg.agent.host_id.clone();
+        tokio::spawn(async move {
+            collectors::firmware_integrity::run(tx_firmware, host_id).await;
+        });
+    }
+
     // Drop the original tx — each collector holds its own clone.
     // When all collector tasks finish, all senders drop and rx.recv() returns None.
     drop(tx);
