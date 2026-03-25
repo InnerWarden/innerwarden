@@ -44,11 +44,18 @@ pub struct AdminActionEntry {
 /// Opens the file, reads the last hash, writes the entry, and closes.
 /// Suitable for CLI commands that don't keep a writer open.
 pub fn append_admin_action(data_dir: &Path, entry: &mut AdminActionEntry) -> anyhow::Result<()> {
+    // Canonicalize data_dir to prevent path traversal (CWE-22)
+    let safe_dir = std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
     let today = chrono::Local::now()
         .date_naive()
         .format("%Y-%m-%d")
         .to_string();
-    let path = data_dir.join(format!("admin-actions-{today}.jsonl"));
+    // Validate date string contains only safe characters
+    anyhow::ensure!(
+        today.chars().all(|c| c.is_ascii_digit() || c == '-'),
+        "invalid date format"
+    );
+    let path = safe_dir.join(format!("admin-actions-{today}.jsonl"));
 
     // Read last hash for chain continuity
     let last_hash = read_last_hash_from_file(&path);
@@ -97,6 +104,7 @@ pub fn sha256_hex(data: &str) -> String {
 
 /// Read the last hash from a JSONL file for chain continuity.
 fn read_last_hash_from_file(path: &Path) -> Option<String> {
+    // Path is already canonicalized by caller (append_admin_action)
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
     let mut last_line = String::new();

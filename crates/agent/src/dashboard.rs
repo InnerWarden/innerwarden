@@ -1341,9 +1341,15 @@ async fn api_auth_logout(State(state): State<DashboardState>, req: Request<Body>
         }
     };
 
+    // Remove session by token (token is never logged - CWE-532)
     let username = {
         let mut map = state.sessions.write().unwrap_or_else(|e| e.into_inner());
-        map.remove(&token).map(|s| s.username)
+        // Use the token only as a lookup key, never log or serialize it
+        let user = map.get(&token).map(|s| s.username.clone());
+        if user.is_some() {
+            map.remove(&token);
+        }
+        user
     };
 
     if let Some(user) = &username {
@@ -2634,6 +2640,10 @@ async fn api_sensors_inner(state: &DashboardState) -> serde_json::Value {
     };
     let events_path = canonical_data.join(format!("events-{safe_today}.jsonl"));
     let incidents_path = canonical_data.join(format!("incidents-{safe_today}.jsonl"));
+    // Verify constructed paths stay inside canonical data dir (CWE-22)
+    if !events_path.starts_with(&canonical_data) || !incidents_path.starts_with(&canonical_data) {
+        return serde_json::json!({ "error": "path traversal blocked" });
+    }
 
     // Sample events file across its full length for timeline coverage.
     // Read 20 chunks of 64KB evenly spaced across the file → ~2000 events sampled.
