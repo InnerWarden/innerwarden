@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod entities;
 pub mod event;
 pub mod incident;

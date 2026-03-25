@@ -1166,6 +1166,8 @@ async fn main() -> Result<()> {
         let dashboard_bind = cli.dashboard_bind.clone();
         let web_push_pub_key = cfg.web_push.vapid_public_key.clone();
         let trusted_proxies = cfg.dashboard.trusted_proxies.clone();
+        let session_timeout_minutes = cfg.dashboard.session_timeout_minutes;
+        let max_sessions = cfg.dashboard.max_sessions;
         tokio::spawn(async move {
             if let Err(e) = dashboard::serve(
                 dashboard_data_dir,
@@ -1174,6 +1176,8 @@ async fn main() -> Result<()> {
                 action_cfg,
                 web_push_pub_key,
                 trusted_proxies,
+                session_timeout_minutes,
+                max_sessions,
             )
             .await
             {

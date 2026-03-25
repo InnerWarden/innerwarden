@@ -20,6 +20,7 @@ pub fn cleanup(data_dir: &Path, cfg: &DataRetentionConfig) -> usize {
         ("incidents-", ".jsonl", cfg.incidents_keep_days),
         ("decisions-", ".jsonl", cfg.decisions_keep_days),
         ("telemetry-", ".jsonl", cfg.telemetry_keep_days),
+        ("admin-actions-", ".jsonl", cfg.decisions_keep_days),
         ("trial-report-", ".json", cfg.reports_keep_days),
         ("trial-report-", ".md", cfg.reports_keep_days),
     ];

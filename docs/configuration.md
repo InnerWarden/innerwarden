@@ -336,6 +336,11 @@ enabled = false
 # auto_broadcast = true
 # max_signals_per_hour = 100
 
+[dashboard]
+# trusted_proxies = ["127.0.0.1", "::1"]
+session_timeout_minutes = 480   # 8 hours; inactivity timeout for Bearer sessions
+max_sessions = 5                # max concurrent sessions; oldest evicted when exceeded
+
 [data]
 events_keep_days = 7
 incidents_keep_days = 30

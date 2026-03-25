@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
 use anyhow::{Context, Result};
 use argon2::password_hash::{PasswordHashString, SaltString};
@@ -18,7 +18,7 @@ use axum::{Json, Router};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
-use rand_core::OsRng;
+use rand_core::{OsRng, RngCore};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
@@ -30,6 +30,7 @@ use crate::decisions::DecisionEntry;
 use crate::mitre;
 use crate::report::{self as report_mod, TrialReport};
 use crate::telemetry::TelemetrySnapshot;
+use innerwarden_core::audit::{append_admin_action, AdminActionEntry};
 use innerwarden_core::entities::{EntityRef, EntityType};
 use innerwarden_core::event::Severity;
 use innerwarden_core::incident::Incident;
@@ -177,6 +178,12 @@ struct DashboardState {
     /// Trusted reverse-proxy IPs — only honour X-Forwarded-For / X-Real-IP
     /// when the connecting socket IP is in this set.
     trusted_proxies: Arc<Vec<IpAddr>>,
+    /// Active sessions: token → Session.
+    sessions: Arc<RwLock<HashMap<String, Session>>>,
+    /// Session inactivity timeout in minutes.
+    session_timeout_minutes: u64,
+    /// Maximum concurrent sessions.
+    max_sessions: usize,
 }
 
 #[derive(Clone)]
@@ -245,6 +252,38 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
         .zip(b.bytes())
         .fold(0u8, |acc, (x, y)| acc | (x ^ y))
         == 0
+}
+
+// ---------------------------------------------------------------------------
+// Session-based authentication
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct Session {
+    username: String,
+    created_at: DateTime<Utc>,
+    last_activity: Arc<AtomicI64>,
+    client_ip: String,
+}
+
+impl Session {
+    fn is_expired(&self, timeout_minutes: u64) -> bool {
+        let last = self.last_activity.load(Ordering::Relaxed);
+        let last_dt = DateTime::from_timestamp(last, 0).unwrap_or(self.created_at);
+        Utc::now().signed_duration_since(last_dt).num_minutes() as u64 > timeout_minutes
+    }
+
+    fn touch(&self) {
+        self.last_activity
+            .store(Utc::now().timestamp(), Ordering::Relaxed);
+    }
+}
+
+fn generate_session_token() -> String {
+    let mut bytes = [0u8; 32]; // 256 bits
+    OsRng.fill_bytes(&mut bytes);
+    // Format as hex without external crate
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -654,6 +693,7 @@ impl IpAccumulator {
 // Server entry point
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub async fn serve(
     data_dir: PathBuf,
     bind: String,
@@ -661,6 +701,8 @@ pub async fn serve(
     action_cfg: DashboardActionConfig,
     web_push_vapid_public_key: String,
     trusted_proxy_strs: Vec<String>,
+    session_timeout_minutes: u64,
+    max_sessions: usize,
 ) -> Result<()> {
     if auth.is_none() {
         warn!(
@@ -719,6 +761,7 @@ pub async fn serve(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    let sessions: Arc<RwLock<HashMap<String, Session>>> = Arc::new(RwLock::new(HashMap::new()));
     let state = DashboardState {
         data_dir: data_dir.clone(),
         action_cfg: Arc::new(action_cfg),
@@ -728,9 +771,19 @@ pub async fn serve(
         last_activity: Arc::new(std::sync::atomic::AtomicU64::new(now_secs)),
         sensor_cache: Arc::new(tokio::sync::Mutex::new((0, serde_json::json!({})))),
         trusted_proxies: Arc::new(trusted_proxies),
+        sessions: sessions.clone(),
+        session_timeout_minutes,
+        max_sessions,
     };
-    let auth_layer =
-        middleware::from_fn_with_state((auth, state.trusted_proxies.clone()), require_basic_auth);
+    let auth_layer = middleware::from_fn_with_state(
+        (
+            auth.clone(),
+            state.trusted_proxies.clone(),
+            state.sessions.clone(),
+            session_timeout_minutes,
+        ),
+        require_auth,
+    );
     let activity_state = state.last_activity.clone();
     let activity_layer = middleware::from_fn(move |req: Request<Body>, next: Next| {
         let ts = activity_state.clone();
@@ -774,6 +827,11 @@ pub async fn serve(
         .route("/metrics", get(api_prometheus_metrics))
         .with_state(state.clone());
 
+    // Auth login route — public (no auth required; this IS the auth endpoint)
+    let auth_login = Router::new()
+        .route("/api/auth/login", post(api_auth_login))
+        .with_state(state.clone());
+
     // Dashboard routes — auth required
     let dashboard = Router::new()
         .route("/", get(index))
@@ -809,6 +867,9 @@ pub async fn serve(
             "/api/push/subscribe",
             post(api_push_subscribe).delete(api_push_unsubscribe),
         )
+        // Session management endpoints (auth-protected)
+        .route("/api/auth/logout", post(api_auth_logout))
+        .route("/api/auth/sessions", get(api_auth_sessions))
         .layer(auth_layer)
         .with_state(state.clone());
 
@@ -823,6 +884,7 @@ pub async fn serve(
         .with_state(state);
 
     let app = agent_api
+        .merge(auth_login)
         .merge(live_api)
         .merge(dashboard)
         .layer(middleware::from_fn(security_headers))
@@ -839,6 +901,18 @@ pub async fn serve(
                 kind: "heartbeat".to_string(),
                 data: None,
             });
+        }
+    });
+
+    // Session cleanup: remove expired sessions every 60 seconds
+    let cleanup_sessions = sessions;
+    let cleanup_timeout = session_timeout_minutes;
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let mut map = cleanup_sessions.write().unwrap_or_else(|e| e.into_inner());
+            map.retain(|_, session| !session.is_expired(cleanup_timeout));
         }
     });
 
@@ -1008,8 +1082,14 @@ fn clear_rate_limit(ip: &str) {
     map.remove(ip);
 }
 
-async fn require_basic_auth(
-    State((auth, trusted_proxies)): State<(Option<DashboardAuth>, Arc<Vec<IpAddr>>)>,
+#[allow(clippy::type_complexity)]
+async fn require_auth(
+    State((auth, trusted_proxies, sessions, session_timeout_minutes)): State<(
+        Option<DashboardAuth>,
+        Arc<Vec<IpAddr>>,
+        Arc<RwLock<HashMap<String, Session>>>,
+        u64,
+    )>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
@@ -1020,6 +1100,34 @@ async fn require_basic_auth(
 
     let client_ip = extract_client_ip(&req, &trusted_proxies);
 
+    // 1. Try Bearer token first (session-based auth)
+    if let Some(token) = extract_bearer_token(&req) {
+        let valid = {
+            let map = sessions.read().unwrap_or_else(|e| e.into_inner());
+            if let Some(session) = map.get(token) {
+                if !session.is_expired(session_timeout_minutes) {
+                    session.touch();
+                    true
+                } else {
+                    false
+                }
+            } else {
+                // Token not found — fall through to return error
+                return (StatusCode::UNAUTHORIZED, "session expired or invalid").into_response();
+            }
+        };
+        if valid {
+            return next.run(req).await;
+        }
+        // Expired — remove session
+        sessions
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(token);
+        return (StatusCode::UNAUTHORIZED, "session expired or invalid").into_response();
+    }
+
+    // 2. Fall back to Basic Auth (backward compat for API clients)
     // Check if this IP is already rate-limited before doing any auth work
     if is_rate_limited(&client_ip) {
         warn!(ip = %client_ip, "login rate-limited: too many failed attempts");
@@ -1054,6 +1162,13 @@ async fn require_basic_auth(
     next.run(req).await
 }
 
+/// Extract a Bearer token from the Authorization header.
+fn extract_bearer_token(req: &Request<Body>) -> Option<&str> {
+    let header = req.headers().get(header::AUTHORIZATION)?;
+    let value = header.to_str().ok()?;
+    value.strip_prefix("Bearer ")
+}
+
 fn parse_basic_auth(value: &str) -> Option<(String, String)> {
     let token = value.strip_prefix("Basic ")?;
     let decoded = BASE64_STANDARD.decode(token.as_bytes()).ok()?;
@@ -1077,6 +1192,175 @@ fn rate_limited_response() -> Response {
         "Too many failed login attempts. Try again later.",
     )
         .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Session auth endpoints
+// ---------------------------------------------------------------------------
+
+/// POST /api/auth/login — authenticate with Basic Auth header, returns a session token.
+async fn api_auth_login(State(state): State<DashboardState>, req: Request<Body>) -> Response {
+    // Auth must be configured for session login to work
+    let auth = match DashboardAuth::try_from_env() {
+        Ok(Some(a)) => a,
+        _ => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": "authentication not configured" })),
+            )
+                .into_response();
+        }
+    };
+
+    let client_ip = extract_client_ip(&req, &state.trusted_proxies);
+
+    // Check rate limiting
+    if is_rate_limited(&client_ip) {
+        warn!(ip = %client_ip, "login rate-limited: too many failed attempts");
+        return rate_limited_response();
+    }
+
+    // Extract Basic Auth credentials
+    let Some(raw_header) = req.headers().get(header::AUTHORIZATION) else {
+        return unauthorized_response();
+    };
+    let Ok(raw_header) = raw_header.to_str() else {
+        return unauthorized_response();
+    };
+    let Some((user, password)) = parse_basic_auth(raw_header) else {
+        return unauthorized_response();
+    };
+
+    // Verify credentials
+    if !auth.verify(&user, &password) {
+        let blocked = check_and_record_failed_login(&client_ip);
+        if blocked {
+            warn!(
+                ip = %client_ip,
+                "login rate-limited after {} failed attempts in {} min window",
+                LOGIN_RATE_LIMIT_MAX_ATTEMPTS,
+                LOGIN_RATE_LIMIT_WINDOW_SECS / 60
+            );
+            return rate_limited_response();
+        }
+        return unauthorized_response();
+    }
+
+    // Successful authentication — clear rate limit
+    clear_rate_limit(&client_ip);
+
+    // Generate session token and store session
+    let token = generate_session_token();
+    let now = Utc::now();
+    let session = Session {
+        username: user.clone(),
+        created_at: now,
+        last_activity: Arc::new(AtomicI64::new(now.timestamp())),
+        client_ip: client_ip.clone(),
+    };
+
+    {
+        let mut map = state.sessions.write().unwrap_or_else(|e| e.into_inner());
+
+        // Enforce max_sessions: if exceeded, remove the oldest session
+        while map.len() >= state.max_sessions {
+            // Find the session with the oldest last_activity
+            let oldest_key = map
+                .iter()
+                .min_by_key(|(_, s)| s.last_activity.load(Ordering::Relaxed))
+                .map(|(k, _)| k.clone());
+            if let Some(key) = oldest_key {
+                map.remove(&key);
+            } else {
+                break;
+            }
+        }
+
+        map.insert(token.clone(), session);
+    }
+
+    // Audit log: login
+    let _ = append_admin_action(
+        &state.data_dir,
+        &mut AdminActionEntry {
+            ts: now,
+            operator: user,
+            source: "dashboard".into(),
+            action: "login".into(),
+            target: "session".into(),
+            parameters: serde_json::json!({ "client_ip": client_ip }),
+            result: "success".into(),
+            prev_hash: None,
+        },
+    );
+
+    info!(ip = %client_ip, "session login successful");
+
+    Json(serde_json::json!({
+        "token": token,
+        "expires_in_minutes": state.session_timeout_minutes,
+    }))
+    .into_response()
+}
+
+/// POST /api/auth/logout — invalidate the current session.
+async fn api_auth_logout(State(state): State<DashboardState>, req: Request<Body>) -> Response {
+    let token = match extract_bearer_token(&req) {
+        Some(t) => t.to_string(),
+        None => {
+            return (StatusCode::BAD_REQUEST, "Bearer token required").into_response();
+        }
+    };
+
+    let username = {
+        let mut map = state.sessions.write().unwrap_or_else(|e| e.into_inner());
+        map.remove(&token).map(|s| s.username)
+    };
+
+    if let Some(user) = &username {
+        let client_ip = extract_client_ip(&req, &state.trusted_proxies);
+        let _ = append_admin_action(
+            &state.data_dir,
+            &mut AdminActionEntry {
+                ts: Utc::now(),
+                operator: user.clone(),
+                source: "dashboard".into(),
+                action: "logout".into(),
+                target: "session".into(),
+                parameters: serde_json::json!({ "client_ip": client_ip }),
+                result: "success".into(),
+                prev_hash: None,
+            },
+        );
+        info!(user = %user, "session logout");
+    }
+
+    StatusCode::OK.into_response()
+}
+
+/// GET /api/auth/sessions — list active sessions (does not expose tokens).
+async fn api_auth_sessions(State(state): State<DashboardState>) -> impl IntoResponse {
+    let map = state.sessions.read().unwrap_or_else(|e| e.into_inner());
+    let items: Vec<serde_json::Value> = map
+        .values()
+        .filter(|s| !s.is_expired(state.session_timeout_minutes))
+        .map(|s| {
+            let last = s.last_activity.load(Ordering::Relaxed);
+            let last_dt = DateTime::from_timestamp(last, 0)
+                .unwrap_or(s.created_at)
+                .to_rfc3339();
+            serde_json::json!({
+                "username": s.username,
+                "created_at": s.created_at.to_rfc3339(),
+                "last_activity": last_dt,
+                "client_ip": s.client_ip,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({
+        "total": items.len(),
+        "sessions": items,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -2933,6 +3217,26 @@ async fn api_action_honeypot(
             if let Err(e) = append_decision_entry(&state.data_dir, &entry) {
                 warn!("failed to write honeypot test decision entry: {e}");
             }
+
+            // Admin action audit trail
+            let mut audit = AdminActionEntry {
+                ts: Utc::now(),
+                operator: "dashboard:operator".to_string(),
+                source: "dashboard".to_string(),
+                action: "honeypot".to_string(),
+                target: "honeypot_test".to_string(),
+                parameters: serde_json::json!({
+                    "skill": "honeypot",
+                    "reason": body.reason,
+                    "duration_secs": duration_secs,
+                }),
+                result: "success".to_string(),
+                prev_hash: None,
+            };
+            if let Err(e) = append_admin_action(&state.data_dir, &mut audit) {
+                warn!("failed to write admin audit: {e:#}");
+            }
+
             info!(
                 dry_run = state.action_cfg.dry_run,
                 duration_secs, "dashboard action: honeypot test"
@@ -3031,6 +3335,30 @@ async fn execute_block_ip(
     };
 
     append_decision_entry(data_dir, &entry)?;
+
+    // Admin action audit trail
+    let mut audit = AdminActionEntry {
+        ts: Utc::now(),
+        operator: "dashboard:operator".to_string(),
+        source: "dashboard".to_string(),
+        action: "block_ip".to_string(),
+        target: ip.to_string(),
+        parameters: serde_json::json!({
+            "skill": skill_id,
+            "reason": reason,
+            "incident_id": incident_id,
+        }),
+        result: if success {
+            "success".to_string()
+        } else {
+            format!("failure: {message}")
+        },
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(data_dir, &mut audit) {
+        warn!("failed to write admin audit: {e:#}");
+    }
+
     info!(
         ip = %ip,
         dry_run = cfg.dry_run,
@@ -3116,6 +3444,31 @@ async fn execute_suspend_user(
     };
 
     append_decision_entry(data_dir, &entry)?;
+
+    // Admin action audit trail
+    let mut audit = AdminActionEntry {
+        ts: Utc::now(),
+        operator: "dashboard:operator".to_string(),
+        source: "dashboard".to_string(),
+        action: "suspend_user".to_string(),
+        target: user.to_string(),
+        parameters: serde_json::json!({
+            "skill": "suspend-user-sudo",
+            "reason": reason,
+            "duration_secs": duration_secs,
+            "incident_id": incident_id,
+        }),
+        result: if success {
+            "success".to_string()
+        } else {
+            format!("failure: {message}")
+        },
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(data_dir, &mut audit) {
+        warn!("failed to write admin audit: {e:#}");
+    }
+
     info!(
         user = %user,
         dry_run = cfg.dry_run,

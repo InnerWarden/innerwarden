@@ -1590,6 +1590,7 @@ dependencies = [
  "clap_complete",
  "digest 0.10.7",
  "ed25519-dalek",
+ "innerwarden_core",
  "p256",
  "rand_core 0.6.4",
  "serde",
@@ -1658,9 +1659,14 @@ dependencies = [
 name = "innerwarden_core"
 version = "0.4.3"
 dependencies = [
+ "anyhow",
  "chrono",
+ "hex",
+ "libc",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]

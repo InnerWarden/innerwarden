@@ -62,13 +62,36 @@ pub struct AgentConfig {
 }
 
 /// Dashboard config — trusted proxy IPs and other dashboard-related settings.
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 pub struct DashboardConfig {
     /// List of trusted reverse-proxy IPs. Only when the connecting IP is in
     /// this list will X-Forwarded-For / X-Real-IP headers be honoured.
     /// Example: `["127.0.0.1", "::1", "10.0.0.1"]`
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
+    /// Session inactivity timeout in minutes. Default: 480 (8 hours).
+    #[serde(default = "default_session_timeout_minutes")]
+    pub session_timeout_minutes: u64,
+    /// Maximum number of concurrent sessions per user. Default: 5.
+    #[serde(default = "default_max_sessions")]
+    pub max_sessions: usize,
+}
+
+impl Default for DashboardConfig {
+    fn default() -> Self {
+        Self {
+            trusted_proxies: vec![],
+            session_timeout_minutes: default_session_timeout_minutes(),
+            max_sessions: default_max_sessions(),
+        }
+    }
+}
+
+fn default_session_timeout_minutes() -> u64 {
+    480
+}
+fn default_max_sessions() -> usize {
+    5
 }
 
 /// Mesh network config — mirrors innerwarden_mesh::MeshConfig

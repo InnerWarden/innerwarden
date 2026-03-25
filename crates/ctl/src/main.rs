@@ -19,6 +19,7 @@ mod systemd;
 mod upgrade;
 
 use capability::{ActivationOptions, CapabilityRegistry};
+use innerwarden_core::audit::{append_admin_action, current_operator, AdminActionEntry};
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -524,6 +525,21 @@ enum Command {
     /// Examples:
     ///   innerwarden metrics
     Metrics,
+
+    /// GDPR data subject operations (export & erase).
+    ///
+    /// Export all data matching an entity (IP or username), or erase it
+    /// in compliance with the GDPR right to erasure (Art. 17).
+    ///
+    /// Examples:
+    ///   innerwarden gdpr export --entity 203.0.113.10
+    ///   innerwarden gdpr export --entity root --output /tmp/root-data.jsonl
+    ///   innerwarden gdpr erase --entity 203.0.113.10
+    ///   innerwarden gdpr erase --entity root --yes
+    Gdpr {
+        #[command(subcommand)]
+        action: GdprCommand,
+    },
 }
 
 /// System configuration sub-commands.
@@ -969,6 +985,45 @@ enum ModuleCommand {
     },
 }
 
+/// GDPR data subject sub-commands.
+#[derive(Subcommand)]
+enum GdprCommand {
+    /// Export all data matching an entity (IP or username).
+    ///
+    /// Scans events, incidents, decisions, admin-actions, and telemetry files
+    /// for any record referencing the given entity and outputs matching lines.
+    ///
+    /// Examples:
+    ///   innerwarden gdpr export --entity 203.0.113.10
+    ///   innerwarden gdpr export --entity root --output /tmp/root-data.jsonl
+    Export {
+        /// IP address or username to search for
+        #[arg(long)]
+        entity: String,
+        /// Output file path (default: stdout)
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Erase all data matching an entity (right to erasure, GDPR Art. 17).
+    ///
+    /// Removes all matching records from JSONL data files via atomic rewrite.
+    /// Hash-chained files (decisions, admin-actions) are recomputed after erasure.
+    /// The erase itself is recorded in the admin-actions audit trail.
+    ///
+    /// Examples:
+    ///   innerwarden gdpr erase --entity 203.0.113.10
+    ///   innerwarden gdpr erase --entity root --yes
+    Erase {
+        /// IP address or username to erase
+        #[arg(long)]
+        entity: String,
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -1057,6 +1112,29 @@ fn main() -> Result<()> {
                 }
                 systemd::restart_service("innerwarden-agent", false)?;
                 println!("  [ok] innerwarden-agent restarted");
+
+                // Audit log
+                let mut audit = AdminActionEntry {
+                    ts: chrono::Utc::now(),
+                    operator: current_operator(),
+                    source: "cli".to_string(),
+                    action: "configure".to_string(),
+                    target: "responder".to_string(),
+                    parameters: serde_json::json!({
+                        "enable": *enable,
+                        "dry_run": dry_run,
+                    }),
+                    result: if cli.dry_run {
+                        "dry_run".to_string()
+                    } else {
+                        "success".to_string()
+                    },
+                    prev_hash: None,
+                };
+                if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+                    eprintln!("  [warn] failed to write admin audit: {e:#}");
+                }
+
                 Ok(())
             }
             Some(ConfigureCommand::Sensitivity { ref level }) => {
@@ -1099,6 +1177,22 @@ fn main() -> Result<()> {
                 }
                 systemd::restart_service("innerwarden-agent", false)?;
                 println!("   Agent restarted.");
+
+                // Audit log
+                let mut audit = AdminActionEntry {
+                    ts: chrono::Utc::now(),
+                    operator: current_operator(),
+                    source: "cli".to_string(),
+                    action: "configure".to_string(),
+                    target: "sensitivity".to_string(),
+                    parameters: serde_json::json!({ "level": level }),
+                    result: "success".to_string(),
+                    prev_hash: None,
+                };
+                if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+                    eprintln!("  [warn] failed to write admin audit: {e:#}");
+                }
+
                 Ok(())
             }
         },
@@ -1251,6 +1345,13 @@ fn main() -> Result<()> {
         Command::PipelineTest { wait } => cmd_pipeline_test(&cli, wait, &cli.data_dir.clone()),
         Command::Backup { ref output } => cmd_backup(&cli, output.as_deref()),
         Command::Metrics => cmd_metrics(&cli, &cli.data_dir.clone()),
+        Command::Gdpr { ref action } => match action {
+            GdprCommand::Export {
+                ref entity,
+                ref output,
+            } => cmd_gdpr_export(&cli.data_dir, entity, output.as_deref()),
+            GdprCommand::Erase { ref entity, yes } => cmd_gdpr_erase(&cli.data_dir, entity, *yes),
+        },
     }
 }
 
@@ -1591,6 +1692,21 @@ fn cmd_enable(
         println!("  [warn] {warn}");
     }
 
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "enable".to_string(),
+        target: id.to_string(),
+        parameters: serde_json::json!({}),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     println!("\nCapability '{}' is now enabled.", cap.id());
     Ok(())
 }
@@ -1680,6 +1796,21 @@ fn cmd_module_enable(cli: &Cli, path: &std::path::Path, yes: bool) -> Result<()>
     // 7. Apply
     apply_module_enable(cli, &manifest, &generate_module_sudoers_rule)?;
 
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "module_enable".to_string(),
+        target: manifest.id.clone(),
+        parameters: serde_json::json!({ "path": path.display().to_string() }),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     println!("\nModule '{}' is now enabled.", manifest.id);
     Ok(())
 }
@@ -1721,6 +1852,22 @@ fn cmd_module_disable(cli: &Cli, path: &std::path::Path, yes: bool) -> Result<()
 
     println!();
     apply_module_disable(cli, &manifest)?;
+
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "module_disable".to_string(),
+        target: manifest.id.clone(),
+        parameters: serde_json::json!({ "path": path.display().to_string() }),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     println!("\nModule '{}' is now disabled.", manifest.id);
     Ok(())
 }
@@ -2055,6 +2202,21 @@ fn cmd_disable(cli: &Cli, registry: &CapabilityRegistry, id: &str, yes: bool) ->
     }
     for warn in &report.warnings {
         println!("  [warn] {warn}");
+    }
+
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "disable".to_string(),
+        target: id.to_string(),
+        parameters: serde_json::json!({}),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
     }
 
     println!("\nCapability '{}' is now disabled.", cap.id());
@@ -2406,6 +2568,21 @@ fn cmd_module_install(
     copy_dir(&module_dir, &install_dest)?;
     println!("  [done] Installed → {}", install_dest.display());
 
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "module_install".to_string(),
+        target: manifest.id.clone(),
+        parameters: serde_json::json!({ "source": source }),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     // ── Enable immediately if requested ───────────────────────────────────
     if enable_after {
         println!();
@@ -2469,6 +2646,22 @@ fn cmd_module_uninstall(cli: &Cli, id: &str, modules_dir: &Path, yes: bool) -> R
     std::fs::remove_dir_all(&install_dir)
         .with_context(|| format!("failed to remove {}", install_dir.display()))?;
     println!("  [done] Removed {}", install_dir.display());
+
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "module_uninstall".to_string(),
+        target: manifest.id.clone(),
+        parameters: serde_json::json!({}),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     println!("\nModule '{}' uninstalled.", manifest.id);
     Ok(())
 }
@@ -3989,6 +4182,28 @@ fn cmd_configure_ai(
         println!("  [ok] innerwarden-agent restarted");
     }
 
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "configure".to_string(),
+        target: "ai".to_string(),
+        parameters: serde_json::json!({
+            "provider": provider,
+            "model": model,
+        }),
+        result: if cli.dry_run {
+            "dry_run".to_string()
+        } else {
+            "success".to_string()
+        },
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     println!();
     println!("AI configured. Run 'innerwarden doctor' to validate.");
     Ok(())
@@ -4302,6 +4517,25 @@ fn cmd_configure_telegram(
     println!("    /decisions  — last decisions");
     println!("    /ask <q>    — ask the AI a question");
     println!();
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "configure".to_string(),
+        target: "telegram".to_string(),
+        parameters: serde_json::json!({}),
+        result: if cli.dry_run {
+            "dry_run".to_string()
+        } else {
+            "success".to_string()
+        },
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     println!("Next steps:");
     println!("  innerwarden status       — check services and active capabilities");
     println!("  innerwarden doctor       — validate the full setup");
@@ -4445,6 +4679,25 @@ fn cmd_configure_slack(
         println!("  [ok] innerwarden-agent restarted");
     }
 
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "configure".to_string(),
+        target: "slack".to_string(),
+        parameters: serde_json::json!({ "min_severity": min_severity }),
+        result: if cli.dry_run {
+            "dry_run".to_string()
+        } else {
+            "success".to_string()
+        },
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     println!();
     println!("Slack configured. You'll receive alerts for {min_severity}+ incidents.");
     println!("Run 'innerwarden doctor' to validate the full setup.");
@@ -4545,6 +4798,26 @@ fn cmd_configure_webhook(
     }
 
     restart_agent(cli);
+
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "configure".to_string(),
+        target: "webhook".to_string(),
+        parameters: serde_json::json!({ "min_severity": min_severity }),
+        result: if cli.dry_run {
+            "dry_run".to_string()
+        } else {
+            "success".to_string()
+        },
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     println!();
     println!("Webhook configured. Alerts ({min_severity}+) will be sent to your endpoint.");
     println!("Run 'innerwarden doctor' to validate.");
@@ -4718,6 +4991,25 @@ fn cmd_configure_dashboard(cli: &Cli, user: &str, password_arg: Option<&str>) ->
     println!("      proxy_http_version 1.1;");
     println!("      proxy_buffering off;");
     println!("  }}");
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "configure".to_string(),
+        target: "dashboard".to_string(),
+        parameters: serde_json::json!({ "user": user }),
+        result: if cli.dry_run {
+            "dry_run".to_string()
+        } else {
+            "success".to_string()
+        },
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     println!();
     println!("Run 'innerwarden doctor' to validate.");
     Ok(())
@@ -4880,6 +5172,21 @@ fn cmd_configure_abuseipdb(
         println!("AbuseIPDB enabled. IP reputation will appear in AI analysis.");
         println!("  Tip: set auto_block_threshold = 80 to auto-block known botnet IPs.");
     }
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "configure".to_string(),
+        target: "abuseipdb".to_string(),
+        parameters: serde_json::json!({ "auto_block_threshold": threshold }),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     println!("\nRun 'innerwarden doctor' to validate.");
     Ok(())
 }
@@ -4921,6 +5228,22 @@ fn cmd_configure_geoip(cli: &Cli) -> Result<()> {
     println!("  [ok] agent.toml: geoip.enabled = true");
 
     restart_agent(cli);
+
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "configure".to_string(),
+        target: "geoip".to_string(),
+        parameters: serde_json::json!({}),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     println!();
     println!("GeoIP enabled. Country and ISP will appear in AI decisions.");
     Ok(())
@@ -5009,6 +5332,22 @@ fn cmd_configure_cloudflare(
     println!("  [ok] agent.toml: cloudflare.enabled = true, zone_id set, auto_push_blocks = true");
 
     restart_agent(cli);
+
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "configure".to_string(),
+        target: "cloudflare".to_string(),
+        parameters: serde_json::json!({ "zone_id": zone_id }),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     println!();
     println!("Cloudflare integration enabled.");
     println!("  → Every blocked IP will be pushed to Cloudflare edge IP Access Rules.");
@@ -5162,6 +5501,22 @@ fn cmd_configure_watchdog(cli: &Cli, interval_mins: u64) -> Result<()> {
     println!("  {cron_line}");
     println!();
     println!("To remove:  crontab -e  (delete the innerwarden watchdog line)");
+
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "configure".to_string(),
+        target: "watchdog".to_string(),
+        parameters: serde_json::json!({ "interval_mins": interval_mins }),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     Ok(())
 }
 
@@ -6136,6 +6491,22 @@ fn cmd_tune(cli: &Cli, days: u64, yes: bool, data_dir: &Path) -> Result<()> {
     );
     println!("Restart the sensor to apply: sudo systemctl restart innerwarden-sensor");
 
+    // Audit log
+    let tuned: Vec<&str> = suggestions.iter().map(|s| s.detector).collect();
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "tune".to_string(),
+        target: "detectors".to_string(),
+        parameters: serde_json::json!({ "detectors": tuned, "days": days }),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     Ok(())
 }
 
@@ -6390,6 +6761,21 @@ fn cmd_block(cli: &Cli, ip: &str, reason: &str, data_dir: &Path) -> Result<()> {
     write_manual_decision(&effective_dir, ip, "block_ip", reason, "operator:cli")?;
     println!("  [ok] recorded in decisions log");
 
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "block_ip".to_string(),
+        target: ip.to_string(),
+        parameters: serde_json::json!({ "reason": reason, "backend": backend }),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&effective_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     println!();
     println!("{ip} is now blocked. To reverse: innerwarden unblock {ip} --reason \"...\"");
     Ok(())
@@ -6467,6 +6853,21 @@ fn cmd_unblock(cli: &Cli, ip: &str, reason: &str, data_dir: &Path) -> Result<()>
 
     write_manual_decision(&effective_dir, ip, "unblock_ip", reason, "operator:cli")?;
     println!("  [ok] recorded in decisions log");
+
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "unblock_ip".to_string(),
+        target: ip.to_string(),
+        parameters: serde_json::json!({ "reason": reason, "backend": backend }),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&effective_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
 
     println!();
     println!("{ip} is now unblocked.");
@@ -8863,6 +9264,25 @@ fn cmd_allowlist_add(cli: &Cli, ip: Option<&str>, user: Option<&str>) -> Result<
         anyhow::bail!("specify --ip <cidr> or --user <username>");
     }
     if changed {
+        // Audit log
+        let target = ip
+            .map(|v| v.to_string())
+            .or_else(|| user.map(|v| v.to_string()))
+            .unwrap_or_default();
+        let mut audit = AdminActionEntry {
+            ts: chrono::Utc::now(),
+            operator: current_operator(),
+            source: "cli".to_string(),
+            action: "allowlist_add".to_string(),
+            target,
+            parameters: serde_json::json!({ "ip": ip, "user": user }),
+            result: "success".to_string(),
+            prev_hash: None,
+        };
+        if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+            eprintln!("  [warn] failed to write admin audit: {e:#}");
+        }
+
         println!(
             "Allowlist updated. Restart the agent to apply:\n  sudo systemctl restart innerwarden-agent"
         );
@@ -8896,6 +9316,25 @@ fn cmd_allowlist_remove(cli: &Cli, ip: Option<&str>, user: Option<&str>) -> Resu
         anyhow::bail!("specify --ip <cidr> or --user <username>");
     }
     if changed {
+        // Audit log
+        let target = ip
+            .map(|v| v.to_string())
+            .or_else(|| user.map(|v| v.to_string()))
+            .unwrap_or_default();
+        let mut audit = AdminActionEntry {
+            ts: chrono::Utc::now(),
+            operator: current_operator(),
+            source: "cli".to_string(),
+            action: "allowlist_remove".to_string(),
+            target,
+            parameters: serde_json::json!({ "ip": ip, "user": user }),
+            result: "success".to_string(),
+            prev_hash: None,
+        };
+        if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+            eprintln!("  [warn] failed to write admin audit: {e:#}");
+        }
+
         println!(
             "Allowlist updated. Restart the agent to apply:\n  sudo systemctl restart innerwarden-agent"
         );
@@ -8995,6 +9434,22 @@ fn cmd_notify_web_push_setup(cli: &Cli, subject: Option<&str>) -> Result<()> {
         env_path.display()
     );
     println!();
+
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "configure".to_string(),
+        target: "web_push".to_string(),
+        parameters: serde_json::json!({ "subject": subject_val }),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     print_web_push_next_steps(&cli.agent_config)?;
     Ok(())
 }
@@ -9291,6 +9746,22 @@ fn cmd_mesh_enable(cli: &Cli) -> anyhow::Result<()> {
     println!("   Listening on port 8790 for peer connections.");
     println!("   Add peers: innerwarden mesh add-peer https://peer:8790");
     println!("   Restart agent to apply: sudo systemctl restart innerwarden-agent");
+
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "mesh_enable".to_string(),
+        target: "mesh".to_string(),
+        parameters: serde_json::json!({}),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     Ok(())
 }
 
@@ -9308,6 +9779,22 @@ fn cmd_mesh_disable(cli: &Cli) -> anyhow::Result<()> {
 
     println!("✅ Mesh network disabled.");
     println!("   Restart agent to apply: sudo systemctl restart innerwarden-agent");
+
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "mesh_disable".to_string(),
+        target: "mesh".to_string(),
+        parameters: serde_json::json!({}),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     Ok(())
 }
 
@@ -9347,6 +9834,22 @@ fn cmd_mesh_add_peer(cli: &Cli, endpoint: &str, label: Option<&str>) -> anyhow::
     }
     println!("   Identity will be discovered automatically via ping.");
     println!("   Restart agent to apply: sudo systemctl restart innerwarden-agent");
+
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "mesh_add_peer".to_string(),
+        target: endpoint.to_string(),
+        parameters: serde_json::json!({ "label": label }),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
     Ok(())
 }
 
@@ -9405,6 +9908,216 @@ fn cmd_mesh_status(cli: &Cli) -> anyhow::Result<()> {
 
     println!();
     println!("═══════════════════════════════════════════════════");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// GDPR helpers
+// ---------------------------------------------------------------------------
+
+/// Check if a JSONL line references a given entity (IP or username).
+fn matches_entity(line: &str, entity: &str) -> bool {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+        // Check entities array (events, incidents)
+        if let Some(entities) = value.get("entities").and_then(|v| v.as_array()) {
+            for e in entities {
+                if let Some(val) = e.get("value").and_then(|v| v.as_str()) {
+                    if val == entity {
+                        return true;
+                    }
+                }
+            }
+        }
+        // Check direct fields (decisions, admin-actions)
+        for field in &["target_ip", "target_user", "operator", "target"] {
+            if let Some(val) = value.get(*field).and_then(|v| v.as_str()) {
+                if val == entity {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Recompute SHA-256 hash chain after records have been removed.
+fn recompute_hash_chain(lines: &mut [String]) {
+    use innerwarden_core::audit::sha256_hex;
+    let mut last_hash: Option<String> = None;
+    for line in lines.iter_mut() {
+        if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(line) {
+            value["prev_hash"] = match &last_hash {
+                Some(h) => serde_json::Value::String(h.clone()),
+                None => serde_json::Value::Null,
+            };
+            let new_line = serde_json::to_string(&value).unwrap();
+            last_hash = Some(sha256_hex(&new_line));
+            *line = new_line;
+        }
+    }
+}
+
+/// Export all JSONL records matching an entity to a file or stdout.
+fn cmd_gdpr_export(data_dir: &Path, entity: &str, output: Option<&Path>) -> Result<()> {
+    let patterns = &[
+        "events-",
+        "incidents-",
+        "decisions-",
+        "admin-actions-",
+        "telemetry-",
+    ];
+    let mut total = 0usize;
+    let mut writer: Box<dyn Write> = match output {
+        Some(p) => Box::new(std::fs::File::create(p)?),
+        None => Box::new(std::io::stdout()),
+    };
+
+    for entry in std::fs::read_dir(data_dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".jsonl") {
+            continue;
+        }
+        if !patterns.iter().any(|p| name.starts_with(p)) {
+            continue;
+        }
+
+        let content = std::fs::read_to_string(entry.path())?;
+        for line in content.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if matches_entity(line, entity) {
+                writeln!(writer, "{line}")?;
+                total += 1;
+            }
+        }
+    }
+
+    eprintln!("  Found {total} records matching '{entity}'");
+    Ok(())
+}
+
+/// Erase all JSONL records matching an entity (GDPR right to erasure).
+fn cmd_gdpr_erase(data_dir: &Path, entity: &str, yes: bool) -> Result<()> {
+    let patterns = &[
+        "events-",
+        "incidents-",
+        "decisions-",
+        "admin-actions-",
+        "telemetry-",
+    ];
+    let hash_chained = &["decisions-", "admin-actions-"];
+
+    // Phase 1: count matches per file
+    let mut file_matches: Vec<(PathBuf, String, usize)> = Vec::new();
+    for entry in std::fs::read_dir(data_dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".jsonl") {
+            continue;
+        }
+        let prefix = match patterns.iter().find(|p| name.starts_with(**p)) {
+            Some(p) => p.to_string(),
+            None => continue,
+        };
+
+        let content = std::fs::read_to_string(entry.path())?;
+        let count = content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter(|l| matches_entity(l, entity))
+            .count();
+        if count > 0 {
+            file_matches.push((entry.path(), prefix, count));
+        }
+    }
+
+    let total: usize = file_matches.iter().map(|(_, _, c)| *c).sum();
+    if total == 0 {
+        println!("  No records found matching '{entity}'");
+        return Ok(());
+    }
+
+    // Phase 2: confirm
+    println!(
+        "  Found {total} records matching '{entity}' across {} files",
+        file_matches.len()
+    );
+    if !yes {
+        print!("  Proceed with erasure? [y/N] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("  Aborted.");
+            return Ok(());
+        }
+    }
+
+    // Phase 3: rewrite each file, removing matching records
+    let mut erased = 0usize;
+    for (path, prefix, _) in &file_matches {
+        let content = std::fs::read_to_string(path)?;
+        let mut kept: Vec<String> = Vec::new();
+        let mut removed = 0usize;
+
+        for line in content.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if matches_entity(line, entity) {
+                removed += 1;
+            } else {
+                kept.push(line.to_string());
+            }
+        }
+
+        // Recompute hash chain for decisions and admin-actions
+        if hash_chained.iter().any(|h| prefix.starts_with(h)) {
+            recompute_hash_chain(&mut kept);
+        }
+
+        // Atomic write: temp file + rename
+        let tmp = tempfile::Builder::new()
+            .prefix("innerwarden-gdpr-")
+            .tempfile_in(data_dir)?;
+        let tmp_path = tmp.path().to_path_buf();
+        {
+            let mut writer = std::io::BufWriter::new(&tmp);
+            for line in &kept {
+                writeln!(writer, "{line}")?;
+            }
+            writer.flush()?;
+        }
+        std::fs::rename(&tmp_path, path)?;
+
+        erased += removed;
+    }
+
+    println!(
+        "  Erased {erased} records across {} files",
+        file_matches.len()
+    );
+
+    // Audit the erase action
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "gdpr_erase".to_string(),
+        target: entity.to_string(),
+        parameters: serde_json::json!({
+            "records_erased": erased,
+            "files_modified": file_matches.len(),
+        }),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write audit: {e:#}");
+    }
+
     Ok(())
 }
 
@@ -9552,5 +10265,158 @@ mod tests {
         // Just verify it doesn't panic/error — output goes to stdout
         let result = cmd_completions("bash");
         assert!(result.is_ok());
+    }
+
+    // -- GDPR tests --
+
+    #[test]
+    fn matches_entity_finds_ip_in_entities_array() {
+        let line = r#"{"ts":"2026-03-16T10:00:00Z","entities":[{"type":"Ip","value":"1.2.3.4"}]}"#;
+        assert!(matches_entity(line, "1.2.3.4"));
+        assert!(!matches_entity(line, "5.6.7.8"));
+    }
+
+    #[test]
+    fn matches_entity_finds_target_ip() {
+        let line = r#"{"ts":"2026-03-16T10:00:00Z","action":"block_ip","target_ip":"1.2.3.4"}"#;
+        assert!(matches_entity(line, "1.2.3.4"));
+    }
+
+    #[test]
+    fn matches_entity_finds_target_user() {
+        let line = r#"{"ts":"2026-03-16T10:00:00Z","action":"suspend","target_user":"alice"}"#;
+        assert!(matches_entity(line, "alice"));
+        assert!(!matches_entity(line, "bob"));
+    }
+
+    #[test]
+    fn matches_entity_finds_operator() {
+        let line = r#"{"ts":"2026-03-16T10:00:00Z","operator":"admin","action":"enable"}"#;
+        assert!(matches_entity(line, "admin"));
+    }
+
+    #[test]
+    fn matches_entity_finds_target() {
+        let line = r#"{"ts":"2026-03-16T10:00:00Z","target":"1.2.3.4","action":"gdpr_erase"}"#;
+        assert!(matches_entity(line, "1.2.3.4"));
+    }
+
+    #[test]
+    fn matches_entity_no_match_on_invalid_json() {
+        assert!(!matches_entity("not json", "anything"));
+    }
+
+    #[test]
+    fn gdpr_export_empty_dir() {
+        let dir = TempDir::new().unwrap();
+        let result = cmd_gdpr_export(dir.path(), "1.2.3.4", None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn gdpr_export_finds_matching_records() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let path = dir.path().join(format!("incidents-{today}.jsonl"));
+        std::fs::write(
+            &path,
+            "{\"ts\":\"2026-03-16T10:00:00Z\",\"title\":\"Brute Force\",\"entities\":[{\"type\":\"Ip\",\"value\":\"9.8.7.6\"}]}\n\
+             {\"ts\":\"2026-03-16T11:00:00Z\",\"title\":\"Port Scan\",\"entities\":[{\"type\":\"Ip\",\"value\":\"5.5.5.5\"}]}\n",
+        ).unwrap();
+
+        let out_path = dir.path().join("export.jsonl");
+        let result = cmd_gdpr_export(dir.path(), "9.8.7.6", Some(&out_path));
+        assert!(result.is_ok());
+
+        let exported = std::fs::read_to_string(&out_path).unwrap();
+        assert!(exported.contains("9.8.7.6"));
+        assert!(!exported.contains("5.5.5.5"));
+        assert_eq!(exported.lines().count(), 1);
+    }
+
+    #[test]
+    fn gdpr_erase_no_matching_records() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let path = dir.path().join(format!("events-{today}.jsonl"));
+        std::fs::write(
+            &path,
+            "{\"ts\":\"2026-03-16T10:00:00Z\",\"entities\":[{\"type\":\"Ip\",\"value\":\"5.5.5.5\"}]}\n",
+        ).unwrap();
+        let result = cmd_gdpr_erase(dir.path(), "9.9.9.9", true);
+        assert!(result.is_ok());
+
+        // File should be unchanged
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("5.5.5.5"));
+    }
+
+    #[test]
+    fn gdpr_erase_removes_matching_records() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let path = dir.path().join(format!("events-{today}.jsonl"));
+        std::fs::write(
+            &path,
+            "{\"ts\":\"2026-03-16T10:00:00Z\",\"entities\":[{\"type\":\"Ip\",\"value\":\"1.2.3.4\"}]}\n\
+             {\"ts\":\"2026-03-16T11:00:00Z\",\"entities\":[{\"type\":\"Ip\",\"value\":\"5.5.5.5\"}]}\n",
+        ).unwrap();
+
+        let result = cmd_gdpr_erase(dir.path(), "1.2.3.4", true);
+        assert!(result.is_ok());
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(!content.contains("1.2.3.4"));
+        assert!(content.contains("5.5.5.5"));
+        assert_eq!(content.lines().count(), 1);
+    }
+
+    #[test]
+    fn gdpr_erase_recomputes_hash_chain_for_decisions() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let path = dir.path().join(format!("decisions-{today}.jsonl"));
+        std::fs::write(
+            &path,
+            "{\"ts\":\"2026-03-16T10:00:00Z\",\"action\":\"block_ip\",\"target_ip\":\"1.2.3.4\",\"prev_hash\":null}\n\
+             {\"ts\":\"2026-03-16T11:00:00Z\",\"action\":\"block_ip\",\"target_ip\":\"5.5.5.5\",\"prev_hash\":\"abc123\"}\n\
+             {\"ts\":\"2026-03-16T12:00:00Z\",\"action\":\"block_ip\",\"target_ip\":\"6.6.6.6\",\"prev_hash\":\"def456\"}\n",
+        ).unwrap();
+
+        let result = cmd_gdpr_erase(dir.path(), "1.2.3.4", true);
+        assert!(result.is_ok());
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(!content.contains("1.2.3.4"));
+        // Remaining lines should have recomputed prev_hash — first line should have null
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert!(first.get("prev_hash").unwrap().is_null());
+        // Second line should have a proper SHA-256 hash (64 hex chars)
+        let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        let hash = second.get("prev_hash").unwrap().as_str().unwrap();
+        assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn gdpr_erase_creates_audit_entry() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let events_path = dir.path().join(format!("events-{today}.jsonl"));
+        std::fs::write(
+            &events_path,
+            "{\"ts\":\"2026-03-16T10:00:00Z\",\"entities\":[{\"type\":\"Ip\",\"value\":\"1.2.3.4\"}]}\n",
+        ).unwrap();
+
+        let result = cmd_gdpr_erase(dir.path(), "1.2.3.4", true);
+        assert!(result.is_ok());
+
+        // An admin-actions file should now exist with a gdpr_erase entry
+        let audit_path = dir.path().join(format!("admin-actions-{today}.jsonl"));
+        assert!(audit_path.exists());
+        let audit_content = std::fs::read_to_string(&audit_path).unwrap();
+        assert!(audit_content.contains("gdpr_erase"));
+        assert!(audit_content.contains("1.2.3.4"));
     }
 }
