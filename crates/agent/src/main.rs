@@ -125,6 +125,10 @@ struct NarrativeAccumulator {
 }
 
 impl NarrativeAccumulator {
+    /// Maximum unique IPs/users to track. Narrative only uses top 10,
+    /// so keeping 500 is generous while preventing unbounded growth.
+    const MAX_ENTITY_ENTRIES: usize = 500;
+
     fn ingest_events(&mut self, events: &[innerwarden_core::event::Event]) {
         for ev in events {
             self.total_events += 1;
@@ -132,10 +136,18 @@ impl NarrativeAccumulator {
             for entity in &ev.entities {
                 match entity.r#type {
                     innerwarden_core::entities::EntityType::Ip => {
-                        *self.ip_counts.entry(entity.value.clone()).or_insert(0) += 1;
+                        if self.ip_counts.contains_key(&entity.value)
+                            || self.ip_counts.len() < Self::MAX_ENTITY_ENTRIES
+                        {
+                            *self.ip_counts.entry(entity.value.clone()).or_insert(0) += 1;
+                        }
                     }
                     innerwarden_core::entities::EntityType::User => {
-                        *self.user_counts.entry(entity.value.clone()).or_insert(0) += 1;
+                        if self.user_counts.contains_key(&entity.value)
+                            || self.user_counts.len() < Self::MAX_ENTITY_ENTRIES
+                        {
+                            *self.user_counts.entry(entity.value.clone()).or_insert(0) += 1;
+                        }
                     }
                     _ => {}
                 }
@@ -1708,6 +1720,35 @@ async fn main() -> Result<()> {
                     if removed > 0 {
                         info!(removed, "data_retention: cleaned up old files");
                     }
+
+                    // ── Memory housekeeping: cap unbounded HashMaps ──
+                    {
+                        const MAX_IP_REPUTATIONS: usize = 2000;
+                        if state.ip_reputations.len() > MAX_IP_REPUTATIONS {
+                            let mut entries: Vec<_> = state.ip_reputations.drain().collect();
+                            entries.sort_by(|a, b| {
+                                b.1.reputation_score
+                                    .partial_cmp(&a.1.reputation_score)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            });
+                            entries.truncate(MAX_IP_REPUTATIONS);
+                            state.ip_reputations = entries.into_iter().collect();
+                        }
+
+                        // Expire pending Telegram confirmations older than 30 minutes
+                        let confirm_cutoff =
+                            chrono::Utc::now() - chrono::Duration::minutes(30);
+                        state
+                            .pending_confirmations
+                            .retain(|_, (pc, _, _)| pc.created_at > confirm_cutoff);
+
+                        // Expire pending honeypot choices past their deadline
+                        let now_utc = chrono::Utc::now();
+                        state
+                            .pending_honeypot_choices
+                            .retain(|_, choice| choice.expires_at > now_utc);
+                    }
+
                     if let Err(e) = cursor.save(&state_path) {
                         warn!("failed to save cursor after narrative tick: {e:#}");
                     }
