@@ -34,15 +34,17 @@ mod telemetry;
 mod web_push;
 mod webhook;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use chrono::Timelike as _;
 use clap::Parser;
 use tracing::{debug, info, warn};
+
+use crate::dashboard::AdvisoryEntry;
 
 #[derive(Parser)]
 #[command(
@@ -1131,6 +1133,11 @@ async fn main() -> Result<()> {
         None => config::AgentConfig::default(),
     };
 
+    // Advisory cache: shared between dashboard (writes advisory denials) and
+    // the incident processing loop (checks for advisory violations).
+    let advisory_cache: Arc<RwLock<VecDeque<AdvisoryEntry>>> =
+        Arc::new(RwLock::new(VecDeque::new()));
+
     if cli.dashboard {
         let auth = dashboard::DashboardAuth::try_from_env()?;
         let action_cfg = dashboard::DashboardActionConfig {
@@ -1168,6 +1175,7 @@ async fn main() -> Result<()> {
         let trusted_proxies = cfg.dashboard.trusted_proxies.clone();
         let session_timeout_minutes = cfg.dashboard.session_timeout_minutes;
         let max_sessions = cfg.dashboard.max_sessions;
+        let dashboard_advisory_cache = advisory_cache.clone();
         tokio::spawn(async move {
             if let Err(e) = dashboard::serve(
                 dashboard_data_dir,
@@ -1178,6 +1186,7 @@ async fn main() -> Result<()> {
                 trusted_proxies,
                 session_timeout_minutes,
                 max_sessions,
+                dashboard_advisory_cache,
             )
             .await
             {
@@ -1486,7 +1495,14 @@ async fn main() -> Result<()> {
     }
 
     if cli.once {
-        let handled = process_incidents(&cli.data_dir, &mut cursor, &cfg, &mut state).await;
+        let handled = process_incidents(
+            &cli.data_dir,
+            &mut cursor,
+            &cfg,
+            &mut state,
+            &advisory_cache,
+        )
+        .await;
         let new_events =
             process_narrative_tick(&cli.data_dir, &mut cursor, &cfg, &mut state).await?;
         if let Some(w) = &mut state.decision_writer {
@@ -1605,7 +1621,7 @@ async fn main() -> Result<()> {
             #[cfg(unix)]
             let shutdown = tokio::select! {
                 _ = incident_ticker.tick() => {
-                    process_incidents(&cli.data_dir, &mut cursor, &cfg, &mut state).await;
+                    process_incidents(&cli.data_dir, &mut cursor, &cfg, &mut state, &advisory_cache).await;
                     // Persist cursor after every incident tick — prevents double-processing on restart
                     if let Err(e) = cursor.save(&state_path) {
                         warn!("failed to save cursor after incident tick: {e:#}");
@@ -1765,7 +1781,7 @@ async fn main() -> Result<()> {
             #[cfg(not(unix))]
             let shutdown = tokio::select! {
                 _ = incident_ticker.tick() => {
-                    process_incidents(&cli.data_dir, &mut cursor, &cfg, &mut state).await;
+                    process_incidents(&cli.data_dir, &mut cursor, &cfg, &mut state, &advisory_cache).await;
                     if let Err(e) = cursor.save(&state_path) {
                         warn!("failed to save cursor after incident tick: {e:#}");
                     }
@@ -1899,6 +1915,7 @@ async fn process_incidents(
     cursor: &mut reader::AgentCursor,
     cfg: &config::AgentConfig,
     state: &mut AgentState,
+    advisory_cache: &Arc<RwLock<VecDeque<AdvisoryEntry>>>,
 ) -> usize {
     if cfg.responder.enabled
         && cfg
@@ -2248,6 +2265,48 @@ async fn process_incidents(
                     .set_cooldown(state_store::CooldownTable::Notification, k, now);
             }
         } // end if !notify_suppressed
+
+        // 1e. Advisory correlation — check if this execution incident matches
+        //     a recent advisory denial from the /api/advisor/check-command endpoint.
+        //     If so, the AI agent ignored Inner Warden's security recommendation.
+        if incident.tags.contains(&"execution".to_string())
+            || incident.tags.contains(&"suspicious".to_string())
+        {
+            if let Some(advisory) = check_advisory_match(advisory_cache, incident) {
+                info!(
+                    advisory_id = %advisory.advisory_id,
+                    command = %advisory.command_preview,
+                    risk_score = advisory.risk_score,
+                    "AI agent ignored security advisory"
+                );
+
+                // Send Telegram notification about the advisory violation
+                if let Some(tg) = &state.telegram_client {
+                    let msg = format!(
+                        "\u{26a0}\u{fe0f} <b>Advisory Ignored</b>\n\n\
+                        Your AI agent executed a command that Inner Warden recommended <b>{}</b>.\n\n\
+                        <b>Command:</b> <code>{}</code>\n\
+                        <b>Risk score:</b> {}/100\n\
+                        <b>Signals:</b> {}\n\
+                        <b>Advisory ID:</b> <code>{}</code>\n\n\
+                        The command was executed despite the warning. Review the audit trail.",
+                        advisory.recommendation,
+                        advisory.command_preview.replace('<', "&lt;").replace('>', "&gt;"),
+                        advisory.risk_score,
+                        advisory.signals.join(", "),
+                        advisory.advisory_id,
+                    );
+                    if let Err(e) = tg.send_raw_html(&msg).await {
+                        warn!("failed to send advisory ignored alert: {e:#}");
+                    }
+                }
+
+                // Remove the matched entry from cache (consumed)
+                if let Ok(mut cache) = advisory_cache.write() {
+                    cache.retain(|e| e.advisory_id != advisory.advisory_id);
+                }
+            }
+        }
 
         // 2. AI analysis — only when AI is enabled and incident passes the gate
 
@@ -5827,6 +5886,33 @@ async fn enable_lsm_enforcement() -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// Advisory correlation — match execution incidents against recent advisory
+// denials from the /api/advisor/check-command endpoint.
+// ---------------------------------------------------------------------------
+
+/// Check if an execution incident matches a recent advisory denial.
+/// Returns the matching AdvisoryEntry if the command hash matches.
+fn check_advisory_match(
+    cache: &Arc<RwLock<VecDeque<AdvisoryEntry>>>,
+    incident: &innerwarden_core::incident::Incident,
+) -> Option<AdvisoryEntry> {
+    // Extract command from incident evidence (array of evidence objects)
+    let command = incident
+        .evidence
+        .as_array()?
+        .iter()
+        .find_map(|e| e.get("command").and_then(|c| c.as_str()))?;
+
+    let command_hash = innerwarden_core::audit::sha256_hex(&command.to_lowercase());
+
+    let cache = cache.read().ok()?;
+    cache
+        .iter()
+        .find(|e| e.command_hash == command_hash)
+        .cloned()
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -6026,7 +6112,14 @@ mod tests {
 
         // 4. Run the incident tick
         let mut cursor = reader::AgentCursor::default();
-        let handled = process_incidents(dir.path(), &mut cursor, &cfg, &mut state).await;
+        let handled = process_incidents(
+            dir.path(),
+            &mut cursor,
+            &cfg,
+            &mut state,
+            &Arc::new(RwLock::new(VecDeque::new())),
+        )
+        .await;
 
         // Verify: one incident handled
         assert_eq!(handled, 1, "expected 1 incident handled");
@@ -6149,7 +6242,14 @@ mod tests {
         };
 
         let mut cursor = reader::AgentCursor::default();
-        let handled = process_incidents(dir.path(), &mut cursor, &cfg, &mut state).await;
+        let handled = process_incidents(
+            dir.path(),
+            &mut cursor,
+            &cfg,
+            &mut state,
+            &Arc::new(RwLock::new(VecDeque::new())),
+        )
+        .await;
 
         // Still handled (not skipped entirely) — fell back to ufw
         assert_eq!(handled, 1);
@@ -6248,7 +6348,14 @@ mod tests {
         };
 
         let mut cursor = reader::AgentCursor::default();
-        let handled = process_incidents(dir.path(), &mut cursor, &cfg, &mut state).await;
+        let handled = process_incidents(
+            dir.path(),
+            &mut cursor,
+            &cfg,
+            &mut state,
+            &Arc::new(RwLock::new(VecDeque::new())),
+        )
+        .await;
         assert_eq!(handled, 2, "both incidents should be accounted for");
         assert_eq!(
             calls.load(Ordering::SeqCst),
@@ -6359,7 +6466,14 @@ mod tests {
         };
 
         let mut cursor = reader::AgentCursor::default();
-        let handled = process_incidents(dir.path(), &mut cursor, &cfg, &mut state).await;
+        let handled = process_incidents(
+            dir.path(),
+            &mut cursor,
+            &cfg,
+            &mut state,
+            &Arc::new(RwLock::new(VecDeque::new())),
+        )
+        .await;
         assert_eq!(handled, 2);
         assert!(
             related_count.load(Ordering::SeqCst) >= 1,
@@ -6447,7 +6561,14 @@ mod tests {
         };
 
         let mut cursor = reader::AgentCursor::default();
-        let handled = process_incidents(dir.path(), &mut cursor, &cfg, &mut state).await;
+        let handled = process_incidents(
+            dir.path(),
+            &mut cursor,
+            &cfg,
+            &mut state,
+            &Arc::new(RwLock::new(VecDeque::new())),
+        )
+        .await;
         assert_eq!(handled, 1);
 
         let events_path = dir.path().join(format!("events-{today}.jsonl"));
@@ -6547,7 +6668,14 @@ mod tests {
         };
 
         let mut cursor = reader::AgentCursor::default();
-        let handled = process_incidents(dir.path(), &mut cursor, &cfg, &mut state).await;
+        let handled = process_incidents(
+            dir.path(),
+            &mut cursor,
+            &cfg,
+            &mut state,
+            &Arc::new(RwLock::new(VecDeque::new())),
+        )
+        .await;
 
         // Both incidents are "handled" (counted), but the AI should be called
         // only ONCE — the second incident is suppressed by the decision

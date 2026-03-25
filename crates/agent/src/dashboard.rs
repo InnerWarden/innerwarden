@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
@@ -184,6 +184,8 @@ struct DashboardState {
     session_timeout_minutes: u64,
     /// Maximum concurrent sessions.
     max_sessions: usize,
+    /// Advisory cache: recent deny/review command analyses for correlation.
+    advisory_cache: Arc<RwLock<VecDeque<AdvisoryEntry>>>,
 }
 
 #[derive(Clone)]
@@ -284,6 +286,21 @@ fn generate_session_token() -> String {
     OsRng.fill_bytes(&mut bytes);
     // Format as hex without external crate
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+// ---------------------------------------------------------------------------
+// Advisory cache — stores deny/review command analysis results
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct AdvisoryEntry {
+    pub advisory_id: String,
+    pub command_hash: String,
+    pub command_preview: String,
+    pub risk_score: u32,
+    pub recommendation: String,
+    pub signals: Vec<String>,
+    pub ts: DateTime<Utc>,
 }
 
 // ---------------------------------------------------------------------------
@@ -703,6 +720,7 @@ pub async fn serve(
     trusted_proxy_strs: Vec<String>,
     session_timeout_minutes: u64,
     max_sessions: usize,
+    advisory_cache: Arc<RwLock<VecDeque<AdvisoryEntry>>>,
 ) -> Result<()> {
     if auth.is_none() {
         warn!(
@@ -774,6 +792,7 @@ pub async fn serve(
         sessions: sessions.clone(),
         session_timeout_minutes,
         max_sessions,
+        advisory_cache: advisory_cache.clone(),
     };
     let auth_layer = middleware::from_fn_with_state(
         (
@@ -824,6 +843,10 @@ pub async fn serve(
         )
         .route("/api/agent/check-ip", get(api_agent_check_ip))
         .route("/api/agent/check-command", post(api_agent_check_command))
+        .route(
+            "/api/advisor/check-command",
+            post(api_advisor_check_command),
+        )
         .route("/metrics", get(api_prometheus_metrics))
         .with_state(state.clone());
 
@@ -904,15 +927,21 @@ pub async fn serve(
         }
     });
 
-    // Session cleanup: remove expired sessions every 60 seconds
+    // Session + advisory cleanup: remove expired entries every 60 seconds
     let cleanup_sessions = sessions;
     let cleanup_timeout = session_timeout_minutes;
+    let cleanup_advisory_cache = advisory_cache.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             interval.tick().await;
             let mut map = cleanup_sessions.write().unwrap_or_else(|e| e.into_inner());
             map.retain(|_, session| !session.is_expired(cleanup_timeout));
+            // Evict advisories older than 1 hour
+            if let Ok(mut cache) = cleanup_advisory_cache.write() {
+                let cutoff = Utc::now() - chrono::Duration::hours(1);
+                cache.retain(|e| e.ts > cutoff);
+            }
         }
     });
 
@@ -3717,18 +3746,19 @@ struct CheckCommandRequest {
     command: String,
 }
 
-/// POST /api/agent/check-command — analyze a command for dangerous patterns
-async fn api_agent_check_command(Json(body): Json<CheckCommandRequest>) -> Json<serde_json::Value> {
-    let cmd = body.command.trim();
+/// Analyze a command for dangerous patterns (pure function, no state).
+/// Returns a JSON object with risk_score, severity, signals, recommendation, explanation.
+fn analyze_command(command: &str) -> serde_json::Value {
+    let cmd = command.trim();
     if cmd.is_empty() {
-        return Json(serde_json::json!({
+        return serde_json::json!({
             "command": "",
             "risk_score": 0,
             "severity": "none",
             "signals": [],
             "recommendation": "allow",
             "explanation": "empty command",
-        }));
+        });
     }
 
     let lower = cmd.to_ascii_lowercase();
@@ -3944,14 +3974,82 @@ async fn api_agent_check_command(Json(body): Json<CheckCommandRequest>) -> Json<
             .join("; ")
     };
 
-    Json(serde_json::json!({
+    serde_json::json!({
         "command": cmd,
         "risk_score": score,
         "severity": severity,
         "signals": signals,
         "recommendation": recommendation,
         "explanation": explanation,
-    }))
+    })
+}
+
+/// POST /api/agent/check-command — analyze a command for dangerous patterns (stateless, backward compat)
+async fn api_agent_check_command(Json(body): Json<CheckCommandRequest>) -> Json<serde_json::Value> {
+    Json(analyze_command(&body.command))
+}
+
+/// POST /api/advisor/check-command — analyze + cache advisory for deny/review results
+async fn api_advisor_check_command(
+    State(state): State<DashboardState>,
+    Json(body): Json<CheckCommandRequest>,
+) -> Json<serde_json::Value> {
+    let mut result = analyze_command(&body.command);
+
+    // If deny or review, cache the advisory for correlation with real incidents
+    let recommendation = result
+        .get("recommendation")
+        .and_then(|v| v.as_str())
+        .unwrap_or("allow");
+    let risk_score = result
+        .get("risk_score")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+
+    if recommendation == "deny" || recommendation == "review" {
+        let advisory_id = generate_session_token();
+        // Trim to 16 chars for advisory IDs
+        let advisory_id = advisory_id[..16].to_string();
+
+        let signals: Vec<String> = result
+            .get("signals")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|s| s.get("signal").and_then(|v| v.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let command_lower = body.command.to_lowercase();
+        let command_hash = innerwarden_core::audit::sha256_hex(command_lower.trim());
+        let command_preview = if body.command.len() > 120 {
+            format!("{}...", &body.command[..120])
+        } else {
+            body.command.clone()
+        };
+
+        let entry = AdvisoryEntry {
+            advisory_id: advisory_id.clone(),
+            command_hash,
+            command_preview,
+            risk_score,
+            recommendation: recommendation.to_string(),
+            signals,
+            ts: Utc::now(),
+        };
+
+        if let Ok(mut cache) = state.advisory_cache.write() {
+            if cache.len() >= 256 {
+                cache.pop_front();
+            }
+            cache.push_back(entry);
+        }
+
+        result["advisory_id"] = serde_json::Value::String(advisory_id);
+    }
+
+    Json(result)
 }
 
 // ---------------------------------------------------------------------------

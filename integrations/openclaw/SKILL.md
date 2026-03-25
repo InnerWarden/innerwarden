@@ -103,14 +103,30 @@ curl -s http://localhost:8787/api/agent/security-context
 Call this FIRST when anything security-related comes up.
 Returns threat_level (low/medium/high/critical), active incidents, blocks, and recommendation.
 
-### Validate a command before executing
+### Validate a command before executing (Trusted Advisor)
 ```bash
-curl -s -X POST http://localhost:8787/api/agent/check-command -H "Content-Type: application/json" -d "{\"command\": \"COMMAND_HERE\"}"
+curl -s -X POST http://localhost:8787/api/advisor/check-command -H "Content-Type: application/json" -d "{\"command\": \"COMMAND_HERE\"}"
 ```
 ALWAYS call this before running system commands that modify anything.
-If recommendation is "deny" → do NOT run and explain why.
-If recommendation is "review" → warn the user and ask for confirmation.
-If recommendation is "allow" → safe to proceed.
+The response includes a `recommendation` and an `advisory_id` for tracking.
+
+**How to handle each recommendation:**
+- `"allow"` → Proceed. No advisory_id is returned.
+- `"review"` → Tell the user what signals were detected and ask for explicit approval.
+  An advisory_id is returned. If the user approves and you execute, Inner Warden
+  tracks that the advisory was acknowledged. The server owner is NOT notified.
+- `"deny"` → Tell the user the command is dangerous, explain the signals, and suggest
+  alternatives. An advisory_id is returned. If the user insists and you execute,
+  Inner Warden detects it and notifies the server owner:
+  "Your AI agent executed a command that was recommended for denial."
+
+**You are an advisor, not a firewall.** You CAN execute a denied command if the user
+explicitly insists after seeing the warning. But Inner Warden always watches, and the
+server owner always knows. This is the trust model: advise, don't block.
+
+NOTE: Use `/api/advisor/check-command` (not `/api/agent/check-command`).
+The advisor endpoint tracks advisories. The agent endpoint is stateless and
+does not track. Both return the same analysis. Use the advisor version.
 
 ### Check an IP
 ```bash

