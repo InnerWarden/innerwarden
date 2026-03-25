@@ -17,13 +17,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use chrono::Utc;
-use innerwarden_core::{
-    entities::EntityRef,
-    event::{Event, Severity},
-};
+use innerwarden_core::event::{Event, Severity};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::info;
 
 /// EFI System Partition paths to monitor for unauthorized binaries.
 const ESP_PATHS: &[&str] = &[

@@ -11,6 +11,28 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.2] — 2026-03-25
+
+### Added
+- **Firmware & boot integrity collector** — monitors ESP binaries, UEFI variables (SecureBoot, DBX, PK, KEK), ACPI tables, DMI/SMBIOS, and kernel tainted flag every 5 minutes. Detects BlackLotus, LoJax, MosaicRegressor, ACPI rootkits. Based on Peacock (arxiv:2601.07402) and UEFI Memory Forensics (arxiv:2501.16962).
+- **Firmware & boot hardening checks** — `innerwarden harden` now checks Secure Boot status, kernel tainted flags, TPM presence, boot loader permissions, IOMMU, and kernel lockdown mode.
+- **redb persistent state store** — agent state (cooldowns, block counts) stored in embedded database instead of unbounded HashMaps. Heap stays stable regardless of attack volume.
+- **eBPF bytecode embedded in sensor binary** — `include_bytes!()` bakes the 54KB bytecode into the sensor. Single binary deploy, `innerwarden upgrade` updates everything.
+- **Shield → Telegram notifications** — escalation/de-escalation events sent to Telegram with state, drops/sec, attacker count, Cloudflare proxy status.
+- **Shield → JSONL incidents** — escalation events written to incidents file for live feed visibility.
+- **Live feed shows all incidents** — removed IP-only filter, now displays Shield escalations, privilege escalation, rootkit indicators, and all detector types.
+- **CLI improvements** — `innerwarden list` shows full system coverage (22 hooks, 36 detectors), `innerwarden status <IP>` searches incidents, `innerwarden test` shows injected incident details.
+
+### Fixed
+- **Shield warmup** — ignores first 10 seconds of backlog to prevent false escalation on boot.
+- **Live feed internal filter** — hides Inner Warden's own privilege escalation (agent/shield/sensor doing setuid for skills).
+- **Unused imports** in firmware_integrity collector.
+
+### Changed
+- **3 HashMaps migrated to redb** — decision_cooldowns, notification_cooldowns, block_counts now persistent and bounded.
+
+---
+
 ## [0.4.1] — 2026-03-25
 
 ### eBPF v2

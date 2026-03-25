@@ -33,6 +33,8 @@
 
 **cloudtrail** — tail AWS CloudTrail log directory (JSONL); parses API calls, user identity, source IP; emits events per CloudTrail record
 
+**firmware_integrity** — monitors BIOS/UEFI/boot chain every 5 minutes: ESP binary hashes, UEFI variables (SecureBoot, DBX, PK, KEK), ACPI table hashes (DSDT, SSDT), DMI/SMBIOS baseline, kernel tainted flag. Detects BlackLotus, LoJax, MosaicRegressor, ACPI rootkits. Based on Peacock (arxiv:2601.07402).
+
 ### EXTERNAL (requires separate tool installation)
 
 **falco_log** — tail `/var/log/falco/falco.log` (JSONL); maps priority → Severity; extracts entities from `output_fields` (IP, user, container, pod); incident passthrough for High/Critical; 12 tests

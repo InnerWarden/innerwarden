@@ -1229,8 +1229,10 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResp
     // Filter out privesc from innerwarden processes (agent does setuid for skills).
     let is_internal = |inc: &Incident| -> bool {
         let t = inc.title.to_lowercase();
-        t.contains("(en-agent)") || t.contains("(n-shield)")
-            || t.contains("(en-sensor)") || t.contains("innerwarden")
+        t.contains("(en-agent)")
+            || t.contains("(n-shield)")
+            || t.contains("(en-sensor)")
+            || t.contains("innerwarden")
     };
     let mut items: Vec<LiveFeedItem> = incidents
         .iter()
