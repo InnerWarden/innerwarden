@@ -5,7 +5,7 @@
 //! chaining. Same integrity guarantees as the decision audit trail.
 
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Seek, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
 use anyhow::Context;
@@ -169,6 +169,7 @@ fn read_last_hash_from_open_file(file: &File) -> Option<String> {
 /// Uses tail-seek to avoid O(n) scan on large files.
 #[cfg(not(unix))]
 fn read_last_hash_from_file(path: &Path) -> Option<String> {
+    use std::io::{Read, Seek};
     if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
         return None;
     }

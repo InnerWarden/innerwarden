@@ -929,7 +929,7 @@ async fn main() -> Result<()> {
         process_event(ev, &mut writer, &mut detectors, &mut stats);
 
         // Also flush every 50 events as a safety net
-        if stats.events_written > 0 && stats.events_written.is_multiple_of(50) {
+        if stats.events_written > 0 && stats.events_written % 50 == 0 {
             if let Err(e) = writer.flush() {
                 warn!("count-based flush failed: {e:#}");
             }
