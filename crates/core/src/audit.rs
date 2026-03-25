@@ -8,6 +8,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
+use anyhow::Context;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -44,18 +45,26 @@ pub struct AdminActionEntry {
 /// Opens the file, reads the last hash, writes the entry, and closes.
 /// Suitable for CLI commands that don't keep a writer open.
 pub fn append_admin_action(data_dir: &Path, entry: &mut AdminActionEntry) -> anyhow::Result<()> {
-    // Canonicalize data_dir to prevent path traversal (CWE-22)
-    let safe_dir = std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
+    // Build a safe filename from the current date (only digits and hyphens)
     let today = chrono::Local::now()
         .date_naive()
         .format("%Y-%m-%d")
         .to_string();
-    // Validate date string contains only safe characters
     anyhow::ensure!(
-        today.chars().all(|c| c.is_ascii_digit() || c == '-'),
+        today.len() == 10 && today.chars().all(|c| c.is_ascii_digit() || c == '-'),
         "invalid date format"
     );
-    let path = safe_dir.join(format!("admin-actions-{today}.jsonl"));
+    let filename = format!("admin-actions-{today}.jsonl");
+
+    // Canonicalize data_dir, then join the safe filename, then verify
+    // the result is still inside the canonical directory (CWE-22).
+    let canonical_dir = std::fs::canonicalize(data_dir)
+        .with_context(|| format!("cannot resolve data dir: {}", data_dir.display()))?;
+    let path = canonical_dir.join(&filename);
+    anyhow::ensure!(
+        path.starts_with(&canonical_dir),
+        "constructed path escapes data directory"
+    );
 
     // Read last hash for chain continuity
     let last_hash = read_last_hash_from_file(&path);
@@ -104,7 +113,10 @@ pub fn sha256_hex(data: &str) -> String {
 
 /// Read the last hash from a JSONL file for chain continuity.
 fn read_last_hash_from_file(path: &Path) -> Option<String> {
-    // Path is already canonicalized by caller (append_admin_action)
+    // Only open files with .jsonl extension as a safety guard (CWE-22)
+    if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+        return None;
+    }
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
     let mut last_line = String::new();
