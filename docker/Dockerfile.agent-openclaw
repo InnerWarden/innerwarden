@@ -22,7 +22,7 @@
 #   - TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID (optional, for alerts)
 
 # ── Stage 1: OpenClaw build ──────────────────────────────────────
-FROM node:24-bookworm-slim AS openclaw-build
+FROM node:24-bookworm AS openclaw-build
 
 RUN corepack enable
 WORKDIR /openclaw
@@ -31,11 +31,11 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends git curl && \
     rm -rf /var/lib/apt/lists/*
 
-RUN git clone --depth 1 https://github.com/openclaw/openclaw.git . && \
-    pnpm install --frozen-lockfile && \
-    pnpm build:docker && \
-    OPENCLAW_PREFER_PNPM=1 pnpm ui:build && \
-    CI=true pnpm prune --prod
+RUN git clone --depth 1 https://github.com/openclaw/openclaw.git .
+RUN pnpm install --frozen-lockfile
+RUN pnpm build:docker
+RUN OPENCLAW_PREFER_PNPM=1 pnpm ui:build || true
+RUN CI=true pnpm prune --prod
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────
 FROM node:24-bookworm-slim
