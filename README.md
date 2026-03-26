@@ -136,10 +136,11 @@ https://github.com/user-attachments/assets/e49ea3aa-a3a7-4b4a-8912-8ebe17609a82
 │   │   bot    │ │          │ │ (any)    │                                     │
 │   └──────────┘ └──────────┘ └──────────┘                                     │
 │                                                                               │
-│   ┌───────────────────────────────────────────────┐                           │
-│   │ Dashboard: HUD, threats, investigation, map,  │                           │
-│   │ MITRE ATT&CK, live SSE feed, audit trail      │                           │
-│   └───────────────────────────────────────────────┘                           │
+│   ┌─────────────────────────────────────────────────────┐                     │
+│   │ Dashboard: HUD, threats, investigation, map,        │                     │
+│   │ MITRE ATT&CK, live SSE feed, audit trail,          │                     │
+│   │ ISO 27001 compliance, hash chain verification       │                     │
+│   └─────────────────────────────────────────────────────┘                     │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -245,7 +246,7 @@ Plus: `docker_anomaly`, `osquery_anomaly`, `suricata_alert`, `search_abuse`, `cr
 
 ## How it works
 
-**Sensor**: deterministic signal collection. No AI, no HTTP. 13 collectors (auth.log, journald, Docker events, file integrity, nginx access/error, shell audit, macOS unified log, syslog firewall, eBPF syscall tracing with 22 kernel hooks). Optional: Suricata, osquery, Wazuh, AWS CloudTrail. Events flow through Redis Streams to the agent.
+**Sensor**: deterministic signal collection. No AI, no HTTP. 15 collectors (auth.log, journald, Docker events, file integrity, firmware integrity, nginx access/error, shell audit, macOS unified log, syslog firewall, eBPF syscall tracing with 22 kernel hooks). Optional: Suricata, osquery, Wazuh, AWS CloudTrail, Falco. Events flow through Redis Streams to the agent.
 
 **eBPF**: 22 kernel hooks running inside Linux (5.8+, CO-RE/BTF portable):
 - **18 tracepoints**: execve, connect, openat, ptrace, setuid, bind, mount, memfd_create, init_module, dup2, listen, mprotect, clone, unlinkat, renameat2, kill, prctl, accept4
@@ -269,7 +270,7 @@ Container-aware via cgroup ID. Zero performance overhead.
 
 **Agent**: reads incidents from Redis Streams, applies algorithm gate (skip low severity, private IPs, already-blocked), enriches with AbuseIPDB + GeoIP + CrowdSec, optionally sends to AI for confidence-scored triage, executes the chosen skill. Policy-gated: nothing runs unless you've explicitly enabled it.
 
-Two Rust daemons. No external dependencies. Under 50 MB RAM total. Dashboard with auth, live SSE feed, MITRE ATT&CK mapping, and attack map. Sleeps after 15 min of inactivity.
+Two Rust daemons. No external dependencies. Under 50 MB RAM total. Dashboard with auth, live SSE feed, MITRE ATT&CK mapping, attack map, 20 integration cards, ISO 27001 compliance tab with hash chain verification. Sleeps after 15 min of inactivity.
 
 ---
 
@@ -293,7 +294,7 @@ Not everything should be automatic.
 - **Telegram**: every High/Critical incident pushed to your phone. Approve or deny with inline buttons. Sensitivity control: quiet/normal/verbose.
 - **Slack**: incident notifications via incoming webhook
 - **Webhook**: HTTP POST to any endpoint. Works with PagerDuty, Opsgenie, Discord, Microsoft Teams, Google Chat, DingTalk, Feishu/Lark, WeCom, n8n, Zapier, Make, Home Assistant.
-- **Dashboard**: local authenticated UI with sensor HUD, investigation timeline, entity search, operator actions, live SSE feed, attack map, MITRE ATT&CK mapping, attacker path viewer
+- **Dashboard**: local authenticated UI with sensor HUD, investigation timeline, entity search, operator actions, live SSE feed, attack map, MITRE ATT&CK mapping, attacker path viewer, 20 integration cards, ISO 27001 compliance tab with hash chain verification
 
 ---
 
