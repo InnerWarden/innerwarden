@@ -219,6 +219,88 @@ fn sanitize(s: &str) -> String {
         .join(" ")
 }
 
+/// Extract kill chain intelligence from an incident's evidence, if present.
+/// Returns `Some(formatted_section)` when `evidence[0].kind` contains "kill_chain"
+/// or "pre_chain_warning".
+fn extract_kill_chain_intel(incident: &innerwarden_core::incident::Incident) -> Option<String> {
+    let ev = incident.evidence.get(0)?;
+    let kind = ev.get("kind")?.as_str()?;
+    if !kind.contains("kill_chain") && !kind.contains("pre_chain") {
+        return None;
+    }
+
+    let pattern = ev
+        .get("pattern")
+        .and_then(|v| v.as_str())
+        .unwrap_or("UNKNOWN");
+    let c2_ip = ev
+        .get("c2_ip")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let pid = ev
+        .get("pid")
+        .and_then(|v| v.as_u64())
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let uid = ev
+        .get("uid")
+        .and_then(|v| v.as_u64())
+        .map(|u| u.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let process = ev
+        .get("process")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    let blocked = kind.contains("blocked");
+    let status = if blocked {
+        "BLOCKED by kernel LSM"
+    } else {
+        "DETECTED (may still be active)"
+    };
+
+    // Build timeline summary from syscall events array
+    let timeline_str = ev
+        .get("timeline")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            let steps: Vec<String> = arr
+                .iter()
+                .filter_map(|entry| entry.as_str().map(String::from))
+                .collect();
+            if steps.is_empty() {
+                "no timeline data".to_string()
+            } else {
+                steps.join(" → ")
+            }
+        })
+        .unwrap_or_else(|| "no timeline data".to_string());
+
+    let confidence = if blocked {
+        "This is a CONFIRMED attack — the kernel blocked it. Treat as highest severity."
+    } else {
+        "This is a DETECTED attack pattern — may still be in progress. Treat as critical."
+    };
+
+    Some(format!(
+        "- Source: incident {}\n\
+         - Pattern: {} ({})\n\
+         - C2 IP: {}\n\
+         - Process: {} (PID {}, UID {})\n\
+         - Timeline: {}\n\
+         - Confidence: {}",
+        sanitize(trunc(&incident.incident_id, 200)),
+        pattern,
+        status,
+        c2_ip,
+        process,
+        pid,
+        uid,
+        timeline_str,
+        confidence,
+    ))
+}
+
 fn build_prompt(ctx: &DecisionContext<'_>) -> String {
     let inc = ctx.incident;
     let incident_json = json!({
@@ -271,6 +353,27 @@ fn build_prompt(ctx: &DecisionContext<'_>) -> String {
     let skills_json =
         serde_json::to_string_pretty(&ctx.available_skills).unwrap_or_else(|_| "[]".to_string());
 
+    // Build kill chain intelligence section from current + related incidents
+    let mut kill_chain_entries: Vec<String> = Vec::new();
+
+    if let Some(intel) = extract_kill_chain_intel(inc) {
+        kill_chain_entries.push(intel);
+    }
+    for related in &ctx.related_incidents {
+        if let Some(intel) = extract_kill_chain_intel(related) {
+            kill_chain_entries.push(intel);
+        }
+    }
+
+    let kill_chain_section = if kill_chain_entries.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nKILL CHAIN INTELLIGENCE:\n{}",
+            kill_chain_entries.join("\n\n")
+        )
+    };
+
     format!(
         r#"Analyze this security incident and decide on a response.
 
@@ -285,7 +388,7 @@ TEMPORALLY CORRELATED INCIDENTS (last {related_count}):
 
 ALREADY BLOCKED IPs (do not block these again):
 {blocked:?}
-
+{kill_chain_section}
 AVAILABLE RESPONSE SKILLS (select skill_id from this list):
 {skills_json}
 
@@ -296,6 +399,7 @@ Select the best skill and return a JSON decision."#,
         related_json = related_json,
         related_count = ctx.related_incidents.len(),
         blocked = ctx.already_blocked,
+        kill_chain_section = kill_chain_section,
         skills_json = skills_json,
     )
 }

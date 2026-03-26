@@ -2996,6 +2996,36 @@ async fn api_status(State(state): State<DashboardState>) -> Json<serde_json::Val
         "read_only"
     };
 
+    // Count kill chain incidents from today's incident store
+    let mut kc_total_blocked: u64 = 0;
+    let mut kc_total_pre_chain: u64 = 0;
+    let mut kc_patterns: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    let inc_path = data_dir.join(&incidents_file);
+    if inc_path.exists() {
+        let incidents = read_jsonl::<innerwarden_core::incident::Incident>(&inc_path);
+        for inc in &incidents {
+            if let Some(evidence) = inc.evidence.as_array() {
+                for ev in evidence {
+                    let kind = ev.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+                    if kind.contains("kill_chain") {
+                        let blocked = ev.get("blocked").and_then(|b| b.as_bool()).unwrap_or(false);
+                        if blocked {
+                            kc_total_blocked += 1;
+                        } else {
+                            kc_total_pre_chain += 1;
+                        }
+                        let pattern = ev
+                            .get("pattern")
+                            .and_then(|p| p.as_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+                        *kc_patterns.entry(pattern).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+    }
+
     Json(serde_json::json!({
         "date": today,
         "data_dir": data_dir.display().to_string(),
@@ -3040,6 +3070,11 @@ async fn api_status(State(state): State<DashboardState>) -> Json<serde_json::Val
             "decisions_days": action_cfg.retention_decisions_days,
             "telemetry_days": action_cfg.retention_telemetry_days,
             "reports_days": action_cfg.retention_reports_days
+        },
+        "kill_chain": {
+            "total_blocked": kc_total_blocked,
+            "total_pre_chain": kc_total_pre_chain,
+            "patterns": kc_patterns
         },
         "version": env!("CARGO_PKG_VERSION")
     }))
@@ -6439,6 +6474,67 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
     .evidence-raw.open { display: block; }
 
+    /* ── Kill chain timeline ────────────────────────────────────── */
+    .kill-chain-timeline {
+      background: rgba(4,8,20,0.7);
+      border: 1px solid rgba(244,63,94,0.35);
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin-bottom: 6px;
+    }
+    .kc-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 8px;
+    }
+    .kc-pattern {
+      font-size: 0.78rem; font-weight: 700; color: var(--danger);
+      letter-spacing: 0.04em;
+    }
+    .kc-status {
+      font-size: 0.6rem; font-weight: 700; padding: 2px 8px;
+      border-radius: 20px; letter-spacing: 0.06em;
+    }
+    .kc-blocked {
+      background: rgba(244,63,94,0.18); color: var(--danger);
+    }
+    .kc-detected {
+      background: rgba(255,184,77,0.18); color: var(--warn);
+    }
+    .kc-process {
+      font-size: 0.68rem; color: var(--muted);
+      font-family: 'JetBrains Mono', monospace;
+      margin-bottom: 10px;
+    }
+    .kc-steps {
+      border-left: 2px solid rgba(58,194,126,0.4);
+      padding-left: 12px;
+      margin-left: 4px;
+    }
+    .kc-step {
+      font-size: 0.65rem; color: #9ab8d0;
+      font-family: 'JetBrains Mono', monospace;
+      padding: 3px 0; position: relative;
+    }
+    .kc-step::before {
+      content: '';
+      position: absolute; left: -16px; top: 50%;
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--ok); transform: translateY(-50%);
+    }
+    .kc-blocked-step {
+      color: var(--danger); font-weight: 700;
+    }
+    .kc-blocked-step::before {
+      background: var(--danger);
+      box-shadow: 0 0 6px var(--danger);
+    }
+    .kc-c2 {
+      font-size: 0.65rem; color: var(--warn);
+      font-family: 'JetBrains Mono', monospace;
+      margin-top: 8px; padding-top: 6px;
+      border-top: 1px solid var(--line);
+    }
+
     @media (max-width: 1180px) {
       .guided-grid   { grid-template-columns: 1fr; }
       .verdict-grid  { grid-template-columns: repeat(2, 1fr); }
@@ -8249,6 +8345,18 @@ const INDEX_HTML: &str = r##"<!doctype html>
       card('🚧', 'Fail2ban Sync', integ.fail2ban||false, 'Sync blocked IPs with fail2ban jails for unified ban management', integ.fail2ban ? 'ON' : 'OFF', 'external', 'Requires fail2ban installed. InnerWarden reads jails and pushes blocks.', 'innerwarden integrate fail2ban') +
       card('🛡️', 'Shield (DDoS)', integ.shield||false, 'Packet flood detection + Cloudflare edge push for volumetric attacks', integ.shield ? 'ON' : 'OFF', 'native', 'Detects SYN/UDP/ICMP floods. Pushes to Cloudflare edge when enabled.', '') +
       card('🧬', 'Threat DNA', integ.dna||false, 'Attacker fingerprinting and behavioral correlation across sessions', integ.dna ? 'ON' : 'OFF', 'native', 'Always active. Tracks attack patterns, timing signatures, tool fingerprints.', '') +
+      (function() {
+        const kc = s.kill_chain || {};
+        const kcTotal = (kc.total_blocked || 0) + (kc.total_pre_chain || 0);
+        const kcOn = kcTotal > 0;
+        const kcDesc = kcTotal > 0
+          ? kcTotal + ' chain(s) detected today — ' + (kc.total_blocked||0) + ' blocked, ' + (kc.total_pre_chain||0) + ' pre-chain'
+          : 'Multi-step attack correlation — detects reverse shells, privilege escalation chains';
+        const kcPatterns = kc.patterns || {};
+        const patternList = Object.keys(kcPatterns).map(function(p) { return p + ': ' + kcPatterns[p]; }).join(', ');
+        const kcCost = 'Native syscall correlation. Patterns: ' + (patternList || 'none detected yet');
+        return card('🔗', 'Kill Chain', kcOn, kcDesc, kcOn ? 'ON' : 'OFF', 'native', kcCost, '');
+      })() +
       '</div></div>';
 
     // ── Section 2b: Integration advisor ────────────────────────────────────
@@ -8889,8 +8997,63 @@ const INDEX_HTML: &str = r##"<!doctype html>
   }
 
   // ── D5: Evidence card (human-first, raw JSON secondary) ────────────────
+
+  // Kill chain timeline renderer - renders when evidence contains kill_chain kind
+  function renderKillChainTimeline(evidence) {
+    if (!evidence || !Array.isArray(evidence)) return null;
+    const kc = evidence.find(e => e.kind && e.kind.indexOf('kill_chain') !== -1);
+    if (!kc) return null;
+    const pattern = kc.pattern || kc.kind || 'KILL_CHAIN';
+    const status = kc.blocked ? 'BLOCKED' : 'DETECTED';
+    const statusCls = kc.blocked ? 'kc-blocked' : 'kc-detected';
+    const proc = kc.process || kc.command || '';
+    const pid = kc.pid ? ' (PID ' + kc.pid + (kc.uid != null ? ', UID ' + kc.uid : '') + ')' : '';
+    const steps = kc.steps || kc.syscalls || [];
+    const c2 = kc.c2 || kc.remote_addr || '';
+
+    let stepsHtml = '';
+    steps.forEach(function(s) {
+      const ts = s.ts ? esc(fmtTime(s.ts)) + ' → ' : '';
+      const desc = esc(s.description || s.call || s.summary || JSON.stringify(s));
+      const blocked = s.blocked || s.result === 'BLOCKED';
+      stepsHtml += '<div class="kc-step' + (blocked ? ' kc-blocked-step' : '') + '">' +
+        ts + desc + (blocked ? ' → BLOCKED' : '') + '</div>';
+    });
+
+    return '<div class="kill-chain-timeline">' +
+      '<div class="kc-header">' +
+        '<span class="kc-pattern">🔗 ' + esc(pattern) + '</span>' +
+        '<span class="kc-status ' + statusCls + '">' + esc(status) + '</span>' +
+      '</div>' +
+      (proc ? '<div class="kc-process">' + esc(proc) + esc(pid) + '</div>' : '') +
+      (stepsHtml ? '<div class="kc-steps">' + stepsHtml + '</div>' : '') +
+      (c2 ? '<div class="kc-c2">C2: ' + esc(c2) + '</div>' : '') +
+    '</div>';
+  }
+
   function renderEvidenceCard(entry, idx) {
     const d = entry.data || {};
+
+    // Check for kill chain evidence in incident entries
+    if (entry.kind === 'incident' && d.evidence) {
+      const kcHtml = renderKillChainTimeline(
+        Array.isArray(d.evidence) ? d.evidence : [d.evidence]
+      );
+      if (kcHtml) {
+        return `
+          <div id="tl-entry-${idx}">
+            <div class="evidence-header">
+              <span class="tl-ts">${esc(fmtTime(entry.ts))}</span>
+              <span class="bk bk-incident">KILL CHAIN</span>
+              <button type="button" class="evidence-raw-toggle" onclick="toggleRaw(${idx})">Raw JSON</button>
+            </div>
+            <div class="evidence-title">${esc(entrySummary(entry))}</div>
+            ${kcHtml}
+            <pre class="evidence-raw" id="raw-${idx}" data-json="${esc(JSON.stringify(entry.data))}"></pre>
+          </div>`;
+      }
+    }
+
     const lines = [];
     if (d.severity)          lines.push('Severity: ' + d.severity);
     if (d.source_ip || d.ip) lines.push('IP: ' + (d.source_ip || d.ip));

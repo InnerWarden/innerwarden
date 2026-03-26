@@ -313,6 +313,7 @@ impl SkillRegistry {
                 Box::new(SuspendUserSudo),
                 Box::new(RateLimitNginx),
                 Box::new(KillProcess),
+                Box::new(KillChainResponse),
                 Box::new(BlockContainer),
             ],
         }
@@ -452,7 +453,7 @@ mod tests {
     fn registry_infos_are_serializable() {
         let reg = SkillRegistry::default_builtin();
         let infos = reg.infos();
-        assert_eq!(infos.len(), 11);
+        assert_eq!(infos.len(), 12);
         let json = serde_json::to_string(&infos).unwrap();
         assert!(json.contains("block-ip-ufw"));
     }

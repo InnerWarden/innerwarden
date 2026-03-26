@@ -1486,6 +1486,23 @@ fn try_clone(ctx: &TracePointContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
+// Kill chain propagation on clone/fork
+// ---------------------------------------------------------------------------
+// When a process with accumulated kill chain flags forks, the child inherits
+// the parent's flags. This prevents evasion by forking before execve.
+// Runs inside the existing clone handler — no separate tracepoint needed.
+// The parent PID is available in sys_enter_clone. We propagate to the
+// child via a deferred mechanism: we mark the parent PID as "propagate on
+// next child" and the sched_process_exit handler (or LSM hook) will check.
+//
+// Simpler approach: propagate in userspace. The innerwarden-killchain service
+// tracks clone events and copies parent flags to child PIDs when it sees a
+// process.clone event followed by events from the child PID.
+//
+// Kernel-level approach (future): add sched_process_fork tracepoint which
+// has both parent and child task_struct pointers, allowing direct propagation.
+
+// ---------------------------------------------------------------------------
 // Tracepoint: sys_enter_unlinkat - evidence destruction / log wipe
 // ---------------------------------------------------------------------------
 // Only emits for sensitive paths: /var/log, /etc, /root
