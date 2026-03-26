@@ -134,10 +134,7 @@ impl ResponseSkill for KillChainResponse {
                 }
 
                 // Kill the process itself
-                let kill = Command::new("kill")
-                    .args(["-9", &pid_str])
-                    .output()
-                    .await;
+                let kill = Command::new("kill").args(["-9", &pid_str]).output().await;
                 match &kill {
                     Ok(out) if out.status.success() => {
                         info!(pid, "killed process PID {pid}");
@@ -206,7 +203,10 @@ impl ResponseSkill for KillChainResponse {
                             }
                         }
                     } else {
-                        warn!(c2_ip = ip_only, "XDP blocklist not available, skipping C2 block");
+                        warn!(
+                            c2_ip = ip_only,
+                            "XDP blocklist not available, skipping C2 block"
+                        );
                         actions.push(format!(
                             "XDP not available for C2 {ip_only} (map not found at {BLOCKLIST_PIN})"
                         ));
@@ -260,21 +260,14 @@ impl ResponseSkill for KillChainResponse {
 
             SkillResult {
                 success: true,
-                message: format!(
-                    "Kill chain response ({pattern}): {}",
-                    actions.join("; ")
-                ),
+                message: format!("Kill chain response ({pattern}): {}", actions.join("; ")),
             }
         })
     }
 }
 
 async fn capture_network_snapshot() -> String {
-    match Command::new("ss")
-        .args(["-tunp"])
-        .output()
-        .await
-    {
+    match Command::new("ss").args(["-tunp"]).output().await {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             // Truncate to avoid huge forensics files

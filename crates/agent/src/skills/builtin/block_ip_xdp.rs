@@ -69,16 +69,15 @@ impl ResponseSkill for BlockIpXdp {
                 (
                     BLOCKLIST_PIN,
                     vec![
-                        b[0].to_string(), b[1].to_string(),
-                        b[2].to_string(), b[3].to_string(),
+                        b[0].to_string(),
+                        b[1].to_string(),
+                        b[2].to_string(),
+                        b[3].to_string(),
                     ],
                 )
             } else if let Ok(v6) = ip.parse::<Ipv6Addr>() {
                 let b = v6.octets();
-                (
-                    BLOCKLIST_V6_PIN,
-                    b.iter().map(|x| x.to_string()).collect(),
-                )
+                (BLOCKLIST_V6_PIN, b.iter().map(|x| x.to_string()).collect())
             } else {
                 return SkillResult {
                     success: false,
@@ -87,7 +86,10 @@ impl ResponseSkill for BlockIpXdp {
             };
 
             if dry_run {
-                info!(ip, "DRY RUN: would insert {ip} into XDP blocklist (wire-speed drop)");
+                info!(
+                    ip,
+                    "DRY RUN: would insert {ip} into XDP blocklist (wire-speed drop)"
+                );
                 return SkillResult {
                     success: true,
                     message: format!("DRY RUN: would block {ip} via XDP (wire-speed)"),
@@ -96,7 +98,11 @@ impl ResponseSkill for BlockIpXdp {
 
             // Check if pinned map exists
             if !std::path::Path::new(map_pin).exists() {
-                warn!(ip, map = map_pin, "XDP blocklist map not found - XDP firewall not loaded");
+                warn!(
+                    ip,
+                    map = map_pin,
+                    "XDP blocklist map not found - XDP firewall not loaded"
+                );
                 return SkillResult {
                     success: false,
                     message: format!(
@@ -108,11 +114,22 @@ impl ResponseSkill for BlockIpXdp {
 
             // Insert into pinned BPF map via bpftool
             let mut args = vec![
-                "bpftool".to_string(), "map".to_string(), "update".to_string(),
-                "pinned".to_string(), map_pin.to_string(), "key".to_string(),
+                "bpftool".to_string(),
+                "map".to_string(),
+                "update".to_string(),
+                "pinned".to_string(),
+                map_pin.to_string(),
+                "key".to_string(),
             ];
             args.extend(key_args);
-            args.extend(["value".to_string(), "1".to_string(), "0".to_string(), "0".to_string(), "0".to_string(), "any".to_string()]);
+            args.extend([
+                "value".to_string(),
+                "1".to_string(),
+                "0".to_string(),
+                "0".to_string(),
+                "0".to_string(),
+                "any".to_string(),
+            ]);
 
             let output = tokio::process::Command::new("sudo")
                 .args(&args[..])

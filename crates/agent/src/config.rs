@@ -878,6 +878,24 @@ pub struct TelegramConfig {
 }
 
 impl TelegramConfig {
+    /// Validate Telegram configuration. Call after loading config.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.enabled {
+            if self.resolved_bot_token().is_empty() {
+                anyhow::bail!("telegram.enabled=true but bot_token is not configured");
+            }
+            if self.resolved_chat_id().is_empty() {
+                anyhow::bail!("telegram.enabled=true but chat_id is not configured");
+            }
+        }
+        if let Some(h) = self.daily_summary_hour {
+            if h > 23 {
+                anyhow::bail!("telegram.daily_summary_hour must be 0-23, got {h}");
+            }
+        }
+        Ok(())
+    }
+
     /// Resolve bot_token: config field takes precedence, then env var TELEGRAM_BOT_TOKEN.
     pub fn resolved_bot_token(&self) -> String {
         if !self.bot_token.is_empty() {
@@ -1885,5 +1903,77 @@ approval_ttl_secs = 300
             ..Default::default()
         };
         assert_eq!(cfg.parsed_min_severity(), Severity::Medium);
+    }
+
+    #[test]
+    fn telegram_validate_disabled_is_ok() {
+        let cfg = TelegramConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn telegram_validate_enabled_missing_token() {
+        let cfg = TelegramConfig {
+            enabled: true,
+            bot_token: String::new(),
+            chat_id: "-1001234567890".into(),
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("bot_token"),
+            "error should mention bot_token: {err}"
+        );
+    }
+
+    #[test]
+    fn telegram_validate_enabled_missing_chat_id() {
+        let cfg = TelegramConfig {
+            enabled: true,
+            bot_token: "1234567890:AAAAAAAAAA".into(),
+            chat_id: String::new(),
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("chat_id"),
+            "error should mention chat_id: {err}"
+        );
+    }
+
+    #[test]
+    fn telegram_validate_enabled_configured_is_ok() {
+        let cfg = TelegramConfig {
+            enabled: true,
+            bot_token: "1234567890:AAAAAAAAAA".into(),
+            chat_id: "-1001234567890".into(),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn telegram_validate_invalid_summary_hour() {
+        let cfg = TelegramConfig {
+            daily_summary_hour: Some(25),
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("daily_summary_hour"),
+            "error should mention daily_summary_hour: {err}"
+        );
+    }
+
+    #[test]
+    fn telegram_validate_valid_summary_hour() {
+        let cfg = TelegramConfig {
+            daily_summary_hour: Some(23),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
     }
 }

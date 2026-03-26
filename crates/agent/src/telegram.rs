@@ -4,6 +4,7 @@
 /// T.2 - Approvals: sends an inline-keyboard message when the AI requests human
 ///        confirmation; polls for button presses and sends results back to the
 ///        main loop via a channel.
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -11,6 +12,44 @@ use innerwarden_core::incident::Incident;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
+
+// ---------------------------------------------------------------------------
+// Message length guard
+// ---------------------------------------------------------------------------
+
+/// Telegram enforces a 4096-character limit on messages.
+/// Truncate with a warning marker if exceeded.
+const TELEGRAM_MAX_LEN: usize = 4000; // Leave margin for safety
+
+fn enforce_length(text: &str) -> String {
+    if text.len() <= TELEGRAM_MAX_LEN {
+        return text.to_string();
+    }
+    warn!(
+        original_len = text.len(),
+        "Telegram message truncated (exceeded 4096 char limit)"
+    );
+    let mut truncated: String = text.chars().take(TELEGRAM_MAX_LEN - 30).collect();
+    truncated.push_str("\n\n<i>… message truncated</i>");
+    truncated
+}
+
+// ---------------------------------------------------------------------------
+// URL sanitization for logging
+// ---------------------------------------------------------------------------
+
+/// Replace bot token in Telegram API URL with redacted version for logging.
+fn sanitize_url(url: &str) -> String {
+    if let Some(start) = url.find("/bot") {
+        if let Some(end) = url[start + 4..].find('/') {
+            let mut sanitized = url[..start + 4].to_string();
+            sanitized.push_str("***REDACTED***");
+            sanitized.push_str(&url[start + 4 + end..]);
+            return sanitized;
+        }
+    }
+    url.to_string()
+}
 
 // ---------------------------------------------------------------------------
 // Guardian mode
@@ -88,6 +127,8 @@ pub struct TelegramClient {
     chat_id: String,
     dashboard_url: Option<String>,
     http: reqwest::Client,
+    /// Rate limiter: tracks last send time to stay within Telegram's 30 msg/sec limit.
+    last_send: Arc<tokio::sync::Mutex<tokio::time::Instant>>,
 }
 
 impl TelegramClient {
@@ -107,6 +148,9 @@ impl TelegramClient {
             chat_id: chat_id.into(),
             dashboard_url,
             http,
+            last_send: Arc::new(tokio::sync::Mutex::new(
+                tokio::time::Instant::now() - Duration::from_secs(1),
+            )),
         })
     }
 
@@ -876,23 +920,28 @@ impl TelegramClient {
                                             "👍 Logged as false positive. Keeping eyes on it.",
                                         )
                                         .await;
-                                } else if let Some(ip) = data.strip_prefix("quick:block:") {
-                                    let ip = ip.to_string();
-                                    let _ = self
-                                        .answer_callback_toast(
-                                            &callback.id,
-                                            &format!("🛡 Dropping {ip} at the firewall..."),
-                                        )
-                                        .await;
-                                    let result = ApprovalResult {
-                                        incident_id: format!("__quick_block__:{ip}"),
-                                        approved: true,
-                                        always: false,
-                                        operator_name: operator.clone(),
-                                        chosen_action: String::new(),
-                                    };
-                                    if approval_tx.send(result).await.is_err() {
-                                        return;
+                                } else if let Some(ip_str) = data.strip_prefix("quick:block:") {
+                                    // Validate IP format before processing
+                                    if ip_str.parse::<std::net::IpAddr>().is_ok() {
+                                        let ip = ip_str.to_string();
+                                        let _ = self
+                                            .answer_callback_toast(
+                                                &callback.id,
+                                                &format!("🛡 Dropping {ip} at the firewall..."),
+                                            )
+                                            .await;
+                                        let result = ApprovalResult {
+                                            incident_id: format!("__quick_block__:{ip}"),
+                                            approved: true,
+                                            always: false,
+                                            operator_name: operator.clone(),
+                                            chosen_action: String::new(),
+                                        };
+                                        if approval_tx.send(result).await.is_err() {
+                                            return;
+                                        }
+                                    } else {
+                                        warn!(callback_data = %data, "invalid IP in Telegram callback, ignoring");
                                     }
                                 } else if let Some(rest) = data.strip_prefix("hpot:") {
                                     // Honeypot operator-in-the-loop choice
@@ -1046,10 +1095,10 @@ impl TelegramClient {
             ])
             .send()
             .await
-            .context("getUpdates request failed")?
+            .with_context(|| format!("getUpdates request failed ({})", sanitize_url(&url)))?
             .json::<serde_json::Value>()
             .await
-            .context("getUpdates JSON parse failed")?;
+            .with_context(|| format!("getUpdates JSON parse failed ({})", sanitize_url(&url)))?;
 
         if !resp["ok"].as_bool().unwrap_or(false) {
             let desc = resp["description"].as_str().unwrap_or("unknown error");
@@ -1093,23 +1142,48 @@ impl TelegramClient {
         method: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value> {
+        // Enforce message length limit on outgoing text
+        let body = if let Some(text) = body["text"].as_str() {
+            let safe_text = enforce_length(text);
+            let mut patched = body.clone();
+            patched["text"] = serde_json::Value::String(safe_text);
+            patched
+        } else {
+            body.clone()
+        };
+
+        // Rate limiter: ~20 msg/sec, well within Telegram's 30/sec limit
+        {
+            let mut last = self.last_send.lock().await;
+            let elapsed = last.elapsed();
+            if elapsed < Duration::from_millis(50) {
+                tokio::time::sleep(Duration::from_millis(50) - elapsed).await;
+            }
+            *last = tokio::time::Instant::now();
+        }
+
         let url = self.api_url(method);
         let resp = self
             .http
             .post(&url)
-            .json(body)
+            .json(&body)
             .send()
             .await
-            .with_context(|| format!("Telegram {method} failed"))?
+            .with_context(|| format!("Telegram {method} failed ({})", sanitize_url(&url)))?
             .json::<serde_json::Value>()
             .await
-            .with_context(|| format!("Telegram {method} JSON parse failed"))?;
+            .with_context(|| {
+                format!(
+                    "Telegram {method} JSON parse failed ({})",
+                    sanitize_url(&url)
+                )
+            })?;
 
         if !resp["ok"].as_bool().unwrap_or(false) {
             let desc = resp["description"]
                 .as_str()
                 .unwrap_or("unknown Telegram error");
-            warn!(method, "Telegram API error: {desc}");
+            warn!(method, url = %sanitize_url(&url), "Telegram API error: {desc}");
         }
 
         Ok(resp)
@@ -1796,5 +1870,63 @@ mod tests {
             "🚫 Block"
         };
         assert_eq!(block_label_not_suggested, "🚫 Block");
+    }
+
+    #[test]
+    fn enforce_length_passes_short_messages() {
+        let short = "Hello, world!";
+        assert_eq!(enforce_length(short), short);
+    }
+
+    #[test]
+    fn enforce_length_truncates_long_messages() {
+        let long = "x".repeat(5000);
+        let result = enforce_length(&long);
+        assert!(result.len() <= TELEGRAM_MAX_LEN);
+        assert!(result.contains("… message truncated"));
+    }
+
+    #[test]
+    fn enforce_length_at_boundary() {
+        // Exactly at limit should pass through
+        let exact = "a".repeat(TELEGRAM_MAX_LEN);
+        assert_eq!(enforce_length(&exact), exact);
+
+        // One over should truncate
+        let over = "a".repeat(TELEGRAM_MAX_LEN + 1);
+        let result = enforce_length(&over);
+        assert!(result.len() <= TELEGRAM_MAX_LEN);
+        assert!(result.contains("… message truncated"));
+    }
+
+    #[test]
+    fn sanitize_url_redacts_bot_token() {
+        let url = "https://api.telegram.org/bot1234567890:AAAAAAAAAA/sendMessage";
+        let sanitized = sanitize_url(url);
+        assert_eq!(
+            sanitized,
+            "https://api.telegram.org/bot***REDACTED***/sendMessage"
+        );
+        assert!(!sanitized.contains("1234567890"));
+        assert!(!sanitized.contains("AAAAAAAAAA"));
+    }
+
+    #[test]
+    fn sanitize_url_no_bot_token() {
+        let url = "https://example.com/api/test";
+        assert_eq!(sanitize_url(url), url);
+    }
+
+    #[test]
+    fn quick_block_rejects_invalid_ip() {
+        // Valid IPs should be accepted
+        assert!("1.2.3.4".parse::<std::net::IpAddr>().is_ok());
+        assert!("::1".parse::<std::net::IpAddr>().is_ok());
+        assert!("2001:db8::1".parse::<std::net::IpAddr>().is_ok());
+
+        // Invalid strings should be rejected
+        assert!("not-an-ip".parse::<std::net::IpAddr>().is_err());
+        assert!("1.2.3.4; rm -rf /".parse::<std::net::IpAddr>().is_err());
+        assert!("".parse::<std::net::IpAddr>().is_err());
     }
 }

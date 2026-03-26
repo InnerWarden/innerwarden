@@ -1800,9 +1800,15 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         source: "ebpf".to_string(),
                         kind: "firmware.efi_call".to_string(),
                         severity: Severity::Debug,
-                        summary: format!("[EXPERIMENTAL] {comm} (PID {pid}) EFI Runtime Services call"),
+                        summary: format!(
+                            "[EXPERIMENTAL] {comm} (PID {pid}) EFI Runtime Services call"
+                        ),
                         details: serde_json::json!({"pid": pid, "uid": uid, "comm": comm, "experimental": true}),
-                        tags: vec!["ebpf".to_string(), "firmware".to_string(), "experimental".to_string()],
+                        tags: vec![
+                            "ebpf".to_string(),
+                            "firmware".to_string(),
+                            "experimental".to_string(),
+                        ],
                         entities: vec![],
                     })
                 }

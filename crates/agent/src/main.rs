@@ -1145,6 +1145,9 @@ async fn main() -> Result<()> {
         None => config::AgentConfig::default(),
     };
 
+    // Validate Telegram config early to fail fast on misconfiguration
+    cfg.telegram.validate()?;
+
     // Advisory cache: shared between dashboard (writes advisory denials) and
     // the incident processing loop (checks for advisory violations).
     let advisory_cache: Arc<RwLock<VecDeque<AdvisoryEntry>>> =
@@ -5056,7 +5059,7 @@ async fn process_narrative_tick(
                     let already_sent = state.last_daily_summary_telegram == Some(today_naive);
                     if !already_sent && now_local.hour() >= u32::from(hour) {
                         if let Some(tg) = &state.telegram_client {
-                            let preview: String = md.chars().take(3800).collect();
+                            let preview: String = md.chars().take(3500).collect();
                             let text = format!(
                                 "📋 <b>Daily report - {today}</b>\n\n<pre>{}</pre>",
                                 html_escape(&preview)
