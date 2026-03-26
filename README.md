@@ -255,6 +255,8 @@ Plus: `docker_anomaly`, `osquery_anomaly`, `suricata_alert`, `search_abuse`, `cr
 - **LSM enforcement** (`bprm_check_security`): blocks execution from /tmp and /dev/shm at the kernel level, plus **kill chain detection** with 7 generic patterns (reverse shell, bind shell, code injection, exploit-to-shell, inject-to-shell, exploit-to-C2, full exploit chain) blocked at execve. No CVE signatures needed.
 - **XDP program**: wire-speed IP blocking at the network driver (10M+ pps drop rate)
 
+> **Looking for the eBPF source code?** All 22 kernel programs live in a single file: [`crates/sensor-ebpf/src/main.rs`](crates/sensor-ebpf/src/main.rs).
+
 **Kernel-level noise filters** keep overhead near zero: COMM_ALLOWLIST (137 trusted processes like sshd, systemd, docker), CGROUP_ALLOWLIST, PID_RATE_LIMIT, and PID_CHAIN. Tail call dispatcher routes events through a single attach point to N handlers via ProgramArray. Ring buffer with epoll wakeup delivers events in microseconds.
 
 **DDoS defense**: 4-layer adaptive protection. XDP kernel drop (wire speed) + Shield module (dynamic rate limiting) + Cloudflare auto-failover (edge blocking) + Nginx rate limit. Rate limits tighten dynamically under attack.
