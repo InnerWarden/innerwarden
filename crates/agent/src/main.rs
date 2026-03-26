@@ -1180,6 +1180,15 @@ async fn main() -> Result<()> {
                 .allowed_skills
                 .iter()
                 .any(|s| s.contains("execution")),
+            mesh_enabled: cfg.mesh.enabled,
+            web_push_enabled: !cfg.web_push.vapid_public_key.is_empty(),
+            shield_enabled: cfg.cloudflare.enabled,
+            dna_enabled: true, // DNA fingerprinting is always active
+            retention_events_days: cfg.data.events_keep_days,
+            retention_incidents_days: cfg.data.incidents_keep_days,
+            retention_decisions_days: cfg.data.decisions_keep_days,
+            retention_telemetry_days: cfg.data.telemetry_keep_days,
+            retention_reports_days: cfg.data.reports_keep_days,
         };
         let dashboard_data_dir = cli.data_dir.clone();
         let dashboard_bind = cli.dashboard_bind.clone();

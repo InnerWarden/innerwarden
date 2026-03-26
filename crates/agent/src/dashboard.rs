@@ -128,6 +128,24 @@ pub struct DashboardActionConfig {
     pub sudo_protection_enabled: bool,
     /// Whether execution_guard detector is enabled.
     pub execution_guard_enabled: bool,
+    /// Whether mesh collaborative defense is enabled.
+    pub mesh_enabled: bool,
+    /// Whether web push notifications are configured.
+    pub web_push_enabled: bool,
+    /// Whether Shield DDoS module is enabled.
+    pub shield_enabled: bool,
+    /// Whether Threat DNA fingerprinting is enabled.
+    pub dna_enabled: bool,
+    /// Data retention: events keep days.
+    pub retention_events_days: usize,
+    /// Data retention: incidents keep days.
+    pub retention_incidents_days: usize,
+    /// Data retention: decisions keep days (audit trail).
+    pub retention_decisions_days: usize,
+    /// Data retention: telemetry keep days.
+    pub retention_telemetry_days: usize,
+    /// Data retention: reports keep days.
+    pub retention_reports_days: usize,
 }
 
 impl Default for DashboardActionConfig {
@@ -152,6 +170,15 @@ impl Default for DashboardActionConfig {
             webhook_format: "default".to_string(),
             sudo_protection_enabled: false,
             execution_guard_enabled: false,
+            mesh_enabled: false,
+            web_push_enabled: false,
+            shield_enabled: false,
+            dna_enabled: false,
+            retention_events_days: 7,
+            retention_incidents_days: 30,
+            retention_decisions_days: 90,
+            retention_telemetry_days: 14,
+            retention_reports_days: 30,
         }
     }
 }
@@ -884,6 +911,7 @@ pub async fn serve(
         // Compliance tab
         .route("/api/admin-actions", get(api_admin_actions))
         .route("/api/advisory-cache", get(api_advisory_cache))
+        .route("/api/compliance", get(api_compliance))
         // D6 - SSE live event stream
         .route("/api/events/stream", get(api_events_stream))
         // Web Push
@@ -2347,6 +2375,7 @@ async fn api_action_config(State(state): State<DashboardState>) -> Json<serde_js
         "ai_provider": cfg.ai_provider,
         "ai_model": cfg.ai_model,
         "mode": mode,
+        "version": env!("CARGO_PKG_VERSION"),
     }))
 }
 
@@ -2641,6 +2670,102 @@ async fn api_advisory_cache(State(state): State<DashboardState>) -> Json<serde_j
     Json(serde_json::json!({ "total": items.len(), "items": items }))
 }
 
+/// GET /api/compliance - compliance overview: retention, hash chain, ISO 27001.
+async fn api_compliance(State(state): State<DashboardState>) -> Json<serde_json::Value> {
+    let cfg = &state.action_cfg;
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+
+    // Hash chain verification: read the last few entries of today's decisions file
+    // and verify each entry's prev_hash matches the SHA-256 of the preceding entry.
+    let decisions_path = state.data_dir.join(format!("decisions-{today}.jsonl"));
+    let (chain_intact, chain_length, last_hash) = tokio::task::spawn_blocking({
+        let path = decisions_path;
+        move || -> (bool, usize, String) {
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => return (true, 0, "none".to_string()),
+            };
+            let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+            if lines.is_empty() {
+                return (true, 0, "none".to_string());
+            }
+            let mut intact = true;
+            let mut prev_computed_hash: Option<String> = None;
+            for line in &lines {
+                if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+                    let prev_hash = entry["prev_hash"].as_str().map(|s| s.to_string());
+                    // Verify: if this entry has a prev_hash, it should match our computed hash
+                    if let Some(ref expected) = prev_hash {
+                        if let Some(ref computed) = prev_computed_hash {
+                            if expected != computed {
+                                intact = false;
+                            }
+                        }
+                    }
+                }
+                // Compute hash of this line for next iteration
+                use sha2::Digest;
+                let hash = sha2::Sha256::digest(line.as_bytes());
+                prev_computed_hash = Some(format!("{hash:x}"));
+            }
+            let last = prev_computed_hash.unwrap_or_else(|| "none".to_string());
+            (intact, lines.len(), last)
+        }
+    })
+    .await
+    .unwrap_or((true, 0, "none".to_string()));
+
+    // Data retention config
+    let retention = serde_json::json!({
+        "events_days": cfg.retention_events_days,
+        "incidents_days": cfg.retention_incidents_days,
+        "decisions_days": cfg.retention_decisions_days,
+        "telemetry_days": cfg.retention_telemetry_days,
+        "reports_days": cfg.retention_reports_days,
+    });
+
+    // ISO 27001 control checklist - map controls to feature state
+    let controls = serde_json::json!([
+        { "id": "A.5.1",  "name": "Information security policies", "met": true, "reason": "Security agent with automated response policy" },
+        { "id": "A.6.1",  "name": "Organization of information security", "met": cfg.ai_enabled, "reason": if cfg.ai_enabled { "AI-driven triage active" } else { "Enable AI analysis for automated triage" } },
+        { "id": "A.8.1",  "name": "Asset management", "met": true, "reason": "Sensor inventory tracks all monitored log sources" },
+        { "id": "A.9.1",  "name": "Access control", "met": cfg.sudo_protection_enabled, "reason": if cfg.sudo_protection_enabled { "Sudo protection detects privilege abuse" } else { "Enable sudo-protection for access control monitoring" } },
+        { "id": "A.10.1", "name": "Cryptography", "met": chain_length > 0, "reason": if chain_length > 0 { "Decision audit trail uses SHA-256 hash chain" } else { "No decisions recorded yet" } },
+        { "id": "A.12.1", "name": "Operations security", "met": cfg.enabled, "reason": if cfg.enabled { "Automated response enabled" } else { "Enable responder for operational security controls" } },
+        { "id": "A.12.4", "name": "Logging and monitoring", "met": true, "reason": "Continuous monitoring with 39+ detectors and audit trail" },
+        { "id": "A.12.6", "name": "Technical vulnerability management", "met": cfg.execution_guard_enabled, "reason": if cfg.execution_guard_enabled { "Execution guard blocks exploit payloads" } else { "Enable execution-guard for exploit prevention" } },
+        { "id": "A.13.1", "name": "Network security management", "met": cfg.enabled && !cfg.dry_run, "reason": if cfg.enabled && !cfg.dry_run { "Automated IP blocking active" } else { "Enable guard mode for network-level response" } },
+        { "id": "A.16.1", "name": "Incident management", "met": true, "reason": "Automated incident detection, correlation, and response pipeline" },
+        { "id": "A.18.1", "name": "Compliance", "met": cfg.retention_decisions_days >= 90, "reason": format!("Audit trail retained {}d (requirement: 90d)", cfg.retention_decisions_days) },
+        { "id": "A.18.2", "name": "Information security reviews", "met": true, "reason": "Daily automated security reports with telemetry" },
+    ]);
+
+    let controls_met = controls
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|c| c["met"].as_bool().unwrap_or(false))
+                .count()
+        })
+        .unwrap_or(0);
+    let controls_total = controls.as_array().map(|a| a.len()).unwrap_or(0);
+
+    Json(serde_json::json!({
+        "hash_chain": {
+            "intact": chain_intact,
+            "length": chain_length,
+            "last_hash": last_hash,
+        },
+        "retention": retention,
+        "iso_27001": {
+            "controls": controls,
+            "met": controls_met,
+            "total": controls_total,
+        },
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
+}
+
 /// GET /api/sensors - sensor activity time-series for dashboard graphs.
 /// Returns event counts bucketed by 5-minute intervals, grouped by source.
 /// Cached for 30 seconds to avoid re-reading the events file on every request.
@@ -2903,8 +3028,20 @@ async fn api_status(State(state): State<DashboardState>) -> Json<serde_json::Val
             "telegram": action_cfg.telegram_enabled,
             "slack": action_cfg.slack_enabled,
             "cloudflare": action_cfg.cloudflare_enabled,
-            "crowdsec": action_cfg.crowdsec_enabled
-        }
+            "crowdsec": action_cfg.crowdsec_enabled,
+            "mesh": action_cfg.mesh_enabled,
+            "web_push": action_cfg.web_push_enabled,
+            "shield": action_cfg.shield_enabled,
+            "dna": action_cfg.dna_enabled
+        },
+        "retention": {
+            "events_days": action_cfg.retention_events_days,
+            "incidents_days": action_cfg.retention_incidents_days,
+            "decisions_days": action_cfg.retention_decisions_days,
+            "telemetry_days": action_cfg.retention_telemetry_days,
+            "reports_days": action_cfg.retention_reports_days
+        },
+        "version": env!("CARGO_PKG_VERSION")
     }))
 }
 
@@ -2966,6 +3103,10 @@ async fn api_collectors(State(state): State<DashboardState>) -> Json<serde_json:
     let nginx_acc = "/var/log/nginx/access.log";
     let nginx_err = "/var/log/nginx/error.log";
     let docker_sock = "/var/run/docker.sock";
+    let syslog_fw = "/var/log/syslog";
+    let kern_log = "/var/log/kern.log";
+    let cloudtrail = "/var/log/cloudtrail/events.json";
+    let falco = "/var/log/falco/falco_output.json";
 
     let collectors = serde_json::json!([
         {
@@ -3036,7 +3177,7 @@ async fn api_collectors(State(state): State<DashboardState>) -> Json<serde_json:
             "detected": file_exists("/usr/local/lib/innerwarden/innerwarden-ebpf"),
             "active": true,
             "events_today": count_source("ebpf"),
-            "desc": "6 kernel programs: execve + connect + openat + kprobe + LSM + XDP"
+            "desc": "22 kernel hooks: 19 tracepoints + kprobe (privesc) + LSM (exec block) + XDP (wire-speed IP block)"
         },
         {
             "id": "suricata_eve",
@@ -3067,6 +3208,56 @@ async fn api_collectors(State(state): State<DashboardState>) -> Json<serde_json:
             "active": recent(file_age_secs(osquery)),
             "events_today": count_source("osquery_log"),
             "desc": "osquery differential results (ports, users, crontabs, processes)"
+        },
+        {
+            "id": "syslog_firewall",
+            "name": "Syslog Firewall",
+            "kind": "native",
+            "log_path": syslog_fw,
+            "detected": file_exists(syslog_fw) || file_exists(kern_log),
+            "active": recent(file_age_secs(syslog_fw)) || recent(file_age_secs(kern_log)),
+            "events_today": count_source("syslog_firewall"),
+            "desc": "iptables/nftables DROP logs from /var/log/syslog or kern.log"
+        },
+        {
+            "id": "firmware_integrity",
+            "name": "Firmware Integrity",
+            "kind": "native",
+            "log_path": "/boot/efi",
+            "detected": file_exists("/boot/efi") || file_exists("/sys/firmware/efi"),
+            "active": true,
+            "events_today": count_source("firmware_integrity"),
+            "desc": "UEFI/EFI boot partition monitoring - detects unauthorized binaries"
+        },
+        {
+            "id": "cloudtrail",
+            "name": "AWS CloudTrail",
+            "kind": "external",
+            "log_path": cloudtrail,
+            "detected": file_exists(cloudtrail),
+            "active": recent(file_age_secs(cloudtrail)),
+            "events_today": count_source("cloudtrail"),
+            "desc": "AWS CloudTrail JSON logs - IAM changes, S3 access, API calls"
+        },
+        {
+            "id": "macos_log",
+            "name": "macOS Unified Log",
+            "kind": "native",
+            "log_path": "log stream",
+            "detected": has_binary("log"),
+            "active": has_binary("log"),
+            "events_today": count_source("macos_log"),
+            "desc": "macOS unified log stream - auth events, process exec, network"
+        },
+        {
+            "id": "falco_log",
+            "name": "Falco Runtime Security",
+            "kind": "external",
+            "log_path": falco,
+            "detected": file_exists(falco),
+            "active": recent(file_age_secs(falco)),
+            "events_today": count_source("falco_log"),
+            "desc": "Falco kernel-level runtime security alerts (container + host)"
         }
     ]);
 
@@ -6867,6 +7058,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     <div class="status-strip">
       <span class="status-badge status-badge-read" id="modeBadge">READ-ONLY</span>
       <span class="status-badge status-badge-ai-off" id="aiBadge">AI: off</span>
+      <span class="status-badge" id="versionBadge" style="background:rgba(120,229,255,0.08);color:var(--accent);font-size:0.58rem"></span>
     </div>
     <span id="refreshStatus"></span>
     <div class="main-nav">
@@ -7133,25 +7325,46 @@ const INDEX_HTML: &str = r##"<!doctype html>
           <div class="kpi-value" id="comp-admin-actions">-</div>
         </div>
         <div class="kpi-card">
-          <div class="kpi-label">Advisory Cache</div>
-          <div class="kpi-value" id="comp-advisories">-</div>
+          <div class="kpi-label">ISO 27001 Controls</div>
+          <div class="kpi-value" id="comp-iso-score" style="color:var(--ok)">-</div>
         </div>
         <div class="kpi-card">
-          <div class="kpi-label">Audit Trail</div>
-          <div class="kpi-value" id="comp-audit-status">Active</div>
+          <div class="kpi-label">Hash Chain</div>
+          <div class="kpi-value" id="comp-chain-status">-</div>
         </div>
       </div>
 
+      <!-- Hash Chain Verification -->
+      <h3 style="margin:24px 0 12px;color:var(--text);">Audit Trail Hash Chain</h3>
+      <div id="comp-chain-detail" class="card" style="padding:14px;">
+        <div class="muted">Loading...</div>
+      </div>
+
+      <!-- Data Retention Config -->
+      <h3 style="margin:24px 0 12px;color:var(--text);">Data Retention Policy</h3>
+      <div id="comp-retention" class="card" style="padding:14px;">
+        <div class="muted">Loading...</div>
+      </div>
+
+      <!-- ISO 27001 Control Checklist -->
+      <h3 style="margin:24px 0 12px;color:var(--text);">ISO 27001 Control Mapping</h3>
+      <div id="comp-iso-controls" class="card" style="max-height:500px;overflow-y:auto;padding:14px;">
+        <div class="muted">Loading...</div>
+      </div>
+
+      <!-- Recent Admin Actions -->
       <h3 style="margin:24px 0 12px;color:var(--text);">Recent Admin Actions</h3>
       <div id="comp-admin-list" class="card" style="max-height:400px;overflow-y:auto;padding:12px;">
         <div class="muted">Loading...</div>
       </div>
 
+      <!-- Active Advisories -->
       <h3 style="margin:24px 0 12px;color:var(--text);">Active Advisories (Trusted Advisor)</h3>
       <div id="comp-advisory-list" class="card" style="max-height:300px;overflow-y:auto;padding:12px;">
         <div class="muted">Loading...</div>
       </div>
 
+      <!-- Active Sessions -->
       <h3 style="margin:24px 0 12px;color:var(--text);">Active Sessions</h3>
       <div id="comp-session-list" class="card" style="max-height:300px;overflow-y:auto;padding:12px;">
         <div class="muted">Loading...</div>
@@ -7415,7 +7628,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
     ebpf: '#7fe7ff', auditd: '#fb7185', auth_log: '#fbbf24', journald: '#4ade80',
     docker: '#60a5fa', nginx: '#f97316', suricata: '#a78bfa', osquery: '#22d3ee',
     syslog: '#8b9db8', wazuh: '#f472b6', integrity: '#84cc16', cloudtrail: '#3b82f6',
-    exec_audit: '#fb7185',
+    exec_audit: '#fb7185', syslog_firewall: '#8b9db8', firmware_integrity: '#84cc16',
+    macos_log: '#a78bfa', falco_log: '#f472b6',
   };
   function sensorColor(name) { return SENSOR_COLORS[name] || '#78e5ff'; }
 
@@ -8030,6 +8244,11 @@ const INDEX_HTML: &str = r##"<!doctype html>
       card('📟', 'Opsgenie',     (s.webhook_format||'') === 'opsgenie',  'On-call alerts via Opsgenie Alert API',       (s.webhook_format||'') === 'opsgenie' ? 'ON' : 'OFF',  'external', 'Set webhook.format = \"opsgenie\" and webhook.url to Opsgenie alert endpoint.',      'innerwarden configure webhook') +
       card('👑', 'Sudo Protection', s.sudo_protection||false, 'Detects privilege abuse and suspends sudo access', s.sudo_protection ? 'ON' : 'OFF', 'native', 'Detects 11 threat categories including SUID manipulation, SSH key injection, log tampering.', 'innerwarden enable sudo-protection') +
       card('🔫', 'Execution Guard', s.execution_guard||false, 'Structural AST analysis of shell commands - catches obfuscation', s.execution_guard ? 'ON' : 'OFF', 'native', 'tree-sitter-bash analysis. Detects reverse shells, curl|bash, hex obfuscation.', 'innerwarden enable execution-guard') +
+      card('🕸️', 'Mesh Network', integ.mesh||false, 'Collaborative defense - peers exchange block signals with trust scoring', integ.mesh ? 'ON' : 'OFF', 'native', 'Decentralized threat intel sharing between InnerWarden instances.', 'innerwarden integrate mesh') +
+      card('🔔', 'Web Push', integ.web_push||false, 'Browser push notifications for real-time alerts without Telegram/Slack', integ.web_push ? 'ON' : 'OFF', 'native', 'VAPID-based. Subscribe from the dashboard bell icon. No external service.', '') +
+      card('🚧', 'Fail2ban Sync', integ.fail2ban||false, 'Sync blocked IPs with fail2ban jails for unified ban management', integ.fail2ban ? 'ON' : 'OFF', 'external', 'Requires fail2ban installed. InnerWarden reads jails and pushes blocks.', 'innerwarden integrate fail2ban') +
+      card('🛡️', 'Shield (DDoS)', integ.shield||false, 'Packet flood detection + Cloudflare edge push for volumetric attacks', integ.shield ? 'ON' : 'OFF', 'native', 'Detects SYN/UDP/ICMP floods. Pushes to Cloudflare edge when enabled.', '') +
+      card('🧬', 'Threat DNA', integ.dna||false, 'Attacker fingerprinting and behavioral correlation across sessions', integ.dna ? 'ON' : 'OFF', 'native', 'Always active. Tracks attack patterns, timing signatures, tool fingerprints.', '') +
       '</div></div>';
 
     // ── Section 2b: Integration advisor ────────────────────────────────────
@@ -8047,6 +8266,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     if (!integ.telegram)  recommendations.push({ icon:'🔔', text:'Enable Telegram - real-time alerts with approve/reject buttons on your phone', cmd:'innerwarden notify telegram' });
     if (!integ.abuseipdb) recommendations.push({ icon:'🔍', text:'Enable AbuseIPDB - free API key, enriches AI context with IP reputation score', cmd:'innerwarden integrate abuseipdb' });
     if (!integ.cloudflare && resp.enabled) recommendations.push({ icon:'☁️', text:'Enable Cloudflare - push blocked IPs to the edge after every block-ip decision', cmd:'innerwarden integrate cloudflare' });
+    if (!integ.mesh) recommendations.push({ icon:'🕸️', text:'Enable Mesh - share threat intel with other InnerWarden instances', cmd:'innerwarden integrate mesh' });
 
     if (conflicts.length > 0 || recommendations.length > 0) {
       html += '<div class="report-section"><div class="report-section-title">Integration Advisor</div>' +
@@ -8091,7 +8311,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
     if (collectors.length > 0) {
       const colIcons = {
         auth_log:'🔑', journald:'📋', docker:'🐳', nginx_access:'🌐', nginx_error:'⚠️',
-        exec_audit:'🔎', ebpf:'⚡', suricata_eve:'🐉', wazuh_alerts:'🔒', osquery_log:'🔍'
+        exec_audit:'🔎', ebpf:'⚡', suricata_eve:'🐉', wazuh_alerts:'🔒', osquery_log:'🔍',
+        syslog_firewall:'🧱', firmware_integrity:'🔧', cloudtrail:'☁️', macos_log:'🍎', falco_log:'🦅'
       };
       const colStyle =
         '.col-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:4px}' +
@@ -8182,9 +8403,93 @@ const INDEX_HTML: &str = r##"<!doctype html>
     const status = document.getElementById('complianceViewStatus');
     if (status) status.textContent = 'Loading…';
     try {
-      // Admin actions
-      const actions = await loadJson('/api/admin-actions');
+      // Load all compliance data in parallel
+      const [actions, advisories, sessions, compliance] = await Promise.all([
+        loadJson('/api/admin-actions'),
+        loadJson('/api/advisory-cache'),
+        loadJson('/api/auth/sessions').catch(() => []),
+        loadJson('/api/compliance'),
+      ]);
+
+      // KPI: Admin actions
       document.getElementById('comp-admin-actions').textContent = actions.total || 0;
+
+      // KPI: ISO 27001 score
+      const iso = compliance.iso_27001 || {};
+      const isoEl = document.getElementById('comp-iso-score');
+      if (isoEl) {
+        isoEl.textContent = (iso.met || 0) + '/' + (iso.total || 0);
+        isoEl.style.color = iso.met === iso.total ? 'var(--ok)' : 'var(--warn)';
+      }
+
+      // KPI: Hash chain
+      const chain = compliance.hash_chain || {};
+      const chainKpi = document.getElementById('comp-chain-status');
+      if (chainKpi) {
+        if (chain.length === 0) {
+          chainKpi.textContent = 'Empty';
+          chainKpi.style.color = 'var(--muted)';
+        } else if (chain.intact) {
+          chainKpi.textContent = '\u2713 Intact';
+          chainKpi.style.color = 'var(--ok)';
+        } else {
+          chainKpi.textContent = '\u2717 Broken';
+          chainKpi.style.color = 'var(--danger)';
+        }
+      }
+
+      // Hash Chain Detail
+      const chainEl = document.getElementById('comp-chain-detail');
+      if (chainEl) {
+        const intactBadge = chain.length === 0
+          ? '<span style="color:var(--muted)">No decisions recorded today</span>'
+          : chain.intact
+            ? '<span style="color:var(--ok);font-weight:700">\u2713 Chain integrity verified</span>'
+            : '<span style="color:var(--danger);font-weight:700">\u2717 Chain integrity BROKEN - possible tampering</span>';
+        chainEl.innerHTML =
+          '<div style="display:flex;flex-direction:column;gap:8px">' +
+          '<div>' + intactBadge + '</div>' +
+          '<div style="display:flex;gap:20px;font-size:0.75rem;color:var(--muted)">' +
+          '<span>Entries: <strong style="color:var(--text)">' + (chain.length || 0) + '</strong></span>' +
+          '<span>Last hash: <code style="color:var(--accent);font-size:0.68rem">' + esc((chain.last_hash || 'none').substring(0, 16)) + '…</code></span>' +
+          '</div>' +
+          '<div style="font-size:0.65rem;color:var(--muted)">Each decision entry includes a SHA-256 hash of the previous entry, forming a tamper-evident chain.</div>' +
+          '</div>';
+      }
+
+      // Retention config
+      const ret = compliance.retention || {};
+      const retEl = document.getElementById('comp-retention');
+      if (retEl) {
+        const row = (label, days, desc) =>
+          '<div style="display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid var(--line)">' +
+          '<span style="font-size:0.8rem;color:var(--text);min-width:120px;font-weight:600">' + esc(label) + '</span>' +
+          '<span style="font-size:0.85rem;color:var(--accent);font-weight:700;min-width:50px">' + days + 'd</span>' +
+          '<span style="font-size:0.68rem;color:var(--muted)">' + esc(desc) + '</span>' +
+          '</div>';
+        retEl.innerHTML =
+          row('Events', ret.events_days || 7, 'Raw event JSONL (auth_log, ebpf, docker, etc.)') +
+          row('Incidents', ret.incidents_days || 30, 'Detected threat incidents') +
+          row('Decisions', ret.decisions_days || 90, 'AI/operator response audit trail (hash-chained)') +
+          row('Telemetry', ret.telemetry_days || 14, 'Agent health and performance metrics') +
+          row('Reports', ret.reports_days || 30, 'Daily security reports') +
+          '<div style="font-size:0.62rem;color:var(--muted);margin-top:8px">Configure in <code>[data]</code> section of agent.toml. GDPR export/erase: <code>innerwarden gdpr export</code> / <code>innerwarden gdpr erase</code></div>';
+      }
+
+      // ISO 27001 controls
+      const ctrlEl = document.getElementById('comp-iso-controls');
+      if (ctrlEl && iso.controls) {
+        ctrlEl.innerHTML = iso.controls.map(c =>
+          '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">' +
+          '<span style="font-size:1rem">' + (c.met ? '\u2705' : '\u274c') + '</span>' +
+          '<span style="font-size:0.72rem;font-weight:700;color:var(--accent);min-width:50px">' + esc(c.id) + '</span>' +
+          '<span style="font-size:0.78rem;font-weight:600;color:var(--text);min-width:180px">' + esc(c.name) + '</span>' +
+          '<span style="font-size:0.68rem;color:' + (c.met ? 'var(--ok)' : 'var(--warn)') + ';flex:1">' + esc(c.reason) + '</span>' +
+          '</div>'
+        ).join('');
+      }
+
+      // Admin actions list
       const listEl = document.getElementById('comp-admin-list');
       if (actions.items && actions.items.length > 0) {
         listEl.innerHTML = actions.items.map(a => `
@@ -8200,8 +8505,6 @@ const INDEX_HTML: &str = r##"<!doctype html>
       }
 
       // Advisory cache
-      const advisories = await loadJson('/api/advisory-cache');
-      document.getElementById('comp-advisories').textContent = advisories.total || 0;
       const advEl = document.getElementById('comp-advisory-list');
       if (advisories.items && advisories.items.length > 0) {
         advEl.innerHTML = advisories.items.map(a => `
@@ -8218,7 +8521,6 @@ const INDEX_HTML: &str = r##"<!doctype html>
       }
 
       // Sessions
-      const sessions = await loadJson('/api/auth/sessions');
       const sessCount = Array.isArray(sessions) ? sessions.length : 0;
       document.getElementById('comp-sessions').textContent = sessCount;
       const sessEl = document.getElementById('comp-session-list');
@@ -8683,6 +8985,11 @@ const INDEX_HTML: &str = r##"<!doctype html>
           aiBadge.textContent = 'AI: off';
           aiBadge.className = 'status-badge status-badge-ai-off';
         }
+      }
+      // Version badge
+      const vBadge = document.getElementById('versionBadge');
+      if (vBadge && actionCfg.version) {
+        vBadge.textContent = 'v' + actionCfg.version;
       }
     } catch (_) {
       actionCfg = null;
