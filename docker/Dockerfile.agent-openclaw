@@ -1,0 +1,134 @@
+# Inner Warden Agent + OpenClaw — AI agent protected by AI security
+#
+# Two processes in one container:
+#   1. Inner Warden Agent: security monitoring, AI triage, automated response
+#   2. OpenClaw Gateway: autonomous AI agent with shell access
+#
+# Inner Warden watches everything OpenClaw does via:
+#   - Trusted Advisor API: OpenClaw checks commands before executing
+#   - Audit trail: every action logged with hash chain
+#   - eBPF detection: if sensor runs on host, captures all exec syscalls
+#
+# Usage:
+#   docker run -d --name warden-claw \
+#     -p 8787:8787 -p 18789:18789 \
+#     -v /var/lib/innerwarden:/data \
+#     --env-file agent.env \
+#     -e ANTHROPIC_API_KEY=sk-... \
+#     innerwarden/agent-openclaw
+#
+# Required env vars:
+#   - AI provider key (OPENAI_API_KEY or ANTHROPIC_API_KEY)
+#   - TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID (optional, for alerts)
+
+# ── Stage 1: OpenClaw build ──────────────────────────────────────
+FROM node:24-bookworm-slim AS openclaw-build
+
+RUN corepack enable
+WORKDIR /openclaw
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git curl && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 https://github.com/openclaw/openclaw.git . && \
+    pnpm install --frozen-lockfile && \
+    pnpm build:docker && \
+    OPENCLAW_PREFER_PNPM=1 pnpm ui:build && \
+    CI=true pnpm prune --prod
+
+# ── Stage 2: Runtime ─────────────────────────────────────────────
+FROM node:24-bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates curl iptables iproute2 procps tini && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN corepack enable
+
+# Create users
+RUN useradd -r -s /usr/sbin/nologin innerwarden && \
+    useradd -r -s /bin/bash -m openclaw
+
+# Inner Warden agent binary
+ARG INNERWARDEN_VERSION=0.4.5
+ARG TARGETARCH
+RUN ARCH=$(case "${TARGETARCH}" in \
+      amd64) echo "x86_64" ;; \
+      arm64) echo "aarch64" ;; \
+      *) echo "x86_64" ;; \
+    esac) && \
+    curl -sL "https://github.com/InnerWarden/innerwarden/releases/download/v${INNERWARDEN_VERSION}/innerwarden-agent-linux-${ARCH}" -o /usr/local/bin/innerwarden-agent && \
+    curl -sL "https://github.com/InnerWarden/innerwarden/releases/download/v${INNERWARDEN_VERSION}/innerwarden-ctl-linux-${ARCH}" -o /usr/local/bin/innerwarden && \
+    chmod +x /usr/local/bin/innerwarden-agent /usr/local/bin/innerwarden
+
+# OpenClaw runtime
+COPY --from=openclaw-build /openclaw/dist /openclaw/dist
+COPY --from=openclaw-build /openclaw/node_modules /openclaw/node_modules
+COPY --from=openclaw-build /openclaw/package.json /openclaw/
+COPY --from=openclaw-build /openclaw/openclaw.mjs /openclaw/
+COPY --from=openclaw-build /openclaw/extensions /openclaw/extensions
+COPY --from=openclaw-build /openclaw/skills /openclaw/skills
+RUN ln -sf /openclaw/openclaw.mjs /usr/local/bin/openclaw && \
+    chmod 755 /openclaw/openclaw.mjs
+
+# Data directories
+RUN mkdir -p /data /etc/innerwarden && chown innerwarden:innerwarden /data
+
+# Startup script: runs both processes
+COPY <<'STARTUP' /usr/local/bin/start.sh
+#!/bin/bash
+set -e
+
+echo "Starting Inner Warden Agent + OpenClaw..."
+
+# Start Inner Warden agent (background)
+innerwarden-agent \
+  --data-dir /data \
+  --dashboard \
+  --dashboard-bind 0.0.0.0:8787 \
+  ${INNERWARDEN_CONFIG:+--config "$INNERWARDEN_CONFIG"} &
+AGENT_PID=$!
+
+# Wait for agent dashboard to be ready
+for i in $(seq 1 30); do
+  if curl -sf http://127.0.0.1:8787/api/action/config > /dev/null 2>&1; then
+    echo "Inner Warden Agent ready (dashboard on :8787)"
+    break
+  fi
+  sleep 1
+done
+
+# Start OpenClaw gateway (foreground)
+# OpenClaw will use Inner Warden's Trusted Advisor API at localhost:8787
+export OPENCLAW_INNERWARDEN_URL="http://127.0.0.1:8787"
+cd /openclaw
+exec node openclaw.mjs gateway \
+  --bind lan \
+  --allow-unconfigured &
+CLAW_PID=$!
+
+echo "OpenClaw Gateway ready (on :18789)"
+echo ""
+echo "Inner Warden Dashboard: http://localhost:8787"
+echo "OpenClaw Gateway:       http://localhost:18789"
+echo ""
+echo "Inner Warden is watching everything OpenClaw does."
+
+# Wait for either process to exit
+wait -n $AGENT_PID $CLAW_PID
+exit $?
+STARTUP
+RUN chmod +x /usr/local/bin/start.sh
+
+VOLUME ["/data", "/etc/innerwarden"]
+
+EXPOSE 8787 18789
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD curl -sf http://127.0.0.1:8787/api/action/config > /dev/null && \
+      curl -sf http://127.0.0.1:18789/healthz > /dev/null || exit 1
+
+ENTRYPOINT ["tini", "--"]
+CMD ["start.sh"]

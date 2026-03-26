@@ -1,0 +1,63 @@
+# Inner Warden Docker Compose
+#
+# Quick start:
+#   cp agent.env.example agent.env   # edit with your keys
+#   docker compose up agent          # agent only
+#   docker compose up agent-openclaw # agent + OpenClaw
+
+services:
+  # Redis (shared event bus between sensor and agent)
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+
+  # Inner Warden Agent (dashboard + AI triage + skills)
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - agent-data:/data
+    env_file:
+      - agent.env
+    depends_on:
+      redis:
+        condition: service_healthy
+    command:
+      - --data-dir
+      - /data
+      - --config
+      - /etc/innerwarden/agent.toml
+      - --dashboard
+      - --dashboard-bind
+      - "0.0.0.0:8787"
+
+  # Inner Warden Agent + OpenClaw (AI agent protected by AI security)
+  agent-openclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent-openclaw
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+      - "18789:18789"
+    volumes:
+      - agent-data:/data
+    env_file:
+      - agent.env
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis-data:
+  agent-data:

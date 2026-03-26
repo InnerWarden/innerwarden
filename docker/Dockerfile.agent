@@ -1,0 +1,70 @@
+# Inner Warden Agent — containerized dashboard + AI triage + skills
+#
+# The agent reads events from Redis Streams (or mounted JSONL) and provides:
+#   - AI-powered incident triage (OpenAI, Anthropic, Ollama)
+#   - Automated response (IP blocking, user suspension, honeypot)
+#   - Dashboard with 15 collectors, 20 integrations, ISO 27001 compliance tab
+#   - Telegram/Slack/webhook notifications
+#
+# NOTE: The sensor must run on the HOST (not in a container) because it
+# requires eBPF kernel hooks. This image is for the agent only.
+#
+# Usage:
+#   docker run -d --name innerwarden-agent \
+#     -p 8787:8787 \
+#     -v /var/lib/innerwarden:/data \
+#     -v /etc/innerwarden/agent.toml:/etc/innerwarden/agent.toml:ro \
+#     --env-file /etc/innerwarden/agent.env \
+#     innerwarden/agent
+#
+# With Redis (recommended):
+#   docker run -d --name innerwarden-agent \
+#     -p 8787:8787 \
+#     --env-file /etc/innerwarden/agent.env \
+#     innerwarden/agent \
+#     --config /etc/innerwarden/agent.toml --dashboard --dashboard-bind 0.0.0.0:8787
+
+ARG TARGETARCH
+FROM debian:bookworm-slim AS base
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates curl iptables iproute2 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create innerwarden user
+RUN useradd -r -s /usr/sbin/nologin innerwarden
+
+WORKDIR /app
+
+# Download official release binaries
+ARG INNERWARDEN_VERSION=0.4.5
+ARG TARGETARCH
+RUN ARCH=$(case "${TARGETARCH}" in \
+      amd64) echo "x86_64" ;; \
+      arm64) echo "aarch64" ;; \
+      *) echo "x86_64" ;; \
+    esac) && \
+    curl -sL "https://github.com/InnerWarden/innerwarden/releases/download/v${INNERWARDEN_VERSION}/innerwarden-agent-linux-${ARCH}" -o /usr/local/bin/innerwarden-agent && \
+    curl -sL "https://github.com/InnerWarden/innerwarden/releases/download/v${INNERWARDEN_VERSION}/innerwarden-ctl-linux-${ARCH}" -o /usr/local/bin/innerwarden && \
+    curl -sL "https://github.com/InnerWarden/innerwarden/releases/download/v${INNERWARDEN_VERSION}/innerwarden-agent-linux-${ARCH}.sha256" -o /tmp/agent.sha256 && \
+    curl -sL "https://github.com/InnerWarden/innerwarden/releases/download/v${INNERWARDEN_VERSION}/innerwarden-ctl-linux-${ARCH}.sha256" -o /tmp/ctl.sha256 && \
+    echo "$(cat /tmp/agent.sha256)  /usr/local/bin/innerwarden-agent" | sha256sum -c && \
+    echo "$(cat /tmp/ctl.sha256)  /usr/local/bin/innerwarden" | sha256sum -c && \
+    chmod +x /usr/local/bin/innerwarden-agent /usr/local/bin/innerwarden && \
+    rm -f /tmp/*.sha256
+
+# Default config directory
+RUN mkdir -p /etc/innerwarden /data && chown innerwarden:innerwarden /data
+
+VOLUME ["/data", "/etc/innerwarden"]
+
+EXPOSE 8787
+
+USER innerwarden
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -sf http://127.0.0.1:8787/api/action/config > /dev/null || exit 1
+
+ENTRYPOINT ["innerwarden-agent"]
+CMD ["--data-dir", "/data", "--dashboard", "--dashboard-bind", "0.0.0.0:8787"]
