@@ -70,6 +70,14 @@ static BLOCKLIST: HashMap<u32, u32> = HashMap::with_max_entries(10_000, 0);
 #[map]
 static ALLOWLIST: HashMap<u32, u32> = HashMap::with_max_entries(1_000, 0);
 
+/// IPv6 blocklist - same as BLOCKLIST but keyed by 128-bit IPv6 address.
+#[map]
+static BLOCKLIST_V6: HashMap<[u8; 16], u32> = HashMap::with_max_entries(10_000, 0);
+
+/// IPv6 allowlist - same as ALLOWLIST but keyed by 128-bit IPv6 address.
+#[map]
+static ALLOWLIST_V6: HashMap<[u8; 16], u32> = HashMap::with_max_entries(1_000, 0);
+
 // ---------------------------------------------------------------------------
 // Kernel-level noise filters - populated by userspace, checked before emit
 // ---------------------------------------------------------------------------
@@ -304,14 +312,15 @@ pub fn innerwarden_dispatcher(ctx: RawTracePointContext) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// XDP: innerwarden_xdp - wire-speed IP blocking
+// XDP: innerwarden_xdp - wire-speed IP blocking (IPv4 + IPv6)
 // ---------------------------------------------------------------------------
 //
 // Attached to a network interface. For every incoming packet:
-//   1. Parse Ethernet + IPv4 header
-//   2. Lookup source IP in BLOCKLIST
-//   3. If found → XDP_DROP (packet never reaches the kernel stack)
-//   4. If not found → XDP_PASS (normal processing)
+//   1. Parse Ethernet header to determine protocol (IPv4 or IPv6)
+//   2. Extract source IP (4 bytes for IPv4, 16 bytes for IPv6)
+//   3. Check allowlist FIRST — never drop protected IPs
+//   4. Check blocklist — if found → XDP_DROP (packet never reaches kernel stack)
+//   5. If not found → XDP_PASS (normal processing)
 //
 // Performance: 10-25 million packets per second drop rate.
 // Zero CPU overhead for dropped packets.
@@ -329,38 +338,64 @@ fn try_xdp_firewall(ctx: &XdpContext) -> Result<u32, ()> {
     let data = ctx.data();
     let data_end = ctx.data_end();
 
-    // Need at least: Ethernet header (14) + IPv4 header (20) = 34 bytes
-    if data + 34 > data_end {
+    // Need at least Ethernet header (14 bytes)
+    if data + 14 > data_end {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    // Parse Ethernet header - check for IPv4 (EtherType 0x0800)
+    // Parse EtherType (offset 12, 2 bytes)
     let eth_proto = u16::from_be_bytes(unsafe {
         let ptr = data as *const u8;
         [*ptr.add(12), *ptr.add(13)]
     });
 
-    if eth_proto != 0x0800 {
-        return Ok(xdp_action::XDP_PASS); // not IPv4
+    match eth_proto {
+        // IPv4 (EtherType 0x0800)
+        0x0800 => {
+            // Ethernet (14) + IPv4 header (20) = 34 bytes minimum
+            if data + 34 > data_end {
+                return Ok(xdp_action::XDP_PASS);
+            }
+            // Source IP at offset 14 (eth) + 12 (ip src) = 26, 4 bytes
+            let src_ip = u32::from_ne_bytes(unsafe {
+                let ptr = data as *const u8;
+                [*ptr.add(26), *ptr.add(27), *ptr.add(28), *ptr.add(29)]
+            });
+            if unsafe { ALLOWLIST.get(&src_ip) }.is_some() {
+                return Ok(xdp_action::XDP_PASS);
+            }
+            if unsafe { BLOCKLIST.get(&src_ip) }.is_some() {
+                return Ok(xdp_action::XDP_DROP);
+            }
+            Ok(xdp_action::XDP_PASS)
+        }
+        // IPv6 (EtherType 0x86DD)
+        0x86DD => {
+            // Ethernet (14) + IPv6 header (40) = 54 bytes minimum
+            if data + 54 > data_end {
+                return Ok(xdp_action::XDP_PASS);
+            }
+            // Source IP at offset 14 (eth) + 8 (ipv6 src) = 22, 16 bytes
+            let mut src_ip = [0u8; 16];
+            unsafe {
+                let ptr = data as *const u8;
+                let mut i = 0;
+                while i < 16 {
+                    src_ip[i] = *ptr.add(22 + i);
+                    i += 1;
+                }
+            }
+            if unsafe { ALLOWLIST_V6.get(&src_ip) }.is_some() {
+                return Ok(xdp_action::XDP_PASS);
+            }
+            if unsafe { BLOCKLIST_V6.get(&src_ip) }.is_some() {
+                return Ok(xdp_action::XDP_DROP);
+            }
+            Ok(xdp_action::XDP_PASS)
+        }
+        // Not IP — pass through (ARP, etc.)
+        _ => Ok(xdp_action::XDP_PASS),
     }
-
-    // Parse IPv4 source address (offset 14 + 12 = 26, 4 bytes)
-    let src_ip = u32::from_ne_bytes(unsafe {
-        let ptr = data as *const u8;
-        [*ptr.add(26), *ptr.add(27), *ptr.add(28), *ptr.add(29)]
-    });
-
-    // Allowlist check FIRST - never drop protected IPs
-    if unsafe { ALLOWLIST.get(&src_ip) }.is_some() {
-        return Ok(xdp_action::XDP_PASS);
-    }
-
-    // Blocklist check - O(1) hash map lookup
-    if unsafe { BLOCKLIST.get(&src_ip) }.is_some() {
-        return Ok(xdp_action::XDP_DROP);
-    }
-
-    Ok(xdp_action::XDP_PASS)
 }
 
 // ---------------------------------------------------------------------------

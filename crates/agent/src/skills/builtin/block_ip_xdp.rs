@@ -1,5 +1,5 @@
 use std::future::Future;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::pin::Pin;
 
 use tracing::{info, warn};
@@ -12,12 +12,15 @@ use crate::skills::{ResponseSkill, SkillContext, SkillResult, SkillTier};
 /// into a BPF hash map that the XDP program checks on every incoming packet.
 /// Drop rate: 10-25 million packets per second, zero CPU overhead.
 ///
-/// The BPF map is pinned at /sys/fs/bpf/innerwarden/blocklist.
-/// We use bpftool to manage it (available on all eBPF-capable systems).
+/// Supports both IPv4 and IPv6. Uses separate pinned maps:
+///   - /sys/fs/bpf/innerwarden/blocklist    (IPv4, key: 4 bytes)
+///   - /sys/fs/bpf/innerwarden/blocklist_v6 (IPv6, key: 16 bytes)
 pub struct BlockIpXdp;
 
-/// Path where the XDP blocklist map is pinned.
+/// Path where the XDP IPv4 blocklist map is pinned.
 const BLOCKLIST_PIN: &str = "/sys/fs/bpf/innerwarden/blocklist";
+/// Path where the XDP IPv6 blocklist map is pinned.
+const BLOCKLIST_V6_PIN: &str = "/sys/fs/bpf/innerwarden/blocklist_v6";
 
 impl ResponseSkill for BlockIpXdp {
     fn id(&self) -> &'static str {
@@ -60,22 +63,31 @@ impl ResponseSkill for BlockIpXdp {
                 }
             };
 
-            // Parse and convert IP to bytes (network byte order)
-            let addr: Ipv4Addr = match ip.parse() {
-                Ok(a) => a,
-                Err(_) => {
-                    return SkillResult {
-                        success: false,
-                        message: format!("block-ip-xdp: invalid IPv4 address: {ip}"),
-                    }
-                }
+            // Determine IP version and prepare key bytes + map path
+            let (map_pin, key_args): (&str, Vec<String>) = if let Ok(v4) = ip.parse::<Ipv4Addr>() {
+                let b = v4.octets();
+                (
+                    BLOCKLIST_PIN,
+                    vec![
+                        b[0].to_string(), b[1].to_string(),
+                        b[2].to_string(), b[3].to_string(),
+                    ],
+                )
+            } else if let Ok(v6) = ip.parse::<Ipv6Addr>() {
+                let b = v6.octets();
+                (
+                    BLOCKLIST_V6_PIN,
+                    b.iter().map(|x| x.to_string()).collect(),
+                )
+            } else {
+                return SkillResult {
+                    success: false,
+                    message: format!("block-ip-xdp: invalid IP address: {ip}"),
+                };
             };
-            let ip_bytes = addr.octets();
+
             if dry_run {
-                info!(
-                    ip,
-                    "DRY RUN: would insert {ip} into XDP blocklist (wire-speed drop)"
-                );
+                info!(ip, "DRY RUN: would insert {ip} into XDP blocklist (wire-speed drop)");
                 return SkillResult {
                     success: true,
                     message: format!("DRY RUN: would block {ip} via XDP (wire-speed)"),
@@ -83,42 +95,27 @@ impl ResponseSkill for BlockIpXdp {
             }
 
             // Check if pinned map exists
-            if !std::path::Path::new(BLOCKLIST_PIN).exists() {
-                // XDP not loaded - fall through, agent will use fallback backend
-                warn!(
-                    ip,
-                    "XDP blocklist map not found at {BLOCKLIST_PIN} - XDP firewall not loaded"
-                );
+            if !std::path::Path::new(map_pin).exists() {
+                warn!(ip, map = map_pin, "XDP blocklist map not found - XDP firewall not loaded");
                 return SkillResult {
                     success: false,
                     message: format!(
-                        "XDP not available (map not found at {BLOCKLIST_PIN}). \
-                         Ensure innerwarden-sensor is running with --features ebpf and XDP is attached."
+                        "XDP not available (map not found at {map_pin}). \
+                         Ensure innerwarden-sensor is running with XDP attached."
                     ),
                 };
             }
 
             // Insert into pinned BPF map via bpftool
-            // Key: 4 bytes (IPv4 addr), Value: 4 bytes (flag = 1)
+            let mut args = vec![
+                "bpftool".to_string(), "map".to_string(), "update".to_string(),
+                "pinned".to_string(), map_pin.to_string(), "key".to_string(),
+            ];
+            args.extend(key_args);
+            args.extend(["value".to_string(), "1".to_string(), "0".to_string(), "0".to_string(), "0".to_string(), "any".to_string()]);
+
             let output = tokio::process::Command::new("sudo")
-                .args([
-                    "bpftool",
-                    "map",
-                    "update",
-                    "pinned",
-                    BLOCKLIST_PIN,
-                    "key",
-                    &ip_bytes[0].to_string(),
-                    &ip_bytes[1].to_string(),
-                    &ip_bytes[2].to_string(),
-                    &ip_bytes[3].to_string(),
-                    "value",
-                    "1",
-                    "0",
-                    "0",
-                    "0",
-                    "any",
-                ])
+                .args(&args[..])
                 .output()
                 .await;
 
