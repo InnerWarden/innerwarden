@@ -69,6 +69,8 @@ pub enum SyscallKind {
     Prctl = 21,
     /// Accept incoming connection
     Accept = 22,
+    /// EFI Runtime Services call (EXPERIMENTAL — firmware behavioral baseline)
+    EfiCall = 23,
 }
 
 /// Event emitted by the eBPF `execve` tracepoint.
@@ -425,6 +427,29 @@ pub struct AcceptEvent {
     pub _pad: u32,
     pub cgroup_id: u64,
     pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+/// EXPERIMENTAL: Event emitted by the EFI Runtime Services kprobe.
+///
+/// Monitors calls to UEFI runtime services (GetVariable, SetVariable, etc.)
+/// from the OS. Establishes a behavioral baseline of normal firmware activity.
+/// Deviations may indicate firmware-level compromise (UEFI implants, bootkits).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct EfiCallEvent {
+    pub kind: u32,
+    /// PID of the calling process
+    pub pid: u32,
+    /// UID of the calling process
+    pub uid: u32,
+    /// Padding for alignment
+    pub _pad: u32,
+    /// Cgroup ID
+    pub cgroup_id: u64,
+    /// Process name
+    pub comm: [u8; MAX_COMM_LEN],
+    /// Timestamp (nanoseconds since boot)
     pub ts_ns: u64,
 }
 

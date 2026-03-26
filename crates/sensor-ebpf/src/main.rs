@@ -2038,6 +2038,76 @@ pub fn dispatch_kill(ctx: RawTracePointContext) -> u32 {
 // Userspace wires them into SYSCALL_DISPATCH at the correct syscall numbers.
 
 // ---------------------------------------------------------------------------
+// EXPERIMENTAL: EFI Runtime Services monitoring — firmware behavioral baseline
+// ---------------------------------------------------------------------------
+//
+// Hooks efi_call_rts (or __efi_call_virt on some kernels) to observe EFI
+// Runtime Services calls (GetVariable, SetVariable, GetTime, etc.) from the OS.
+//
+// Purpose: establish a behavioral baseline of normal firmware/OS interaction.
+// If firmware is compromised (UEFI implant, bootkit), its runtime behavior may
+// differ from the baseline — more frequent calls, different timing, unexpected
+// callers. This is observational only — no blocking, no modification.
+//
+// References:
+//   - LoJax (ESET, 2018): first in-the-wild UEFI rootkit
+//   - CosmicStrand (Kaspersky, 2022): firmware rootkit with OS-level side effects
+//   - BlackLotus (ESET, 2023): Secure Boot bypass bootkit
+//
+// The kprobe target varies by kernel version:
+//   - 5.x+: efi_call_rts or virt_efi_* functions
+//   - Attach is best-effort; if the symbol doesn't exist, the sensor skips it.
+
+#[kprobe]
+pub fn innerwarden_efi_call(ctx: ProbeContext) -> u32 {
+    match try_efi_call(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0, // fail-open: never interfere with EFI calls
+    }
+}
+
+fn try_efi_call(_ctx: &ProbeContext) -> Result<(), i64> {
+    // Skip noise: only log if not from an allowlisted process
+    if is_comm_allowed(0) || is_cgroup_allowed() {
+        return Ok(());
+    }
+
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let pid = pid_tgid as u32;
+
+    // Heavy rate limiting — EFI calls are low-frequency but we want minimal overhead
+    if is_rate_limited(pid) {
+        return Ok(());
+    }
+
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    let mut entry = match EVENTS.reserve::<innerwarden_ebpf_types::EfiCallEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()), // ring buffer full — fail-open
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::EfiCall as u32;
+    event.pid = pid;
+    event.uid = uid;
+    event._pad = 0;
+    event.cgroup_id = cgroup_id;
+    event.ts_ns = ts;
+    event.comm = [0u8; MAX_COMM_LEN];
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Panic handler (required for no_std)
 // ---------------------------------------------------------------------------
 

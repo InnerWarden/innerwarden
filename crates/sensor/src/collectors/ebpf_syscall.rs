@@ -1789,6 +1789,23 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         entities: vec![],
                     })
                 }
+                // EXPERIMENTAL: EfiCallEvent: kind(4) pid(4) uid(4) _pad(4) cgroup_id(8) comm(64) ts_ns(8)
+                23 if data.len() >= 88 => {
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let comm = bytes_to_string(&data[24..88]);
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "firmware.efi_call".to_string(),
+                        severity: Severity::Debug,
+                        summary: format!("[EXPERIMENTAL] {comm} (PID {pid}) EFI Runtime Services call"),
+                        details: serde_json::json!({"pid": pid, "uid": uid, "comm": comm, "experimental": true}),
+                        tags: vec!["ebpf".to_string(), "firmware".to_string(), "experimental".to_string()],
+                        entities: vec![],
+                    })
+                }
                 _ => None,
             };
 
