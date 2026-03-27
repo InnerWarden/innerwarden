@@ -106,6 +106,11 @@ impl C2CallbackDetector {
             return None;
         }
 
+        // Skip cloud metadata service (169.254.169.254) and port 0 (DNS artifacts)
+        if dst_ip == "169.254.169.254" || dst_port == 0 {
+            return None;
+        }
+
         // Skip verified infra processes from beaconing/exfil checks.
         // Verifies binary path to prevent evasion by name spoofing.
         // They still go through C2 port check (Check 1) for safety.

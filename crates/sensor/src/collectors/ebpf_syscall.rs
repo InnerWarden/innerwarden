@@ -332,9 +332,11 @@ const LEGITIMATE_ESCALATION: &[&str] = &[
     "logrotate",
     "run-parts",
     "anacron",
-    "innerwarden",   // our own agent/sensor using sudo for bpftool/ufw
+    "innerwarden",    // our own agent/sensor using sudo for bpftool/ufw
     "innerwarden-ag", // truncated comm (16 char limit)
     "innerwarden-se",
+    "innerwarden-ct", // innerwarden-ctl
+    "fwupdmgr",       // firmware update manager
 ];
 
 /// Convert a kernel privilege escalation event to an Inner Warden Event.
@@ -349,8 +351,9 @@ fn privesc_to_event(
 ) -> Option<Event> {
     let comm_base = comm.split('/').next_back().unwrap_or(comm);
 
-    // Filter legitimate escalation processes
-    if LEGITIMATE_ESCALATION.contains(&comm_base) {
+    // Filter legitimate escalation processes.
+    // Use starts_with to handle kernel comm truncation (16 char limit).
+    if LEGITIMATE_ESCALATION.iter().any(|p| comm_base.starts_with(p)) {
         return None;
     }
 
