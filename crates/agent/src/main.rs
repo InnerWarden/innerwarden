@@ -1509,6 +1509,13 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Discover mesh peer identities (ping each, learn their public keys).
+    // Must happen after listener starts so peers can ping us back.
+    if let Some(ref mut mesh_node) = state.mesh {
+        mesh_node.discover_peers().await;
+        info!(peers = mesh_node.peer_count(), "mesh peer discovery complete");
+    }
+
     let state_path = cli.data_dir.join("agent-state.json");
     let mut cursor = reader::AgentCursor::load(&state_path)?;
 
