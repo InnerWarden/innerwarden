@@ -1803,6 +1803,7 @@ async fn main() -> Result<()> {
                 }
                 _ = mesh_ticker.tick() => {
                     if let Some(ref mut m) = state.mesh {
+                        m.rediscover_if_needed().await;
                         let result = m.tick();
                         // Notify Telegram about new mesh blocks
                         for (ip, ttl) in &result.block_ips {
@@ -1911,6 +1912,7 @@ async fn main() -> Result<()> {
                 }
                 _ = mesh_ticker.tick() => {
                     if let Some(ref mut m) = state.mesh {
+                        m.rediscover_if_needed().await;
                         let result = m.tick();
                         for (ip, ttl) in &result.block_ips {
                             info!(ip, ttl, "mesh: new block from peer network");

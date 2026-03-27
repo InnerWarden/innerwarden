@@ -68,6 +68,10 @@ impl MeshIntegration {
         self.node.tick()
     }
 
+    pub async fn rediscover_if_needed(&mut self) {
+        self.node.rediscover_if_needed().await;
+    }
+
     pub fn is_mesh_blocked(&self, ip: &str) -> bool {
         self.node.is_mesh_blocked(ip)
     }
