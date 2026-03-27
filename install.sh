@@ -24,7 +24,6 @@ set -euo pipefail
 GITHUB_REPO="InnerWarden/innerwarden"
 GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IW_USER="innerwarden"
 
 # Parse flags
@@ -47,6 +46,7 @@ if [[ "$OS_TYPE" == "Darwin" ]]; then
   SENSOR_PLIST="$PLIST_DIR/com.innerwarden.sensor.plist"
   AGENT_PLIST="$PLIST_DIR/com.innerwarden.agent.plist"
   LOG_DIR="/usr/local/var/log/innerwarden"
+  INSTALL_GROUP="wheel"
 else
   CONFIG_DIR="/etc/innerwarden"
   DATA_DIR="/var/lib/innerwarden"
@@ -263,6 +263,7 @@ download_asset() {
 
 if [[ "${BUILD_FROM_SOURCE}" == "1" ]]; then
   # ── Build from source (development / unsupported arch) ──────────────────
+  ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   if ! command -v cargo >/dev/null 2>&1; then
     log "cargo not found. Installing rustup (user install)..."
     curl -sSf https://sh.rustup.rs | sh -s -- -y
@@ -319,6 +320,19 @@ else
 fi
 
 if [[ "$OS_TYPE" == "Darwin" ]]; then
+  # macOS: create group via dscl if it doesn't exist
+  if ! dscl . list /Groups PrimaryGroupID  | grep "${IW_USER}" >/dev/null 2>&1; then
+    log "creating service group: ${IW_USER}"
+    # Find an unused GID in the system range
+    NEXT_GID=300
+    while dscl . -list /Groups PrimaryGroupID | awk '{print $2}' | grep -q "^${NEXT_GID}$"; do
+      NEXT_GID=$((NEXT_GID + 1))
+    done
+    run_root dscl . -create /Groups/"${IW_USER}"
+    run_root dscl . -create /Users/"${IW_USER}" UserShell /usr/bin/false
+    run_root dscl . -create /Groups/"${IW_USER}" RealName "Inner Warden"
+    run_root dscl . -create /Groups/"${IW_USER}" PrimaryGroupID "${NEXT_GID}"
+  fi
   # macOS: create user via dscl if it doesn't exist
   if ! id "${IW_USER}" >/dev/null 2>&1; then
     log "creating service user: ${IW_USER}"
@@ -331,15 +345,19 @@ if [[ "$OS_TYPE" == "Darwin" ]]; then
     run_root dscl . -create /Users/"${IW_USER}" UserShell /usr/bin/false
     run_root dscl . -create /Users/"${IW_USER}" RealName "Inner Warden"
     run_root dscl . -create /Users/"${IW_USER}" UniqueID "${NEXT_UID}"
-    run_root dscl . -create /Users/"${IW_USER}" PrimaryGroupID 20
+    run_root dscl . -create /Users/"${IW_USER}" PrimaryGroupID "${NEXT_GID}"
     run_root dscl . -create /Users/"${IW_USER}" NFSHomeDirectory /var/empty
   fi
+  # macOS: add user to group via dscl if it doesn't exist
+  if ! dscl . read /Groups/"${IW_USER}" GroupMembership  | grep "${IW_USER}" >/dev/null 2>&1; then
+    run_root dscl . append /Groups/"${IW_USER}" GroupMembership "${IW_USER}"
+  fi
   run_root mkdir -p "${CONFIG_DIR}" "${DATA_DIR}" "${LOG_DIR}"
-  run_root chown root:"staff" "${CONFIG_DIR}"
+  run_root chown "${INSTALL_USER:-root}":"${IW_USER}" "${CONFIG_DIR}"
   run_root chmod 750 "${CONFIG_DIR}"
-  run_root chown "${IW_USER}:staff" "${DATA_DIR}"
+  run_root chown "${IW_USER}:${IW_USER}" "${DATA_DIR}"
   run_root chmod 750 "${DATA_DIR}"
-  run_root chown "${IW_USER}:staff" "${LOG_DIR}"
+  run_root chown "${IW_USER}:${IW_USER}" "${LOG_DIR}"
   run_root chmod 750 "${LOG_DIR}"
 else
   NOLOGIN_BIN="$(command -v nologin || echo /usr/sbin/nologin)"
@@ -356,17 +374,17 @@ else
 
   run_root mkdir -p "${CONFIG_DIR}" "${DATA_DIR}"
   # Allow the service user to traverse/read config files without making them world-readable.
-  run_root chown root:"${IW_USER}" "${CONFIG_DIR}"
+  run_root chown "${INSTALL_USER:-root}":"${IW_USER}" "${CONFIG_DIR}"
   run_root chmod 750 "${CONFIG_DIR}"
   run_root chown "${IW_USER}:${IW_USER}" "${DATA_DIR}"
   run_root chmod 750 "${DATA_DIR}"
 fi
 
 log "installing binaries to ${BIN_DIR}"
-run_root install -o root -g root -m 755 "${IW_SENSOR_BIN}" "${SENSOR_BIN}"
-run_root install -o root -g root -m 755 "${IW_AGENT_BIN}"  "${AGENT_BIN}"
-run_root install -o root -g root -m 755 "${IW_CTL_BIN}"    "${BIN_DIR}/innerwarden-ctl"
-run_root install -o root -g root -m 755 "${IW_CTL_BIN}"    "${BIN_DIR}/innerwarden"
+run_root install -o ${INSTALL_USER:-root} -g ${INSTALL_GROUP:-root} -m 755 "${IW_SENSOR_BIN}" "${SENSOR_BIN}"
+run_root install -o ${INSTALL_USER:-root} -g ${INSTALL_GROUP:-root} -m 755 "${IW_AGENT_BIN}"  "${AGENT_BIN}"
+run_root install -o ${INSTALL_USER:-root} -g ${INSTALL_GROUP:-root} -m 755 "${IW_CTL_BIN}"    "${BIN_DIR}/innerwarden-ctl"
+run_root install -o ${INSTALL_USER:-root} -g ${INSTALL_GROUP:-root} -m 755 "${IW_CTL_BIN}"    "${BIN_DIR}/innerwarden"
 
 # ── Install bpftool for eBPF support (Linux only) ────────────────────────
 # bpftool is required for XDP firewall and LSM enforcement management.
@@ -403,10 +421,11 @@ if [[ -f "${SENSOR_CONFIG}" && -f "${AGENT_CONFIG}" ]]; then
   EXISTING_INSTALL=true
   BAKSUFFIX="$(date +%Y%m%d%H%M%S)"
   log "existing installation detected - preserving configs"
-  log "backup created: ${SENSOR_CONFIG}.bak.${BAKSUFFIX}"
   run_root cp "${SENSOR_CONFIG}" "${SENSOR_CONFIG}.bak.${BAKSUFFIX}"
+  log "backup created: ${SENSOR_CONFIG}.bak.${BAKSUFFIX}"
   run_root cp "${AGENT_CONFIG}" "${AGENT_CONFIG}.bak.${BAKSUFFIX}"
-  run_root cp "${ENV_FILE}" "${ENV_FILE}.bak.${BAKSUFFIX}" 2>/dev/null || true
+  log "backup created: ${AGENT_CONFIG}.bak.${BAKSUFFIX}"
+  run_root cp "${AGENT_ENV}" "${AGENT_ENV}.bak.${BAKSUFFIX}" 2>/dev/null || true
 fi
 
 if [[ "${EXISTING_INSTALL}" == "true" ]]; then
@@ -414,7 +433,7 @@ if [[ "${EXISTING_INSTALL}" == "true" ]]; then
 else
 log "writing sensor config: ${SENSOR_CONFIG}"
 if [[ "$OS_TYPE" == "Darwin" ]]; then
-  install_from_stdin "${SENSOR_CONFIG}" 640 root "${IW_USER}" <<EOF
+  install_from_stdin "${SENSOR_CONFIG}" 640 "${INSTALL_USER:-root}" "${IW_USER}" <<EOF
 [agent]
 host_id = "${HOST_ID}"
 
@@ -455,7 +474,7 @@ threshold = 3
 window_seconds = 300
 EOF
 else
-  install_from_stdin "${SENSOR_CONFIG}" 640 root "${IW_USER}" <<EOF
+  install_from_stdin "${SENSOR_CONFIG}" 640 "${INSTALL_USER:-root}" "${IW_USER}" <<EOF
 [agent]
 host_id = "${HOST_ID}"
 
@@ -500,7 +519,7 @@ if [[ "${ENABLE_EXEC_AUDIT}" == "true" ]]; then
   log "shell command audit enabled (include_tty=${ENABLE_EXEC_AUDIT_TTY})"
   if run_root test -d /etc/audit/rules.d; then
     log "writing auditd rules: ${AUDIT_RULE_FILE}"
-    install_from_stdin "${AUDIT_RULE_FILE}" 640 root root <<'EOF'
+    install_from_stdin "${AUDIT_RULE_FILE}" 640 "${INSTALL_USER:-root}" "${INSTALL_GROUP:-root}" <<'EOF'
 # Inner Warden shell command trail (installed with explicit consent)
 -a always,exit -F arch=b64 -S execve -k innerwarden-shell-exec
 -a always,exit -F arch=b32 -S execve -k innerwarden-shell-exec
@@ -530,7 +549,7 @@ EOF
 fi
 
 log "writing agent config: ${AGENT_CONFIG}"
-install_from_stdin "${AGENT_CONFIG}" 640 root "${IW_USER}" <<EOF
+install_from_stdin "${AGENT_CONFIG}" 640 "${INSTALL_USER:-root}" "${IW_USER}" <<EOF
 [narrative]
 enabled = true
 keep_days = 7
@@ -643,7 +662,7 @@ else
 ENVEOF
 fi
 backup_if_exists "${AGENT_ENV}"
-run_root install -o root -g "${IW_USER}" -m 640 "${tmp_env}" "${AGENT_ENV}"
+run_root install -o "${INSTALL_USER:-root}" -g "${IW_USER}" -m 640 "${tmp_env}" "${AGENT_ENV}"
 rm -f "${tmp_env}"
 
 fi  # end of "if not EXISTING_INSTALL" config block
@@ -651,7 +670,7 @@ fi  # end of "if not EXISTING_INSTALL" config block
 if [[ "$OS_TYPE" == "Darwin" ]]; then
   log "writing launchd plist: ${SENSOR_PLIST}"
   run_root mkdir -p "${PLIST_DIR}"
-  install_from_stdin "${SENSOR_PLIST}" 644 root root <<EOF
+  install_from_stdin "${SENSOR_PLIST}" 644 "${INSTALL_USER:-root}" "${INSTALL_GROUP:-root}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -672,7 +691,7 @@ if [[ "$OS_TYPE" == "Darwin" ]]; then
 EOF
 
   log "writing launchd plist: ${AGENT_PLIST}"
-  install_from_stdin "${AGENT_PLIST}" 644 root root <<EOF
+  install_from_stdin "${AGENT_PLIST}" 644 "${INSTALL_USER:-root}" "${INSTALL_GROUP:-root}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -700,7 +719,7 @@ EOF
 EOF
 else
   log "writing systemd unit: ${SENSOR_UNIT}"
-  install_from_stdin "${SENSOR_UNIT}" 644 root root <<'EOF'
+  install_from_stdin "${SENSOR_UNIT}" 644 "${INSTALL_USER:-root}" "${INSTALL_GROUP:-root}" <<'EOF'
 [Unit]
 Description=Inner Warden - Sensor (host observability)
 After=network.target syslog.target
@@ -732,7 +751,7 @@ WantedBy=multi-user.target
 EOF
 
   log "writing systemd unit: ${AGENT_UNIT}"
-  install_from_stdin "${AGENT_UNIT}" 644 root root <<'EOF'
+  install_from_stdin "${AGENT_UNIT}" 644 "${INSTALL_USER:-root}" "${INSTALL_GROUP:-root}" <<'EOF'
 [Unit]
 Description=Inner Warden - Agent (AI analysis and audit)
 After=network-online.target innerwarden-sensor.service
@@ -910,7 +929,7 @@ _append_integration_collector() {
   tmp="$(mktemp)"
   run_root cat "${SENSOR_CONFIG}" > "$tmp"
   printf '\n%s\n' "$section" >> "$tmp"
-  run_root install -o root -g "${IW_USER}" -m 640 "$tmp" "${SENSOR_CONFIG}"
+  run_root install -o "${INSTALL_USER:-root}" -g "${IW_USER}" -m 640 "$tmp" "${SENSOR_CONFIG}"
   rm -f "$tmp"
 }
 
