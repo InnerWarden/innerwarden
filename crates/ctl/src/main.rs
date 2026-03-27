@@ -1029,8 +1029,19 @@ enum GdprCommand {
 // ---------------------------------------------------------------------------
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     let registry = CapabilityRegistry::default_all();
+
+    // macOS uses /usr/local/etc instead of /etc for config files
+    if cfg!(target_os = "macos") {
+        let macos_cfg = Path::new("/usr/local/etc/innerwarden");
+        if cli.sensor_config == Path::new("/etc/innerwarden/config.toml") {
+            cli.sensor_config = macos_cfg.join("config.toml");
+        }
+        if cli.agent_config == Path::new("/etc/innerwarden/agent.toml") {
+            cli.agent_config = macos_cfg.join("agent.toml");
+        }
+    }
 
     match cli.command {
         Command::Harden { verbose } => harden::cmd_harden(verbose),
@@ -3319,9 +3330,26 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
         println!();
         match choice.trim().to_lowercase().as_str() {
             "1" | "" => {
-                if let Err(e) = cmd_ai_install(cli, "qwen3-coder:480b", None, true) {
-                    println!("  Could not configure Ollama automatically: {e:#}");
-                    println!("  Run later:  innerwarden ai install");
+                // Try local Ollama first, fall back to cloud install
+                let local_models = fetch_models("http://localhost:11434", "", "ollama");
+                if !local_models.is_empty() {
+                    println!("Found {} local Ollama models:\n", local_models.len());
+                    for (i, m) in local_models.iter().enumerate() {
+                        println!("  {}. {}", i + 1, m);
+                    }
+                    println!();
+                    let mc = prompt(&format!("Model [1-{}, default=1]", local_models.len()))?;
+                    let idx = mc.trim().parse::<usize>().unwrap_or(1)
+                        .saturating_sub(1).min(local_models.len() - 1);
+                    if let Err(e) = cmd_configure_ai(cli, "ollama", None, Some(&local_models[idx]), None) {
+                        println!("  Could not configure local Ollama: {e:#}");
+                    }
+                } else {
+                    println!("Ollama not detected locally. Setting up Ollama cloud...\n");
+                    if let Err(e) = cmd_ai_install(cli, "qwen3-coder:480b", None, true) {
+                        println!("  Could not configure Ollama automatically: {e:#}");
+                        println!("  Run later:  innerwarden ai install");
+                    }
                 }
             }
             "2" => {
