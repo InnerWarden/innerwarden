@@ -13,15 +13,12 @@ use tracing::info;
 // Skill types
 // ---------------------------------------------------------------------------
 
-/// Tier determines whether a skill is open-source or requires a premium license.
+/// Tier determines the availability of a skill.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SkillTier {
-    /// Free and open-source - community contributions welcome.
+    /// Free and open-source — all skills are open.
     Open,
-    /// Premium feature - requires a license or future subscription.
-    /// Current premium stubs log a friendly message and return success without acting.
-    Premium,
 }
 
 /// Context passed to a skill when it is executed.
