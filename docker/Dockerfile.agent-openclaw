@@ -33,6 +33,7 @@ RUN apt-get update && \
 
 RUN git clone --depth 1 https://github.com/openclaw/openclaw.git .
 RUN pnpm install --frozen-lockfile
+RUN pnpm canvas:a2ui:bundle || true
 RUN pnpm build:docker
 RUN OPENCLAW_PREFER_PNPM=1 pnpm ui:build || true
 RUN CI=true pnpm prune --prod
