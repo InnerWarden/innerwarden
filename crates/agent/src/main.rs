@@ -2597,8 +2597,6 @@ async fn process_incidents(
                             alternatives: vec![],
                             estimated_threat: "high".into(),
                         };
-                        blocked_set.insert(ip.clone());
-                        state.blocklist.insert(ip.clone());
                         if let Some(key) =
                             decision_cooldown_key_for_decision(incident, &auto_decision)
                         {
@@ -2613,6 +2611,16 @@ async fn process_incidents(
                         } else {
                             ("skipped: responder disabled".to_string(), false)
                         };
+                        // Only mark as blocked if the execution actually succeeded.
+                        // Previously this was BEFORE execute_decision, so failed blocks
+                        // (e.g., XDP map missing) still marked the IP as "blocked",
+                        // causing the AI gate to skip all future detections for this IP.
+                        if !execution_result.starts_with("skipped") && !execution_result.starts_with("rate-limited") {
+                            blocked_set.insert(ip.clone());
+                            state.blocklist.insert(ip.clone());
+                        } else {
+                            warn!(ip, execution_result, "AbuseIPDB auto-block: execution failed, IP NOT marked as blocked");
+                        }
                         if let Some(writer) = &mut state.decision_writer {
                             let entry = decisions::build_entry(
                                 &incident.incident_id,
