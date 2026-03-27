@@ -28,7 +28,7 @@ const PAYLOAD_READ_TIMEOUT_MS: u64 = 700;
 const DEFAULT_LOCK_FILE: &str = "listener-active.lock";
 const SANDBOX_GRACE_SECS: u64 = 30;
 
-/// Premium honeypot skill.
+/// Honeypot skill.
 ///
 /// Modes:
 /// - `demo`: controlled marker only.
@@ -302,14 +302,14 @@ impl ResponseSkill for Honeypot {
         "honeypot"
     }
     fn name(&self) -> &'static str {
-        "Honeypot (Premium)"
+        "Honeypot"
     }
     fn description(&self) -> &'static str {
         "Runs in demo mode or in bounded real listener mode with multi-service decoys, \
          selective redirection, and lightweight forensic artifacts."
     }
     fn tier(&self) -> SkillTier {
-        SkillTier::Premium
+        SkillTier::Open
     }
     fn applicable_to(&self) -> &'static [&'static str] {
         &[]

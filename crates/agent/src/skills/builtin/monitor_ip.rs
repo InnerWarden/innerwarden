@@ -13,9 +13,9 @@ const DEFAULT_CAPTURE_DIR: &str = "/var/lib/innerwarden/monitoring";
 const CAPTURE_TIMEOUT_SECS: u64 = 30;
 const CAPTURE_MAX_PACKETS: u64 = 200;
 
-/// Premium skill: capture bounded network traffic for a target IP without blocking.
+/// Capture bounded network traffic for a target IP without blocking.
 ///
-/// This implementation performs a short-lived tcpdump capture and stores:
+/// Performs a short-lived tcpdump capture and stores:
 /// - `.pcap` with captured packets
 /// - `.txt` sidecar with incident metadata
 pub struct MonitorIp;
@@ -25,15 +25,15 @@ impl ResponseSkill for MonitorIp {
         "monitor-ip"
     }
     fn name(&self) -> &'static str {
-        "Shadow-monitor IP (Premium)"
+        "Shadow-monitor IP"
     }
     fn description(&self) -> &'static str {
         "Captures bounded traffic for the target IP without blocking it, writing a .pcap \
          and metadata sidecar for later analysis. Useful to gather evidence before blocking. \
-         [PREMIUM] Requires tcpdump privileges."
+         Requires tcpdump privileges."
     }
     fn tier(&self) -> SkillTier {
-        SkillTier::Premium
+        SkillTier::Open
     }
     fn applicable_to(&self) -> &'static [&'static str] {
         &[]
