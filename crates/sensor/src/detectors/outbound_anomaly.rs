@@ -162,6 +162,13 @@ impl OutboundAnomalyDetector {
             return None;
         }
 
+        // Skip network-heavy infrastructure processes (reverse proxies, monitors)
+        let comm_base = comm.split('/').next_back().unwrap_or(comm);
+        if matches!(comm_base, "nginx" | "haproxy" | "envoy" | "caddy" | "traefik"
+            | "gomon" | "prometheus" | "telegraf" | "node_export") {
+            return None;
+        }
+
         let now = event.ts;
         let flood_cutoff = now - self.flood_window;
         let spray_cutoff = now - self.spray_window;

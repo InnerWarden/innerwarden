@@ -332,6 +332,9 @@ const LEGITIMATE_ESCALATION: &[&str] = &[
     "logrotate",
     "run-parts",
     "anacron",
+    "innerwarden",   // our own agent/sensor using sudo for bpftool/ufw
+    "innerwarden-ag", // truncated comm (16 char limit)
+    "innerwarden-se",
 ];
 
 /// Convert a kernel privilege escalation event to an Inner Warden Event.

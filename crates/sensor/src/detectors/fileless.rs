@@ -62,6 +62,16 @@ impl FilelessDetector {
             .as_str()
             .unwrap_or("unknown")
             .to_string();
+
+        // Container runtimes (runc, crun, containerd-shim) legitimately execute
+        // from memfd/procfs paths. Not fileless malware.
+        if comm == "runc"
+            || comm.starts_with("containerd")
+            || comm == "crun"
+            || comm.starts_with("docker")
+        {
+            return None;
+        }
         let container_id = event.details["container_id"]
             .as_str()
             .map(|s| s.to_string());
