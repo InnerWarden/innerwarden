@@ -505,10 +505,6 @@ pub fn innerwarden_connect(ctx: TracePointContext) -> u32 {
 }
 
 fn try_connect(ctx: &TracePointContext) -> Result<(), i64> {
-    if is_comm_allowed(1) || is_cgroup_allowed() {
-        return Ok(());
-    }
-
     // sys_enter_connect args: [fd, uservaddr, addrlen]
     let addr_ptr: *const u8 = unsafe { ctx.read_at(24)? };
 
@@ -528,14 +524,27 @@ fn try_connect(ctx: &TracePointContext) -> Result<(), i64> {
     let port = u16::from_be_bytes([sa_buf[2], sa_buf[3]]);
     let addr = u32::from_ne_bytes([sa_buf[4], sa_buf[5], sa_buf[6], sa_buf[7]]);
 
-    // Skip loopback (127.x.x.x) and unspecified (0.0.0.0)
+    // Kill chain: ALWAYS set the SOCKET flag, regardless of allowlists,
+    // loopback, or rate limiting. The chain flag tracks attack patterns —
+    // filtering here would let attackers evade detection by using localhost
+    // or allowlisted process names.
+    let pid = bpf_get_current_pid_tgid() as u32;
+    chain_flag(pid, CHAIN_SOCKET);
+
+    // Now apply normal noise filters for EVENT emission only.
+    // The chain flag is already set above — these filters only control
+    // whether the event is sent to the ring buffer.
+    if is_comm_allowed(1) || is_cgroup_allowed() {
+        return Ok(());
+    }
+
+    // Skip loopback (127.x.x.x) and unspecified (0.0.0.0) for event emission
     let first_octet = sa_buf[4];
     if first_octet == 127 || addr == 0 {
         return Ok(());
     }
 
     let pid_tgid = bpf_get_current_pid_tgid();
-    let pid = pid_tgid as u32;
     let tgid = (pid_tgid >> 32) as u32;
     let uid = bpf_get_current_uid_gid() as u32;
     let ts = unsafe { bpf_ktime_get_ns() };
@@ -561,9 +570,6 @@ fn try_connect(ctx: &TracePointContext) -> Result<(), i64> {
         event.comm[..comm.len().min(MAX_COMM_LEN)]
             .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
     }
-
-    // Kill chain: mark this PID as having made an outbound connection
-    chain_flag(pid, CHAIN_SOCKET);
 
     entry.submit(0);
 
@@ -1348,9 +1354,6 @@ pub fn innerwarden_dup(ctx: TracePointContext) -> u32 {
 
 #[inline(always)]
 fn try_dup(ctx: &TracePointContext) -> Result<(), i64> {
-    if is_comm_allowed(9) || is_cgroup_allowed() {
-        return Ok(());
-    }
     // sys_enter_dup2 args: [oldfd, newfd]  /  dup3: [oldfd, newfd, flags]
     let oldfd: u32 = unsafe { ctx.read_at(16)? };
     let newfd: u32 = unsafe { ctx.read_at(20)? };
@@ -1358,7 +1361,21 @@ fn try_dup(ctx: &TracePointContext) -> Result<(), i64> {
     if newfd > 2 {
         return Ok(());
     }
+
+    // Kill chain: ALWAYS set dup flags before any filtering.
     let pid = bpf_get_current_pid_tgid() as u32;
+    match newfd {
+        0 => chain_flag(pid, CHAIN_DUP_STDIN),
+        1 => chain_flag(pid, CHAIN_DUP_STDOUT),
+        2 => chain_flag(pid, CHAIN_DUP_STDERR),
+        _ => {}
+    }
+
+    // Noise filter for EVENT emission — chain flag already set above.
+    if is_comm_allowed(9) || is_cgroup_allowed() {
+        return Ok(());
+    }
+
     let uid = bpf_get_current_uid_gid() as u32;
     let ts = unsafe { bpf_ktime_get_ns() };
     let mut entry = match EVENTS.reserve::<DupEvent>(0) {
@@ -1376,13 +1393,6 @@ fn try_dup(ctx: &TracePointContext) -> Result<(), i64> {
     if let Ok(comm) = bpf_get_current_comm() {
         event.comm[..comm.len().min(MAX_COMM_LEN)]
             .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
-    }
-    // Kill chain: track fd redirection
-    match newfd {
-        0 => chain_flag(pid, CHAIN_DUP_STDIN),
-        1 => chain_flag(pid, CHAIN_DUP_STDOUT),
-        2 => chain_flag(pid, CHAIN_DUP_STDERR),
-        _ => {}
     }
     entry.submit(0);
     Ok(())
