@@ -14,7 +14,7 @@
 ![AI Optional](https://img.shields.io/badge/AI-optional-lightgrey)
 [![Featured on GitHub Awesome](https://img.shields.io/badge/Featured-GitHub%20Awesome-blue)](https://www.youtube.com/watch?v=i9YpWp0hXgg&t=315)
 
-Inner Warden is an autonomous security agent for Linux and macOS. It detects attacks, blocks them at the kernel level, and responds automatically when you allow it. 22 eBPF kernel hooks. 36 detectors. 10 response skills. No cloud. No dependencies. Just two Rust daemons and a CLI.
+Inner Warden is an autonomous security agent for Linux and macOS. It detects attacks, blocks them at the kernel level, and responds automatically when you allow it. 22 eBPF kernel hooks. 36 detectors. 12 response skills. Mesh collaborative defense. No cloud. No dependencies. Just two Rust daemons and a CLI.
 
 ```bash
 curl -fsSL https://innerwarden.com/install | sudo bash
@@ -62,13 +62,14 @@ https://github.com/user-attachments/assets/6ea1e124-52c2-48fe-8600-4b2f3d670116
 
 ```
                          ┌─────────────────────────────────────────────────────────────┐
+                         ┌─────────────────────────────────────────────────────────────┐
                          │                        KERNEL                               │
                          │                                                             │
                          │  ┌──────────────┐  ┌──────────┐  ┌───────┐  ┌───────────┐  │
-                         │  │ 18 tracepoints│  │ 2 kprobes│  │  LSM  │  │    XDP    │  │
-                         │  │  execve,      │  │ commit_  │  │ block │  │ wire-speed│  │
-                         │  │  connect,     │  │ creds,   │  │ /tmp  │  │ IP drop   │  │
-                         │  │  openat, ...  │  │ exit     │  │ exec  │  │ 10M+ pps  │  │
+                         │  │19 tracepoints │  │ 1 kprobe │  │  LSM  │  │    XDP    │  │
+                         │  │  execve,      │  │ commit_  │  │ kill  │  │ wire-speed│  │
+                         │  │  connect,     │  │ creds    │  │ chain │  │ IP drop   │  │
+                         │  │  openat, ...  │  │          │  │ 8 pat │  │ 10M+ pps  │  │
                          │  └──────┬───────┘  └────┬─────┘  └───┬───┘  └─────┬─────┘  │
                          │         │               │            │            │         │
                          │         └───────┬───────┘            │            │         │
@@ -99,10 +100,6 @@ https://github.com/user-attachments/assets/6ea1e124-52c2-48fe-8600-4b2f3d670116
 │              └───────────┬───────────┘                    │    │            │
 └──────────────────────────┼────────────────────────────────┘    │            │
                            │                                     │            │
-                    ┌──────▼──────┐                               │            │
-                    │Redis Streams│                               │            │
-                    └──────┬──────┘                               │            │
-                           │                                     │            │
 ┌──────────────────────────┼─────────────────────────────────────┼────────────┼──┐
 │                   AGENT  │                                     │            │  │
 │                          ▼                                     │            │  │
@@ -121,12 +118,13 @@ https://github.com/user-attachments/assets/6ea1e124-52c2-48fe-8600-4b2f3d670116
 │                       ▼                                        │            │  │
 │              ┌─────────────────┐     ┌──────────────┐          │            │  │
 │              │ Skill Executor  │────►│ LSM enforce  │◄─────────┘            │  │
-│              │                 │     │ XDP block    │◄──────────────────────┘  │
-│              │ block_ip (fw)   │     └──────────────┘                         │
-│              │ suspend_sudo    │     ┌──────────────┐                         │
-│              │ kill_process    │────►│ Cloudflare   │                         │
-│              │ honeypot        │     │ AbuseIPDB    │                         │
-│              │ monitor_ip      │     └──────────────┘                         │
+│              │ 12 skills       │     │ XDP block    │◄──────────────────────┘  │
+│              │                 │     └──────────────┘                         │
+│              │ block_ip (5)    │     ┌──────────────┐   ┌──────────────┐      │
+│              │ kill_chain_resp │────►│ Cloudflare   │   │ Mesh Network │      │
+│              │ suspend_sudo   │     │ AbuseIPDB    │   │ broadcast to │      │
+│              │ kill_process    │     └──────────────┘   │ peer nodes   │      │
+│              │ honeypot        │                        └──────────────┘      │
 │              └────────┬────────┘                                              │
 │                       │                                                       │
 │          ┌────────────┼────────────┐                                          │
@@ -196,8 +194,9 @@ When a threat is confirmed, Inner Warden picks the right tool.
 | **Monitor IP** | Bounded tcpdump capture for forensic analysis |
 | **Block IP (Cloudflare)** | Edge-level blocking via Cloudflare API, stops traffic before it reaches your server |
 | **Report to AbuseIPDB** | Shares attacker IPs with community threat intelligence |
+| **Kill chain response** | Kills process tree + blocks C2 IP via XDP + captures forensics (ss, /proc) |
 
-Blocking is **layered**: a single block decision triggers XDP (instant kernel drop) + firewall (persists reboot) + Cloudflare edge (stops traffic upstream) + AbuseIPDB report (community intelligence). All skills are bounded, audited, and reversible.
+Blocking is **layered**: a single block decision triggers XDP (instant kernel drop) + firewall (persists reboot) + mesh broadcast (peer nodes block too) + Cloudflare edge (stops traffic upstream) + AbuseIPDB report (community intelligence). Kill chain incidents trigger the `kill-chain-response` skill: kill process tree + block C2 via XDP + capture forensics. All skills are bounded, audited, and reversible.
 
 ---
 
@@ -249,9 +248,8 @@ Plus: `docker_anomaly`, `osquery_anomaly`, `suricata_alert`, `search_abuse`, `cr
 **Sensor**: deterministic signal collection. No AI, no HTTP. 15 collectors (auth.log, journald, Docker events, file integrity, firmware integrity, nginx access/error, shell audit, macOS unified log, syslog firewall, eBPF syscall tracing with 22 kernel hooks). Optional: Suricata, osquery, Wazuh, AWS CloudTrail, Falco. Events flow through Redis Streams to the agent.
 
 **eBPF**: 22 kernel hooks running inside Linux (5.8+, CO-RE/BTF portable):
-- **18 tracepoints**: execve, connect, openat, ptrace, setuid, bind, mount, memfd_create, init_module, dup2, listen, mprotect, clone, unlinkat, renameat2, kill, prctl, accept4
+- **19 tracepoints**: execve, connect, openat, ptrace, setuid, bind, mount, memfd_create, init_module, dup2/dup3, listen, mprotect, clone, unlinkat, renameat2, kill, prctl, accept4, sched_process_exit
 - **1 kprobe** (`commit_creds`): detects privilege escalation before any log is written
-- **1 kprobe** (`sched_process_exit`): tracks process lifecycle for kill chain correlation
 - **LSM enforcement** (`bprm_check_security`): blocks execution from /tmp and /dev/shm at the kernel level, plus **kill chain detection** with 8 generic patterns (reverse shell, bind shell, code injection, exploit-to-shell, inject-to-shell, exploit-to-C2, full exploit chain, data exfiltration) blocked at execve. No CVE signatures needed. All 8 patterns tested and blocking on production.
 - **XDP program**: wire-speed IP blocking at the network driver (10M+ pps drop rate)
 
