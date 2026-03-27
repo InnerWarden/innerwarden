@@ -427,8 +427,8 @@ if [[ -f "${SENSOR_CONFIG}" && -f "${AGENT_CONFIG}" ]]; then
   log "backup created: ${SENSOR_CONFIG}.bak.${BAKSUFFIX}"
   run_root cp "${AGENT_CONFIG}" "${AGENT_CONFIG}.bak.${BAKSUFFIX}"
   log "backup created: ${AGENT_CONFIG}.bak.${BAKSUFFIX}"
-  [ -f "${AGENT_ENV}" ] && run_root cp "${AGENT_ENV}" "${AGENT_ENV}.bak.${BAKSUFFIX}" 2>/dev/null || true
-  log "backup created: ${AGENT_ENV}.bak.${BAKSUFFIX}"
+  [ -f "${AGENT_ENV}" ] && run_root cp "${AGENT_ENV}" "${AGENT_ENV}.bak.${BAKSUFFIX}" 2>/dev/null \
+   && log "backup created: ${AGENT_ENV}.bak.${BAKSUFFIX}" || true
 fi
 
 if [[ "${EXISTING_INSTALL}" == "true" ]]; then
