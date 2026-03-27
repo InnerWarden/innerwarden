@@ -463,12 +463,13 @@ fn attach_lsm(bpf: &mut aya::Ebpf) {
         }
     }
 
-    // Pin the LSM_POLICY map so the agent can enable/disable enforcement
+    // Pin the LSM_POLICY map so the agent can enable/disable enforcement.
+    // Remove stale pin first — on sensor restart, the old pin points to a dead
+    // map from the previous instance, causing map.pin() to fail with EEXIST.
     if let Some(map) = bpf.map_mut("LSM_POLICY") {
+        let _ = std::fs::remove_file(LSM_POLICY_PIN);
         if let Err(e) = map.pin(LSM_POLICY_PIN) {
-            if !std::path::Path::new(LSM_POLICY_PIN).exists() {
-                warn!(error = %e, "LSM: failed to pin policy map");
-            }
+            warn!(error = %e, "LSM: failed to pin policy map");
         } else {
             info!("eBPF: LSM policy map pinned at {LSM_POLICY_PIN}");
             info!("eBPF: LSM enforcement is OFF by default - enable via: bpftool map update pinned {LSM_POLICY_PIN} key 0 0 0 0 value 1 0 0 0");
@@ -526,10 +527,9 @@ fn attach_xdp(bpf: &mut aya::Ebpf) {
         return;
     }
     if let Some(map) = bpf.map_mut("BLOCKLIST") {
+        let _ = std::fs::remove_file(XDP_BLOCKLIST_PIN);
         if let Err(e) = map.pin(XDP_BLOCKLIST_PIN) {
-            if !std::path::Path::new(XDP_BLOCKLIST_PIN).exists() {
-                warn!(error = %e, "XDP: failed to pin blocklist map");
-            }
+            warn!(error = %e, "XDP: failed to pin blocklist map");
         } else {
             info!("eBPF: XDP blocklist pinned at {XDP_BLOCKLIST_PIN}");
         }
@@ -537,10 +537,9 @@ fn attach_xdp(bpf: &mut aya::Ebpf) {
 
     // Pin the ALLOWLIST map for operator-managed never-drop IPs
     if let Some(map) = bpf.map_mut("ALLOWLIST") {
+        let _ = std::fs::remove_file(XDP_ALLOWLIST_PIN);
         if let Err(e) = map.pin(XDP_ALLOWLIST_PIN) {
-            if !std::path::Path::new(XDP_ALLOWLIST_PIN).exists() {
-                warn!(error = %e, "XDP: failed to pin allowlist map");
-            }
+            warn!(error = %e, "XDP: failed to pin allowlist map");
         } else {
             info!("eBPF: XDP allowlist pinned at {XDP_ALLOWLIST_PIN}");
         }

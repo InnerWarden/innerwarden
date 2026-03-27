@@ -26,7 +26,7 @@ use aya_ebpf::{
     helpers::{
         bpf_get_current_cgroup_id, bpf_get_current_comm, bpf_get_current_pid_tgid,
         bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_kernel,
-        bpf_probe_read_user_str_bytes,
+        bpf_probe_read_user, bpf_probe_read_user_str_bytes,
     },
     macros::{kprobe, lsm, map, tracepoint, xdp},
     maps::{HashMap, RingBuf},
@@ -508,11 +508,12 @@ fn try_connect(ctx: &TracePointContext) -> Result<(), i64> {
     // sys_enter_connect args: [fd, uservaddr, addrlen]
     let addr_ptr: *const u8 = unsafe { ctx.read_at(24)? };
 
-    // Read sockaddr_in (first 2 bytes = family, next 2 = port, next 4 = addr)
-    let mut sa_buf = [0u8; 16];
-    unsafe {
-        let _ = bpf_probe_read_user_str_bytes(addr_ptr, &mut sa_buf);
-    }
+    // Read sockaddr_in: family(2) + port(2) + addr(4) = 8 bytes minimum.
+    // Use bpf_probe_read_user (NOT str_bytes) — sockaddr_in is binary data
+    // and str_bytes stops at null bytes, corrupting port/addr fields.
+    let sa_buf = unsafe {
+        bpf_probe_read_user(addr_ptr as *const [u8; 8]).unwrap_or([0u8; 8])
+    };
 
     let family = u16::from_ne_bytes([sa_buf[0], sa_buf[1]]);
 
@@ -592,14 +593,6 @@ pub fn innerwarden_openat(ctx: TracePointContext) -> u32 {
 }
 
 fn try_openat(ctx: &TracePointContext) -> Result<(), i64> {
-    if is_comm_allowed(2) || is_cgroup_allowed() {
-        return Ok(());
-    }
-    let pid = bpf_get_current_pid_tgid() as u32;
-    if is_rate_limited(pid) {
-        return Ok(());
-    }
-
     // sys_enter_openat args: [dfd, filename, flags, mode]
     let filename_ptr: *const u8 = unsafe { ctx.read_at(24)? };
 
@@ -608,7 +601,7 @@ fn try_openat(ctx: &TracePointContext) -> Result<(), i64> {
         let _ = bpf_probe_read_user_str_bytes(filename_ptr, &mut filename_buf);
     }
 
-    // Only emit events for sensitive paths (kernel-space filtering)
+    // Sensitive path check — needed for kill chain before noise filters
     let is_sensitive = {
         let f = &filename_buf;
         // /etc/passwd, /etc/shadow, /etc/sudoers*
@@ -619,13 +612,24 @@ fn try_openat(ctx: &TracePointContext) -> Result<(), i64> {
         || (f[0] == b'/' && f[1] == b'h' && f[2] == b'o' && f[3] == b'm' && f[4] == b'e')
     };
 
+    // Kill chain: ALWAYS set sensitive_read flag before noise filters.
+    // Filtering here would let attackers evade DATA_EXFIL detection.
+    if is_sensitive {
+        let pid = bpf_get_current_pid_tgid() as u32;
+        chain_flag(pid, CHAIN_SENSITIVE_READ);
+    }
+
+    // Noise filters for EVENT emission only — chain flag already set above.
+    if is_comm_allowed(2) || is_cgroup_allowed() {
+        return Ok(());
+    }
     if !is_sensitive {
         return Ok(());
     }
-
-    // Set kill chain flag: this PID accessed a sensitive file.
-    // If it also has CHAIN_SOCKET, the DATA_EXFIL pattern will match.
-    chain_flag(pid, CHAIN_SENSITIVE_READ);
+    let pid = bpf_get_current_pid_tgid() as u32;
+    if is_rate_limited(pid) {
+        return Ok(());
+    }
 
     let pid_tgid = bpf_get_current_pid_tgid();
     let pid = pid_tgid as u32;
@@ -985,10 +989,6 @@ pub fn innerwarden_ptrace(ctx: TracePointContext) -> u32 {
 
 #[inline(always)]
 fn try_ptrace(ctx: &TracePointContext) -> Result<(), i64> {
-    if is_comm_allowed(3) || is_cgroup_allowed() {
-        return Ok(());
-    }
-
     // sys_enter_ptrace args: [request, pid, addr, data]
     let request: u64 = unsafe { ctx.read_at(16)? };
     let target_pid: u64 = unsafe { ctx.read_at(24)? };
@@ -1002,7 +1002,17 @@ fn try_ptrace(ctx: &TracePointContext) -> Result<(), i64> {
         return Ok(());
     }
 
+    // Kill chain: ALWAYS set ptrace flag before noise filters.
+    // Filtering here would let attackers evade CODE_INJECT/INJECT_SHELL/
+    // FULL_EXPLOIT detection by using allowlisted process names.
     let pid = bpf_get_current_pid_tgid() as u32;
+    chain_flag(pid, CHAIN_PTRACE);
+
+    // Noise filter for EVENT emission only — chain flag already set above.
+    if is_comm_allowed(3) || is_cgroup_allowed() {
+        return Ok(());
+    }
+
     let uid = bpf_get_current_uid_gid() as u32;
     let ts = unsafe { bpf_ktime_get_ns() };
 
@@ -1025,7 +1035,6 @@ fn try_ptrace(ctx: &TracePointContext) -> Result<(), i64> {
             .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
     }
 
-    chain_flag(pid, CHAIN_PTRACE);
     entry.submit(0);
     Ok(())
 }
@@ -1107,18 +1116,15 @@ pub fn innerwarden_bind(ctx: TracePointContext) -> u32 {
 
 #[inline(always)]
 fn try_bind(ctx: &TracePointContext) -> Result<(), i64> {
-    if is_comm_allowed(5) || is_cgroup_allowed() {
-        return Ok(());
-    }
-
     // sys_enter_bind args: [fd, umyaddr, addrlen]
     let addr_ptr: *const u8 = unsafe { ctx.read_at(24)? };
 
-    // Read sockaddr_in: family(2) + port(2) + addr(4)
-    let mut sa_buf = [0u8; 16];
-    unsafe {
-        let _ = bpf_probe_read_user_str_bytes(addr_ptr, &mut sa_buf);
-    }
+    // Read sockaddr_in: family(2) + port(2) + addr(4) = 8 bytes.
+    // Use bpf_probe_read_user (NOT str_bytes) — sockaddr_in is binary data
+    // and str_bytes stops at null bytes, corrupting port/addr fields.
+    let sa_buf = unsafe {
+        bpf_probe_read_user(addr_ptr as *const [u8; 8]).unwrap_or([0u8; 8])
+    };
 
     let family = u16::from_ne_bytes([sa_buf[0], sa_buf[1]]);
 
@@ -1130,13 +1136,20 @@ fn try_bind(ctx: &TracePointContext) -> Result<(), i64> {
     let port = u16::from_be_bytes([sa_buf[2], sa_buf[3]]);
     let addr = u32::from_ne_bytes([sa_buf[4], sa_buf[5], sa_buf[6], sa_buf[7]]);
 
-    // Skip ephemeral port range (32768+) to reduce noise from normal apps
-    // Focus on low ports and common backdoor ports
     if port == 0 {
         return Ok(());
     }
 
+    // Kill chain: ALWAYS set bind flag before noise filters.
+    // Filtering here would let attackers evade BIND_SHELL detection.
     let pid = bpf_get_current_pid_tgid() as u32;
+    chain_flag(pid, CHAIN_BIND);
+
+    // Noise filter for EVENT emission only — chain flag already set above.
+    if is_comm_allowed(5) || is_cgroup_allowed() {
+        return Ok(());
+    }
+
     let uid = bpf_get_current_uid_gid() as u32;
     let ts = unsafe { bpf_ktime_get_ns() };
 
@@ -1162,7 +1175,6 @@ fn try_bind(ctx: &TracePointContext) -> Result<(), i64> {
             .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
     }
 
-    chain_flag(pid, CHAIN_BIND);
     entry.submit(0);
     Ok(())
 }
@@ -1418,12 +1430,19 @@ pub fn innerwarden_listen(ctx: TracePointContext) -> u32 {
 
 #[inline(always)]
 fn try_listen(ctx: &TracePointContext) -> Result<(), i64> {
+    // sys_enter_listen args: [fd, backlog]
+    let backlog: u32 = unsafe { ctx.read_at(20)? };
+
+    // Kill chain: ALWAYS set listen flag before noise filters.
+    // Filtering here would let attackers evade BIND_SHELL detection.
+    let pid = bpf_get_current_pid_tgid() as u32;
+    chain_flag(pid, CHAIN_LISTEN);
+
+    // Noise filter for EVENT emission only — chain flag already set above.
     if is_comm_allowed(10) || is_cgroup_allowed() {
         return Ok(());
     }
-    // sys_enter_listen args: [fd, backlog]
-    let backlog: u32 = unsafe { ctx.read_at(20)? };
-    let pid = bpf_get_current_pid_tgid() as u32;
+
     let uid = bpf_get_current_uid_gid() as u32;
     let ts = unsafe { bpf_ktime_get_ns() };
     let mut entry = match EVENTS.reserve::<ListenEvent>(0) {
@@ -1441,7 +1460,6 @@ fn try_listen(ctx: &TracePointContext) -> Result<(), i64> {
         event.comm[..comm.len().min(MAX_COMM_LEN)]
             .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
     }
-    chain_flag(pid, CHAIN_LISTEN);
     entry.submit(0);
     Ok(())
 }
@@ -1463,9 +1481,6 @@ pub fn innerwarden_mprotect(ctx: TracePointContext) -> u32 {
 
 #[inline(always)]
 fn try_mprotect(ctx: &TracePointContext) -> Result<(), i64> {
-    if is_comm_allowed(11) || is_cgroup_allowed() {
-        return Ok(());
-    }
     // sys_enter_mprotect args: [addr, len, prot]
     let addr: u64 = unsafe { ctx.read_at(16)? };
     let len: u64 = unsafe { ctx.read_at(24)? };
@@ -1474,7 +1489,17 @@ fn try_mprotect(ctx: &TracePointContext) -> Result<(), i64> {
     if prot & PROT_EXEC == 0 {
         return Ok(());
     }
+
+    // Kill chain: ALWAYS set mprotect flag before noise filters.
+    // Filtering here would let attackers evade CODE_INJECT/EXPLOIT_SHELL/
+    // EXPLOIT_C2/FULL_EXPLOIT detection.
     let pid = bpf_get_current_pid_tgid() as u32;
+    chain_flag(pid, CHAIN_MPROTECT);
+
+    // Noise filter for EVENT emission only — chain flag already set above.
+    if is_comm_allowed(11) || is_cgroup_allowed() {
+        return Ok(());
+    }
     if is_rate_limited(pid) {
         return Ok(());
     }
@@ -1497,7 +1522,6 @@ fn try_mprotect(ctx: &TracePointContext) -> Result<(), i64> {
         event.comm[..comm.len().min(MAX_COMM_LEN)]
             .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
     }
-    chain_flag(pid, CHAIN_MPROTECT);
     entry.submit(0);
     Ok(())
 }
@@ -1911,10 +1935,9 @@ fn try_dispatch_connect(ctx: &RawTracePointContext) -> Result<(), i64> {
         return Ok(());
     }
     let addr_ptr: *const u8 = unsafe { read_syscall_arg(ctx, 1)? as *const u8 };
-    let mut sa_buf = [0u8; 16];
-    unsafe {
-        let _ = bpf_probe_read_user_str_bytes(addr_ptr, &mut sa_buf);
-    }
+    let sa_buf = unsafe {
+        bpf_probe_read_user(addr_ptr as *const [u8; 8]).unwrap_or([0u8; 8])
+    };
     let family = u16::from_ne_bytes([sa_buf[0], sa_buf[1]]);
     if family != 2 {
         return Ok(());
