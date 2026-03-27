@@ -1,6 +1,67 @@
-# Agent Capabilities Wiki - New Sections (v0.4.5)
+# Agent Capabilities Wiki - New Sections (v0.5.0)
 
 Sections below should be added to the [Agent Capabilities](https://github.com/InnerWarden/innerwarden/wiki/Agent-Capabilities) wiki page.
+
+---
+
+## Kill Chain Integration (v0.5.0)
+
+### Kill Chain Response Skill
+
+New `kill-chain-response` skill performs atomic response when kernel LSM blocks an attack chain:
+1. Kills process tree (`pkill -9 -P {pid}`, `kill -9 {pid}`)
+2. Blocks C2 IP via XDP (`bpftool map update`)
+3. Captures forensics (`ss -tunp`, `/proc/{pid}/` snapshot)
+
+Applicable to: `kill_chain` incidents.
+
+### AI Kill Chain Intelligence
+
+When incidents contain kill chain evidence (`evidence[0].kind` containing "kill_chain"), the AI prompt includes a `KILL CHAIN INTELLIGENCE` section with:
+- Pattern name (REVERSE_SHELL, BIND_SHELL, DATA_EXFIL, etc.)
+- C2 IP and port
+- Process details (PID, UID, comm)
+- Syscall timeline
+- Confidence assessment
+
+### 8 Kill Chain Patterns
+
+| # | Pattern | Bits | Detection |
+|---|---------|------|-----------|
+| 1 | REVERSE_SHELL | socket + dup(stdin) + dup(stdout) | Classic reverse shell |
+| 2 | BIND_SHELL | bind + listen + dup(stdin) + dup(stdout) | Bind shell |
+| 3 | CODE_INJECT | ptrace + mprotect(RWX) | Shellcode injection |
+| 4 | EXPLOIT_SHELL | mprotect(RWX) + dup(stdin) + dup(stdout) | Exploit → shell |
+| 5 | INJECT_SHELL | ptrace + dup(stdin) | Inject → shell |
+| 6 | EXPLOIT_C2 | mprotect(RWX) + socket | Shellcode phone home |
+| 7 | FULL_EXPLOIT | mprotect(RWX) + ptrace + socket | Full chain |
+| 8 | DATA_EXFIL | sensitive_read + socket | Data exfiltration |
+
+### IPv6 XDP Blocking
+
+XDP now parses both IPv4 (0x0800) and IPv6 (0x86DD). Separate BPF HashMaps:
+- `BLOCKLIST` / `ALLOWLIST`: u32 key (IPv4)
+- `BLOCKLIST_V6` / `ALLOWLIST_V6`: [u8; 16] key (IPv6)
+
+The `block-ip-xdp` skill auto-detects IP version.
+
+### EFI Runtime Monitoring (EXPERIMENTAL)
+
+Kprobe on `efi_call_rts` monitors UEFI Runtime Services calls. Establishes behavioral baseline of normal firmware/OS interaction. Events tagged as `firmware.efi_call` with severity Debug.
+
+### Telegram Hardening
+
+- 4000-char message limit enforced on all message types
+- Rate limiting: 50ms gap between sends (~20 msg/sec)
+- Bot token sanitized from log output
+- Callback IP validation on quick:block actions
+- Config validation at startup (bot_token, chat_id, daily_summary_hour)
+
+### Dashboard
+
+- Kill chain timeline visualization for incidents with chain evidence
+- Kill chain metrics card in integrations grid
+- `/api/status` includes `kill_chain` counters
 
 ---
 
@@ -22,7 +83,7 @@ The Sensors HUD displays all 15 collectors with live status (detected/active), e
 | 4 | `nginx_access` | nginx Access Log | native | nginx access log - search abuse, UA scanner detection |
 | 5 | `nginx_error` | nginx Error Log | native | nginx error log - web scanner and probe detection |
 | 6 | `exec_audit` | Shell Audit (auditd) | native | auditd EXECVE events - execution guard and shell command trail |
-| 7 | `ebpf` | eBPF Kernel | native | 22 kernel hooks: 19 tracepoints + kprobe (privesc) + LSM (exec block) + XDP (wire-speed IP block) |
+| 7 | `ebpf` | eBPF Kernel | native | 23 kernel hooks: 19 tracepoints + 2 kprobes (privesc + EFI) + LSM (exec block) + XDP (wire-speed IP block) |
 | 8 | `suricata_eve` | Suricata IDS | external | Suricata network IDS alerts (alert, dns, http, tls, anomaly) |
 | 9 | `wazuh_alerts` | Wazuh HIDS | external | Wazuh HIDS/FIM/compliance alerts |
 | 10 | `osquery_log` | osquery | external | osquery differential results (ports, users, crontabs, processes) |
@@ -32,11 +93,11 @@ The Sensors HUD displays all 15 collectors with live status (detected/active), e
 | 14 | `macos_log` | macOS Unified Log | native | macOS unified log stream - auth events, process exec, network |
 | 15 | `falco_log` | Falco Runtime Security | external | Falco kernel-level runtime security alerts (container + host) |
 
-Collectors 11-15 were added in v0.4.5. The eBPF description was corrected from "6 kernel programs" to "22 kernel hooks".
+Collectors 11-15 were added in v0.4.5. The eBPF description was corrected from "6 kernel programs" to "22 kernel hooks". Updated to 23 hooks in v0.5.0 (added EFI kprobe).
 
-### Integration Cards (20)
+### Integration Cards (21)
 
-The Health tab displays 20 integration cards in a 2-column grid. Each card shows ON/OFF badge, NATIVE/EXTERNAL kind, cost note, and a copy-to-clipboard enable/disable command where applicable.
+The Health tab displays 21 integration cards in a 2-column grid. Each card shows ON/OFF badge, NATIVE/EXTERNAL kind, cost note, and a copy-to-clipboard enable/disable command where applicable.
 
 | # | Name | Kind | Description |
 |---|------|------|-------------|
@@ -59,15 +120,16 @@ The Health tab displays 20 integration cards in a 2-column grid. Each card shows
 | 17 | Web Push | native | VAPID-based browser push notifications without Telegram/Slack |
 | 18 | Fail2ban Sync | external | Sync blocked IPs with fail2ban jails for unified ban management |
 | 19 | Shield (DDoS) | native | Packet flood detection + Cloudflare edge push for volumetric attacks |
-| 20 | Threat DNA | native | Attacker fingerprinting and behavioral correlation across sessions |
+| 20 | Threat DNA | native | Attacker fingerprinting and behavioral correlation across sessions (dna_enabled: true; kill chain feeds into DNA) |
+| 21 | Kill Chain | native | 8-pattern attack chain detection with atomic response (kill process tree + XDP block + forensic capture) |
 
-Cards 16-20 were added in v0.4.5. The Integration Advisor now also recommends enabling Mesh.
+Cards 16-20 were added in v0.4.5. Card 21 (Kill Chain) added in v0.5.0. The Integration Advisor now also recommends enabling Mesh.
 
 ### Compliance Tab
 
 Redesigned in v0.4.5 with three new sections above the existing admin actions, advisories, and sessions.
 
-**ISO 27001 Control Mapping** - Maps 12 ISO 27001 Annex A controls to current configuration state. Each control shows met/unmet status and the reason. Controls evaluated:
+**ISO 27001 Control Mapping** - Maps 13 ISO 27001 Annex A controls to current configuration state. Each control shows met/unmet status and the reason. Controls evaluated:
 
 | Control | Name | Condition for "met" |
 |---------|------|---------------------|
@@ -77,10 +139,11 @@ Redesigned in v0.4.5 with three new sections above the existing admin actions, a
 | A.9.1 | Access control | `sudo_protection_enabled = true` |
 | A.10.1 | Cryptography | `chain_length > 0` (decision audit trail uses SHA-256 hash chain) |
 | A.12.1 | Operations security | `enabled = true` (automated response enabled) |
-| A.12.4 | Logging and monitoring | Always met (39+ detectors and audit trail) |
-| A.12.6 | Technical vulnerability management | `execution_guard_enabled = true` |
-| A.13.1 | Network security management | `enabled = true && dry_run = false` (guard mode) |
-| A.16.1 | Incident management | Always met (automated detection, correlation, and response) |
+| A.12.4 | Logging and monitoring | Always met (39+ detectors, 23 eBPF hooks incl. EFI kprobe, and audit trail) |
+| A.12.6 | Technical vulnerability management | `execution_guard_enabled = true` (includes 8 kill chain patterns) |
+| A.13.1 | Network security management | `enabled = true && dry_run = false` (guard mode, IPv4 + IPv6 XDP) |
+| A.13.2 | Information transfer | eBPF kill chain detection active (DATA_EXFIL pattern) |
+| A.16.1 | Incident management | Always met (automated detection, correlation, and response; hardened Telegram delivery) |
 | A.18.1 | Compliance | `retention_decisions_days >= 90` |
 | A.18.2 | Information security reviews | Always met (daily automated security reports) |
 
@@ -123,10 +186,10 @@ Returns hash chain verification, data retention config, and ISO 27001 control ch
         "reason": "Security agent with automated response policy"
       }
     ],
-    "met": 9,
-    "total": 12
+    "met": 10,
+    "total": 13
   },
-  "version": "0.4.5"
+  "version": "0.5.0"
 }
 ```
 
@@ -145,7 +208,13 @@ The following fields were added to the existing `/api/status` response:
     "mesh": false,
     "web_push": false,
     "shield": false,
-    "dna": false
+    "dna": false,
+    "kill_chain": true
+  },
+  "kill_chain": {
+    "patterns_loaded": 8,
+    "chains_detected": 0,
+    "responses_executed": 0
   },
   "retention": {
     "events_days": 7,
@@ -154,7 +223,7 @@ The following fields were added to the existing `/api/status` response:
     "telemetry_days": 14,
     "reports_days": 30
   },
-  "version": "0.4.5"
+  "version": "0.5.0"
 }
 ```
 
@@ -162,6 +231,10 @@ The following fields were added to the existing `/api/status` response:
 - `integrations.web_push` - whether VAPID-based Web Push notifications are configured.
 - `integrations.shield` - whether Shield DDoS detection module is enabled.
 - `integrations.dna` - whether Threat DNA fingerprinting is enabled.
+- `integrations.kill_chain` - whether kill chain detection and response is enabled.
+- `kill_chain.patterns_loaded` - number of kill chain patterns loaded (8).
+- `kill_chain.chains_detected` - total kill chains detected since agent start.
+- `kill_chain.responses_executed` - total kill-chain-response skill executions.
 - `retention.*` - configured data retention periods in days.
 - `version` - agent version from `CARGO_PKG_VERSION`.
 
@@ -179,7 +252,7 @@ Added `version` field to the response:
   "ai_provider": "openai",
   "ai_model": "gpt-4o-mini",
   "mode": "guard",
-  "version": "0.4.5"
+  "version": "0.5.0"
 }
 ```
 
