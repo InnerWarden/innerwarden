@@ -209,6 +209,7 @@ fn action_tag(action: &AiAction) -> &'static str {
         AiAction::KillProcess { .. } => "kill_process",
         AiAction::BlockContainer { .. } => "block_container",
         AiAction::RequestConfirmation { .. } => "request_confirmation",
+        AiAction::KillChainResponse { .. } => "kill_chain_response",
         AiAction::Ignore { .. } => "ignore",
     }
 }

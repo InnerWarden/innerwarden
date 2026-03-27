@@ -505,6 +505,20 @@ fn parse_decision(content: &str) -> Result<AiDecision> {
         "ignore" => AiAction::Ignore {
             reason: raw.reason.clone(),
         },
+        // AI sometimes returns skill IDs instead of action enum names.
+        // Map known skill patterns to the correct AiAction.
+        a if a.starts_with("block-ip") || a.starts_with("block_ip_") => {
+            let ip = raw.target_ip.clone().unwrap_or_default();
+            AiAction::BlockIp {
+                ip,
+                skill_id: raw.action.clone(),
+            }
+        }
+        "kill-chain-response" | "kill_chain_response" => {
+            AiAction::KillChainResponse {
+                reason: raw.reason.clone(),
+            }
+        }
         _ => {
             if raw.action != "ignore" {
                 warn!(action = %raw.action, "unknown AI action - defaulting to ignore");

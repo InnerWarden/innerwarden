@@ -900,6 +900,9 @@ fn decision_cooldown_key_for_decision(
             "container",
             container_id,
         )),
+        ai::AiAction::KillChainResponse { .. } => {
+            Some(decision_cooldown_key("kill_chain_response", detector, "pid", "-"))
+        }
         ai::AiAction::Ignore { .. } | ai::AiAction::RequestConfirmation { .. } => None,
     }
 }
@@ -3163,6 +3166,9 @@ async fn process_incidents(
                     AiAction::BlockContainer { container_id, .. } => {
                         ("Paused container".to_string(), container_id.clone())
                     }
+                    AiAction::KillChainResponse { .. } => {
+                        ("Kill chain response".to_string(), format!("PID {}", incident.incident_id.split(':').nth(2).unwrap_or("-")))
+                    }
                     AiAction::Ignore { .. } => ("Ignored".to_string(), "-".to_string()),
                     AiAction::RequestConfirmation { .. } => {
                         ("Requested confirmation for".to_string(), "-".to_string())
@@ -3629,6 +3635,31 @@ async fn execute_decision(
             } else {
                 (
                     "confirmation requested (no Telegram or webhook configured)".to_string(),
+                    false,
+                )
+            }
+        }
+        AiAction::KillChainResponse { .. } => {
+            let skill_id = "kill-chain-response";
+            if let Some(skill) = state.skill_registry.get(skill_id) {
+                let ctx = skills::SkillContext {
+                    incident: incident.clone(),
+                    target_ip: None,
+                    target_user: None,
+                    target_container: None,
+                    duration_secs: None,
+                    host: incident.host.clone(),
+                    data_dir: data_dir.to_path_buf(),
+                    honeypot: honeypot_runtime(cfg),
+                    ai_provider: state.ai_provider.clone(),
+                };
+                (
+                    skill.execute(&ctx, cfg.responder.dry_run).await.message,
+                    false,
+                )
+            } else {
+                (
+                    "skipped: kill-chain-response skill not available".to_string(),
                     false,
                 )
             }
@@ -4842,6 +4873,8 @@ fn read_last_decisions(data_dir: &Path, today: &str, n: usize) -> String {
             "👁"
         } else if a.contains("kill") || a.contains("Kill") {
             "💀"
+        } else if a.contains("kill_chain") || a.contains("Kill chain") {
+            "🔗"
         } else if a.contains("Ignore") || a.contains("ignore") {
             "🙈"
         } else {
@@ -5901,12 +5934,10 @@ fn should_auto_enable_lsm(incident: &innerwarden_core::incident::Incident) -> bo
 }
 
 /// Enable LSM enforcement by setting key 0 = 1 in the pinned policy map.
+/// Note: no Path::exists() pre-check — the agent runs as non-root and can't
+/// stat /sys/fs/bpf/, but sudo bpftool can access it fine.
 async fn enable_lsm_enforcement() -> Result<(), String> {
     const LSM_POLICY_PIN: &str = "/sys/fs/bpf/innerwarden/lsm_policy";
-
-    if !std::path::Path::new(LSM_POLICY_PIN).exists() {
-        return Err("LSM policy map not found (BPF LSM not loaded)".to_string());
-    }
 
     let output = tokio::process::Command::new("sudo")
         .args([

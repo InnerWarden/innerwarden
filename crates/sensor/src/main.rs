@@ -1009,6 +1009,39 @@ fn process_event(
         stats.events_written += 1;
     }
 
+    // LSM blocked execution → immediate Critical incident.
+    // The eBPF LSM hook already validated the kill chain pattern in-kernel;
+    // promote directly to incident so the agent can auto-enable enforcement,
+    // execute the kill-chain-response skill, and notify.
+    if ev.kind == "lsm.exec_blocked" {
+        use innerwarden_core::incident::Incident;
+        let pid = ev.details.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
+        let comm = ev.details.get("comm").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let filename = ev.details.get("filename").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let incident = Incident {
+            ts: ev.ts,
+            host: ev.host.clone(),
+            incident_id: format!("lsm:kill_chain:{}:{}",
+                pid, ev.ts.format("%Y-%m-%dT%H:%MZ")),
+            severity: Severity::Critical,
+            title: format!("Kill chain blocked: {comm} (PID {pid})"),
+            summary: format!(
+                "Kernel LSM blocked execution: process {comm} (PID {pid}) attempted to run {filename} \
+                 after accumulating kill chain flags. The attack was prevented at kernel level before \
+                 the new process image was loaded."
+            ),
+            evidence: serde_json::json!([ev.details]),
+            recommended_checks: vec![
+                "Investigate the parent process that accumulated the kill chain".to_string(),
+                "Check network connections from this PID for C2 communication".to_string(),
+                "Review other processes from the same user/session".to_string(),
+            ],
+            tags: ev.tags.clone(),
+            entities: ev.entities.clone(),
+        };
+        write_incident(writer, stats, incident);
+    }
+
     // Incident passthrough: tools that already ran their own detection
     // (Falco, Suricata) emit High/Critical events that are incidents by definition.
     if is_passthrough_source(&ev.source) {

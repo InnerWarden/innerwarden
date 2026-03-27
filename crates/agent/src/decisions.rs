@@ -227,6 +227,12 @@ pub fn build_entry(
         AiAction::RequestConfirmation { .. } => {
             ("request_confirmation".to_string(), None, None, None)
         }
+        AiAction::KillChainResponse { .. } => (
+            "kill_chain_response".to_string(),
+            None,
+            None,
+            Some("kill-chain-response".to_string()),
+        ),
         AiAction::Ignore { .. } => ("ignore".to_string(), None, None, None),
     };
 

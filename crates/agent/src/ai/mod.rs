@@ -53,6 +53,10 @@ pub enum AiAction {
     /// Send a confirmation request to the operator webhook before acting.
     RequestConfirmation { summary: String },
 
+    /// Execute the kill-chain-response skill: kill process, block C2, capture forensics.
+    /// Triggered when the eBPF LSM blocks a kill chain pattern.
+    KillChainResponse { reason: String },
+
     /// No action required - false positive or already handled.
     Ignore { reason: String },
 }
@@ -90,6 +94,7 @@ impl AiAction {
             AiAction::KillProcess { .. } => "kill_process",
             AiAction::BlockContainer { .. } => "block_container",
             AiAction::RequestConfirmation { .. } => "request_confirmation",
+            AiAction::KillChainResponse { .. } => "kill_chain_response",
             AiAction::Ignore { .. } => "ignore",
         }
     }
