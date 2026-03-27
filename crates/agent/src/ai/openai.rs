@@ -514,11 +514,9 @@ fn parse_decision(content: &str) -> Result<AiDecision> {
                 skill_id: raw.action.clone(),
             }
         }
-        "kill-chain-response" | "kill_chain_response" => {
-            AiAction::KillChainResponse {
-                reason: raw.reason.clone(),
-            }
-        }
+        "kill-chain-response" | "kill_chain_response" => AiAction::KillChainResponse {
+            reason: raw.reason.clone(),
+        },
         _ => {
             if raw.action != "ignore" {
                 warn!(action = %raw.action, "unknown AI action - defaulting to ignore");

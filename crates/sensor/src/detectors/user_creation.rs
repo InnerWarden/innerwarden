@@ -105,11 +105,7 @@ impl UserCreationDetector {
 
         // Skip if parent is an allowlisted process (package manager, config mgmt).
         // Use starts_with to handle kernel comm truncation (16 char limit).
-        if !ppid_comm.is_empty()
-            && ALLOWLISTED_PARENTS
-                .iter()
-                .any(|p| ppid_comm.starts_with(p))
-        {
+        if !ppid_comm.is_empty() && ALLOWLISTED_PARENTS.iter().any(|p| ppid_comm.starts_with(p)) {
             return None;
         }
 

@@ -900,9 +900,12 @@ fn decision_cooldown_key_for_decision(
             "container",
             container_id,
         )),
-        ai::AiAction::KillChainResponse { .. } => {
-            Some(decision_cooldown_key("kill_chain_response", detector, "pid", "-"))
-        }
+        ai::AiAction::KillChainResponse { .. } => Some(decision_cooldown_key(
+            "kill_chain_response",
+            detector,
+            "pid",
+            "-",
+        )),
         ai::AiAction::Ignore { .. } | ai::AiAction::RequestConfirmation { .. } => None,
     }
 }
@@ -1513,7 +1516,10 @@ async fn main() -> Result<()> {
     // Must happen after listener starts so peers can ping us back.
     if let Some(ref mut mesh_node) = state.mesh {
         mesh_node.discover_peers().await;
-        info!(peers = mesh_node.peer_count(), "mesh peer discovery complete");
+        info!(
+            peers = mesh_node.peer_count(),
+            "mesh peer discovery complete"
+        );
     }
 
     let state_path = cli.data_dir.join("agent-state.json");
@@ -2615,11 +2621,17 @@ async fn process_incidents(
                         // Previously this was BEFORE execute_decision, so failed blocks
                         // (e.g., XDP map missing) still marked the IP as "blocked",
                         // causing the AI gate to skip all future detections for this IP.
-                        if !execution_result.starts_with("skipped") && !execution_result.starts_with("rate-limited") {
+                        if !execution_result.starts_with("skipped")
+                            && !execution_result.starts_with("rate-limited")
+                        {
                             blocked_set.insert(ip.clone());
                             state.blocklist.insert(ip.clone());
                         } else {
-                            warn!(ip, execution_result, "AbuseIPDB auto-block: execution failed, IP NOT marked as blocked");
+                            warn!(
+                                ip,
+                                execution_result,
+                                "AbuseIPDB auto-block: execution failed, IP NOT marked as blocked"
+                            );
                         }
                         if let Some(writer) = &mut state.decision_writer {
                             let entry = decisions::build_entry(
@@ -3187,9 +3199,13 @@ async fn process_incidents(
                     AiAction::BlockContainer { container_id, .. } => {
                         ("Paused container".to_string(), container_id.clone())
                     }
-                    AiAction::KillChainResponse { .. } => {
-                        ("Kill chain response".to_string(), format!("PID {}", incident.incident_id.split(':').nth(2).unwrap_or("-")))
-                    }
+                    AiAction::KillChainResponse { .. } => (
+                        "Kill chain response".to_string(),
+                        format!(
+                            "PID {}",
+                            incident.incident_id.split(':').nth(2).unwrap_or("-")
+                        ),
+                    ),
                     AiAction::Ignore { .. } => ("Ignored".to_string(), "-".to_string()),
                     AiAction::RequestConfirmation { .. } => {
                         ("Requested confirmation for".to_string(), "-".to_string())

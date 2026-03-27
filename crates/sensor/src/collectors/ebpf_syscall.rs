@@ -353,7 +353,10 @@ fn privesc_to_event(
 
     // Filter legitimate escalation processes.
     // Use starts_with to handle kernel comm truncation (16 char limit).
-    if LEGITIMATE_ESCALATION.iter().any(|p| comm_base.starts_with(p)) {
+    if LEGITIMATE_ESCALATION
+        .iter()
+        .any(|p| comm_base.starts_with(p))
+    {
         return None;
     }
 

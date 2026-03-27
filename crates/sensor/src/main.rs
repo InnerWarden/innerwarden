@@ -1016,8 +1016,16 @@ fn process_event(
     if ev.kind == "lsm.exec_blocked" {
         use innerwarden_core::incident::Incident;
         let pid = ev.details.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
-        let comm = ev.details.get("comm").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let filename = ev.details.get("filename").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let comm = ev
+            .details
+            .get("comm")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let filename = ev
+            .details
+            .get("filename")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         let incident = Incident {
             ts: ev.ts,
             host: ev.host.clone(),
