@@ -10,7 +10,7 @@
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange)
 ![eBPF Hooks](https://img.shields.io/badge/eBPF%20hooks-22-blueviolet)
 ![Detectors](https://img.shields.io/badge/detectors-36-blue)
-![Memory](https://img.shields.io/badge/memory-under%2050MB-green)
+![Memory](https://img.shields.io/badge/memory-under%20100MB-green)
 ![AI Optional](https://img.shields.io/badge/AI-optional-lightgrey)
 [![Featured on GitHub Awesome](https://img.shields.io/badge/Featured-GitHub%20Awesome-blue)](https://www.youtube.com/watch?v=i9YpWp0hXgg&t=315)
 
