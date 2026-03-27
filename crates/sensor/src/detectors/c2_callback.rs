@@ -6,21 +6,21 @@ use innerwarden_core::{entities::EntityRef, event::Event, event::Severity, incid
 /// Processes that legitimately make many outbound connections and should be
 /// excluded from C2 beaconing/exfil checks (still checked for C2 port matches).
 const C2_ALLOWED_COMMS: &[&str] = &[
-    "gomon",       // Go monitoring agent (health checks to many IPs)
-    "crowdsec",    // CrowdSec threat intel queries
-    "prometheus",  // Prometheus scraper
-    "telegraf",    // Telegraf metrics collector
-    "node_export", // Node exporter (truncated comm)
-    "apache2",     // Web server connecting to database/backends
-    "httpd",       // Apache on RHEL/CentOS
-    "nginx",       // Reverse proxy to backends
-    "mysqld",      // MySQL server replication/connections
-    "postgres",    // PostgreSQL connections
+    "gomon",        // Go monitoring agent (health checks to many IPs)
+    "crowdsec",     // CrowdSec threat intel queries
+    "prometheus",   // Prometheus scraper
+    "telegraf",     // Telegraf metrics collector
+    "node_export",  // Node exporter (truncated comm)
+    "apache2",      // Web server connecting to database/backends
+    "httpd",        // Apache on RHEL/CentOS
+    "nginx",        // Reverse proxy to backends
+    "mysqld",       // MySQL server replication/connections
+    "postgres",     // PostgreSQL connections
     "redis-server", // Redis replication
-    "php-fpm",     // PHP workers connecting to databases
-    "gunicorn",    // Python WSGI server
-    "uvicorn",     // Python ASGI server
-    "puma",        // Ruby web server
+    "php-fpm",      // PHP workers connecting to databases
+    "gunicorn",     // Python WSGI server
+    "uvicorn",      // Python ASGI server
+    "puma",         // Ruby web server
 ];
 
 /// Detects Command & Control (C2) callback patterns from outbound connections.

@@ -3339,9 +3339,15 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
                     }
                     println!();
                     let mc = prompt(&format!("Model [1-{}, default=1]", local_models.len()))?;
-                    let idx = mc.trim().parse::<usize>().unwrap_or(1)
-                        .saturating_sub(1).min(local_models.len() - 1);
-                    if let Err(e) = cmd_configure_ai(cli, "ollama", None, Some(&local_models[idx]), None) {
+                    let idx = mc
+                        .trim()
+                        .parse::<usize>()
+                        .unwrap_or(1)
+                        .saturating_sub(1)
+                        .min(local_models.len() - 1);
+                    if let Err(e) =
+                        cmd_configure_ai(cli, "ollama", None, Some(&local_models[idx]), None)
+                    {
                         println!("  Could not configure local Ollama: {e:#}");
                     }
                 } else {
