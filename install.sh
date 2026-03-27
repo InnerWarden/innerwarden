@@ -46,10 +46,13 @@ if [[ "$OS_TYPE" == "Darwin" ]]; then
   SENSOR_PLIST="$PLIST_DIR/com.innerwarden.sensor.plist"
   AGENT_PLIST="$PLIST_DIR/com.innerwarden.agent.plist"
   LOG_DIR="/usr/local/var/log/innerwarden"
+  INSTALL_USER="root"
   INSTALL_GROUP="wheel"
 else
   CONFIG_DIR="/etc/innerwarden"
   DATA_DIR="/var/lib/innerwarden"
+  INSTALL_USER="root"
+  INSTALL_GROUP="root"
 fi
 
 SENSOR_BIN="${BIN_DIR}/innerwarden-sensor"
@@ -329,7 +332,6 @@ if [[ "$OS_TYPE" == "Darwin" ]]; then
       NEXT_GID=$((NEXT_GID + 1))
     done
     run_root dscl . -create /Groups/"${IW_USER}"
-    run_root dscl . -create /Users/"${IW_USER}" UserShell /usr/bin/false
     run_root dscl . -create /Groups/"${IW_USER}" RealName "Inner Warden"
     run_root dscl . -create /Groups/"${IW_USER}" PrimaryGroupID "${NEXT_GID}"
   fi
@@ -425,7 +427,8 @@ if [[ -f "${SENSOR_CONFIG}" && -f "${AGENT_CONFIG}" ]]; then
   log "backup created: ${SENSOR_CONFIG}.bak.${BAKSUFFIX}"
   run_root cp "${AGENT_CONFIG}" "${AGENT_CONFIG}.bak.${BAKSUFFIX}"
   log "backup created: ${AGENT_CONFIG}.bak.${BAKSUFFIX}"
-  run_root cp "${AGENT_ENV}" "${AGENT_ENV}.bak.${BAKSUFFIX}" 2>/dev/null || true
+  [ -f "${AGENT_ENV}" ] && run_root cp "${AGENT_ENV}" "${AGENT_ENV}.bak.${BAKSUFFIX}" 2>/dev/null || true
+  log "backup created: ${AGENT_ENV}.bak.${BAKSUFFIX}"
 fi
 
 if [[ "${EXISTING_INSTALL}" == "true" ]]; then
