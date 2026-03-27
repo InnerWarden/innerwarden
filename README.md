@@ -150,7 +150,7 @@ https://github.com/user-attachments/assets/6ea1e124-52c2-48fe-8600-4b2f3d670116
 
 1. **Watches**: collects signals from your host (SSH, Docker, nginx, sudo, shell audit, firewall logs, eBPF kernel tracing with 22 hooks covering every process, connection, file access, privilege change, and network bind)
 2. **Detects**: 36 stateful detectors identify brute-force, credential stuffing, port scans, C2 callbacks, privilege escalation, container escapes, reverse shells, ransomware, rootkits, DNS tunneling, and more
-3. **Blocks at the kernel**: LSM enforcement stops reverse shells and /tmp execution before they run. XDP drops attack traffic at wire speed. 7 kill chain patterns detected and blocked without signatures.
+3. **Blocks at the kernel**: LSM enforcement stops reverse shells and /tmp execution before they run. XDP drops attack traffic at wire speed. 8 kill chain patterns detected and blocked without signatures. Blocks propagate to mesh peers.
 4. **Alerts you**: Telegram, Slack, webhook (PagerDuty, Discord, Teams, DingTalk, and more), real time, on your phone
 5. **Decides**: optionally asks AI for a confidence-scored recommendation (not required)
 6. **Acts**: blocks the IP, suspends sudo, deploys a honeypot, captures traffic. Or does nothing. Your call.
@@ -252,7 +252,7 @@ Plus: `docker_anomaly`, `osquery_anomaly`, `suricata_alert`, `search_abuse`, `cr
 - **18 tracepoints**: execve, connect, openat, ptrace, setuid, bind, mount, memfd_create, init_module, dup2, listen, mprotect, clone, unlinkat, renameat2, kill, prctl, accept4
 - **1 kprobe** (`commit_creds`): detects privilege escalation before any log is written
 - **1 kprobe** (`sched_process_exit`): tracks process lifecycle for kill chain correlation
-- **LSM enforcement** (`bprm_check_security`): blocks execution from /tmp and /dev/shm at the kernel level, plus **kill chain detection** with 7 generic patterns (reverse shell, bind shell, code injection, exploit-to-shell, inject-to-shell, exploit-to-C2, full exploit chain) blocked at execve. No CVE signatures needed.
+- **LSM enforcement** (`bprm_check_security`): blocks execution from /tmp and /dev/shm at the kernel level, plus **kill chain detection** with 8 generic patterns (reverse shell, bind shell, code injection, exploit-to-shell, inject-to-shell, exploit-to-C2, full exploit chain, data exfiltration) blocked at execve. No CVE signatures needed. All 8 patterns tested and blocking on production.
 - **XDP program**: wire-speed IP blocking at the network driver (10M+ pps drop rate)
 
 > **Looking for the eBPF source code?** All 22 kernel programs live in a single file: [`crates/sensor-ebpf/src/main.rs`](crates/sensor-ebpf/src/main.rs).
