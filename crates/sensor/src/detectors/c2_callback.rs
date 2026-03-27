@@ -111,13 +111,12 @@ impl C2CallbackDetector {
             return None;
         }
 
-        // Skip verified infra processes from beaconing/exfil checks.
-        // Verifies binary path to prevent evasion by name spoofing.
-        // They still go through C2 port check (Check 1) for safety.
+        // Skip verified infra processes from ALL C2 checks (beaconing, exfil, ports).
+        // Monitoring tools (gomon, prometheus, etc.) legitimately make HTTPS calls
+        // to APIs on port 443 at regular intervals, which triggers beaconing detection.
+        // Verifies binary path via /proc/PID/exe to prevent evasion by name spoofing.
         let comm_base = comm.split('/').next_back().unwrap_or(&comm).to_string();
-        if super::is_verified_infra_process(&comm_base, pid, C2_ALLOWED_COMMS)
-            && !self.c2_ports.contains(&dst_port)
-        {
+        if super::is_verified_infra_process(&comm_base, pid, C2_ALLOWED_COMMS) {
             return None;
         }
 

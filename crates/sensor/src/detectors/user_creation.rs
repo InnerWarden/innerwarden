@@ -109,6 +109,16 @@ impl UserCreationDetector {
             return None;
         }
 
+        // Skip NSS cache hooks (nscd, sss_cache) invoked by usermod/useradd after
+        // user modifications. Also skip when the command target is a system utility
+        // path (e.g., "usermod ... /usr/sbin/nscd" is an NSS invalidation, not an attack).
+        if cmd_lower.contains("/usr/sbin/nscd")
+            || cmd_lower.contains("/usr/sbin/sss_cache")
+            || cmd_lower.contains("/usr/sbin/nss")
+        {
+            return None;
+        }
+
         // Detect root-equivalent user creation (UID 0)
         if (cmd_lower.contains("useradd") || cmd_lower.contains("adduser"))
             && (cmd_lower.contains("-o -u 0")
