@@ -3,6 +3,16 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use chrono::{DateTime, Duration, Utc};
 use innerwarden_core::{entities::EntityRef, event::Event, event::Severity, incident::Incident};
 
+/// Processes that legitimately make many outbound connections and should be
+/// excluded from C2 beaconing/exfil checks (still checked for C2 port matches).
+const C2_ALLOWED_COMMS: &[&str] = &[
+    "gomon",       // Go monitoring agent (health checks to many IPs)
+    "crowdsec",    // CrowdSec threat intel queries
+    "prometheus",  // Prometheus scraper
+    "telegraf",    // Telegraf metrics collector
+    "node_export", // Node exporter (truncated comm)
+];
+
 /// Detects Command & Control (C2) callback patterns from outbound connections.
 ///
 /// Patterns detected:
@@ -96,6 +106,14 @@ impl C2CallbackDetector {
             return None;
         }
 
+        // Skip monitoring/infra processes from beaconing/exfil checks.
+        // They still go through C2 port check (Check 1) for safety.
+        let comm_base = comm.split('/').next_back().unwrap_or(&comm).to_string();
+        let is_infra = C2_ALLOWED_COMMS.iter().any(|c| comm_base.starts_with(c));
+        if is_infra && !self.c2_ports.contains(&dst_port) {
+            return None;
+        }
+
         let now = event.ts;
         let cutoff = now - self.window;
 
@@ -130,7 +148,6 @@ impl C2CallbackDetector {
         }
 
         // ── Check 1: C2 port from suspicious process ────────────────────
-        let comm_base = comm.split('/').next_back().unwrap_or(&comm).to_string();
         if self.c2_ports.contains(&dst_port) && self.suspicious_processes.contains(&comm_base) {
             // Port 443/8080 only suspicious from shell/scripting processes
             if (dst_port == 443 || dst_port == 8080)

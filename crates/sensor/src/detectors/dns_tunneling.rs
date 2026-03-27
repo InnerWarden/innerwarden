@@ -13,6 +13,17 @@ const STANDARD_RESOLVERS: &[&str] = &[
     "9.9.9.9",    // Quad9
 ];
 
+/// Processes that legitimately query many DNS servers and should be excluded
+/// from eBPF DNS tunneling detection (beaconing, burst, nonstandard checks).
+const DNS_ALLOWED_COMMS: &[&str] = &[
+    "crowdsec",    // CrowdSec queries many DNS servers for threat intel
+    "gomon",       // Go monitoring agent does health checks
+    "systemd-reso", // systemd-resolved (truncated comm)
+    "unbound",     // DNS resolver
+    "named",       // BIND DNS
+    "dnsmasq",     // DNS forwarder
+];
+
 /// Detects DNS tunneling patterns from Suricata DNS query logs AND eBPF connect events.
 ///
 /// Suricata path (deep inspection):
@@ -198,6 +209,12 @@ impl DnsTunnelingDetector {
             .get("comm")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
+
+        // Skip processes that legitimately query many DNS servers
+        if DNS_ALLOWED_COMMS.iter().any(|c| comm.starts_with(c)) {
+            return None;
+        }
+
         let pid = event
             .details
             .get("pid")
