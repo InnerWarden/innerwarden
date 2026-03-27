@@ -1026,7 +1026,23 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
             "syscalls",
             "sys_enter_init_module",
         );
-        attach_tp(&mut bpf, "innerwarden_dup", "syscalls", "sys_enter_dup2");
+        // dup2 doesn't exist on aarch64 — try dup2, fall back to dup3.
+        // Load the program once, then try attach with fallback.
+        {
+            use aya::programs::TracePoint;
+            if let Some(prog) = bpf.program_mut("innerwarden_dup") {
+                if let Ok(tp) = TryInto::<&mut TracePoint>::try_into(prog) {
+                    let _ = tp.load(); // load once
+                    if tp.attach("syscalls", "sys_enter_dup2").is_ok() {
+                        info!("eBPF: innerwarden_dup → sys_enter_dup2 ✅");
+                    } else if tp.attach("syscalls", "sys_enter_dup3").is_ok() {
+                        info!("eBPF: innerwarden_dup → sys_enter_dup3 ✅ (aarch64 fallback)");
+                    } else {
+                        warn!("innerwarden_dup: failed to attach to dup2 or dup3");
+                    }
+                }
+            }
+        }
         attach_tp(
             &mut bpf,
             "innerwarden_listen",

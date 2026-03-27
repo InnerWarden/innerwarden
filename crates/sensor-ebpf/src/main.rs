@@ -773,10 +773,15 @@ fn try_lsm_exec(ctx: &LsmContext) -> Result<i32, i64> {
         return Ok(0); // policy disabled - allow everything
     }
 
-    // Kill chain detection: if this PID accumulated an attack pattern,
-    // deny execution regardless of path.
-    let pid = bpf_get_current_pid_tgid() as u32;
-    if chain_is_attack(pid) {
+    // Kill chain detection: check both PID and TGID (thread group leader).
+    // When a process forks (subprocess.run, os.system), the child has a new PID
+    // but the parent's chain flags stay on the parent PID. By checking the TGID
+    // (which equals the parent PID for the main thread), we catch cases where
+    // the parent accumulated the chain and the child does the execve.
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let pid = pid_tgid as u32;
+    let tgid = (pid_tgid >> 32) as u32;
+    if chain_is_attack(pid) || (tgid != pid && chain_is_attack(tgid)) {
         // Emit blocked event before denying
         let uid = bpf_get_current_uid_gid() as u32;
         let ts = unsafe { bpf_ktime_get_ns() };
@@ -1354,9 +1359,10 @@ pub fn innerwarden_dup(ctx: TracePointContext) -> u32 {
 
 #[inline(always)]
 fn try_dup(ctx: &TracePointContext) -> Result<(), i64> {
-    // sys_enter_dup2 args: [oldfd, newfd]  /  dup3: [oldfd, newfd, flags]
+    // sys_enter_dup3 args on aarch64: [oldfd(8 bytes @ 16), newfd(8 bytes @ 24), flags(8 bytes @ 32)]
+    // On x86_64 dup2: [oldfd(8 @ 16), newfd(8 @ 24)]  — same offsets.
     let oldfd: u32 = unsafe { ctx.read_at(16)? };
-    let newfd: u32 = unsafe { ctx.read_at(20)? };
+    let newfd: u32 = unsafe { ctx.read_at(24)? };
     // Only care about redirecting to stdin(0), stdout(1), stderr(2)
     if newfd > 2 {
         return Ok(());
