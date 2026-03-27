@@ -116,11 +116,13 @@ static PID_RATE_LIMIT: HashMap<u32, u64> = HashMap::with_max_entries(4096, 0);
 //   1 = dup2 fd→stdin (0)             5 = listen (server ready)
 //   2 = dup2 fd→stdout (1)            6 = ptrace (injection)
 //   3 = dup2 fd→stderr (2)            7 = mprotect RWX (shellcode)
+//   8 = openat sensitive path          (credential/config read)
 //
 // Attack patterns (bitwise AND):
 //   REVERSE_SHELL = socket + dup(stdin) + dup(stdout) = 0b0000_0111 = 0x07
 //   BIND_SHELL    = bind + listen + dup(stdin) + dup(stdout) = 0b0011_0110 = 0x36
 //   CODE_INJECT   = ptrace + mprotect(RWX) = 0b1100_0000 = 0xC0
+//   DATA_EXFIL    = sensitive_read + socket = 0b1_0000_0001 = 0x101
 
 /// Per-PID kill chain flags. Key: PID. Value: accumulated bit flags.
 /// Checked by LSM before allowing execve. Cleaned on process exit.
@@ -135,6 +137,7 @@ const CHAIN_BIND: u32 = 1 << 4;
 const CHAIN_LISTEN: u32 = 1 << 5;
 const CHAIN_PTRACE: u32 = 1 << 6;
 const CHAIN_MPROTECT: u32 = 1 << 7;
+const CHAIN_SENSITIVE_READ: u32 = 1 << 8; // openat on /etc/shadow, .ssh/, credentials
 
 const PATTERN_REVERSE_SHELL: u32 = CHAIN_SOCKET | CHAIN_DUP_STDIN | CHAIN_DUP_STDOUT;
 const PATTERN_BIND_SHELL: u32 = CHAIN_BIND | CHAIN_LISTEN | CHAIN_DUP_STDIN | CHAIN_DUP_STDOUT;
@@ -148,6 +151,8 @@ const PATTERN_INJECT_SHELL: u32 = CHAIN_PTRACE | CHAIN_DUP_STDIN;
 const PATTERN_EXPLOIT_C2: u32 = CHAIN_MPROTECT | CHAIN_SOCKET;
 // Full exploit chain: RWX memory + inject + redirect + outbound
 const PATTERN_FULL_EXPLOIT: u32 = CHAIN_MPROTECT | CHAIN_PTRACE | CHAIN_SOCKET;
+// Data exfiltration: read sensitive file + has outbound socket
+const PATTERN_DATA_EXFIL: u32 = CHAIN_SENSITIVE_READ | CHAIN_SOCKET;
 
 /// Set a kill chain flag for the current PID.
 #[inline(always)]
@@ -171,6 +176,8 @@ fn chain_is_attack(pid: u32) -> bool {
         || (flags & PATTERN_INJECT_SHELL) == PATTERN_INJECT_SHELL
         || (flags & PATTERN_EXPLOIT_C2) == PATTERN_EXPLOIT_C2
         || (flags & PATTERN_FULL_EXPLOIT) == PATTERN_FULL_EXPLOIT
+        // Data exfiltration: read credentials/config + outbound socket
+        || (flags & PATTERN_DATA_EXFIL) == PATTERN_DATA_EXFIL
 }
 
 /// Clear kill chain for a PID (called on process exit).
@@ -609,6 +616,10 @@ fn try_openat(ctx: &TracePointContext) -> Result<(), i64> {
     if !is_sensitive {
         return Ok(());
     }
+
+    // Set kill chain flag: this PID accessed a sensitive file.
+    // If it also has CHAIN_SOCKET, the DATA_EXFIL pattern will match.
+    chain_flag(pid, CHAIN_SENSITIVE_READ);
 
     let pid_tgid = bpf_get_current_pid_tgid();
     let pid = pid_tgid as u32;
