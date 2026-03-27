@@ -3338,6 +3338,21 @@ async fn execute_decision(
 
             if any_success {
                 state.blocklist.insert(ip.clone());
+
+                // Layer 2.5: Mesh broadcast — share with peer nodes
+                if let Some(ref mesh) = state.mesh {
+                    let detector = incident.incident_id.split(':').next().unwrap_or("unknown");
+                    let evidence = decision.reason.as_bytes();
+                    mesh.broadcast_local_block(
+                        ip,
+                        detector,
+                        decision.confidence,
+                        evidence,
+                        block_ttl_secs as u64,
+                    )
+                    .await;
+                    layers_applied.push("Mesh");
+                }
             }
 
             // Layer 3: Cloudflare edge block

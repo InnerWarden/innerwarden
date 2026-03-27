@@ -210,8 +210,14 @@ impl DnsTunnelingDetector {
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
 
-        // Skip processes that legitimately query many DNS servers
-        if DNS_ALLOWED_COMMS.iter().any(|c| comm.starts_with(c)) {
+        // Skip processes that legitimately query many DNS servers.
+        // Verify binary path to prevent evasion by renaming a malicious binary.
+        let pid = event
+            .details
+            .get("pid")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        if super::is_verified_infra_process(comm, pid, DNS_ALLOWED_COMMS) {
             return None;
         }
 

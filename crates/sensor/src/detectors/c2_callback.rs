@@ -106,11 +106,13 @@ impl C2CallbackDetector {
             return None;
         }
 
-        // Skip monitoring/infra processes from beaconing/exfil checks.
+        // Skip verified infra processes from beaconing/exfil checks.
+        // Verifies binary path to prevent evasion by name spoofing.
         // They still go through C2 port check (Check 1) for safety.
         let comm_base = comm.split('/').next_back().unwrap_or(&comm).to_string();
-        let is_infra = C2_ALLOWED_COMMS.iter().any(|c| comm_base.starts_with(c));
-        if is_infra && !self.c2_ports.contains(&dst_port) {
+        if super::is_verified_infra_process(&comm_base, pid, C2_ALLOWED_COMMS)
+            && !self.c2_ports.contains(&dst_port)
+        {
             return None;
         }
 

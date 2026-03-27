@@ -162,10 +162,14 @@ impl OutboundAnomalyDetector {
             return None;
         }
 
-        // Skip network-heavy infrastructure processes (reverse proxies, monitors)
+        // Skip verified infrastructure processes (reverse proxies, monitors).
+        // Verifies binary path to prevent evasion by name spoofing.
+        const OUTBOUND_ALLOWED: &[&str] = &[
+            "nginx", "haproxy", "envoy", "caddy", "traefik",
+            "gomon", "prometheus", "telegraf", "node_export",
+        ];
         let comm_base = comm.split('/').next_back().unwrap_or(comm);
-        if matches!(comm_base, "nginx" | "haproxy" | "envoy" | "caddy" | "traefik"
-            | "gomon" | "prometheus" | "telegraf" | "node_export") {
+        if super::is_verified_infra_process(comm_base, pid, OUTBOUND_ALLOWED) {
             return None;
         }
 

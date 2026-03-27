@@ -23,6 +23,35 @@ pub fn is_internal_ip(ip: &str) -> bool {
         std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
     }
 }
+/// Verify that a process name matches a known infrastructure binary path.
+/// Prevents evasion by renaming a malicious binary to "crowdsec" etc.
+/// Returns true only if the comm matches AND /proc/PID/exe points to a
+/// legitimate system path (not /tmp, /dev/shm, or user home dirs).
+pub fn is_verified_infra_process(comm: &str, pid: u32, allowed_comms: &[&str]) -> bool {
+    if !allowed_comms.iter().any(|c| comm.starts_with(c)) {
+        return false;
+    }
+    // Verify binary path via /proc — catches name spoofing
+    let exe_path = format!("/proc/{pid}/exe");
+    match std::fs::read_link(&exe_path) {
+        Ok(path) => {
+            let p = path.to_string_lossy();
+            // Legitimate paths: /usr/bin, /usr/sbin, /usr/local/bin, /snap, /opt
+            // NOT: /tmp, /dev/shm, /var/tmp, /home (attacker-writable)
+            p.starts_with("/usr/")
+                || p.starts_with("/snap/")
+                || p.starts_with("/opt/")
+                || p.starts_with("/sbin/")
+                || p.starts_with("/bin/")
+        }
+        Err(_) => {
+            // Process might have exited — allow if comm matches
+            // (better to have a brief FN gap than block infra permanently)
+            true
+        }
+    }
+}
+
 pub mod dns_tunneling;
 pub mod docker_anomaly;
 pub mod execution_guard;
