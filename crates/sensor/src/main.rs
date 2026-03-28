@@ -112,6 +112,7 @@ struct DetectorSet {
     credential_harvest: Option<CredentialHarvestDetector>,
     packet_flood: Option<PacketFloodDetector>,
     sensitive_write: Option<detectors::sensitive_write::SensitiveWriteDetector>,
+    io_uring_anomaly: Option<detectors::io_uring_anomaly::IoUringAnomalyDetector>,
 }
 
 #[derive(Default)]
@@ -571,6 +572,10 @@ async fn main() -> Result<()> {
         sensitive_write: Some({
             info!("sensitive_write detector enabled (sensitive path protection)");
             detectors::sensitive_write::SensitiveWriteDetector::new(&cfg.agent.host_id, 300)
+        }),
+        io_uring_anomaly: Some({
+            info!("io_uring_anomaly detector enabled (io_uring evasion detection)");
+            detectors::io_uring_anomaly::IoUringAnomalyDetector::new(&cfg.agent.host_id, 300)
         }),
     };
 
@@ -1291,6 +1296,12 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.sensitive_write {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.io_uring_anomaly {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }

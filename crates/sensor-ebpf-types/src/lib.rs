@@ -71,6 +71,10 @@ pub enum SyscallKind {
     Accept = 22,
     /// EFI Runtime Services call (EXPERIMENTAL — firmware behavioral baseline)
     EfiCall = 23,
+    /// io_uring SQE submission (detect io_uring-based evasion)
+    IoUring = 24,
+    /// io_uring ring creation (track which processes use io_uring)
+    IoUringCreate = 25,
 }
 
 /// Event emitted by the eBPF `execve` tracepoint.
@@ -450,6 +454,63 @@ pub struct EfiCallEvent {
     /// Process name
     pub comm: [u8; MAX_COMM_LEN],
     /// Timestamp (nanoseconds since boot)
+    pub ts_ns: u64,
+}
+
+// ---------------------------------------------------------------------------
+// io_uring monitoring events
+// ---------------------------------------------------------------------------
+
+/// Event emitted by the `io_uring:io_uring_submit_sqe` tracepoint.
+///
+/// Captures io_uring SQE submissions. Security-relevant opcodes:
+///   OPENAT(18), CONNECT(16), ACCEPT(13), SEND(26), RECV(27),
+///   SENDMSG(9), RECVMSG(10), SOCKET(45), URING_CMD(46).
+/// Most legitimate workloads don't use io_uring — its presence
+/// in non-database/non-webserver processes is suspicious.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct IoUringEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    /// io_uring opcode (IORING_OP_*)
+    pub opcode: u8,
+    /// SQE flags
+    pub sqe_flags: u8,
+    pub _pad: u16,
+    /// File descriptor (for OPENAT, CONNECT, etc.)
+    pub fd: i32,
+    /// Cgroup ID (container awareness)
+    pub cgroup_id: u64,
+    /// Process name
+    pub comm: [u8; MAX_COMM_LEN],
+    /// Timestamp (nanoseconds since boot)
+    pub ts_ns: u64,
+}
+
+/// Event emitted by `io_uring:io_uring_create` tracepoint.
+///
+/// Fires when a process creates an io_uring instance. The mere act
+/// of creating an io_uring ring is a signal worth tracking.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct IoUringCreateEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    /// Ring file descriptor
+    pub ring_fd: i32,
+    /// Number of submission queue entries
+    pub sq_entries: u32,
+    /// Number of completion queue entries
+    pub cq_entries: u32,
+    /// io_uring_setup flags
+    pub flags: u32,
+    /// Cgroup ID
+    pub cgroup_id: u64,
+    /// Process name
+    pub comm: [u8; MAX_COMM_LEN],
     pub ts_ns: u64,
 }
 

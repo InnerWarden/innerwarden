@@ -1865,6 +1865,76 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         entities: vec![],
                     })
                 }
+                // IoUringEvent: kind(4) pid(4) uid(4) opcode(1) sqe_flags(1) _pad(2) fd(4)
+                //   cgroup_id(8) comm(64) ts_ns(8)
+                // Offsets: 0  4  8  12  13  14  16  20  24..88  88
+                24 if data.len() >= 96 => {
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let opcode = data[12];
+                    let sqe_flags = data[13];
+                    let fd = read_u32!(data, 16..20) as i32;
+                    let cgroup_id = read_u64!(data, 20..28);
+                    let comm = bytes_to_string(&data[28..92]);
+
+                    if comm.starts_with("innerwarden") {
+                        continue;
+                    }
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "io_uring.submit".to_string(),
+                        severity: Severity::Info,
+                        summary: format!(
+                            "{comm} (pid={pid}) io_uring submit opcode={opcode} fd={fd}"
+                        ),
+                        details: serde_json::json!({
+                            "pid": pid, "uid": uid, "comm": comm,
+                            "opcode": opcode, "sqe_flags": sqe_flags,
+                            "fd": fd, "cgroup_id": cgroup_id,
+                        }),
+                        tags: vec!["ebpf".to_string(), "io_uring".to_string()],
+                        entities: vec![],
+                    })
+                }
+                // IoUringCreateEvent: kind(4) pid(4) uid(4) ring_fd(4) sq_entries(4)
+                //   cq_entries(4) flags(4) _pad(4) cgroup_id(8) comm(64) ts_ns(8)
+                // Offsets: 0  4  8  12  16  20  24  28  32..96  96
+                25 if data.len() >= 104 => {
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let ring_fd = read_u32!(data, 12..16) as i32;
+                    let sq_entries = read_u32!(data, 16..20);
+                    let cq_entries = read_u32!(data, 20..24);
+                    let flags = read_u32!(data, 24..28);
+                    let cgroup_id = read_u64!(data, 32..40);
+                    let comm = bytes_to_string(&data[40..104]);
+
+                    if comm.starts_with("innerwarden") {
+                        continue;
+                    }
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "io_uring.create".to_string(),
+                        severity: Severity::Info,
+                        summary: format!(
+                            "{comm} (pid={pid}) created io_uring ring (sq={sq_entries})"
+                        ),
+                        details: serde_json::json!({
+                            "pid": pid, "uid": uid, "comm": comm,
+                            "ring_fd": ring_fd, "sq_entries": sq_entries,
+                            "cq_entries": cq_entries, "flags": flags,
+                            "cgroup_id": cgroup_id,
+                        }),
+                        tags: vec!["ebpf".to_string(), "io_uring".to_string()],
+                        entities: vec![],
+                    })
+                }
                 _ => None,
             };
 

@@ -88,4 +88,5 @@ pub mod web_shell;
 pub mod sensitive_write;
 
 // v0.6.0 detectors
+pub mod io_uring_anomaly;
 pub mod packet_flood;
