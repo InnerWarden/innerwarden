@@ -1875,7 +1875,7 @@ mod tests {
         let mut last_ts = base + Duration::milliseconds(15);
         let mut triggered = false;
         for _i in 0..10 {
-            last_ts = last_ts + Duration::seconds(10);
+            last_ts += Duration::seconds(10);
             if let Some(inc) = det.process(&timing_event("file.read_access", last_ts)) {
                 assert_eq!(inc.severity, Severity::High);
                 assert!(inc.title.contains("timing anomaly"), "title={}", inc.title);
@@ -1984,7 +1984,7 @@ mod tests {
         let mut last_ts = base + Duration::milliseconds(15);
         let mut incident = None;
         for _ in 0..3 {
-            last_ts = last_ts + Duration::seconds(10);
+            last_ts += Duration::seconds(10);
             if let Some(inc) = det.process(&timing_event("file.read_access", last_ts)) {
                 incident = Some(inc);
                 break;
@@ -2016,7 +2016,7 @@ mod tests {
         let mut last_ts = base + Duration::milliseconds(15);
         let mut triggered = false;
         for _ in 0..3 {
-            last_ts = last_ts + Duration::seconds(10);
+            last_ts += Duration::seconds(10);
             if det
                 .process(&timing_event("file.read_access", last_ts))
                 .is_some()
@@ -2034,7 +2034,7 @@ mod tests {
         );
 
         // A single new anomaly should NOT trigger (need 3 more consecutive)
-        last_ts = last_ts + Duration::seconds(10);
+        last_ts += Duration::seconds(10);
         let inc = det.process(&timing_event("file.read_access", last_ts));
         assert!(
             inc.is_none(),
@@ -2056,7 +2056,7 @@ mod tests {
 
         let mut last_ts = base + Duration::milliseconds(15);
         for _ in 0..5 {
-            last_ts = last_ts + Duration::seconds(10);
+            last_ts += Duration::seconds(10);
             let inc = det.process(&timing_event("file.read_access", last_ts));
             assert!(
                 inc.is_none(),

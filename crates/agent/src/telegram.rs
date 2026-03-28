@@ -126,6 +126,8 @@ pub struct TelegramClient {
     bot_token: String,
     chat_id: String,
     dashboard_url: Option<String>,
+    /// Dev mode: adds "Check FP" button to every notification.
+    pub dev_mode: bool,
     http: reqwest::Client,
     /// Rate limiter: tracks last send time to stay within Telegram's 30 msg/sec limit.
     last_send: Arc<tokio::sync::Mutex<tokio::time::Instant>>,
@@ -147,6 +149,7 @@ impl TelegramClient {
             bot_token: bot_token.into(),
             chat_id: chat_id.into(),
             dashboard_url,
+            dev_mode: false,
             http,
             last_send: Arc::new(tokio::sync::Mutex::new(
                 tokio::time::Instant::now() - Duration::from_secs(1),
@@ -230,6 +233,24 @@ impl TelegramClient {
                         }]]
                     });
                 }
+            }
+        }
+
+        // Dev mode: append "Check FP" button to every incident notification
+        if self.dev_mode {
+            let incident_id = &incident.incident_id;
+            let fp_btn = serde_json::json!({
+                "text": "\u{1f52c} Check FP",
+                "callback_data": format!("fp:check:{}", &incident_id[..incident_id.len().min(60)])
+            });
+            if let Some(markup) = body.get_mut("reply_markup") {
+                if let Some(kb) = markup.get_mut("inline_keyboard") {
+                    if let Some(arr) = kb.as_array_mut() {
+                        arr.push(serde_json::json!([fp_btn]));
+                    }
+                }
+            } else {
+                body["reply_markup"] = serde_json::json!({ "inline_keyboard": [[fp_btn]] });
             }
         }
 
@@ -912,7 +933,50 @@ impl TelegramClient {
                                 .unwrap_or_else(|| "unknown".to_string());
 
                             if let Some(data) = &callback.data {
-                                if data == "quick:ignore" {
+                                if let Some(incident_id) = data.strip_prefix("fp:check:") {
+                                    // Dev mode: log incident as potential false positive
+                                    let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+                                    let entry = format!(
+                                        "{{\"ts\":\"{ts}\",\"incident_id\":\"{incident_id}\",\"operator\":\"{operator}\",\"action\":\"check_fp\"}}\n"
+                                    );
+                                    // Write to false-positive review log
+                                    // Write to data dir or fallback to /tmp
+                                    let fp_path = {
+                                        let primary = std::path::PathBuf::from(
+                                            "/var/lib/innerwarden/fp-review.jsonl",
+                                        );
+                                        if primary.parent().map(|p| p.exists()).unwrap_or(false) {
+                                            primary
+                                        } else {
+                                            std::path::PathBuf::from(
+                                                "/tmp/innerwarden-fp-review.jsonl",
+                                            )
+                                        }
+                                    };
+                                    match std::fs::OpenOptions::new()
+                                        .create(true)
+                                        .append(true)
+                                        .open(&fp_path)
+                                    {
+                                        Ok(mut f) => {
+                                            use std::io::Write;
+                                            let _ = f.write_all(entry.as_bytes());
+                                            info!(incident_id, operator = %operator, path = %fp_path.display(), "FP review: incident flagged for review");
+                                        }
+                                        Err(e) => {
+                                            warn!(error = %e, "FP review: failed to write log")
+                                        }
+                                    }
+                                    let _ = self
+                                        .answer_callback_toast(
+                                            &callback.id,
+                                            &format!(
+                                                "\u{1f52c} Flagged for FP review: {}",
+                                                &incident_id[..incident_id.len().min(40)]
+                                            ),
+                                        )
+                                        .await;
+                                } else if data == "quick:ignore" {
                                     // Just ack with toast - no further action needed
                                     let _ = self
                                         .answer_callback_toast(

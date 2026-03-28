@@ -18,6 +18,35 @@ pub const MAX_ARGS: usize = 8;
 pub const MAX_ARG_LEN: usize = 128;
 
 // ---------------------------------------------------------------------------
+// Capability bits for fine-grained guard mode policy
+// ---------------------------------------------------------------------------
+//
+// Used in CGROUP_CAPABILITIES and COMM_CAPABILITIES BPF maps.
+// Each bit grants permission for a specific action when guard mode is on.
+// If the bit is NOT set, the action is blocked (when guard mode is enabled).
+
+/// Allow execution from /tmp, /dev/shm, /var/tmp
+pub const CAP_EXEC_TMP: u32 = 1 << 0;
+/// Allow write to /etc/shadow, /etc/passwd, /etc/gshadow
+pub const CAP_WRITE_CREDENTIALS: u32 = 1 << 1;
+/// Allow write to ~/.ssh/authorized_keys, ~/.ssh/id_*
+pub const CAP_WRITE_SSH: u32 = 1 << 2;
+/// Allow write to /etc/sudoers, /etc/sudoers.d/
+pub const CAP_WRITE_SUDO: u32 = 1 << 3;
+/// Allow write to /etc/cron*, /var/spool/cron/
+pub const CAP_WRITE_CRON: u32 = 1 << 4;
+/// Allow write to /etc/systemd/system/, /etc/init.d/
+pub const CAP_WRITE_PERSISTENCE: u32 = 1 << 5;
+/// Allow write to /etc/ld.so.preload, /etc/ld.so.conf*
+pub const CAP_WRITE_LDPRELOAD: u32 = 1 << 6;
+/// Allow write to /etc/pam.d/
+pub const CAP_WRITE_PAM: u32 = 1 << 7;
+/// Allow io_uring usage
+pub const CAP_IO_URING: u32 = 1 << 8;
+/// Allow execution from overlayfs upper layer (container drift)
+pub const CAP_OVERLAY_DRIFT: u32 = 1 << 9;
+
+// ---------------------------------------------------------------------------
 // Syscall event types
 // ---------------------------------------------------------------------------
 
@@ -71,6 +100,12 @@ pub enum SyscallKind {
     Accept = 22,
     /// EFI Runtime Services call (EXPERIMENTAL — firmware behavioral baseline)
     EfiCall = 23,
+    /// io_uring SQE submission (detect io_uring-based evasion)
+    IoUring = 24,
+    /// io_uring ring creation (track which processes use io_uring)
+    IoUringCreate = 25,
+    /// Container drift: binary executed from overlayfs upper layer (not in original image)
+    ContainerDrift = 26,
 }
 
 /// Event emitted by the eBPF `execve` tracepoint.
@@ -450,6 +485,63 @@ pub struct EfiCallEvent {
     /// Process name
     pub comm: [u8; MAX_COMM_LEN],
     /// Timestamp (nanoseconds since boot)
+    pub ts_ns: u64,
+}
+
+// ---------------------------------------------------------------------------
+// io_uring monitoring events
+// ---------------------------------------------------------------------------
+
+/// Event emitted by the `io_uring:io_uring_submit_sqe` tracepoint.
+///
+/// Captures io_uring SQE submissions. Security-relevant opcodes:
+///   OPENAT(18), CONNECT(16), ACCEPT(13), SEND(26), RECV(27),
+///   SENDMSG(9), RECVMSG(10), SOCKET(45), URING_CMD(46).
+/// Most legitimate workloads don't use io_uring — its presence
+/// in non-database/non-webserver processes is suspicious.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct IoUringEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    /// io_uring opcode (IORING_OP_*)
+    pub opcode: u8,
+    /// SQE flags
+    pub sqe_flags: u8,
+    pub _pad: u16,
+    /// File descriptor (for OPENAT, CONNECT, etc.)
+    pub fd: i32,
+    /// Cgroup ID (container awareness)
+    pub cgroup_id: u64,
+    /// Process name
+    pub comm: [u8; MAX_COMM_LEN],
+    /// Timestamp (nanoseconds since boot)
+    pub ts_ns: u64,
+}
+
+/// Event emitted by `io_uring:io_uring_create` tracepoint.
+///
+/// Fires when a process creates an io_uring instance. The mere act
+/// of creating an io_uring ring is a signal worth tracking.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct IoUringCreateEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    /// Ring file descriptor
+    pub ring_fd: i32,
+    /// Number of submission queue entries
+    pub sq_entries: u32,
+    /// Number of completion queue entries
+    pub cq_entries: u32,
+    /// io_uring_setup flags
+    pub flags: u32,
+    /// Cgroup ID
+    pub cgroup_id: u64,
+    /// Process name
+    pub comm: [u8; MAX_COMM_LEN],
     pub ts_ns: u64,
 }
 

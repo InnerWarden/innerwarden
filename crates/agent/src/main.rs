@@ -1304,7 +1304,11 @@ async fn main() -> Result<()> {
                 Some(cfg.telegram.dashboard_url.clone())
             };
             match telegram::TelegramClient::new(token, chat_id, dashboard_url) {
-                Ok(c) => {
+                Ok(mut c) => {
+                    if cfg.telegram.dev_mode {
+                        c.dev_mode = true;
+                        info!("Telegram dev mode ON — FP review button on every notification");
+                    }
                     info!("Telegram client initialised (T.1 notifications enabled)");
                     Some(Arc::new(c))
                 }
@@ -6914,14 +6918,14 @@ mod tests {
         let mut cfg2 = config::AgentConfig::default();
         cfg2.honeypot.mode = "demo".to_string();
         assert!(
-            !(&cfg2.honeypot.mode == "always_on"),
+            cfg2.honeypot.mode != "always_on",
             "demo should not match always_on"
         );
 
         let mut cfg3 = config::AgentConfig::default();
         cfg3.honeypot.mode = "listener".to_string();
         assert!(
-            !(&cfg3.honeypot.mode == "always_on"),
+            cfg3.honeypot.mode != "always_on",
             "listener should not match always_on"
         );
     }
@@ -6930,8 +6934,10 @@ mod tests {
 
     #[test]
     fn synthetic_events_capped_at_2000() {
-        let mut acc = NarrativeAccumulator::default();
-        acc.date = "2026-01-01".to_string();
+        let mut acc = NarrativeAccumulator {
+            date: "2026-01-01".to_string(),
+            ..Default::default()
+        };
         // Simulate 100k events of one kind
         *acc.events_by_kind
             .entry("ssh.login_failed".to_string())
@@ -6946,8 +6952,10 @@ mod tests {
 
     #[test]
     fn synthetic_events_preserves_proportions() {
-        let mut acc = NarrativeAccumulator::default();
-        acc.date = "2026-01-01".to_string();
+        let mut acc = NarrativeAccumulator {
+            date: "2026-01-01".to_string(),
+            ..Default::default()
+        };
         *acc.events_by_kind
             .entry("ssh.login_failed".to_string())
             .or_insert(0) = 8000;
@@ -6966,8 +6974,10 @@ mod tests {
 
     #[test]
     fn incidents_capped_at_500() {
-        let mut acc = NarrativeAccumulator::default();
-        acc.date = "2026-01-01".to_string();
+        let mut acc = NarrativeAccumulator {
+            date: "2026-01-01".to_string(),
+            ..Default::default()
+        };
         let incident = innerwarden_core::incident::Incident {
             ts: chrono::Utc::now(),
             host: "test".to_string(),
@@ -7006,8 +7016,10 @@ mod tests {
 
     #[test]
     fn narrative_accumulator_resets_on_date_change() {
-        let mut acc = NarrativeAccumulator::default();
-        acc.date = "2026-01-01".to_string();
+        let mut acc = NarrativeAccumulator {
+            date: "2026-01-01".to_string(),
+            ..Default::default()
+        };
         *acc.events_by_kind
             .entry("ssh.login_failed".to_string())
             .or_insert(0) = 100;

@@ -758,9 +758,56 @@ fn try_privesc(ctx: &ProbeContext) -> Result<(), i64> {
 
 /// Policy map - controls LSM enforcement.
 /// Key 0 = master switch: 0 = disabled (observe only), 1 = enforce (block).
+/// Key 1 = sensitive write protection: 0 = observe only, 1 = block writes.
 /// Managed by the agent via bpftool on the pinned map.
 #[map]
 static LSM_POLICY: HashMap<u32, u32> = HashMap::with_max_entries(16, 0);
+
+/// sizeof(struct inode) for the running kernel - populated by userspace from BTF.
+/// Used for overlayfs upper-layer detection: __upperdentry is at inode_ptr + sizeof(struct inode).
+/// Key: 0. Value: sizeof(struct inode) in bytes.
+/// Trick from Falco: avoids needing BTF for the private ovl_inode struct.
+#[map]
+static INODE_SIZE: HashMap<u32, u64> = HashMap::with_max_entries(1, 0);
+
+const OVERLAYFS_SUPER_MAGIC: u64 = 0x794c_7630;
+
+/// Per-cgroup capability bitmask. Key: cgroup_id. Value: bitmask of allowed capabilities.
+/// Populated by the agent from config. When guard mode is on and a cgroup has a capability
+/// bit set, that action is ALLOWED for processes in that cgroup.
+#[map]
+static CGROUP_CAPABILITIES: HashMap<u64, u32> = HashMap::with_max_entries(256, 0);
+
+/// Per-process capability bitmask. Key: first 16 bytes of comm. Value: bitmask.
+/// Same semantics as CGROUP_CAPABILITIES but per process name.
+/// Replaces hardcoded byte-comparison allowlists in LSM hooks.
+#[map]
+static COMM_CAPABILITIES: HashMap<[u8; 16], u32> = HashMap::with_max_entries(256, 0);
+
+/// Check if the current process or its cgroup has a specific capability.
+/// Returns true if the action should be ALLOWED.
+#[inline(always)]
+fn has_capability(cap_bit: u32) -> bool {
+    // Check per-cgroup first (more specific)
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    if let Some(&caps) = unsafe { CGROUP_CAPABILITIES.get(&cgroup_id) } {
+        if caps & cap_bit != 0 {
+            return true;
+        }
+    }
+    // Check per-comm
+    if let Ok(comm) = bpf_get_current_comm() {
+        let mut key = [0u8; 16];
+        let len = comm.len().min(16);
+        key[..len].copy_from_slice(&comm[..len]);
+        if let Some(&caps) = unsafe { COMM_CAPABILITIES.get(&key) } {
+            if caps & cap_bit != 0 {
+                return true;
+            }
+        }
+    }
+    false
+}
 
 #[lsm(hook = "bprm_check_security")]
 pub fn innerwarden_lsm_exec(ctx: LsmContext) -> i32 {
@@ -771,6 +818,20 @@ pub fn innerwarden_lsm_exec(ctx: LsmContext) -> i32 {
 }
 
 fn try_lsm_exec(ctx: &LsmContext) -> Result<i32, i64> {
+    // ── Container drift detection (ALWAYS runs, even without guard mode) ──
+    // Check if the binary is on an overlayfs upper layer (dropped after container start).
+    // Uses the Falco trick: __upperdentry is at inode_ptr + sizeof(struct inode).
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    if cgroup_id != 0 {
+        // In a container — check for overlayfs drift
+        if let Some(&inode_size) = unsafe { INODE_SIZE.get(&0u32) } {
+            if inode_size > 0 {
+                let _ = check_overlay_drift(ctx, cgroup_id, inode_size);
+            }
+        }
+    }
+
+    // ── Guard mode enforcement ──
     // Check if enforcement is enabled (key 0 in policy map)
     let enabled = unsafe { LSM_POLICY.get(&0u32) };
     if enabled.is_none() || *enabled.unwrap() == 0 {
@@ -912,6 +973,277 @@ fn try_lsm_exec(ctx: &LsmContext) -> Result<i32, i64> {
     }
 
     Ok(-1) // -EPERM: deny execution
+}
+
+// ---------------------------------------------------------------------------
+// Container drift detection via overlayfs upper-layer check
+// ---------------------------------------------------------------------------
+//
+// Checks if the binary being executed is in the overlayfs upper layer.
+// The upper layer contains files created/modified after container start —
+// i.e., not in the original image. This is container drift.
+//
+// Technique (from Falco): __upperdentry is the first field after vfs_inode
+// in struct ovl_inode. So its offset = inode_ptr + sizeof(struct inode).
+// sizeof(struct inode) is queried from kernel BTF by userspace and stored
+// in the INODE_SIZE map.
+
+fn check_overlay_drift(
+    ctx: &LsmContext,
+    cgroup_id: u64,
+    inode_size: u64,
+) -> Result<(), i64> {
+    // bprm_check_security(struct linux_binprm *bprm)
+    let bprm_ptr: *const u8 = unsafe { ctx.arg(0) };
+
+    // bprm->file @ offset 48 (kernel 6.x: struct linux_binprm has
+    // struct vm_area_struct *vma, unsigned long limit, mm, flags, etc. before file)
+    const BPRM_FILE_OFFSET: usize = 48;
+    let file_ptr: *const u8 = unsafe {
+        bpf_probe_read_kernel(bprm_ptr.add(BPRM_FILE_OFFSET) as *const *const u8)
+            .map_err(|e| e)?
+    };
+    if file_ptr.is_null() {
+        return Ok(());
+    }
+
+    // file->f_path.dentry @ offset 16 (f_path is { mnt(8), dentry(8) } at offset 8)
+    const F_PATH_DENTRY_OFFSET: usize = 16;
+    let dentry_ptr: *const u8 = unsafe {
+        bpf_probe_read_kernel(file_ptr.add(F_PATH_DENTRY_OFFSET) as *const *const u8)
+            .map_err(|e| e)?
+    };
+    if dentry_ptr.is_null() {
+        return Ok(());
+    }
+
+    // dentry->d_sb @ offset 104 (kernel 6.x)
+    const DENTRY_D_SB_OFFSET: usize = 104;
+    let sb_ptr: *const u8 = unsafe {
+        bpf_probe_read_kernel(dentry_ptr.add(DENTRY_D_SB_OFFSET) as *const *const u8)
+            .map_err(|e| e)?
+    };
+    if sb_ptr.is_null() {
+        return Ok(());
+    }
+
+    // super_block->s_magic @ offset 104 (kernel 6.x)
+    const SB_S_MAGIC_OFFSET: usize = 104;
+    let s_magic: u64 = unsafe {
+        bpf_probe_read_kernel(sb_ptr.add(SB_S_MAGIC_OFFSET) as *const u64).map_err(|e| e)?
+    };
+    if s_magic != OVERLAYFS_SUPER_MAGIC {
+        return Ok(()); // Not overlayfs — skip
+    }
+
+    // dentry->d_inode @ offset 48 (kernel 6.x)
+    const DENTRY_D_INODE_OFFSET: usize = 48;
+    let inode_ptr: *const u8 = unsafe {
+        bpf_probe_read_kernel(dentry_ptr.add(DENTRY_D_INODE_OFFSET) as *const *const u8)
+            .map_err(|e| e)?
+    };
+    if inode_ptr.is_null() {
+        return Ok(());
+    }
+
+    // __upperdentry is at inode_ptr + sizeof(struct inode)
+    let upper_dentry: *const u8 = unsafe {
+        bpf_probe_read_kernel(inode_ptr.add(inode_size as usize) as *const *const u8)
+            .map_err(|e| e)?
+    };
+
+    if upper_dentry.is_null() {
+        return Ok(()); // Lower layer — part of original image, no drift
+    }
+
+    // DRIFT DETECTED: binary is in overlayfs upper layer (dropped after container start)
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let pid = pid_tgid as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+
+    if let Some(mut entry) = EVENTS.reserve::<innerwarden_ebpf_types::ExecveEvent>(0) {
+        let event = unsafe { &mut *entry.as_mut_ptr() };
+        event.kind = innerwarden_ebpf_types::SyscallKind::ContainerDrift as u32;
+        event.pid = pid;
+        event.tgid = (pid_tgid >> 32) as u32;
+        event.uid = uid;
+        event.gid = 0;
+        event.ppid = 0;
+        event.cgroup_id = cgroup_id;
+        event.ts_ns = ts;
+        event.argc = 0;
+        event.argv = [[0u8; 128]; 8];
+
+        // Read the filename from bprm->filename
+        const BPRM_FILENAME_OFFSET: usize = 72;
+        let filename_ptr: *const u8 = unsafe {
+            bpf_probe_read_kernel(bprm_ptr.add(BPRM_FILENAME_OFFSET) as *const *const u8)
+                .unwrap_or(core::ptr::null())
+        };
+        event.filename = [0u8; 256];
+        if !filename_ptr.is_null() {
+            unsafe {
+                let _ = bpf_probe_read_kernel_str_bytes(filename_ptr, &mut event.filename);
+            }
+        }
+
+        if let Ok(comm) = bpf_get_current_comm() {
+            event.comm = [0u8; MAX_COMM_LEN];
+            event.comm[..comm.len().min(MAX_COMM_LEN)]
+                .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+        }
+
+        entry.submit(0);
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// LSM: file_open - block writes to sensitive paths (guard mode)
+// ---------------------------------------------------------------------------
+//
+// Protects critical system files from unauthorized modification.
+// When enabled via LSM_POLICY key 1, blocks write opens to:
+//   /etc/shadow, /etc/passwd, /etc/sudoers*
+//   ~/.ssh/authorized_keys, ~/.ssh/id_*
+//   /etc/cron*, /var/spool/cron/
+//   /etc/systemd/system/
+//   /etc/ld.so.preload, /etc/ld.so.conf*
+//   /etc/pam.d/
+//
+// Policy key 1 = 1 → enforce (block writes), 0 or absent → observe only.
+// Always emits FileOpenEvent with kind=FileWrite for visibility.
+
+#[lsm(hook = "file_open")]
+pub fn innerwarden_lsm_file_open(ctx: LsmContext) -> i32 {
+    match try_lsm_file_open(&ctx) {
+        Ok(ret) => ret,
+        Err(_) => 0, // fail-open
+    }
+}
+
+fn try_lsm_file_open(ctx: &LsmContext) -> Result<i32, i64> {
+    // file_open(struct file *file)
+    // struct file { ... f_flags @ offset 76 (kernel 6.x), f_path.dentry @ offset ... }
+    // We read f_flags to check for write mode.
+    let file_ptr: *const u8 = unsafe { ctx.arg(0) };
+
+    // f_flags offset in struct file (kernel 6.x)
+    const F_FLAGS_OFFSET: usize = 76;
+    let flags: u32 = unsafe {
+        bpf_probe_read_kernel(file_ptr.add(F_FLAGS_OFFSET) as *const u32).map_err(|e| e)?
+    };
+
+    // Only interested in write opens: O_WRONLY(1), O_RDWR(2), O_CREAT(0x40), O_TRUNC(0x200)
+    let is_write = (flags & 0x3) != 0 || (flags & 0x40) != 0 || (flags & 0x200) != 0;
+    if !is_write {
+        return Ok(0);
+    }
+
+    // Read filename from f_path.dentry->d_name
+    // struct file { f_path { struct vfsmount *mnt; struct dentry *dentry } @ offset 16 }
+    // f_path.dentry @ offset 24 (after mnt pointer)
+    const F_PATH_DENTRY_OFFSET: usize = 24;
+    let dentry_ptr: *const u8 = unsafe {
+        bpf_probe_read_kernel(file_ptr.add(F_PATH_DENTRY_OFFSET) as *const *const u8)
+            .map_err(|e| e)?
+    };
+
+    // dentry->d_name.name @ offset 40 (kernel 6.x, after d_name { hash_len, name })
+    // d_name is struct qstr at offset 32 in dentry, name ptr is at qstr+8 = dentry+40
+    const DENTRY_NAME_OFFSET: usize = 40;
+    let name_ptr: *const u8 = unsafe {
+        bpf_probe_read_kernel(dentry_ptr.add(DENTRY_NAME_OFFSET) as *const *const u8)
+            .map_err(|e| e)?
+    };
+
+    let mut name_buf = [0u8; 64];
+    unsafe {
+        let _ = bpf_probe_read_kernel_str_bytes(name_ptr, &mut name_buf);
+    }
+
+    // Classify the filename into a capability category
+    let n = &name_buf;
+    let cap_bit: u32 = if
+        // shadow, passwd, gshadow, group
+        (n[0] == b's' && n[1] == b'h' && n[2] == b'a' && n[3] == b'd' && n[4] == b'o' && n[5] == b'w')
+        || (n[0] == b'p' && n[1] == b'a' && n[2] == b's' && n[3] == b's' && n[4] == b'w' && n[5] == b'd')
+        || (n[0] == b'g' && n[1] == b's' && n[2] == b'h' && n[3] == b'a' && n[4] == b'd')
+    {
+        innerwarden_ebpf_types::CAP_WRITE_CREDENTIALS
+    } else if
+        // authorized_keys, id_rsa, id_ed25519
+        n[0] == b'a' && n[1] == b'u' && n[2] == b't' && n[3] == b'h' && n[4] == b'o' && n[5] == b'r'
+    {
+        innerwarden_ebpf_types::CAP_WRITE_SSH
+    } else if
+        // sudoers
+        n[0] == b's' && n[1] == b'u' && n[2] == b'd' && n[3] == b'o' && n[4] == b'e' && n[5] == b'r' && n[6] == b's'
+    {
+        innerwarden_ebpf_types::CAP_WRITE_SUDO
+    } else if
+        // crontab, cron.d
+        n[0] == b'c' && n[1] == b'r' && n[2] == b'o' && n[3] == b'n'
+    {
+        innerwarden_ebpf_types::CAP_WRITE_CRON
+    } else if
+        // ld.so.preload, ld.so.conf
+        n[0] == b'l' && n[1] == b'd' && n[2] == b'.' && n[3] == b's' && n[4] == b'o'
+    {
+        innerwarden_ebpf_types::CAP_WRITE_LDPRELOAD
+    } else if
+        // .bashrc, .profile (persistence via shell config)
+        (n[0] == b'.' && n[1] == b'b' && n[2] == b'a' && n[3] == b's' && n[4] == b'h')
+        || (n[0] == b'.' && n[1] == b'p' && n[2] == b'r' && n[3] == b'o' && n[4] == b'f')
+    {
+        innerwarden_ebpf_types::CAP_WRITE_PERSISTENCE
+    } else {
+        return Ok(0); // Not a sensitive path
+    };
+
+    // Check capability maps: if this process/cgroup has the capability, allow
+    if has_capability(cap_bit) {
+        return Ok(0);
+    }
+
+    // Emit event for visibility (always, regardless of guard mode)
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    if let Some(mut entry) = EVENTS.reserve::<innerwarden_ebpf_types::FileOpenEvent>(0) {
+        let event = unsafe { &mut *entry.as_mut_ptr() };
+        event.kind = innerwarden_ebpf_types::SyscallKind::FileWrite as u32;
+        event.pid = pid;
+        event.uid = uid;
+        event.ppid = 0;
+        event.cgroup_id = cgroup_id;
+        event.flags = flags;
+        event.ts_ns = ts;
+
+        // Copy filename
+        event.filename = [0u8; 256];
+        let copy_len = name_buf.len().min(256);
+        event.filename[..copy_len].copy_from_slice(&name_buf[..copy_len]);
+
+        if let Ok(comm) = bpf_get_current_comm() {
+            event.comm[..comm.len().min(MAX_COMM_LEN)]
+                .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+        }
+
+        entry.submit(0);
+    }
+
+    // Check if guard mode is enabled (LSM_POLICY key 1)
+    let guard_writes = unsafe { LSM_POLICY.get(&1u32) };
+    if guard_writes.is_some() && *guard_writes.unwrap() == 1 {
+        return Ok(-1); // -EPERM: block the write
+    }
+
+    Ok(0) // observe only
 }
 
 // ---------------------------------------------------------------------------
@@ -2179,6 +2511,150 @@ fn try_efi_call(_ctx: &ProbeContext) -> Result<(), i64> {
     event.pid = pid;
     event.uid = uid;
     event._pad = 0;
+    event.cgroup_id = cgroup_id;
+    event.ts_ns = ts;
+    event.comm = [0u8; MAX_COMM_LEN];
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// io_uring monitoring - detect syscall bypass evasion
+// ---------------------------------------------------------------------------
+//
+// io_uring submits operations via shared ring buffers, bypassing traditional
+// syscall interception (seccomp, audit). Attackers use this for invisible
+// file I/O, network connections, and data exfiltration.
+//
+// Tracepoint name changed in kernel 6.4:
+//   5.10-6.3: io_uring:io_uring_submit_sqe
+//   6.4+:     io_uring:io_uring_submit_req
+// Both have identical layout for the fields we read.
+//
+// Offsets (from tracepoint format, after 8-byte common header):
+//   ctx(8) req(8) user_data(8) opcode(1) _pad(3) flags(4) sq_thread(1)
+
+/// io_uring SQE submission — fires on every submitted operation.
+/// We use the 6.4+ name; the userspace loader tries both names.
+#[tracepoint]
+pub fn innerwarden_io_uring_submit(ctx: TracePointContext) -> u32 {
+    match try_io_uring_submit(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+fn try_io_uring_submit(ctx: &TracePointContext) -> Result<(), i64> {
+    // Offsets after 8-byte common header
+    let opcode: u8 = unsafe { ctx.read_at(32)? };
+
+    // Only emit events for security-relevant opcodes to avoid flooding
+    let is_relevant = matches!(
+        opcode,
+        9  | // SENDMSG
+        10 | // RECVMSG
+        13 | // ACCEPT
+        16 | // CONNECT
+        18 | // OPENAT
+        26 | // SEND
+        27 | // RECV
+        28 | // OPENAT2
+        35 | // RENAMEAT
+        36 | // UNLINKAT
+        45 | // SOCKET
+        46 | // URING_CMD
+        53   // SEND_ZC
+    );
+    if !is_relevant {
+        return Ok(());
+    }
+
+    // Noise filters
+    if is_comm_allowed(2) || is_cgroup_allowed() {
+        return Ok(());
+    }
+
+    let pid = bpf_get_current_pid_tgid() as u32;
+    if is_rate_limited(pid) {
+        return Ok(());
+    }
+
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    let flags: u32 = unsafe { ctx.read_at(36).unwrap_or(0) };
+
+    let mut entry = match EVENTS.reserve::<innerwarden_ebpf_types::IoUringEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = innerwarden_ebpf_types::SyscallKind::IoUring as u32;
+    event.pid = pid;
+    event.uid = uid;
+    event.opcode = opcode;
+    event.sqe_flags = 0;
+    event._pad = 0;
+    event.fd = -1; // fd not directly available in the tracepoint
+    event.cgroup_id = cgroup_id;
+    event.ts_ns = ts;
+    event.comm = [0u8; MAX_COMM_LEN];
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
+}
+
+/// io_uring ring creation — fires when a process creates an io_uring instance.
+#[tracepoint]
+pub fn innerwarden_io_uring_create(ctx: TracePointContext) -> u32 {
+    match try_io_uring_create(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+fn try_io_uring_create(ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(2) || is_cgroup_allowed() {
+        return Ok(());
+    }
+
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    // Offsets after 8-byte common header
+    let ring_fd: i32 = unsafe { ctx.read_at(8).unwrap_or(-1) };
+    // ctx pointer at offset 16, skip it
+    let sq_entries: u32 = unsafe { ctx.read_at(24).unwrap_or(0) };
+    let cq_entries: u32 = unsafe { ctx.read_at(28).unwrap_or(0) };
+    let flags: u32 = unsafe { ctx.read_at(32).unwrap_or(0) };
+
+    let mut entry = match EVENTS.reserve::<innerwarden_ebpf_types::IoUringCreateEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = innerwarden_ebpf_types::SyscallKind::IoUringCreate as u32;
+    event.pid = pid;
+    event.uid = uid;
+    event.ring_fd = ring_fd;
+    event.sq_entries = sq_entries;
+    event.cq_entries = cq_entries;
+    event.flags = flags;
     event.cgroup_id = cgroup_id;
     event.ts_ns = ts;
     event.comm = [0u8; MAX_COMM_LEN];

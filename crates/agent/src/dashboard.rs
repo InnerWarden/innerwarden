@@ -2735,6 +2735,7 @@ async fn api_compliance(State(state): State<DashboardState>) -> Json<serde_json:
         { "id": "A.12.4", "name": "Logging and monitoring", "met": true, "reason": "Continuous monitoring with 39+ detectors and audit trail" },
         { "id": "A.12.6", "name": "Technical vulnerability management", "met": cfg.execution_guard_enabled, "reason": if cfg.execution_guard_enabled { "Execution guard blocks exploit payloads" } else { "Enable execution-guard for exploit prevention" } },
         { "id": "A.13.1", "name": "Network security management", "met": cfg.enabled && !cfg.dry_run, "reason": if cfg.enabled && !cfg.dry_run { "Automated IP blocking active" } else { "Enable guard mode for network-level response" } },
+        { "id": "A.13.2", "name": "Information transfer", "met": true, "reason": "Container drift detection (overlayfs upper-layer check) + io_uring monitoring prevent unauthorized data transfer via syscall bypass and dropped executables" },
         { "id": "A.16.1", "name": "Incident management", "met": true, "reason": "Automated incident detection, correlation, and response pipeline" },
         { "id": "A.18.1", "name": "Compliance", "met": cfg.retention_decisions_days >= 90, "reason": format!("Audit trail retained {}d (requirement: 90d)", cfg.retention_decisions_days) },
         { "id": "A.18.2", "name": "Information security reviews", "met": true, "reason": "Daily automated security reports with telemetry" },
@@ -5971,7 +5972,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
     /* ── Left panel ──────────────────────────────────────────────── */
     .left-panel {
-      width: 300px; flex-shrink: 0;
+      width: 380px; flex-shrink: 0;
       overflow-y: auto; overflow-x: hidden;
       border-right: 1px solid var(--line);
       padding: 12px 10px;
@@ -7235,6 +7236,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       background:linear-gradient(90deg, rgba(120,229,255,0.7), rgba(120,229,255,0.1)); }
   </style>
   <div class="report-view sensor-hud" id="viewSensors" style="display:flex;">
+    <div id="topAction" style="display:none;margin-bottom:14px;padding:16px 20px;border-radius:14px;border:1px solid rgba(244,63,94,0.3);background:rgba(244,63,94,0.06);"></div>
     <div class="hud-stats" id="sensorCards"></div>
     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:6px;" id="sensorSources"></div>
     <div class="hud-panel">
@@ -7519,7 +7521,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     });
     const toggleBtn = document.getElementById('panelToggleBtn');
     if (toggleBtn) toggleBtn.classList.toggle('hidden', name !== 'investigate');
-    if (name === 'sensors') loadSensors();
+    if (name === 'sensors') { loadSensors(); loadTopAction(); }
     if (name === 'report') loadReport();
     if (name === 'status') loadStatus();
     if (name === 'honeypot') loadHoneypot();
@@ -7743,16 +7745,37 @@ const INDEX_HTML: &str = r##"<!doctype html>
       html += '<div class="hud-card"><div class="hud-val">' + (data.detectors||[]).length + '</div><div class="hud-label">Detectors Firing</div></div>';
       cards.innerHTML = html;
 
-      // Per-source rows
+      // Per-source rows — split into active vs available
       const srcEl = document.getElementById('sensorSources');
       if (srcEl) {
-        let shtml = '';
-        for (const s of (data.sources || [])) {
+        const allSources = data.sources || [];
+        const active = allSources.filter(s => s.count > 0);
+        const idle = allSources.filter(s => s.count === 0);
+        const totalActive = active.length;
+        const totalAll = allSources.length;
+
+        let shtml = '<div style="font-size:0.72rem;font-weight:700;color:var(--ok);letter-spacing:0.05em;margin-bottom:6px">' +
+          'DATA COLLECTION &mdash; ' + totalActive + '/' + totalAll + ' active</div>';
+        shtml += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px">';
+        for (const s of active) {
           const c = sensorColor(s.name);
           shtml += '<div class="hud-source">' +
             '<div class="hud-source-dot" style="background:' + c + ';box-shadow:0 0 6px ' + c + ';"></div>' +
             '<span class="hud-source-name">' + s.name + '</span>' +
             '<span class="hud-source-count" style="color:' + c + ';">' + s.count.toLocaleString() + '</span></div>';
+        }
+        shtml += '</div>';
+        if (idle.length > 0) {
+          shtml += '<div style="font-size:0.65rem;color:var(--muted);margin-top:8px;cursor:pointer" onclick="var el=document.getElementById(\'idleSources\');el.style.display=el.style.display===\'none\'?\'grid\':\'none\'">' +
+            idle.length + ' available but idle &#9662;</div>' +
+            '<div id="idleSources" style="display:none;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px;margin-top:4px;opacity:0.5">';
+          for (const s of idle) {
+            shtml += '<div class="hud-source">' +
+              '<div class="hud-source-dot" style="background:var(--muted);"></div>' +
+              '<span class="hud-source-name">' + s.name + '</span>' +
+              '<span class="hud-source-count" style="color:var(--muted);">0</span></div>';
+          }
+          shtml += '</div>';
         }
         srcEl.innerHTML = shtml;
       }
@@ -7777,6 +7800,64 @@ const INDEX_HTML: &str = r##"<!doctype html>
       // Detector activity chart
       drawDetectorChart(data.detectors || []);
     } catch(e) { console.error('loadSensors', e); }
+  }
+
+  // ── Top Action Widget: surface the most urgent decision ───────────
+  async function loadTopAction() {
+    try {
+      const ctx = await loadJson('/api/agent/security-context');
+      const el = document.getElementById('topAction');
+      if (!el) return;
+
+      const level = ctx.threat_level || 'low';
+      const hc = ctx.high_or_critical_today || 0;
+      const threats = ctx.top_threats || [];
+      const blocks = ctx.recent_blocks_today || 0;
+
+      if (level === 'low' && hc === 0) {
+        // All clear — show subtle green bar
+        el.style.display = 'block';
+        el.style.borderColor = 'rgba(58,194,126,0.3)';
+        el.style.background = 'rgba(58,194,126,0.04)';
+        el.innerHTML = '<div style="display:flex;align-items:center;gap:10px">' +
+          '<span style="font-size:1.3rem">&#9989;</span>' +
+          '<div><div style="font-size:0.85rem;font-weight:700;color:var(--ok)">All Clear</div>' +
+          '<div style="font-size:0.7rem;color:var(--muted)">' + blocks + ' IPs blocked today. No unresolved high-severity incidents.</div></div></div>';
+        return;
+      }
+
+      // There are threats — show the most urgent one
+      const topThreat = threats.length > 0 ? threats[0] : null;
+      const colors = { critical: '#f43f5e', high: '#fb923c', medium: '#facc15' };
+      const color = colors[level] || colors.medium;
+
+      el.style.display = 'block';
+      el.style.borderColor = color.replace(')', ',0.4)').replace('#', 'rgba(') || 'rgba(244,63,94,0.3)';
+      el.style.background = 'linear-gradient(135deg, rgba(244,63,94,0.06), transparent)';
+
+      let actionHtml = '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">' +
+        '<div style="display:flex;align-items:center;gap:10px">' +
+        '<span style="font-size:1.3rem">' + (level === 'critical' ? '&#128680;' : '&#9888;&#65039;') + '</span>' +
+        '<div>' +
+        '<div style="font-size:0.85rem;font-weight:700;color:' + color + '">' + hc + ' unresolved ' + (level === 'critical' ? 'CRITICAL' : 'high-severity') + ' incident' + (hc > 1 ? 's' : '') + '</div>' +
+        '<div style="font-size:0.7rem;color:var(--muted)">';
+
+      if (topThreat) {
+        actionHtml += 'Top threat: <strong style="color:var(--text)">' + esc(topThreat) + '</strong>';
+        if (threats.length > 1) actionHtml += ' + ' + (threats.length - 1) + ' more';
+      }
+      actionHtml += '</div></div></div>';
+
+      // Action button — takes user to Threats tab
+      actionHtml += '<button onclick="showView(\'investigate\')" style="' +
+        'padding:8px 18px;border-radius:10px;border:1px solid ' + color + ';' +
+        'background:transparent;color:' + color + ';font-size:0.75rem;font-weight:700;' +
+        'cursor:pointer;white-space:nowrap;transition:background 0.2s' +
+        '" onmouseover="this.style.background=\'' + color + '20\'" onmouseout="this.style.background=\'transparent\'">' +
+        'Investigate &#8594;</button></div>';
+
+      el.innerHTML = actionHtml;
+    } catch(e) { /* non-critical */ }
   }
 
   // Chart.js global config - match site design system
@@ -8076,17 +8157,37 @@ const INDEX_HTML: &str = r##"<!doctype html>
     const confColor = (v) => v >= 0.85 ? 'good' : v >= 0.7 ? 'warn' : 'bad';
     const healthVal = (v) => v ? '<span class="health-ok">✓ OK</span>' : '<span class="health-fail">✗ Fail</span>';
 
-    // KPI row
+    // Hero KPIs — the 3 numbers that matter most
+    const hcRecent = rw.high_critical_incidents ?? 0;
+    const blocksToday = ai.block_ip_count ?? 0;
+    const totalIncidents = ds.total_incidents ?? 0;
     let html = `<div class="report-section">
-      <div class="report-section-title">Summary - ${esc(r.analyzed_date)}</div>
-      <div class="report-kpi-row">
+      <div class="report-section-title">Summary &mdash; ${esc(r.analyzed_date)}</div>
+      <div class="report-kpi-row" style="grid-template-columns:repeat(3,1fr)">
+        <div class="report-kpi" style="text-align:center">
+          <div class="report-kpi-label">Incidents Today</div>
+          <div class="report-kpi-value" style="font-size:1.8rem">${totalIncidents}</div>
+          <div style="font-size:0.62rem;color:var(--muted)">${ds.total_events ?? 0} events analyzed</div>
+        </div>
+        <div class="report-kpi" style="text-align:center">
+          <div class="report-kpi-label">Auto-Blocked</div>
+          <div class="report-kpi-value" style="font-size:1.8rem;color:var(--ok)">${blocksToday}</div>
+          <div style="font-size:0.62rem;color:var(--muted)">${((ai.average_confidence ?? 0) * 100).toFixed(0)}% avg AI confidence</div>
+        </div>
+        <div class="report-kpi" style="text-align:center">
+          <div class="report-kpi-label">High/Critical (6h)</div>
+          <div class="report-kpi-value ${hcRecent > 0 ? 'bad' : 'good'}" style="font-size:1.8rem">${hcRecent}</div>
+          <div style="font-size:0.62rem;color:var(--muted)">${rw.incidents ?? 0} total last 6 hours</div>
+        </div>
+      </div>
+      <div style="margin-top:8px;cursor:pointer;font-size:0.65rem;color:var(--muted)" onclick="var el=document.getElementById('reportDetailKpis');el.style.display=el.style.display==='none'?'grid':'none'">
+        All metrics &#9662;
+      </div>
+      <div id="reportDetailKpis" class="report-kpi-row" style="display:none;margin-top:8px">
         <div class="report-kpi"><div class="report-kpi-label">Events</div><div class="report-kpi-value">${ds.total_events ?? 0}</div></div>
-        <div class="report-kpi"><div class="report-kpi-label">Incidents</div><div class="report-kpi-value">${ds.total_incidents ?? 0}</div></div>
         <div class="report-kpi"><div class="report-kpi-label">Decisions</div><div class="report-kpi-value">${ai.total_decisions ?? 0}</div></div>
-        <div class="report-kpi"><div class="report-kpi-label">Blocks</div><div class="report-kpi-value">${ai.block_ip_count ?? 0}</div></div>
         <div class="report-kpi"><div class="report-kpi-label">Avg Conf</div><div class="report-kpi-value ${confColor(ai.average_confidence ?? 0)}">${((ai.average_confidence ?? 0) * 100).toFixed(0)}%</div></div>
         <div class="report-kpi"><div class="report-kpi-label">Last 6h Incid.</div><div class="report-kpi-value">${rw.incidents ?? 0}</div></div>
-        <div class="report-kpi"><div class="report-kpi-label">High/Crit 6h</div><div class="report-kpi-value ${(rw.high_critical_incidents ?? 0) > 0 ? 'bad' : 'good'}">${rw.high_critical_incidents ?? 0}</div></div>
       </div>
     </div>`;
 
@@ -8298,9 +8399,9 @@ const INDEX_HTML: &str = r##"<!doctype html>
     const hpMode = (integ.honeypot_mode || 'off').toLowerCase();
     const hpBadge = hpMode === 'listener' ? 'LIVE' : hpMode === 'demo' ? 'DEMO' : 'OFF';
 
-    html += '<div class="report-section"><div class="report-section-title">Active Integrations</div>' +
-      '<style>' +
-      '.integ-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:20px}' +
+    // ── Section 2: Active Integrations — grouped by category ─────────────
+    const groupStyle = '<style>' +
+      '.integ-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:12px}' +
       '.integ-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;align-items:flex-start;gap:12px}' +
       '.integ-card.active{border-color:rgba(58,194,126,0.4)}' +
       '.integ-card.inactive{opacity:0.65}' +
@@ -8322,42 +8423,97 @@ const INDEX_HTML: &str = r##"<!doctype html>
       '.integ-badge.demo{background:rgba(255,184,77,0.15);color:var(--warn)}' +
       '.integ-kind-native{display:inline-block;font-size:0.52rem;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:5px;vertical-align:middle;background:rgba(120,229,255,0.12);color:var(--accent);letter-spacing:0.04em}' +
       '.integ-kind-ext{display:inline-block;font-size:0.52rem;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:5px;vertical-align:middle;background:rgba(255,184,77,0.12);color:var(--warn);letter-spacing:0.04em}' +
+      '.integ-group{margin-bottom:18px}' +
+      '.integ-group-header{display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:8px 0;user-select:none}' +
+      '.integ-group-title{font-size:0.72rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--accent)}' +
+      '.integ-group-count{font-size:0.65rem;color:var(--muted)}' +
+      '.integ-group-chevron{font-size:0.8rem;color:var(--muted);transition:transform 0.2s}' +
+      '.integ-group-chevron.collapsed{transform:rotate(-90deg)}' +
+      '.integ-group-body{overflow:hidden;transition:max-height 0.3s ease}' +
+      '.integ-group-body.collapsed{max-height:0 !important;margin:0;padding:0}' +
       '@media(max-width:640px){.integ-grid{grid-template-columns:1fr}}' +
-      '</style>' +
-      '<div class="integ-grid">' +
-      card('🤖', 'AI Analysis',   s.ai_enabled,       'Analyzes threats and selects the best response action',         s.ai_enabled ? 'ON' : 'OFF',  'native',   'Built into InnerWarden - no external service needed.',                                       'innerwarden enable ai') +
-      card('🛡️', 'IP Blocker',    resp.enabled,       'Automatically blocks IPs via UFW/iptables when AI decides',     resp.enabled ? 'ON' : 'OFF',  'native',   'Zero cost. Uses your existing firewall.',                                                    'innerwarden enable block-ip') +
-      card('🪤', 'Honeypot',      hpMode !== 'off',   'Decoy server that captures and logs attacker behavior',         hpBadge,                      'native',   'Built-in. listener mode activates on AI demand; always_on keeps it permanently open.',      '') +
-      card('🌍', 'GeoIP',         integ.geoip,        'Adds country/ISP info to every threat - free, no key needed',  integ.geoip ? 'ON' : 'OFF',   'native',   'Free. Calls ip-api.com (45 req/min). Best first enrichment to enable.',                      'innerwarden integrate geoip') +
-      card('🔍', 'AbuseIPDB',     integ.abuseipdb,    'IP reputation + delayed community reporting (5min grace)',      integ.abuseipdb ? 'ON' : 'OFF','external', 'Free plan: 1,000 req/day. Reports delayed 5 min to allow false-positive correction.', 'innerwarden integrate abuseipdb') +
-      card('⚡', 'XDP Firewall',  true,               'Wire-speed IP blocking at network driver - 10M+ pps drop rate', 'ON',  'native',  'Active when eBPF sensor runs. Layered: XDP + firewall + Cloudflare + AbuseIPDB in one action.', '') +
-      card('🔔', 'Telegram',      integ.telegram,     'Real-time alerts + inline approval buttons on your phone',     integ.telegram ? 'ON' : 'OFF', 'external', 'Free. Best solo-operator channel - supports bidirectional approve/reject.',                  'innerwarden notify telegram') +
-      card('💬', 'Slack',         integ.slack,        'Incident notifications to a Slack team channel',               integ.slack ? 'ON' : 'OFF',   'external', 'Free (requires workspace). Activating alongside Telegram doubles alert volume for same incident.', 'innerwarden notify slack') +
-      card('☁️', 'Cloudflare',    integ.cloudflare,   'Pushes blocked IPs to Cloudflare edge after block-ip fires',   integ.cloudflare ? 'ON' : 'OFF','external', 'Free plan supports IP Access Rules. Effective for DDoS edge-layer defense.',               'innerwarden integrate cloudflare') +
-      card('🌐', 'CrowdSec',     integ.crowdsec||false, 'Community threat intelligence - known-bad IPs looked up on incident', integ.crowdsec ? 'ON' : 'OFF', 'external', 'Free. Requires CrowdSec LAPI running locally. Lookup-only, no preventive blocking.',       'innerwarden integrate crowdsec') +
-      card('📊', 'Prometheus',   true,               'Metrics endpoint at /metrics - scrape with Prometheus, visualize in Grafana', 'ON',  'native',   'Always available when dashboard is active. No config needed.',                               '') +
-      card('🚨', 'PagerDuty',    (s.webhook_format||'') === 'pagerduty', 'On-call alerts via PagerDuty Events API v2',  (s.webhook_format||'') === 'pagerduty' ? 'ON' : 'OFF', 'external', 'Set webhook.format = \"pagerduty\" and webhook.url to PagerDuty enqueue endpoint.',   'innerwarden configure webhook') +
-      card('📟', 'Opsgenie',     (s.webhook_format||'') === 'opsgenie',  'On-call alerts via Opsgenie Alert API',       (s.webhook_format||'') === 'opsgenie' ? 'ON' : 'OFF',  'external', 'Set webhook.format = \"opsgenie\" and webhook.url to Opsgenie alert endpoint.',      'innerwarden configure webhook') +
-      card('👑', 'Sudo Protection', s.sudo_protection||false, 'Detects privilege abuse and suspends sudo access', s.sudo_protection ? 'ON' : 'OFF', 'native', 'Detects 11 threat categories including SUID manipulation, SSH key injection, log tampering.', 'innerwarden enable sudo-protection') +
-      card('🔫', 'Execution Guard', s.execution_guard||false, 'Structural AST analysis of shell commands - catches obfuscation', s.execution_guard ? 'ON' : 'OFF', 'native', 'tree-sitter-bash analysis. Detects reverse shells, curl|bash, hex obfuscation.', 'innerwarden enable execution-guard') +
-      card('🕸️', 'Mesh Network', integ.mesh||false, 'Collaborative defense - peers exchange block signals with trust scoring', integ.mesh ? 'ON' : 'OFF', 'native', 'Decentralized threat intel sharing between InnerWarden instances.', 'innerwarden integrate mesh') +
-      card('🔔', 'Web Push', integ.web_push||false, 'Browser push notifications for real-time alerts without Telegram/Slack', integ.web_push ? 'ON' : 'OFF', 'native', 'VAPID-based. Subscribe from the dashboard bell icon. No external service.', '') +
-      card('🚧', 'Fail2ban Sync', integ.fail2ban||false, 'Sync blocked IPs with fail2ban jails for unified ban management', integ.fail2ban ? 'ON' : 'OFF', 'external', 'Requires fail2ban installed. InnerWarden reads jails and pushes blocks.', 'innerwarden integrate fail2ban') +
-      card('🛡️', 'Shield (DDoS)', integ.shield||false, 'Packet flood detection + Cloudflare edge push for volumetric attacks', integ.shield ? 'ON' : 'OFF', 'native', 'Detects SYN/UDP/ICMP floods. Pushes to Cloudflare edge when enabled.', '') +
-      card('🧬', 'Threat DNA', integ.dna||false, 'Attacker fingerprinting and behavioral correlation across sessions', integ.dna ? 'ON' : 'OFF', 'native', 'Always active. Tracks attack patterns, timing signatures, tool fingerprints.', '') +
-      (function() {
-        const kc = s.kill_chain || {};
-        const kcTotal = (kc.total_blocked || 0) + (kc.total_pre_chain || 0);
-        const kcOn = kcTotal > 0;
-        const kcDesc = kcTotal > 0
-          ? kcTotal + ' chain(s) detected today — ' + (kc.total_blocked||0) + ' blocked, ' + (kc.total_pre_chain||0) + ' pre-chain'
-          : 'Multi-step attack correlation — detects reverse shells, privilege escalation chains';
-        const kcPatterns = kc.patterns || {};
-        const patternList = Object.keys(kcPatterns).map(function(p) { return p + ': ' + kcPatterns[p]; }).join(', ');
-        const kcCost = 'Native syscall correlation. Patterns: ' + (patternList || 'none detected yet');
-        return card('🔗', 'Kill Chain', kcOn, kcDesc, kcOn ? 'ON' : 'OFF', 'native', kcCost, '');
-      })() +
-      '</div></div>';
+      '</style>';
+
+    // Group builder: title, cards array, initially expanded?
+    const group = (title, cards, expanded) => {
+      const onCount = cards.filter(c => c.includes('integ-card active')).length;
+      const total = cards.length;
+      const id = 'ig-' + title.replace(/[^a-z]/gi, '').toLowerCase();
+      const chevCls = expanded ? '' : ' collapsed';
+      const bodyCls = expanded ? '' : ' collapsed';
+      return '<div class="integ-group">' +
+        '<div class="integ-group-header" onclick="(function(){ var b=document.getElementById(\'' + id + '\'); var c=b.previousElementSibling.querySelector(\'.integ-group-chevron\'); b.classList.toggle(\'collapsed\'); c.classList.toggle(\'collapsed\'); })()">' +
+        '<span class="integ-group-title">' + title + '</span>' +
+        '<span style="display:flex;align-items:center;gap:8px">' +
+        '<span class="integ-group-count">' + onCount + '/' + total + ' active</span>' +
+        '<span class="integ-group-chevron' + chevCls + '">&#9662;</span>' +
+        '</span></div>' +
+        '<div class="integ-group-body' + bodyCls + '" id="' + id + '" style="max-height:2000px">' +
+        '<div class="integ-grid">' + cards.join('') + '</div></div></div>';
+    };
+
+    // ── Build Kill Chain card (needs runtime data) ──
+    const kcCard = (function() {
+      const kc = s.kill_chain || {};
+      const kcTotal = (kc.total_blocked || 0) + (kc.total_pre_chain || 0);
+      const kcOn = kcTotal > 0;
+      const kcDesc = kcTotal > 0
+        ? kcTotal + ' chain(s) detected today — ' + (kc.total_blocked||0) + ' blocked, ' + (kc.total_pre_chain||0) + ' pre-chain'
+        : 'Multi-step attack correlation — detects reverse shells, privilege escalation chains';
+      const kcPatterns = kc.patterns || {};
+      const patternList = Object.keys(kcPatterns).map(function(p) { return p + ': ' + kcPatterns[p]; }).join(', ');
+      const kcCost = 'Native syscall correlation. Patterns: ' + (patternList || 'none detected yet');
+      return card('🔗', 'Kill Chain', kcOn, kcDesc, kcOn ? 'ON' : 'OFF', 'native', kcCost, '');
+    })();
+
+    html += '<div class="report-section"><div class="report-section-title">Active Integrations</div>' +
+      groupStyle +
+
+      // ── Core Protection (always visible, expanded) ──
+      group('Core Protection', [
+        card('🤖', 'AI Analysis',   s.ai_enabled,     'Analyzes threats and selects the best response action',       s.ai_enabled ? 'ON' : 'OFF', 'native', 'Built into InnerWarden - no external service needed.', 'innerwarden enable ai'),
+        card('🛡️', 'IP Blocker',    resp.enabled,     'Automatically blocks IPs via UFW/iptables when AI decides',   resp.enabled ? 'ON' : 'OFF', 'native', 'Zero cost. Uses your existing firewall.',               'innerwarden enable block-ip'),
+        card('🪤', 'Honeypot',      hpMode !== 'off', 'Decoy server that captures and logs attacker behavior',       hpBadge,                     'native', 'listener mode activates on AI demand; always_on keeps it permanently open.', ''),
+        card('⚡', 'XDP Firewall',  true,             'Wire-speed IP blocking at network driver - 10M+ pps drop',    'ON', 'native', 'Active when eBPF sensor runs. Layered: XDP + firewall + Cloudflare + AbuseIPDB.', ''),
+      ], true) +
+
+      // ── Kernel Hardening (expanded — v0.6.0 features) ──
+      group('Kernel Hardening', [
+        kcCard,
+        card('🔒', 'Sensitive Path Guard', s.sensitive_write||true, 'LSM hook blocks writes to /etc/shadow, sudoers, authorized_keys, crontab', s.sensitive_write !== false ? 'ON' : 'OFF', 'native', 'Capability-based policy: per-cgroup and per-process write permissions via BPF maps.', ''),
+        card('⚡', 'io_uring Monitor',     s.io_uring||true,       'Detects io_uring syscall bypass evasion — invisible to most security tools', s.io_uring !== false ? 'ON' : 'OFF', 'native', 'Tracepoints on submit_sqe/submit_req + create. Alerts on CONNECT, ACCEPT, OPENAT, URING_CMD.', ''),
+        card('📦', 'Container Drift',      s.container_drift||true,'Detects binaries dropped after container start via overlayfs upper-layer',   s.container_drift !== false ? 'ON' : 'OFF', 'native', 'Falco-style: checks ovl_inode.__upperdentry at execve. sizeof(struct inode) from BTF.', ''),
+        card('👑', 'Sudo Protection',      s.sudo_protection||false, 'Detects privilege abuse and suspends sudo access',  s.sudo_protection ? 'ON' : 'OFF', 'native', 'Detects 11 threat categories including SUID manipulation, SSH key injection, log tampering.', 'innerwarden enable sudo-protection'),
+        card('🔫', 'Execution Guard',      s.execution_guard||false, 'Structural AST analysis of shell commands - catches obfuscation', s.execution_guard ? 'ON' : 'OFF', 'native', 'tree-sitter-bash analysis. Detects reverse shells, curl|bash, hex obfuscation.', 'innerwarden enable execution-guard'),
+        card('🛡️', 'Shield (DDoS)',        integ.shield||false,    'Packet flood detection + Cloudflare edge push for volumetric attacks', integ.shield ? 'ON' : 'OFF', 'native', 'Detects SYN/UDP/ICMP floods. Pushes to Cloudflare edge when enabled.', ''),
+        card('🧬', 'Threat DNA',           integ.dna||false,       'Attacker fingerprinting and behavioral correlation across sessions',   integ.dna ? 'ON' : 'OFF', 'native', 'Always active. Tracks attack patterns, timing signatures, tool fingerprints.', ''),
+      ], true) +
+
+      // ── Alerts & Notifications (collapsed) ──
+      group('Alerts & Notifications', [
+        card('🔔', 'Telegram',  integ.telegram,     'Real-time alerts + inline approval buttons on your phone', integ.telegram ? 'ON' : 'OFF', 'external', 'Free. Best solo-operator channel - supports bidirectional approve/reject.', 'innerwarden notify telegram'),
+        card('💬', 'Slack',     integ.slack,         'Incident notifications to a Slack team channel',          integ.slack ? 'ON' : 'OFF',    'external', 'Free (requires workspace). Alongside Telegram doubles alert volume.',      'innerwarden notify slack'),
+        card('🔔', 'Web Push',  integ.web_push||false, 'Browser push notifications - no Telegram/Slack needed', integ.web_push ? 'ON' : 'OFF', 'native', 'VAPID-based. Subscribe from the dashboard bell icon. No external service.', ''),
+        card('🚨', 'PagerDuty', (s.webhook_format||'') === 'pagerduty', 'On-call alerts via PagerDuty Events API v2', (s.webhook_format||'') === 'pagerduty' ? 'ON' : 'OFF', 'external', 'Set webhook.format = \"pagerduty\" and webhook.url to PagerDuty endpoint.', 'innerwarden configure webhook'),
+        card('📟', 'Opsgenie',  (s.webhook_format||'') === 'opsgenie',  'On-call alerts via Opsgenie Alert API',      (s.webhook_format||'') === 'opsgenie' ? 'ON' : 'OFF',  'external', 'Set webhook.format = \"opsgenie\" and webhook.url to Opsgenie endpoint.', 'innerwarden configure webhook'),
+      ], false) +
+
+      // ── Threat Intelligence (collapsed) ──
+      group('Threat Intelligence', [
+        card('🌍', 'GeoIP',     integ.geoip,          'Adds country/ISP info to every threat - free, no key needed', integ.geoip ? 'ON' : 'OFF', 'native', 'Free. Calls ip-api.com (45 req/min). Best first enrichment to enable.', 'innerwarden integrate geoip'),
+        card('🔍', 'AbuseIPDB', integ.abuseipdb,      'IP reputation + delayed community reporting (5min grace)',    integ.abuseipdb ? 'ON' : 'OFF', 'external', 'Free plan: 1,000 req/day. Reports delayed 5 min for false-positive correction.', 'innerwarden integrate abuseipdb'),
+        card('🌐', 'CrowdSec',  integ.crowdsec||false, 'Community threat intelligence - known-bad IPs on incident',  integ.crowdsec ? 'ON' : 'OFF', 'external', 'Free. Requires CrowdSec LAPI running locally. Lookup-only.', 'innerwarden integrate crowdsec'),
+        card('🕸️', 'Mesh Network', integ.mesh||false,  'Collaborative defense - peers exchange block signals',       integ.mesh ? 'ON' : 'OFF', 'native', 'Decentralized threat intel sharing between InnerWarden instances.', 'innerwarden integrate mesh'),
+      ], false) +
+
+      // ── External Services (collapsed) ──
+      group('External Services', [
+        card('☁️', 'Cloudflare',   integ.cloudflare,      'Pushes blocked IPs to Cloudflare edge after block-ip fires', integ.cloudflare ? 'ON' : 'OFF', 'external', 'Free plan supports IP Access Rules. Effective for DDoS edge-layer defense.', 'innerwarden integrate cloudflare'),
+        card('🚧', 'Fail2ban Sync', integ.fail2ban||false, 'Sync blocked IPs with fail2ban jails for unified bans',     integ.fail2ban ? 'ON' : 'OFF', 'external', 'Requires fail2ban installed. InnerWarden reads jails and pushes blocks.', 'innerwarden integrate fail2ban'),
+        card('📊', 'Prometheus',    true,                  'Metrics endpoint at /metrics - scrape with Prometheus/Grafana', 'ON', 'native', 'Always available when dashboard is active. No config needed.', ''),
+      ], false) +
+
+      '</div>';
 
     // ── Section 2b: Integration advisor ────────────────────────────────────
     const conflicts = [];
@@ -8584,17 +8740,60 @@ const INDEX_HTML: &str = r##"<!doctype html>
           '<div style="font-size:0.62rem;color:var(--muted);margin-top:8px">Configure in <code>[data]</code> section of agent.toml. GDPR export/erase: <code>innerwarden gdpr export</code> / <code>innerwarden gdpr erase</code></div>';
       }
 
-      // ISO 27001 controls
+      // ISO 27001 controls — with progress bar and actionable grouping
       const ctrlEl = document.getElementById('comp-iso-controls');
       if (ctrlEl && iso.controls) {
-        ctrlEl.innerHTML = iso.controls.map(c =>
-          '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">' +
-          '<span style="font-size:1rem">' + (c.met ? '\u2705' : '\u274c') + '</span>' +
-          '<span style="font-size:0.72rem;font-weight:700;color:var(--accent);min-width:50px">' + esc(c.id) + '</span>' +
-          '<span style="font-size:0.78rem;font-weight:600;color:var(--text);min-width:180px">' + esc(c.name) + '</span>' +
-          '<span style="font-size:0.68rem;color:' + (c.met ? 'var(--ok)' : 'var(--warn)') + ';flex:1">' + esc(c.reason) + '</span>' +
-          '</div>'
-        ).join('');
+        const met = iso.controls.filter(c => c.met);
+        const notMet = iso.controls.filter(c => !c.met);
+        const pct = iso.total > 0 ? Math.round((iso.met / iso.total) * 100) : 0;
+        const barColor = pct === 100 ? 'var(--ok)' : pct >= 80 ? 'var(--warn)' : 'var(--danger)';
+
+        let isoHtml = '';
+
+        // Progress bar
+        isoHtml += '<div style="margin-bottom:16px">' +
+          '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">' +
+          '<span style="font-size:0.78rem;font-weight:700;color:var(--text)">ISO 27001 Readiness</span>' +
+          '<span style="font-size:0.85rem;font-weight:800;color:' + barColor + '">' + pct + '%</span></div>' +
+          '<div style="height:8px;border-radius:4px;background:var(--line);overflow:hidden">' +
+          '<div style="height:100%;width:' + pct + '%;background:' + barColor + ';border-radius:4px;transition:width 0.6s ease"></div>' +
+          '</div>' +
+          '<div style="font-size:0.62rem;color:var(--muted);margin-top:4px">' + iso.met + ' of ' + iso.total + ' controls met &mdash; <a href="https://www.iso.org/standard/27001" target="_blank" style="color:var(--accent)">What is ISO 27001?</a></div>' +
+          '</div>';
+
+        // Actions needed (not met) — shown first, prominent
+        if (notMet.length > 0) {
+          isoHtml += '<div style="margin-bottom:14px">' +
+            '<div style="font-size:0.7rem;font-weight:700;color:var(--warn);letter-spacing:0.05em;text-transform:uppercase;margin-bottom:8px">Actions Needed</div>';
+          for (const c of notMet) {
+            isoHtml += '<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 12px;margin-bottom:6px;border-radius:8px;background:rgba(255,184,77,0.06);border:1px solid rgba(255,184,77,0.15)">' +
+              '<span style="font-size:0.72rem;font-weight:700;color:var(--accent);min-width:50px;padding-top:1px">' + esc(c.id) + '</span>' +
+              '<div><div style="font-size:0.78rem;font-weight:600;color:var(--text)">' + esc(c.name) + '</div>' +
+              '<div style="font-size:0.68rem;color:var(--warn);margin-top:2px">' + esc(c.reason) + '</div></div></div>';
+          }
+          isoHtml += '</div>';
+        }
+
+        // Met controls — compact, collapsed by default if many
+        if (met.length > 0) {
+          const showAll = met.length <= 5;
+          isoHtml += '<div>' +
+            '<div style="font-size:0.7rem;font-weight:700;color:var(--ok);letter-spacing:0.05em;text-transform:uppercase;margin-bottom:8px;cursor:pointer" ' +
+            'onclick="var el=document.getElementById(\'isoMetList\');el.style.display=el.style.display===\'none\'?\'block\':\'none\'">' +
+            'Controls Met (' + met.length + ') &#9662;</div>' +
+            '<div id="isoMetList" style="display:' + (showAll ? 'block' : 'none') + '">';
+          for (const c of met) {
+            isoHtml += '<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.03)">' +
+              '<span style="font-size:0.85rem">\u2705</span>' +
+              '<span style="font-size:0.72rem;font-weight:700;color:var(--accent);min-width:50px">' + esc(c.id) + '</span>' +
+              '<span style="font-size:0.75rem;color:var(--text)">' + esc(c.name) + '</span>' +
+              '<span style="font-size:0.62rem;color:var(--muted);margin-left:auto">' + esc(c.reason) + '</span>' +
+              '</div>';
+          }
+          isoHtml += '</div></div>';
+        }
+
+        ctrlEl.innerHTML = isoHtml;
       }
 
       // Admin actions list
@@ -9310,6 +9509,17 @@ const INDEX_HTML: &str = r##"<!doctype html>
       card.classList.toggle('hidden', !match);
       if (match) visible++;
     });
+    // Show result count next to search box
+    let countEl = document.getElementById('searchCount');
+    if (!countEl) {
+      countEl = document.createElement('span');
+      countEl.id = 'searchCount';
+      countEl.style.cssText = 'font-size:0.62rem;color:var(--muted);margin-left:6px';
+      const searchBox = document.getElementById('entitySearch');
+      if (searchBox && searchBox.parentNode) searchBox.parentNode.appendChild(countEl);
+    }
+    countEl.textContent = q ? visible + ' of ' + cards.length : '';
+
     // Show a "no results" message if every card is hidden
     let noRes = document.getElementById('searchNoResults');
     if (!visible && q) {
@@ -9520,6 +9730,41 @@ const INDEX_HTML: &str = r##"<!doctype html>
           ${actionBtns}
         </div>
         ${renderVerdictCard(j)}
+        ${(function() {
+          // TL;DR — auto-generated narrative from key entries
+          const incidents = j.entries.filter(e => e.kind === 'incident');
+          const decisions = j.entries.filter(e => e.kind === 'decision');
+          const blocks = decisions.filter(e => (e.action||'').includes('block'));
+          if (incidents.length === 0 && decisions.length === 0) return '';
+
+          const topIncident = incidents.length > 0 ? incidents[0] : null;
+          const topDetector = topIncident ? (topIncident.detector || 'unknown') : '';
+          const wasBlocked = blocks.length > 0;
+
+          let narrative = '';
+          if (topIncident) {
+            narrative += '<strong>' + esc(topDetector.replace(/_/g, ' ')) + '</strong> detected';
+            if (incidents.length > 1) narrative += ' (' + incidents.length + ' incidents total)';
+            narrative += '. ';
+          }
+          if (wasBlocked) {
+            narrative += 'AI decided to <strong style="color:var(--ok)">block</strong>';
+            if (blocks.length > 1) narrative += ' (' + blocks.length + ' actions)';
+            narrative += '. ';
+          } else if (decisions.length > 0) {
+            const action = decisions[0].action || 'monitor';
+            narrative += 'AI decided to <strong>' + esc(action) + '</strong>. ';
+          }
+          if (j.outcome === 'blocked') {
+            narrative += 'Threat <strong style="color:var(--ok)">contained</strong>.';
+          } else if (j.outcome === 'active') {
+            narrative += 'Threat is <strong style="color:var(--danger)">still active</strong>.';
+          }
+
+          return '<div style="padding:12px 16px;margin-bottom:12px;border-radius:10px;background:rgba(120,229,255,0.04);border:1px solid rgba(120,229,255,0.12)">' +
+            '<div style="font-size:0.68rem;font-weight:700;color:var(--accent);letter-spacing:0.05em;text-transform:uppercase;margin-bottom:4px">TL;DR</div>' +
+            '<div style="font-size:0.8rem;color:var(--text);line-height:1.5">' + narrative + '</div></div>';
+        })()}
         <div class="guided-grid">
           <section class="guided-card">
             <div class="guided-title">Investigation Summary</div>

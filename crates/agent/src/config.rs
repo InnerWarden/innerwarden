@@ -872,6 +872,12 @@ pub struct TelegramConfig {
     #[serde(default)]
     pub daily_summary_hour: Option<u8>,
 
+    /// Dev mode: adds a "Check FP" button to every notification.
+    /// When pressed, logs the incident to a false-positive review file
+    /// for later analysis. Useful for tuning detectors.
+    #[serde(default)]
+    pub dev_mode: bool,
+
     /// Conversational bot configuration.
     #[serde(default)]
     pub bot: TelegramBotConfig,
@@ -942,6 +948,7 @@ impl Default for TelegramConfig {
             dashboard_url: String::new(),
             approval_ttl_secs: default_telegram_approval_ttl_secs(),
             daily_summary_hour: None,
+            dev_mode: false,
             bot: TelegramBotConfig::default(),
         }
     }

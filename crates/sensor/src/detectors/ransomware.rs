@@ -856,7 +856,7 @@ mod tests {
             ));
         }
 
-        let inc = det.process(&file_write_event(
+        let _inc = det.process(&file_write_event(
             "locker",
             "/data/file5.locked",
             3000,
@@ -1239,7 +1239,7 @@ mod tests {
             );
         }
         assert!(
-            det_high.high_entropy_writes.get("proc").is_none(),
+            !det_high.high_entropy_writes.contains_key("proc"),
             "high threshold detector should not have tracked any high-entropy writes"
         );
     }
@@ -1288,7 +1288,7 @@ mod tests {
 
         // vim should still not have any entropy alerts
         assert!(
-            det.high_entropy_writes.get("vim").is_none(),
+            !det.high_entropy_writes.contains_key("vim"),
             "vim should have no high-entropy writes tracked"
         );
     }

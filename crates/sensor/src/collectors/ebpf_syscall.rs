@@ -437,6 +437,10 @@ fn detect_default_interface() -> Option<String> {
 
 /// Pin path for the LSM policy map.
 const LSM_POLICY_PIN: &str = "/sys/fs/bpf/innerwarden/lsm_policy";
+/// Pin path for per-cgroup capability map.
+const CGROUP_CAP_PIN: &str = "/sys/fs/bpf/innerwarden/cgroup_capabilities";
+/// Pin path for per-comm capability map.
+const COMM_CAP_PIN: &str = "/sys/fs/bpf/innerwarden/comm_capabilities";
 
 /// Attach LSM execution policy and pin the policy map.
 /// Requires `lsm=...,bpf` in kernel boot cmdline.
@@ -472,6 +476,38 @@ fn attach_lsm(bpf: &mut aya::Ebpf) {
         }
     }
 
+    // Attach LSM file_open hook for sensitive path write protection.
+    // Non-critical — if it fails, we still have observe-only via the openat tracepoint.
+    match bpf.program_mut("innerwarden_lsm_file_open") {
+        Some(prog) => {
+            let lsm: &mut Lsm = match prog.try_into() {
+                Ok(l) => l,
+                Err(e) => {
+                    info!(error = %e, "innerwarden_lsm_file_open: not available");
+                    // Continue — the exec LSM is the critical one
+                    return pin_lsm_policy(bpf);
+                }
+            };
+            if let Err(e) = lsm.load("file_open", &btf.as_ref().unwrap()) {
+                info!(error = %e, "innerwarden_lsm_file_open: failed to load");
+            } else if let Err(e) = lsm.attach() {
+                warn!(error = %e, "innerwarden_lsm_file_open: failed to attach");
+            } else {
+                info!("eBPF: innerwarden_lsm_file_open → file_open (sensitive path protection) ✅");
+            }
+        }
+        None => {
+            info!(
+                "eBPF: innerwarden_lsm_file_open not found — sensitive path blocking unavailable"
+            );
+        }
+    }
+
+    pin_lsm_policy(bpf);
+}
+
+#[cfg(feature = "ebpf")]
+fn pin_lsm_policy(bpf: &mut aya::Ebpf) {
     // Pin the LSM_POLICY map so the agent can enable/disable enforcement.
     // Remove stale pin first — on sensor restart, the old pin points to a dead
     // map from the previous instance, causing map.pin() to fail with EEXIST.
@@ -482,6 +518,107 @@ fn attach_lsm(bpf: &mut aya::Ebpf) {
         } else {
             info!("eBPF: LSM policy map pinned at {LSM_POLICY_PIN}");
             info!("eBPF: LSM enforcement is OFF by default - enable via: bpftool map update pinned {LSM_POLICY_PIN} key 0 0 0 0 value 1 0 0 0");
+        }
+    }
+
+    // Pin capability maps so the agent can grant per-cgroup/per-comm permissions.
+    for (map_name, pin_path) in [
+        ("CGROUP_CAPABILITIES", CGROUP_CAP_PIN),
+        ("COMM_CAPABILITIES", COMM_CAP_PIN),
+    ] {
+        if let Some(map) = bpf.map_mut(map_name) {
+            let _ = std::fs::remove_file(pin_path);
+            if let Err(e) = map.pin(pin_path) {
+                warn!(error = %e, "{map_name}: failed to pin");
+            } else {
+                info!("eBPF: {map_name} pinned at {pin_path}");
+            }
+        }
+    }
+
+    // Populate INODE_SIZE map for overlayfs drift detection (Falco trick).
+    // sizeof(struct inode) varies by kernel config; query BTF at runtime.
+    populate_inode_size(bpf);
+}
+
+/// Query sizeof(struct inode) from kernel BTF and write it to the INODE_SIZE map.
+/// This enables the eBPF overlay drift detector to find ovl_inode.__upperdentry
+/// at (inode_ptr + sizeof(struct inode)) without needing BTF for the private ovl_inode.
+#[cfg(feature = "ebpf")]
+fn populate_inode_size(bpf: &mut aya::Ebpf) {
+    use aya::maps::HashMap as BpfHashMap;
+
+    // Try to get sizeof(struct inode) from BTF via bpftool
+    let inode_size = match std::process::Command::new("bpftool")
+        .args([
+            "btf",
+            "dump",
+            "file",
+            "/sys/kernel/btf/vmlinux",
+            "format",
+            "c",
+        ])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let btf_dump = String::from_utf8_lossy(&output.stdout);
+            // Parse: look for "struct inode {" and count to closing "}"
+            // This is heuristic — production should use proper BTF parsing.
+            // Fallback: use bpftool to query the size directly.
+            None.or_else(|| {
+                // Try bpftool btf dump id 1 to get struct sizes
+                let size_output = std::process::Command::new("bpftool")
+                    .args(["btf", "dump", "file", "/sys/kernel/btf/vmlinux"])
+                    .output()
+                    .ok()?;
+                let text = String::from_utf8_lossy(&size_output.stdout);
+                // Look for: [NNN] STRUCT 'inode' size=XXX
+                for line in text.lines() {
+                    if line.contains("STRUCT 'inode'") && line.contains("size=") {
+                        if let Some(size_str) = line.split("size=").nth(1) {
+                            let size_str = size_str.split_whitespace().next().unwrap_or("0");
+                            if let Ok(size) = size_str.parse::<u64>() {
+                                if size > 100 && size < 2000 {
+                                    return Some(size);
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            })
+            .unwrap_or_else(|| {
+                // If BTF dump doesn't contain it, try the raw text from format c
+                // and look for "} __attribute__((preserve_access_index));"
+                // after "struct inode {"
+                drop(btf_dump);
+                0
+            })
+        }
+        _ => 0,
+    };
+
+    if inode_size == 0 {
+        info!("eBPF: could not determine sizeof(struct inode) from BTF — container drift detection disabled");
+        info!("eBPF: ensure bpftool is installed and /sys/kernel/btf/vmlinux exists");
+        return;
+    }
+
+    if let Some(map) = bpf.map_mut("INODE_SIZE") {
+        let mut hash: BpfHashMap<_, u32, u64> = match map.try_into() {
+            Ok(h) => h,
+            Err(e) => {
+                warn!(error = %e, "INODE_SIZE map: wrong type");
+                return;
+            }
+        };
+        if let Err(e) = hash.insert(0u32, inode_size, 0) {
+            warn!(error = %e, "INODE_SIZE map: failed to insert");
+        } else {
+            info!(
+                inode_size,
+                "eBPF: container drift detection enabled (sizeof(struct inode) = {inode_size})"
+            );
         }
     }
 }
@@ -1115,6 +1252,28 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     }
 
+    // io_uring monitoring (non-critical — requires kernel 5.10+ with io_uring tracepoints)
+    // Try the 6.4+ name first, fall back to the pre-6.4 name.
+    if !attach_tp(
+        &mut bpf,
+        "innerwarden_io_uring_submit",
+        "io_uring",
+        "io_uring_submit_req",
+    ) {
+        attach_tp(
+            &mut bpf,
+            "innerwarden_io_uring_submit",
+            "io_uring",
+            "io_uring_submit_sqe",
+        );
+    }
+    attach_tp(
+        &mut bpf,
+        "innerwarden_io_uring_create",
+        "io_uring",
+        "io_uring_create",
+    );
+
     // Attach LSM execution policy (non-critical - requires lsm=bpf in kernel cmdline)
     attach_lsm(&mut bpf);
 
@@ -1287,6 +1446,35 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         &host,
                     ))
                 }
+                // FileWrite from LSM file_open hook (same layout as FileOpenEvent)
+                // Emitted when a non-allowlisted process writes to sensitive paths.
+                4 if data.len() >= 348 => {
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let cgroup_id = read_u64!(data, 16..24);
+                    let comm = bytes_to_string(&data[24..88]);
+                    let filename = bytes_to_string(&data[88..344]);
+                    let flags = read_u32!(data, 344..348);
+
+                    if comm.starts_with("innerwarden") {
+                        continue;
+                    }
+
+                    let ppid = resolve_ppid(pid);
+                    let container_id = resolve_container_id(pid);
+
+                    Some(file_open_to_event(
+                        pid,
+                        uid,
+                        ppid,
+                        cgroup_id,
+                        container_id.as_deref(),
+                        &comm,
+                        &filename,
+                        flags,
+                        &host,
+                    ))
+                }
                 // PrivEscEvent layout (#[repr(C)]):
                 //   kind(4) pid(4) tgid(4) old_uid(4) new_uid(4) _pad(4) cgroup_id(8) comm(64) ts_ns(8)
                 //   Offsets: 0  4  8  12  16  20  24  32..96
@@ -1354,6 +1542,39 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         details,
                         tags,
                         entities,
+                    })
+                }
+                // ContainerDrift: ExecveEvent layout with kind=26.
+                // Binary executed from overlayfs upper layer (not in original image).
+                26 if data.len() >= 352 => {
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 12..16);
+                    let cgroup_id = read_u64!(data, 24..32);
+                    let comm = bytes_to_string(&data[32..96]);
+                    let filename = bytes_to_string(&data[96..352]);
+
+                    let container_id = resolve_container_id(pid);
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "shell.command_exec".to_string(),
+                        severity: Severity::Critical,
+                        summary: format!(
+                            "Container drift: {comm} executed {filename} (overlay upper layer)"
+                        ),
+                        details: serde_json::json!({
+                            "pid": pid,
+                            "uid": uid,
+                            "comm": comm,
+                            "filename": filename,
+                            "cgroup_id": cgroup_id,
+                            "container_id": container_id.as_deref().unwrap_or(""),
+                            "overlay_upper": true,
+                        }),
+                        tags: vec!["ebpf".to_string(), "container_drift".to_string()],
+                        entities: vec![],
                     })
                 }
                 // ProcessExitEvent layout (#[repr(C)]):
@@ -1833,6 +2054,76 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                             "firmware".to_string(),
                             "experimental".to_string(),
                         ],
+                        entities: vec![],
+                    })
+                }
+                // IoUringEvent: kind(4) pid(4) uid(4) opcode(1) sqe_flags(1) _pad(2) fd(4)
+                //   cgroup_id(8) comm(64) ts_ns(8)
+                // Offsets: 0  4  8  12  13  14  16  20  24..88  88
+                24 if data.len() >= 96 => {
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let opcode = data[12];
+                    let sqe_flags = data[13];
+                    let fd = read_u32!(data, 16..20) as i32;
+                    let cgroup_id = read_u64!(data, 20..28);
+                    let comm = bytes_to_string(&data[28..92]);
+
+                    if comm.starts_with("innerwarden") {
+                        continue;
+                    }
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "io_uring.submit".to_string(),
+                        severity: Severity::Info,
+                        summary: format!(
+                            "{comm} (pid={pid}) io_uring submit opcode={opcode} fd={fd}"
+                        ),
+                        details: serde_json::json!({
+                            "pid": pid, "uid": uid, "comm": comm,
+                            "opcode": opcode, "sqe_flags": sqe_flags,
+                            "fd": fd, "cgroup_id": cgroup_id,
+                        }),
+                        tags: vec!["ebpf".to_string(), "io_uring".to_string()],
+                        entities: vec![],
+                    })
+                }
+                // IoUringCreateEvent: kind(4) pid(4) uid(4) ring_fd(4) sq_entries(4)
+                //   cq_entries(4) flags(4) _pad(4) cgroup_id(8) comm(64) ts_ns(8)
+                // Offsets: 0  4  8  12  16  20  24  28  32..96  96
+                25 if data.len() >= 104 => {
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let ring_fd = read_u32!(data, 12..16) as i32;
+                    let sq_entries = read_u32!(data, 16..20);
+                    let cq_entries = read_u32!(data, 20..24);
+                    let flags = read_u32!(data, 24..28);
+                    let cgroup_id = read_u64!(data, 32..40);
+                    let comm = bytes_to_string(&data[40..104]);
+
+                    if comm.starts_with("innerwarden") {
+                        continue;
+                    }
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "io_uring.create".to_string(),
+                        severity: Severity::Info,
+                        summary: format!(
+                            "{comm} (pid={pid}) created io_uring ring (sq={sq_entries})"
+                        ),
+                        details: serde_json::json!({
+                            "pid": pid, "uid": uid, "comm": comm,
+                            "ring_fd": ring_fd, "sq_entries": sq_entries,
+                            "cq_entries": cq_entries, "flags": flags,
+                            "cgroup_id": cgroup_id,
+                        }),
+                        tags: vec!["ebpf".to_string(), "io_uring".to_string()],
                         entities: vec![],
                     })
                 }
