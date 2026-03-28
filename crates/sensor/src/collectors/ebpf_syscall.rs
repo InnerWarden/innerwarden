@@ -437,6 +437,10 @@ fn detect_default_interface() -> Option<String> {
 
 /// Pin path for the LSM policy map.
 const LSM_POLICY_PIN: &str = "/sys/fs/bpf/innerwarden/lsm_policy";
+/// Pin path for per-cgroup capability map.
+const CGROUP_CAP_PIN: &str = "/sys/fs/bpf/innerwarden/cgroup_capabilities";
+/// Pin path for per-comm capability map.
+const COMM_CAP_PIN: &str = "/sys/fs/bpf/innerwarden/comm_capabilities";
 
 /// Attach LSM execution policy and pin the policy map.
 /// Requires `lsm=...,bpf` in kernel boot cmdline.
@@ -514,6 +518,21 @@ fn pin_lsm_policy(bpf: &mut aya::Ebpf) {
         } else {
             info!("eBPF: LSM policy map pinned at {LSM_POLICY_PIN}");
             info!("eBPF: LSM enforcement is OFF by default - enable via: bpftool map update pinned {LSM_POLICY_PIN} key 0 0 0 0 value 1 0 0 0");
+        }
+    }
+
+    // Pin capability maps so the agent can grant per-cgroup/per-comm permissions.
+    for (map_name, pin_path) in [
+        ("CGROUP_CAPABILITIES", CGROUP_CAP_PIN),
+        ("COMM_CAPABILITIES", COMM_CAP_PIN),
+    ] {
+        if let Some(map) = bpf.map_mut(map_name) {
+            let _ = std::fs::remove_file(pin_path);
+            if let Err(e) = map.pin(pin_path) {
+                warn!(error = %e, "{map_name}: failed to pin");
+            } else {
+                info!("eBPF: {map_name} pinned at {pin_path}");
+            }
         }
     }
 

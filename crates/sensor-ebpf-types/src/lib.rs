@@ -18,6 +18,35 @@ pub const MAX_ARGS: usize = 8;
 pub const MAX_ARG_LEN: usize = 128;
 
 // ---------------------------------------------------------------------------
+// Capability bits for fine-grained guard mode policy
+// ---------------------------------------------------------------------------
+//
+// Used in CGROUP_CAPABILITIES and COMM_CAPABILITIES BPF maps.
+// Each bit grants permission for a specific action when guard mode is on.
+// If the bit is NOT set, the action is blocked (when guard mode is enabled).
+
+/// Allow execution from /tmp, /dev/shm, /var/tmp
+pub const CAP_EXEC_TMP: u32 = 1 << 0;
+/// Allow write to /etc/shadow, /etc/passwd, /etc/gshadow
+pub const CAP_WRITE_CREDENTIALS: u32 = 1 << 1;
+/// Allow write to ~/.ssh/authorized_keys, ~/.ssh/id_*
+pub const CAP_WRITE_SSH: u32 = 1 << 2;
+/// Allow write to /etc/sudoers, /etc/sudoers.d/
+pub const CAP_WRITE_SUDO: u32 = 1 << 3;
+/// Allow write to /etc/cron*, /var/spool/cron/
+pub const CAP_WRITE_CRON: u32 = 1 << 4;
+/// Allow write to /etc/systemd/system/, /etc/init.d/
+pub const CAP_WRITE_PERSISTENCE: u32 = 1 << 5;
+/// Allow write to /etc/ld.so.preload, /etc/ld.so.conf*
+pub const CAP_WRITE_LDPRELOAD: u32 = 1 << 6;
+/// Allow write to /etc/pam.d/
+pub const CAP_WRITE_PAM: u32 = 1 << 7;
+/// Allow io_uring usage
+pub const CAP_IO_URING: u32 = 1 << 8;
+/// Allow execution from overlayfs upper layer (container drift)
+pub const CAP_OVERLAY_DRIFT: u32 = 1 << 9;
+
+// ---------------------------------------------------------------------------
 // Syscall event types
 // ---------------------------------------------------------------------------
 

@@ -772,6 +772,43 @@ static INODE_SIZE: HashMap<u32, u64> = HashMap::with_max_entries(1, 0);
 
 const OVERLAYFS_SUPER_MAGIC: u64 = 0x794c_7630;
 
+/// Per-cgroup capability bitmask. Key: cgroup_id. Value: bitmask of allowed capabilities.
+/// Populated by the agent from config. When guard mode is on and a cgroup has a capability
+/// bit set, that action is ALLOWED for processes in that cgroup.
+#[map]
+static CGROUP_CAPABILITIES: HashMap<u64, u32> = HashMap::with_max_entries(256, 0);
+
+/// Per-process capability bitmask. Key: first 16 bytes of comm. Value: bitmask.
+/// Same semantics as CGROUP_CAPABILITIES but per process name.
+/// Replaces hardcoded byte-comparison allowlists in LSM hooks.
+#[map]
+static COMM_CAPABILITIES: HashMap<[u8; 16], u32> = HashMap::with_max_entries(256, 0);
+
+/// Check if the current process or its cgroup has a specific capability.
+/// Returns true if the action should be ALLOWED.
+#[inline(always)]
+fn has_capability(cap_bit: u32) -> bool {
+    // Check per-cgroup first (more specific)
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    if let Some(&caps) = unsafe { CGROUP_CAPABILITIES.get(&cgroup_id) } {
+        if caps & cap_bit != 0 {
+            return true;
+        }
+    }
+    // Check per-comm
+    if let Ok(comm) = bpf_get_current_comm() {
+        let mut key = [0u8; 16];
+        let len = comm.len().min(16);
+        key[..len].copy_from_slice(&comm[..len]);
+        if let Some(&caps) = unsafe { COMM_CAPABILITIES.get(&key) } {
+            if caps & cap_bit != 0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[lsm(hook = "bprm_check_security")]
 pub fn innerwarden_lsm_exec(ctx: LsmContext) -> i32 {
     match try_lsm_exec(&ctx) {
@@ -1127,50 +1164,48 @@ fn try_lsm_file_open(ctx: &LsmContext) -> Result<i32, i64> {
         let _ = bpf_probe_read_kernel_str_bytes(name_ptr, &mut name_buf);
     }
 
-    // Check if the filename matches sensitive targets
+    // Classify the filename into a capability category
     let n = &name_buf;
-    let is_sensitive_write =
-        // shadow, passwd
+    let cap_bit: u32 = if
+        // shadow, passwd, gshadow, group
         (n[0] == b's' && n[1] == b'h' && n[2] == b'a' && n[3] == b'd' && n[4] == b'o' && n[5] == b'w')
         || (n[0] == b'p' && n[1] == b'a' && n[2] == b's' && n[3] == b's' && n[4] == b'w' && n[5] == b'd')
+        || (n[0] == b'g' && n[1] == b's' && n[2] == b'h' && n[3] == b'a' && n[4] == b'd')
+    {
+        innerwarden_ebpf_types::CAP_WRITE_CREDENTIALS
+    } else if
+        // authorized_keys, id_rsa, id_ed25519
+        n[0] == b'a' && n[1] == b'u' && n[2] == b't' && n[3] == b'h' && n[4] == b'o' && n[5] == b'r'
+    {
+        innerwarden_ebpf_types::CAP_WRITE_SSH
+    } else if
         // sudoers
-        || (n[0] == b's' && n[1] == b'u' && n[2] == b'd' && n[3] == b'o' && n[4] == b'e' && n[5] == b'r' && n[6] == b's')
-        // authorized_keys
-        || (n[0] == b'a' && n[1] == b'u' && n[2] == b't' && n[3] == b'h' && n[4] == b'o' && n[5] == b'r')
-        // crontab, cron.d entries
-        || (n[0] == b'c' && n[1] == b'r' && n[2] == b'o' && n[3] == b'n')
+        n[0] == b's' && n[1] == b'u' && n[2] == b'd' && n[3] == b'o' && n[4] == b'e' && n[5] == b'r' && n[6] == b's'
+    {
+        innerwarden_ebpf_types::CAP_WRITE_SUDO
+    } else if
+        // crontab, cron.d
+        n[0] == b'c' && n[1] == b'r' && n[2] == b'o' && n[3] == b'n'
+    {
+        innerwarden_ebpf_types::CAP_WRITE_CRON
+    } else if
         // ld.so.preload, ld.so.conf
-        || (n[0] == b'l' && n[1] == b'd' && n[2] == b'.' && n[3] == b's' && n[4] == b'o')
-        // .bashrc, .profile, .bash_profile (dot files)
-        || (n[0] == b'.' && n[1] == b'b' && n[2] == b'a' && n[3] == b's' && n[4] == b'h')
-        || (n[0] == b'.' && n[1] == b'p' && n[2] == b'r' && n[3] == b'o' && n[4] == b'f');
+        n[0] == b'l' && n[1] == b'd' && n[2] == b'.' && n[3] == b's' && n[4] == b'o'
+    {
+        innerwarden_ebpf_types::CAP_WRITE_LDPRELOAD
+    } else if
+        // .bashrc, .profile (persistence via shell config)
+        (n[0] == b'.' && n[1] == b'b' && n[2] == b'a' && n[3] == b's' && n[4] == b'h')
+        || (n[0] == b'.' && n[1] == b'p' && n[2] == b'r' && n[3] == b'o' && n[4] == b'f')
+    {
+        innerwarden_ebpf_types::CAP_WRITE_PERSISTENCE
+    } else {
+        return Ok(0); // Not a sensitive path
+    };
 
-    if !is_sensitive_write {
+    // Check capability maps: if this process/cgroup has the capability, allow
+    if has_capability(cap_bit) {
         return Ok(0);
-    }
-
-    // Skip known safe processes
-    if let Ok(comm) = bpf_get_current_comm() {
-        let c = &comm;
-        let is_allowed =
-            // Package managers
-            (c[0] == b'd' && c[1] == b'p' && c[2] == b'k' && c[3] == b'g')
-            || (c[0] == b'a' && c[1] == b'p' && c[2] == b't')
-            || (c[0] == b'y' && c[1] == b'u' && c[2] == b'm')
-            || (c[0] == b'r' && c[1] == b'p' && c[2] == b'm')
-            // Auth/user management
-            || (c[0] == b'u' && c[1] == b's' && c[2] == b'e' && c[3] == b'r')  // useradd/usermod
-            || (c[0] == b'p' && c[1] == b'a' && c[2] == b's' && c[3] == b's')  // passwd
-            || (c[0] == b'c' && c[1] == b'h' && c[2] == b'p' && c[3] == b'a')  // chpasswd
-            || (c[0] == b'v' && c[1] == b'i' && c[2] == b's' && c[3] == b'u')  // visudo
-            || (c[0] == b's' && c[1] == b'u' && c[2] == b'd' && c[3] == b'o')  // sudo
-            || (c[0] == b's' && c[1] == b's' && c[2] == b'h' && c[3] == b'd')  // sshd
-            // System services
-            || (c[0] == b's' && c[1] == b'y' && c[2] == b's' && c[3] == b't')  // systemd*
-            || (c[0] == b'c' && c[1] == b'r' && c[2] == b'o' && c[3] == b'n'); // cron*
-        if is_allowed {
-            return Ok(0);
-        }
     }
 
     // Emit event for visibility (always, regardless of guard mode)
