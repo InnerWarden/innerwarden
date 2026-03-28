@@ -881,7 +881,10 @@ pub async fn serve(
         )
         .route("/metrics", get(api_prometheus_metrics))
         .route("/api/agent-guard/connect", post(api_agent_guard_connect))
-        .route("/api/agent-guard/disconnect", post(api_agent_guard_disconnect))
+        .route(
+            "/api/agent-guard/disconnect",
+            post(api_agent_guard_disconnect),
+        )
         .route("/api/agent-guard/agents", get(api_agent_guard_list))
         .with_state(state.clone());
 
@@ -4400,9 +4403,7 @@ async fn api_agent_guard_disconnect(
 }
 
 /// GET /api/agent-guard/agents — list all connected agents and detected tools.
-async fn api_agent_guard_list(
-    State(state): State<DashboardState>,
-) -> Json<serde_json::Value> {
+async fn api_agent_guard_list(State(state): State<DashboardState>) -> Json<serde_json::Value> {
     let registry = state.agent_registry.lock().await;
     let agents = registry.list();
     Json(serde_json::json!({
