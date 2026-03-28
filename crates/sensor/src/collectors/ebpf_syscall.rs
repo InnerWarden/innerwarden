@@ -488,6 +488,7 @@ fn attach_lsm(bpf: &mut aya::Ebpf) {
                     return pin_lsm_policy(bpf);
                 }
             };
+            let btf = aya::Btf::from_sys_fs().ok();
             if let Err(e) = lsm.load("file_open", &btf.as_ref().unwrap()) {
                 info!(error = %e, "innerwarden_lsm_file_open: failed to load");
             } else if let Err(e) = lsm.attach() {
