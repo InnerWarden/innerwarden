@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::{info, warn};
 
-use crate::signatures::{Kind, SignatureIndex};
+use crate::signatures::SignatureIndex;
 
 /// A detected AI agent running on the server.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -177,14 +177,12 @@ mod tests {
     #[test]
     fn scan_mcp_returns_vec() {
         // Just verify it doesn't panic
-        let configs = scan_mcp_configs();
-        assert!(configs.len() >= 0);
+        let _configs = scan_mcp_configs();
     }
 
     #[test]
     fn detect_all_returns_vec() {
         let index = SignatureIndex::new();
-        let agents = detect_all(&index);
-        assert!(agents.len() >= 0);
+        let _agents = detect_all(&index);
     }
 }

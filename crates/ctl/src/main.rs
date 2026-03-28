@@ -10239,7 +10239,7 @@ fn cmd_agent(command: Option<&AgentCommand>) -> Result<()> {
             println!("  \x1b[1;36m🤖 Available Agents\x1b[0m");
             println!();
             println!("  \x1b[1mInstallable agents\x1b[0m (innerwarden agent add <name>):");
-            println!("  {:<16} {:<20} {}", "NAME", "VENDOR", "DESCRIPTION");
+            println!("  {:<16} {:<20} DESCRIPTION", "NAME", "VENDOR");
             println!("  {}", "─".repeat(60));
             for sig in KNOWN.iter().filter(|s| s.kind == Kind::Agent) {
                 println!(
@@ -10255,7 +10255,7 @@ fn cmd_agent(command: Option<&AgentCommand>) -> Result<()> {
             }
             println!();
             println!("  \x1b[1mAuto-detected tools\x1b[0m (monitored when running):");
-            println!("  {:<16} {:<12} {}", "NAME", "INTEGRATION", "VENDOR");
+            println!("  {:<16} {:<12} VENDOR", "NAME", "INTEGRATION");
             println!("  {}", "─".repeat(50));
             for sig in KNOWN.iter().filter(|s| s.kind == Kind::Tool) {
                 let integ = format!("{:?}", sig.integration).to_lowercase();
@@ -10263,7 +10263,7 @@ fn cmd_agent(command: Option<&AgentCommand>) -> Result<()> {
             }
             println!();
             println!("  \x1b[1mAuto-detected runtimes\x1b[0m (API monitored):");
-            println!("  {:<16} {}", "NAME", "VENDOR");
+            println!("  {:<16} VENDOR", "NAME");
             println!("  {}", "─".repeat(36));
             for sig in KNOWN.iter().filter(|s| s.kind == Kind::Runtime) {
                 println!("  {:<16} {}", sig.name, sig.vendor);
@@ -10384,8 +10384,8 @@ fn cmd_agent(command: Option<&AgentCommand>) -> Result<()> {
                 println!("  To connect a custom agent: innerwarden agent connect <pid>");
             } else {
                 println!(
-                    "  {:<6} {:<8} {:<16} {:<10} {}",
-                    "FOUND", "PID", "NAME", "TYPE", "STATUS"
+                    "  {:<6} {:<8} {:<16} {:<10} STATUS",
+                    "FOUND", "PID", "NAME", "TYPE"
                 );
                 println!("  {}", "─".repeat(56));
                 for (i, agent) in found.iter().enumerate() {
@@ -10446,10 +10446,7 @@ fn cmd_agent(command: Option<&AgentCommand>) -> Result<()> {
             if !found.is_empty() {
                 println!();
                 println!("  \x1b[1mDetected processes:\x1b[0m");
-                println!(
-                    "  {:<16} {:<8} {:<12} {}",
-                    "NAME", "PID", "TYPE", "INTEGRATION"
-                );
+                println!("  {:<16} {:<8} {:<12} INTEGRATION", "NAME", "PID", "TYPE");
                 println!("  {}", "─".repeat(48));
                 for agent in &found {
                     println!(

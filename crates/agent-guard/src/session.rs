@@ -70,9 +70,7 @@ impl SessionTracker {
     }
 
     pub fn record_file_access(&mut self, path: &str) -> Option<Alert> {
-        if threats::check_sensitive_path(path).is_none() {
-            return None;
-        }
+        threats::check_sensitive_path(path)?;
         self.sensitive_accesses.push(path.to_string());
         self.read_files.insert(path.to_string(), Instant::now());
 

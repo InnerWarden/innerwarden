@@ -17,7 +17,7 @@ pub struct VerdictAlert {
 }
 
 /// Inspect a tools/call request.
-pub fn inspect_tool_call(tool_name: &str, args: &serde_json::Value) -> Verdict {
+pub fn inspect_tool_call(_tool_name: &str, args: &serde_json::Value) -> Verdict {
     let mut alerts = Vec::new();
     let args_str = args.to_string();
 
