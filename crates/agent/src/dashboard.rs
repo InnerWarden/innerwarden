@@ -7236,6 +7236,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       background:linear-gradient(90deg, rgba(120,229,255,0.7), rgba(120,229,255,0.1)); }
   </style>
   <div class="report-view sensor-hud" id="viewSensors" style="display:flex;">
+    <div id="topAction" style="display:none;margin-bottom:14px;padding:16px 20px;border-radius:14px;border:1px solid rgba(244,63,94,0.3);background:rgba(244,63,94,0.06);"></div>
     <div class="hud-stats" id="sensorCards"></div>
     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:6px;" id="sensorSources"></div>
     <div class="hud-panel">
@@ -7520,7 +7521,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     });
     const toggleBtn = document.getElementById('panelToggleBtn');
     if (toggleBtn) toggleBtn.classList.toggle('hidden', name !== 'investigate');
-    if (name === 'sensors') loadSensors();
+    if (name === 'sensors') { loadSensors(); loadTopAction(); }
     if (name === 'report') loadReport();
     if (name === 'status') loadStatus();
     if (name === 'honeypot') loadHoneypot();
@@ -7778,6 +7779,64 @@ const INDEX_HTML: &str = r##"<!doctype html>
       // Detector activity chart
       drawDetectorChart(data.detectors || []);
     } catch(e) { console.error('loadSensors', e); }
+  }
+
+  // ── Top Action Widget: surface the most urgent decision ───────────
+  async function loadTopAction() {
+    try {
+      const ctx = await loadJson('/api/agent/security-context');
+      const el = document.getElementById('topAction');
+      if (!el) return;
+
+      const level = ctx.threat_level || 'low';
+      const hc = ctx.high_or_critical_today || 0;
+      const threats = ctx.top_threats || [];
+      const blocks = ctx.recent_blocks_today || 0;
+
+      if (level === 'low' && hc === 0) {
+        // All clear — show subtle green bar
+        el.style.display = 'block';
+        el.style.borderColor = 'rgba(58,194,126,0.3)';
+        el.style.background = 'rgba(58,194,126,0.04)';
+        el.innerHTML = '<div style="display:flex;align-items:center;gap:10px">' +
+          '<span style="font-size:1.3rem">&#9989;</span>' +
+          '<div><div style="font-size:0.85rem;font-weight:700;color:var(--ok)">All Clear</div>' +
+          '<div style="font-size:0.7rem;color:var(--muted)">' + blocks + ' IPs blocked today. No unresolved high-severity incidents.</div></div></div>';
+        return;
+      }
+
+      // There are threats — show the most urgent one
+      const topThreat = threats.length > 0 ? threats[0] : null;
+      const colors = { critical: '#f43f5e', high: '#fb923c', medium: '#facc15' };
+      const color = colors[level] || colors.medium;
+
+      el.style.display = 'block';
+      el.style.borderColor = color.replace(')', ',0.4)').replace('#', 'rgba(') || 'rgba(244,63,94,0.3)';
+      el.style.background = 'linear-gradient(135deg, rgba(244,63,94,0.06), transparent)';
+
+      let actionHtml = '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">' +
+        '<div style="display:flex;align-items:center;gap:10px">' +
+        '<span style="font-size:1.3rem">' + (level === 'critical' ? '&#128680;' : '&#9888;&#65039;') + '</span>' +
+        '<div>' +
+        '<div style="font-size:0.85rem;font-weight:700;color:' + color + '">' + hc + ' unresolved ' + (level === 'critical' ? 'CRITICAL' : 'high-severity') + ' incident' + (hc > 1 ? 's' : '') + '</div>' +
+        '<div style="font-size:0.7rem;color:var(--muted)">';
+
+      if (topThreat) {
+        actionHtml += 'Top threat: <strong style="color:var(--text)">' + esc(topThreat) + '</strong>';
+        if (threats.length > 1) actionHtml += ' + ' + (threats.length - 1) + ' more';
+      }
+      actionHtml += '</div></div></div>';
+
+      // Action button — takes user to Threats tab
+      actionHtml += '<button onclick="showView(\'investigate\')" style="' +
+        'padding:8px 18px;border-radius:10px;border:1px solid ' + color + ';' +
+        'background:transparent;color:' + color + ';font-size:0.75rem;font-weight:700;' +
+        'cursor:pointer;white-space:nowrap;transition:background 0.2s' +
+        '" onmouseover="this.style.background=\'' + color + '20\'" onmouseout="this.style.background=\'transparent\'">' +
+        'Investigate &#8594;</button></div>';
+
+      el.innerHTML = actionHtml;
+    } catch(e) { /* non-critical */ }
   }
 
   // Chart.js global config - match site design system
@@ -8299,9 +8358,9 @@ const INDEX_HTML: &str = r##"<!doctype html>
     const hpMode = (integ.honeypot_mode || 'off').toLowerCase();
     const hpBadge = hpMode === 'listener' ? 'LIVE' : hpMode === 'demo' ? 'DEMO' : 'OFF';
 
-    html += '<div class="report-section"><div class="report-section-title">Active Integrations</div>' +
-      '<style>' +
-      '.integ-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:20px}' +
+    // ── Section 2: Active Integrations — grouped by category ─────────────
+    const groupStyle = '<style>' +
+      '.integ-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:12px}' +
       '.integ-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;align-items:flex-start;gap:12px}' +
       '.integ-card.active{border-color:rgba(58,194,126,0.4)}' +
       '.integ-card.inactive{opacity:0.65}' +
@@ -8323,45 +8382,97 @@ const INDEX_HTML: &str = r##"<!doctype html>
       '.integ-badge.demo{background:rgba(255,184,77,0.15);color:var(--warn)}' +
       '.integ-kind-native{display:inline-block;font-size:0.52rem;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:5px;vertical-align:middle;background:rgba(120,229,255,0.12);color:var(--accent);letter-spacing:0.04em}' +
       '.integ-kind-ext{display:inline-block;font-size:0.52rem;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:5px;vertical-align:middle;background:rgba(255,184,77,0.12);color:var(--warn);letter-spacing:0.04em}' +
+      '.integ-group{margin-bottom:18px}' +
+      '.integ-group-header{display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:8px 0;user-select:none}' +
+      '.integ-group-title{font-size:0.72rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--accent)}' +
+      '.integ-group-count{font-size:0.65rem;color:var(--muted)}' +
+      '.integ-group-chevron{font-size:0.8rem;color:var(--muted);transition:transform 0.2s}' +
+      '.integ-group-chevron.collapsed{transform:rotate(-90deg)}' +
+      '.integ-group-body{overflow:hidden;transition:max-height 0.3s ease}' +
+      '.integ-group-body.collapsed{max-height:0 !important;margin:0;padding:0}' +
       '@media(max-width:640px){.integ-grid{grid-template-columns:1fr}}' +
-      '</style>' +
-      '<div class="integ-grid">' +
-      card('🤖', 'AI Analysis',   s.ai_enabled,       'Analyzes threats and selects the best response action',         s.ai_enabled ? 'ON' : 'OFF',  'native',   'Built into InnerWarden - no external service needed.',                                       'innerwarden enable ai') +
-      card('🛡️', 'IP Blocker',    resp.enabled,       'Automatically blocks IPs via UFW/iptables when AI decides',     resp.enabled ? 'ON' : 'OFF',  'native',   'Zero cost. Uses your existing firewall.',                                                    'innerwarden enable block-ip') +
-      card('🪤', 'Honeypot',      hpMode !== 'off',   'Decoy server that captures and logs attacker behavior',         hpBadge,                      'native',   'Built-in. listener mode activates on AI demand; always_on keeps it permanently open.',      '') +
-      card('🌍', 'GeoIP',         integ.geoip,        'Adds country/ISP info to every threat - free, no key needed',  integ.geoip ? 'ON' : 'OFF',   'native',   'Free. Calls ip-api.com (45 req/min). Best first enrichment to enable.',                      'innerwarden integrate geoip') +
-      card('🔍', 'AbuseIPDB',     integ.abuseipdb,    'IP reputation + delayed community reporting (5min grace)',      integ.abuseipdb ? 'ON' : 'OFF','external', 'Free plan: 1,000 req/day. Reports delayed 5 min to allow false-positive correction.', 'innerwarden integrate abuseipdb') +
-      card('⚡', 'XDP Firewall',  true,               'Wire-speed IP blocking at network driver - 10M+ pps drop rate', 'ON',  'native',  'Active when eBPF sensor runs. Layered: XDP + firewall + Cloudflare + AbuseIPDB in one action.', '') +
-      card('🔔', 'Telegram',      integ.telegram,     'Real-time alerts + inline approval buttons on your phone',     integ.telegram ? 'ON' : 'OFF', 'external', 'Free. Best solo-operator channel - supports bidirectional approve/reject.',                  'innerwarden notify telegram') +
-      card('💬', 'Slack',         integ.slack,        'Incident notifications to a Slack team channel',               integ.slack ? 'ON' : 'OFF',   'external', 'Free (requires workspace). Activating alongside Telegram doubles alert volume for same incident.', 'innerwarden notify slack') +
-      card('☁️', 'Cloudflare',    integ.cloudflare,   'Pushes blocked IPs to Cloudflare edge after block-ip fires',   integ.cloudflare ? 'ON' : 'OFF','external', 'Free plan supports IP Access Rules. Effective for DDoS edge-layer defense.',               'innerwarden integrate cloudflare') +
-      card('🌐', 'CrowdSec',     integ.crowdsec||false, 'Community threat intelligence - known-bad IPs looked up on incident', integ.crowdsec ? 'ON' : 'OFF', 'external', 'Free. Requires CrowdSec LAPI running locally. Lookup-only, no preventive blocking.',       'innerwarden integrate crowdsec') +
-      card('📊', 'Prometheus',   true,               'Metrics endpoint at /metrics - scrape with Prometheus, visualize in Grafana', 'ON',  'native',   'Always available when dashboard is active. No config needed.',                               '') +
-      card('🚨', 'PagerDuty',    (s.webhook_format||'') === 'pagerduty', 'On-call alerts via PagerDuty Events API v2',  (s.webhook_format||'') === 'pagerduty' ? 'ON' : 'OFF', 'external', 'Set webhook.format = \"pagerduty\" and webhook.url to PagerDuty enqueue endpoint.',   'innerwarden configure webhook') +
-      card('📟', 'Opsgenie',     (s.webhook_format||'') === 'opsgenie',  'On-call alerts via Opsgenie Alert API',       (s.webhook_format||'') === 'opsgenie' ? 'ON' : 'OFF',  'external', 'Set webhook.format = \"opsgenie\" and webhook.url to Opsgenie alert endpoint.',      'innerwarden configure webhook') +
-      card('👑', 'Sudo Protection', s.sudo_protection||false, 'Detects privilege abuse and suspends sudo access', s.sudo_protection ? 'ON' : 'OFF', 'native', 'Detects 11 threat categories including SUID manipulation, SSH key injection, log tampering.', 'innerwarden enable sudo-protection') +
-      card('🔫', 'Execution Guard', s.execution_guard||false, 'Structural AST analysis of shell commands - catches obfuscation', s.execution_guard ? 'ON' : 'OFF', 'native', 'tree-sitter-bash analysis. Detects reverse shells, curl|bash, hex obfuscation.', 'innerwarden enable execution-guard') +
-      card('🕸️', 'Mesh Network', integ.mesh||false, 'Collaborative defense - peers exchange block signals with trust scoring', integ.mesh ? 'ON' : 'OFF', 'native', 'Decentralized threat intel sharing between InnerWarden instances.', 'innerwarden integrate mesh') +
-      card('🔔', 'Web Push', integ.web_push||false, 'Browser push notifications for real-time alerts without Telegram/Slack', integ.web_push ? 'ON' : 'OFF', 'native', 'VAPID-based. Subscribe from the dashboard bell icon. No external service.', '') +
-      card('🚧', 'Fail2ban Sync', integ.fail2ban||false, 'Sync blocked IPs with fail2ban jails for unified ban management', integ.fail2ban ? 'ON' : 'OFF', 'external', 'Requires fail2ban installed. InnerWarden reads jails and pushes blocks.', 'innerwarden integrate fail2ban') +
-      card('🛡️', 'Shield (DDoS)', integ.shield||false, 'Packet flood detection + Cloudflare edge push for volumetric attacks', integ.shield ? 'ON' : 'OFF', 'native', 'Detects SYN/UDP/ICMP floods. Pushes to Cloudflare edge when enabled.', '') +
-      card('🧬', 'Threat DNA', integ.dna||false, 'Attacker fingerprinting and behavioral correlation across sessions', integ.dna ? 'ON' : 'OFF', 'native', 'Always active. Tracks attack patterns, timing signatures, tool fingerprints.', '') +
-      (function() {
-        const kc = s.kill_chain || {};
-        const kcTotal = (kc.total_blocked || 0) + (kc.total_pre_chain || 0);
-        const kcOn = kcTotal > 0;
-        const kcDesc = kcTotal > 0
-          ? kcTotal + ' chain(s) detected today — ' + (kc.total_blocked||0) + ' blocked, ' + (kc.total_pre_chain||0) + ' pre-chain'
-          : 'Multi-step attack correlation — detects reverse shells, privilege escalation chains';
-        const kcPatterns = kc.patterns || {};
-        const patternList = Object.keys(kcPatterns).map(function(p) { return p + ': ' + kcPatterns[p]; }).join(', ');
-        const kcCost = 'Native syscall correlation. Patterns: ' + (patternList || 'none detected yet');
-        return card('🔗', 'Kill Chain', kcOn, kcDesc, kcOn ? 'ON' : 'OFF', 'native', kcCost, '');
-      })() +
-      card('🔒', 'Sensitive Path Guard', s.sensitive_write||true, 'LSM hook blocks unauthorized writes to /etc/shadow, sudoers, authorized_keys, crontab, systemd units', s.sensitive_write !== false ? 'ON' : 'OFF', 'native', 'Capability-based policy: per-cgroup and per-process write permissions via BPF maps.', '') +
-      card('⚡', 'io_uring Monitor', s.io_uring||true, 'Detects io_uring syscall bypass evasion — invisible to most security tools', s.io_uring !== false ? 'ON' : 'OFF', 'native', 'Tracepoints on submit_sqe/submit_req + create. Alerts on CONNECT, ACCEPT, OPENAT, URING_CMD.', '') +
-      card('📦', 'Container Drift', s.container_drift||true, 'Detects binaries dropped after container start via overlayfs upper-layer check', s.container_drift !== false ? 'ON' : 'OFF', 'native', 'Falco-style detection: checks ovl_inode.__upperdentry at execve. sizeof(struct inode) from BTF.', '') +
-      '</div></div>';
+      '</style>';
+
+    // Group builder: title, cards array, initially expanded?
+    const group = (title, cards, expanded) => {
+      const onCount = cards.filter(c => c.includes('integ-card active')).length;
+      const total = cards.length;
+      const id = 'ig-' + title.replace(/[^a-z]/gi, '').toLowerCase();
+      const chevCls = expanded ? '' : ' collapsed';
+      const bodyCls = expanded ? '' : ' collapsed';
+      return '<div class="integ-group">' +
+        '<div class="integ-group-header" onclick="(function(){ var b=document.getElementById(\'' + id + '\'); var c=b.previousElementSibling.querySelector(\'.integ-group-chevron\'); b.classList.toggle(\'collapsed\'); c.classList.toggle(\'collapsed\'); })()">' +
+        '<span class="integ-group-title">' + title + '</span>' +
+        '<span style="display:flex;align-items:center;gap:8px">' +
+        '<span class="integ-group-count">' + onCount + '/' + total + ' active</span>' +
+        '<span class="integ-group-chevron' + chevCls + '">&#9662;</span>' +
+        '</span></div>' +
+        '<div class="integ-group-body' + bodyCls + '" id="' + id + '" style="max-height:2000px">' +
+        '<div class="integ-grid">' + cards.join('') + '</div></div></div>';
+    };
+
+    // ── Build Kill Chain card (needs runtime data) ──
+    const kcCard = (function() {
+      const kc = s.kill_chain || {};
+      const kcTotal = (kc.total_blocked || 0) + (kc.total_pre_chain || 0);
+      const kcOn = kcTotal > 0;
+      const kcDesc = kcTotal > 0
+        ? kcTotal + ' chain(s) detected today — ' + (kc.total_blocked||0) + ' blocked, ' + (kc.total_pre_chain||0) + ' pre-chain'
+        : 'Multi-step attack correlation — detects reverse shells, privilege escalation chains';
+      const kcPatterns = kc.patterns || {};
+      const patternList = Object.keys(kcPatterns).map(function(p) { return p + ': ' + kcPatterns[p]; }).join(', ');
+      const kcCost = 'Native syscall correlation. Patterns: ' + (patternList || 'none detected yet');
+      return card('🔗', 'Kill Chain', kcOn, kcDesc, kcOn ? 'ON' : 'OFF', 'native', kcCost, '');
+    })();
+
+    html += '<div class="report-section"><div class="report-section-title">Active Integrations</div>' +
+      groupStyle +
+
+      // ── Core Protection (always visible, expanded) ──
+      group('Core Protection', [
+        card('🤖', 'AI Analysis',   s.ai_enabled,     'Analyzes threats and selects the best response action',       s.ai_enabled ? 'ON' : 'OFF', 'native', 'Built into InnerWarden - no external service needed.', 'innerwarden enable ai'),
+        card('🛡️', 'IP Blocker',    resp.enabled,     'Automatically blocks IPs via UFW/iptables when AI decides',   resp.enabled ? 'ON' : 'OFF', 'native', 'Zero cost. Uses your existing firewall.',               'innerwarden enable block-ip'),
+        card('🪤', 'Honeypot',      hpMode !== 'off', 'Decoy server that captures and logs attacker behavior',       hpBadge,                     'native', 'listener mode activates on AI demand; always_on keeps it permanently open.', ''),
+        card('⚡', 'XDP Firewall',  true,             'Wire-speed IP blocking at network driver - 10M+ pps drop',    'ON', 'native', 'Active when eBPF sensor runs. Layered: XDP + firewall + Cloudflare + AbuseIPDB.', ''),
+      ], true) +
+
+      // ── Kernel Hardening (expanded — v0.6.0 features) ──
+      group('Kernel Hardening', [
+        kcCard,
+        card('🔒', 'Sensitive Path Guard', s.sensitive_write||true, 'LSM hook blocks writes to /etc/shadow, sudoers, authorized_keys, crontab', s.sensitive_write !== false ? 'ON' : 'OFF', 'native', 'Capability-based policy: per-cgroup and per-process write permissions via BPF maps.', ''),
+        card('⚡', 'io_uring Monitor',     s.io_uring||true,       'Detects io_uring syscall bypass evasion — invisible to most security tools', s.io_uring !== false ? 'ON' : 'OFF', 'native', 'Tracepoints on submit_sqe/submit_req + create. Alerts on CONNECT, ACCEPT, OPENAT, URING_CMD.', ''),
+        card('📦', 'Container Drift',      s.container_drift||true,'Detects binaries dropped after container start via overlayfs upper-layer',   s.container_drift !== false ? 'ON' : 'OFF', 'native', 'Falco-style: checks ovl_inode.__upperdentry at execve. sizeof(struct inode) from BTF.', ''),
+        card('👑', 'Sudo Protection',      s.sudo_protection||false, 'Detects privilege abuse and suspends sudo access',  s.sudo_protection ? 'ON' : 'OFF', 'native', 'Detects 11 threat categories including SUID manipulation, SSH key injection, log tampering.', 'innerwarden enable sudo-protection'),
+        card('🔫', 'Execution Guard',      s.execution_guard||false, 'Structural AST analysis of shell commands - catches obfuscation', s.execution_guard ? 'ON' : 'OFF', 'native', 'tree-sitter-bash analysis. Detects reverse shells, curl|bash, hex obfuscation.', 'innerwarden enable execution-guard'),
+        card('🛡️', 'Shield (DDoS)',        integ.shield||false,    'Packet flood detection + Cloudflare edge push for volumetric attacks', integ.shield ? 'ON' : 'OFF', 'native', 'Detects SYN/UDP/ICMP floods. Pushes to Cloudflare edge when enabled.', ''),
+        card('🧬', 'Threat DNA',           integ.dna||false,       'Attacker fingerprinting and behavioral correlation across sessions',   integ.dna ? 'ON' : 'OFF', 'native', 'Always active. Tracks attack patterns, timing signatures, tool fingerprints.', ''),
+      ], true) +
+
+      // ── Alerts & Notifications (collapsed) ──
+      group('Alerts & Notifications', [
+        card('🔔', 'Telegram',  integ.telegram,     'Real-time alerts + inline approval buttons on your phone', integ.telegram ? 'ON' : 'OFF', 'external', 'Free. Best solo-operator channel - supports bidirectional approve/reject.', 'innerwarden notify telegram'),
+        card('💬', 'Slack',     integ.slack,         'Incident notifications to a Slack team channel',          integ.slack ? 'ON' : 'OFF',    'external', 'Free (requires workspace). Alongside Telegram doubles alert volume.',      'innerwarden notify slack'),
+        card('🔔', 'Web Push',  integ.web_push||false, 'Browser push notifications - no Telegram/Slack needed', integ.web_push ? 'ON' : 'OFF', 'native', 'VAPID-based. Subscribe from the dashboard bell icon. No external service.', ''),
+        card('🚨', 'PagerDuty', (s.webhook_format||'') === 'pagerduty', 'On-call alerts via PagerDuty Events API v2', (s.webhook_format||'') === 'pagerduty' ? 'ON' : 'OFF', 'external', 'Set webhook.format = \"pagerduty\" and webhook.url to PagerDuty endpoint.', 'innerwarden configure webhook'),
+        card('📟', 'Opsgenie',  (s.webhook_format||'') === 'opsgenie',  'On-call alerts via Opsgenie Alert API',      (s.webhook_format||'') === 'opsgenie' ? 'ON' : 'OFF',  'external', 'Set webhook.format = \"opsgenie\" and webhook.url to Opsgenie endpoint.', 'innerwarden configure webhook'),
+      ], false) +
+
+      // ── Threat Intelligence (collapsed) ──
+      group('Threat Intelligence', [
+        card('🌍', 'GeoIP',     integ.geoip,          'Adds country/ISP info to every threat - free, no key needed', integ.geoip ? 'ON' : 'OFF', 'native', 'Free. Calls ip-api.com (45 req/min). Best first enrichment to enable.', 'innerwarden integrate geoip'),
+        card('🔍', 'AbuseIPDB', integ.abuseipdb,      'IP reputation + delayed community reporting (5min grace)',    integ.abuseipdb ? 'ON' : 'OFF', 'external', 'Free plan: 1,000 req/day. Reports delayed 5 min for false-positive correction.', 'innerwarden integrate abuseipdb'),
+        card('🌐', 'CrowdSec',  integ.crowdsec||false, 'Community threat intelligence - known-bad IPs on incident',  integ.crowdsec ? 'ON' : 'OFF', 'external', 'Free. Requires CrowdSec LAPI running locally. Lookup-only.', 'innerwarden integrate crowdsec'),
+        card('🕸️', 'Mesh Network', integ.mesh||false,  'Collaborative defense - peers exchange block signals',       integ.mesh ? 'ON' : 'OFF', 'native', 'Decentralized threat intel sharing between InnerWarden instances.', 'innerwarden integrate mesh'),
+      ], false) +
+
+      // ── External Services (collapsed) ──
+      group('External Services', [
+        card('☁️', 'Cloudflare',   integ.cloudflare,      'Pushes blocked IPs to Cloudflare edge after block-ip fires', integ.cloudflare ? 'ON' : 'OFF', 'external', 'Free plan supports IP Access Rules. Effective for DDoS edge-layer defense.', 'innerwarden integrate cloudflare'),
+        card('🚧', 'Fail2ban Sync', integ.fail2ban||false, 'Sync blocked IPs with fail2ban jails for unified bans',     integ.fail2ban ? 'ON' : 'OFF', 'external', 'Requires fail2ban installed. InnerWarden reads jails and pushes blocks.', 'innerwarden integrate fail2ban'),
+        card('📊', 'Prometheus',    true,                  'Metrics endpoint at /metrics - scrape with Prometheus/Grafana', 'ON', 'native', 'Always available when dashboard is active. No config needed.', ''),
+      ], false) +
+
+      '</div>';
 
     // ── Section 2b: Integration advisor ────────────────────────────────────
     const conflicts = [];
