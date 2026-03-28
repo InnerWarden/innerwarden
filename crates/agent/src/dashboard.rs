@@ -213,6 +213,8 @@ struct DashboardState {
     max_sessions: usize,
     /// Advisory cache: recent deny/review command analyses for correlation.
     advisory_cache: Arc<RwLock<VecDeque<AdvisoryEntry>>>,
+    /// Agent Guard registry: connected AI agents and their sessions.
+    agent_registry: Arc<tokio::sync::Mutex<innerwarden_agent_guard::registry::Registry>>,
 }
 
 #[derive(Clone)]
@@ -820,6 +822,9 @@ pub async fn serve(
         session_timeout_minutes,
         max_sessions,
         advisory_cache: advisory_cache.clone(),
+        agent_registry: Arc::new(tokio::sync::Mutex::new(
+            innerwarden_agent_guard::registry::Registry::new(),
+        )),
     };
     let auth_layer = middleware::from_fn_with_state(
         (
@@ -875,6 +880,9 @@ pub async fn serve(
             post(api_advisor_check_command),
         )
         .route("/metrics", get(api_prometheus_metrics))
+        .route("/api/agent-guard/connect", post(api_agent_guard_connect))
+        .route("/api/agent-guard/disconnect", post(api_agent_guard_disconnect))
+        .route("/api/agent-guard/agents", get(api_agent_guard_list))
         .with_state(state.clone());
 
     // Auth login route - public (no auth required; this IS the auth endpoint)
@@ -4339,6 +4347,72 @@ async fn api_advisor_check_command(
 
 // ---------------------------------------------------------------------------
 // Prometheus metrics endpoint
+// ---------------------------------------------------------------------------
+// Agent Guard API
+// ---------------------------------------------------------------------------
+
+/// POST /api/agent-guard/connect — an AI agent registers itself with InnerWarden.
+///
+/// Request: { "name": "openclaw", "pid": 1234, "label": "work-agent" }
+/// Response: { "connected": true, "agent_id": "ag-0001", "check_command": "...", "policy": {...} }
+async fn api_agent_guard_connect(
+    State(state): State<DashboardState>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let name = body["name"].as_str().unwrap_or("unknown");
+    let pid = body["pid"].as_u64().unwrap_or(0) as u32;
+    let label = body["label"].as_str();
+
+    let mut registry = state.agent_registry.lock().await;
+    match registry.connect(name, pid, label) {
+        Ok(agent_id) => {
+            tracing::info!(agent_id = %agent_id, name, pid, "agent-guard: agent connected via API");
+            Json(serde_json::json!({
+                "connected": true,
+                "agent_id": agent_id,
+                "check_command": "http://localhost:8787/api/agent/check-command",
+                "security_context": "http://localhost:8787/api/agent/security-context",
+                "policy": {
+                    "mode": "warn",
+                    "sensitive_paths_blocked": true,
+                    "max_calls_per_minute": 30,
+                }
+            }))
+        }
+        Err(e) => Json(serde_json::json!({
+            "connected": false,
+            "error": e,
+        })),
+    }
+}
+
+/// POST /api/agent-guard/disconnect — remove an agent from monitoring.
+///
+/// Request: { "agent_id": "ag-0001" }
+async fn api_agent_guard_disconnect(
+    State(state): State<DashboardState>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let agent_id = body["agent_id"].as_str().unwrap_or("");
+    let mut registry = state.agent_registry.lock().await;
+    let ok = registry.disconnect(agent_id);
+    Json(serde_json::json!({ "disconnected": ok }))
+}
+
+/// GET /api/agent-guard/agents — list all connected agents and detected tools.
+async fn api_agent_guard_list(
+    State(state): State<DashboardState>,
+) -> Json<serde_json::Value> {
+    let registry = state.agent_registry.lock().await;
+    let agents = registry.list();
+    Json(serde_json::json!({
+        "agents": agents,
+        "total": registry.count_total(),
+        "agents_count": registry.count_agents(),
+        "tools_count": registry.count_tools(),
+    }))
+}
+
 // ---------------------------------------------------------------------------
 
 async fn api_prometheus_metrics(State(state): State<DashboardState>) -> axum::response::Response {
