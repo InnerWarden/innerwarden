@@ -215,6 +215,24 @@ struct DashboardState {
     advisory_cache: Arc<RwLock<VecDeque<AdvisoryEntry>>>,
     /// Agent Guard registry: connected AI agents and their sessions.
     agent_registry: Arc<tokio::sync::Mutex<innerwarden_agent_guard::registry::Registry>>,
+    /// ATR rule engine for command analysis.
+    rule_engine: Arc<innerwarden_agent_guard::rules::RuleEngine>,
+    /// Channel to notify the main agent loop when an AI agent attempts something dangerous.
+    agent_alert_tx: tokio::sync::mpsc::Sender<AgentGuardAlert>,
+}
+
+/// Alert emitted when an AI agent attempts a dangerous action.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentGuardAlert {
+    pub ts: chrono::DateTime<Utc>,
+    pub agent_name: String,
+    pub command: String,
+    pub risk_score: u32,
+    pub severity: String,
+    pub recommendation: String,
+    pub signals: Vec<String>,
+    pub atr_rule_ids: Vec<String>,
+    pub explanation: String,
 }
 
 #[derive(Clone)]
@@ -750,6 +768,8 @@ pub async fn serve(
     session_timeout_minutes: u64,
     max_sessions: usize,
     advisory_cache: Arc<RwLock<VecDeque<AdvisoryEntry>>>,
+    rule_engine: Arc<innerwarden_agent_guard::rules::RuleEngine>,
+    agent_alert_tx: tokio::sync::mpsc::Sender<AgentGuardAlert>,
 ) -> Result<()> {
     if auth.is_none() {
         warn!(
@@ -825,6 +845,8 @@ pub async fn serve(
         agent_registry: Arc::new(tokio::sync::Mutex::new(
             innerwarden_agent_guard::registry::Registry::new(),
         )),
+        rule_engine,
+        agent_alert_tx,
     };
     let auth_layer = middleware::from_fn_with_state(
         (
@@ -4040,249 +4062,66 @@ async fn api_agent_check_ip(
 #[derive(serde::Deserialize)]
 struct CheckCommandRequest {
     command: String,
+    #[serde(default)]
+    agent_name: Option<String>,
 }
 
 /// Analyze a command for dangerous patterns (pure function, no state).
 /// Returns a JSON object with risk_score, severity, signals, recommendation, explanation.
-fn analyze_command(command: &str) -> serde_json::Value {
-    let cmd = command.trim();
-    if cmd.is_empty() {
-        return serde_json::json!({
-            "command": "",
-            "risk_score": 0,
-            "severity": "none",
-            "signals": [],
-            "recommendation": "allow",
-            "explanation": "empty command",
-        });
+/// Run agent-guard unified command analysis and optionally emit a snitch alert.
+fn run_analysis(
+    state: &DashboardState,
+    command: &str,
+    agent_name: Option<&str>,
+) -> serde_json::Value {
+    let analysis =
+        innerwarden_agent_guard::mcp::analyze_command(command, Some(&state.rule_engine));
+
+    // Emit snitch alert if deny or review.
+    if analysis.recommendation == "deny" || analysis.recommendation == "review" {
+        let alert = AgentGuardAlert {
+            ts: Utc::now(),
+            agent_name: agent_name.unwrap_or("unknown").to_string(),
+            command: if command.len() > 200 {
+                format!("{}...", &command[..200])
+            } else {
+                command.to_string()
+            },
+            risk_score: analysis.risk_score,
+            severity: analysis.severity.clone(),
+            recommendation: analysis.recommendation.clone(),
+            signals: analysis
+                .signals
+                .iter()
+                .map(|s| s.signal.clone())
+                .collect(),
+            atr_rule_ids: analysis
+                .atr_matches
+                .iter()
+                .map(|m| m.rule_id.clone())
+                .collect(),
+            explanation: analysis.explanation.clone(),
+        };
+        let _ = state.agent_alert_tx.try_send(alert);
     }
 
-    let lower = cmd.to_ascii_lowercase();
-    let mut signals = Vec::new();
-    let mut score: u32 = 0;
-
-    // Reverse shell indicators - always deny (score 60+)
-    const REVERSE_SHELL: &[&str] = &[
-        "/dev/tcp/",
-        "/dev/udp/",
-        "nc -e",
-        "ncat -e",
-        "netcat -e",
-        "bash -i",
-        "socat exec:",
-        "socat tcp",
-        "socat udp",
-        "0>&1",
-        ">&/dev/tcp",
-        // Python reverse shells
-        "socket.socket",
-        "subprocess.call",
-        "pty.spawn",
-        // Perl reverse shells
-        "use socket",
-        "perl -mio",
-        // PHP reverse shells
-        "fsockopen",
-        // Ruby reverse shells
-        "-rsocket",
-        // mkfifo pipe
-        "mkfifo /tmp/",
-    ];
-    for indicator in REVERSE_SHELL {
-        if lower.contains(indicator) {
-            signals.push(serde_json::json!({
-                "signal": "reverse_shell",
-                "score": 60,
-                "detail": format!("reverse shell indicator: `{indicator}`"),
-            }));
-            score += 60;
-            break;
-        }
-    }
-
-    // Download-and-execute patterns
-    let downloaders = ["curl", "wget", "fetch", "http"];
-    let executors = [
-        "sh", "bash", "zsh", "dash", "python", "perl", "ruby", "node",
-    ];
-
-    // Pattern 1: pipe-based (curl ... | bash)
-    if cmd.contains('|') {
-        let parts: Vec<&str> = cmd.split('|').collect();
-        if parts.len() >= 2 {
-            let left = parts[0].to_ascii_lowercase();
-            let right = parts[1..].join("|").to_ascii_lowercase();
-            let has_downloader = downloaders.iter().any(|d| left.contains(d));
-            let has_executor = executors.iter().any(|e| {
-                right
-                    .split_whitespace()
-                    .any(|w| w.trim_start_matches("./") == *e)
-            });
-            if has_downloader && has_executor {
-                signals.push(serde_json::json!({
-                    "signal": "download_and_execute",
-                    "score": 40,
-                    "detail": "dangerous pipeline: download piped to shell interpreter",
-                }));
-                score += 40;
-            }
-        }
-    }
-
-    // Pattern 2: staged (wget -O /tmp/x && chmod +x && /tmp/x)
-    {
-        let has_download = downloaders.iter().any(|d| lower.contains(d));
-        let has_chmod_exec = lower.contains("chmod +x")
-            || lower.contains("chmod 755")
-            || lower.contains("chmod 777");
-        if has_download && has_chmod_exec {
-            signals.push(serde_json::json!({
-                "signal": "download_chmod_execute",
-                "score": 40,
-                "detail": "staged attack: download + chmod + execute sequence",
-            }));
-            score += 40;
-        }
-    }
-
-    // Obfuscation patterns
-    const OBFUSCATION: &[&str] = &[
-        "base64 -d",
-        "base64 --decode",
-        "openssl enc -d",
-        "| xxd -r",
-        "eval $(echo",
-        "eval \"$(echo",
-        "eval `echo",
-        "eval $(base64",
-        "eval $(printf",
-        "| rev |",
-        "printf '\\x",
-        "printf \"\\x",
-        "echo -e '\\x",
-        "echo -e \"\\x",
-        "echo -ne '\\x",
-        "$'\\x",
-        "python -c \"import os",
-        "python3 -c \"import os",
-        "python -c 'import os",
-        "python3 -c 'import os",
-        "python -c \"import subprocess",
-        "python3 -c \"import subprocess",
-        "perl -e 'system",
-        "perl -e 'exec",
-        "ruby -e 'system",
-        "ruby -e '`",
-    ];
-    for indicator in OBFUSCATION {
-        if lower.contains(indicator) {
-            signals.push(serde_json::json!({
-                "signal": "obfuscated_command",
-                "score": 30,
-                "detail": format!("obfuscation pattern: `{indicator}`"),
-            }));
-            score += 30;
-            break;
-        }
-    }
-
-    // Persistence indicators
-    const PERSISTENCE: &[&str] = &[
-        "crontab",
-        "/etc/cron",
-        ".bashrc",
-        ".bash_profile",
-        ".profile",
-        "/etc/profile",
-        "/etc/rc.local",
-        "systemctl enable",
-        "update-rc.d",
-        "chkconfig",
-        ".config/autostart",
-    ];
-    for indicator in PERSISTENCE {
-        if lower.contains(indicator) {
-            signals.push(serde_json::json!({
-                "signal": "persistence_attempt",
-                "score": 20,
-                "detail": format!("persistence indicator: `{indicator}`"),
-            }));
-            score += 20;
-            break;
-        }
-    }
-
-    // Execution from temp directories
-    const TMP_DIRS: &[&str] = &["/tmp/", "/var/tmp/", "/dev/shm/", "/run/shm/"];
-    for prefix in TMP_DIRS {
-        if lower.contains(prefix) {
-            signals.push(serde_json::json!({
-                "signal": "tmp_execution",
-                "score": 30,
-                "detail": format!("references world-writable directory: {prefix}"),
-            }));
-            score += 30;
-            break;
-        }
-    }
-
-    // Destructive commands (rm -rf /, chmod 777, dd if=/dev/zero)
-    if lower.contains("rm -rf /") && !lower.contains("rm -rf ./") {
-        signals.push(serde_json::json!({
-            "signal": "destructive_command",
-            "score": 50,
-            "detail": "recursive removal from root directory",
-        }));
-        score += 50;
-    }
-    if lower.contains("chmod 777") || lower.contains("chmod -r 777") {
-        signals.push(serde_json::json!({
-            "signal": "insecure_permissions",
-            "score": 20,
-            "detail": "world-writable permissions",
-        }));
-        score += 20;
-    }
-
-    let severity = if score >= 60 {
-        "high"
-    } else if score >= 30 {
-        "medium"
-    } else {
-        "low"
-    };
-
-    let recommendation = if score >= 40 {
-        "deny"
-    } else if score >= 20 {
-        "review"
-    } else {
-        "allow"
-    };
-
-    let explanation = if signals.is_empty() {
-        "no dangerous patterns detected".to_string()
-    } else {
-        signals
-            .iter()
-            .filter_map(|s| s.get("detail").and_then(|d| d.as_str()))
-            .collect::<Vec<_>>()
-            .join("; ")
-    };
-
+    // Serialize to the same JSON shape as the old analyze_command for backward compat.
     serde_json::json!({
-        "command": cmd,
-        "risk_score": score,
-        "severity": severity,
-        "signals": signals,
-        "recommendation": recommendation,
-        "explanation": explanation,
+        "command": analysis.command,
+        "risk_score": analysis.risk_score,
+        "severity": analysis.severity,
+        "signals": analysis.signals,
+        "recommendation": analysis.recommendation,
+        "explanation": analysis.explanation,
     })
 }
 
-/// POST /api/agent/check-command - analyze a command for dangerous patterns (stateless, backward compat)
-async fn api_agent_check_command(Json(body): Json<CheckCommandRequest>) -> Json<serde_json::Value> {
-    Json(analyze_command(&body.command))
+/// POST /api/agent/check-command - analyze a command for dangerous patterns
+async fn api_agent_check_command(
+    State(state): State<DashboardState>,
+    Json(body): Json<CheckCommandRequest>,
+) -> Json<serde_json::Value> {
+    Json(run_analysis(&state, &body.command, body.agent_name.as_deref()))
 }
 
 /// POST /api/advisor/check-command - analyze + cache advisory for deny/review results
@@ -4290,7 +4129,7 @@ async fn api_advisor_check_command(
     State(state): State<DashboardState>,
     Json(body): Json<CheckCommandRequest>,
 ) -> Json<serde_json::Value> {
-    let mut result = analyze_command(&body.command);
+    let mut result = run_analysis(&state, &body.command, body.agent_name.as_deref());
 
     // If deny or review, cache the advisory for correlation with real incidents
     let recommendation = result

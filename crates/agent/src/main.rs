@@ -1159,6 +1159,11 @@ async fn main() -> Result<()> {
     let advisory_cache: Arc<RwLock<VecDeque<AdvisoryEntry>>> =
         Arc::new(RwLock::new(VecDeque::new()));
 
+    // Agent-guard snitch alert channel. Created before the dashboard block
+    // so the receiver can be used in the dispatch task spawned later.
+    let (agent_alert_tx, mut agent_alert_rx) =
+        tokio::sync::mpsc::channel::<dashboard::AgentGuardAlert>(64);
+
     if cli.dashboard {
         let auth = dashboard::DashboardAuth::try_from_env()?;
         let action_cfg = dashboard::DashboardActionConfig {
@@ -1206,6 +1211,18 @@ async fn main() -> Result<()> {
         let session_timeout_minutes = cfg.dashboard.session_timeout_minutes;
         let max_sessions = cfg.dashboard.max_sessions;
         let dashboard_advisory_cache = advisory_cache.clone();
+
+        // Load ATR rule engine from rules directory.
+        let rules_dir = std::path::Path::new("/etc/innerwarden/rules");
+        let rule_engine = std::sync::Arc::new(
+            innerwarden_agent_guard::rules::RuleEngine::load(rules_dir)
+                .unwrap_or_else(|e| {
+                    warn!(error = %e, "failed to load ATR rules, starting with empty engine");
+                    innerwarden_agent_guard::rules::RuleEngine::empty()
+                }),
+        );
+
+        let agent_alert_tx = agent_alert_tx.clone();
         tokio::spawn(async move {
             if let Err(e) = dashboard::serve(
                 dashboard_data_dir,
@@ -1217,6 +1234,8 @@ async fn main() -> Result<()> {
                 session_timeout_minutes,
                 max_sessions,
                 dashboard_advisory_cache,
+                rule_engine,
+                agent_alert_tx,
             )
             .await
             {
@@ -1357,6 +1376,94 @@ async fn main() -> Result<()> {
     // This ensures restart continuity: IPs already decided on won't be re-evaluated.
     for (key, ts) in &startup_cooldowns {
         store.set_cooldown(state_store::CooldownTable::Decision, key, *ts);
+    }
+
+    // Spawn snitch alert dispatch task (uses cloned notification clients).
+    {
+        let tg = telegram_client.clone();
+        let sc_url = if cfg.slack.enabled {
+            cfg.slack.resolved_webhook_url()
+        } else {
+            String::new()
+        };
+        let wh_url = cfg.webhook.url.clone();
+        let wh_enabled = cfg.webhook.enabled;
+        let wh_timeout = cfg.webhook.timeout_secs;
+        let wh_format = cfg.webhook.format.clone();
+        let alert_data_dir = cli.data_dir.clone();
+        tokio::spawn(async move {
+            let sc = if !sc_url.is_empty() {
+                slack::SlackClient::new(&sc_url).ok()
+            } else {
+                None
+            };
+            let mut cooldowns: std::collections::HashMap<String, tokio::time::Instant> =
+                std::collections::HashMap::new();
+            while let Some(alert) = agent_alert_rx.recv().await {
+                // 60s cooldown per agent+command hash.
+                let key = format!(
+                    "{}:{}",
+                    alert.agent_name,
+                    innerwarden_core::audit::sha256_hex(&alert.command)
+                );
+                let now = tokio::time::Instant::now();
+                if let Some(last) = cooldowns.get(&key) {
+                    if now.duration_since(*last) < std::time::Duration::from_secs(60) {
+                        continue;
+                    }
+                }
+                cooldowns.insert(key, now);
+                cooldowns
+                    .retain(|_, v| now.duration_since(*v) < std::time::Duration::from_secs(300));
+
+                info!(
+                    agent = %alert.agent_name,
+                    command = %alert.command,
+                    severity = %alert.severity,
+                    recommendation = %alert.recommendation,
+                    "agent-guard snitch alert"
+                );
+
+                // Telegram notification.
+                if let Some(ref tg) = tg {
+                    if let Err(e) = tg.send_agent_guard_alert(&alert).await {
+                        warn!(error = %e, "agent-guard Telegram alert failed");
+                    }
+                }
+
+                // Slack notification.
+                if let Some(ref sc) = sc {
+                    if let Err(e) = sc.send_agent_guard_alert(&alert).await {
+                        warn!(error = %e, "agent-guard Slack alert failed");
+                    }
+                }
+
+                // Webhook notification.
+                if wh_enabled {
+                    if let Err(e) = webhook::send_agent_guard_alert(
+                        &wh_url, wh_timeout, &alert, &wh_format,
+                    )
+                    .await
+                    {
+                        warn!(error = %e, "agent-guard webhook alert failed");
+                    }
+                }
+
+                // JSONL audit trail.
+                let today = chrono::Local::now().date_naive().format("%Y-%m-%d");
+                let path = alert_data_dir.join(format!("agent-guard-events-{today}.jsonl"));
+                if let Ok(line) = serde_json::to_string(&alert) {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                    {
+                        let _ = writeln!(f, "{line}");
+                    }
+                }
+            }
+        });
     }
 
     let mut state = AgentState {

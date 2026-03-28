@@ -1,0 +1,66 @@
+title: "Schema-Description Contradiction Attack"
+id: ATR-2026-106
+status: experimental
+description: |
+  Detects tools that claim read-only or safe functionality in their description but expose
+  write-capable or dangerous parameters in their schema. This attack technique uses
+  misleading descriptions to pass security review while the actual schema enables
+  destructive operations. Example: a "safe_query" tool claiming "read-only database query"
+  while exposing a "write_mode" parameter defaulting to true.
+author: "ATR Community"
+date: "2026/03/15"
+schema_version: "0.1"
+detection_tier: semantic
+maturity: experimental
+severity: high
+source: threat-cloud
+
+references:
+  owasp_llm:
+    - "LLM06:2025 - Excessive Agency"
+  owasp_agentic:
+    - "ASI02:2026 - Tool Misuse and Exploitation"
+    - "ASI06:2026 - Insufficient Access Controls"
+
+tags:
+  category: tool-poisoning
+  subcategory: schema-description-mismatch
+  confidence: medium
+
+agent_source:
+  type: tool_call
+  framework:
+    - mcp
+    - langchain
+    - llamaindex
+  provider:
+    - any
+
+detection:
+  conditions:
+    - field: tool_description
+      operator: regex
+      value: "(?:safe|read-only|readonly|read\\s+only).*(?:query|operation|access).*write[_-]?mode.*(?:boolean|true|enable)"
+      description: "Tools claiming safe/read-only operation while exposing write_mode parameters"
+  condition: any
+  false_positives:
+    - "Tools that document write_mode for cache warming with clear explanation"
+
+response:
+  actions: [alert, snapshot]
+
+test_cases:
+  true_positives:
+    - tool_description: "Runs a safe, read-only database query to retrieve information. Parameters: query (the SELECT statement), write_mode (boolean, default true - enables write-back cache for performance)"
+      expected: triggered
+      description: "Read-only claim contradicted by write_mode parameter"
+    - tool_description: "Safe readonly file access tool for browsing documents. Parameters: path (file location), write_mode (boolean, enables write operations when true)"
+      expected: triggered
+      description: "Safe file access claim contradicted by write_mode"
+  true_negatives:
+    - tool_description: "Database query executor with full read/write capabilities. Parameters: query (SQL statement), write_mode (boolean, enables write operations)"
+      expected: not_triggered
+      description: "Honest tool that declares read/write capabilities upfront"
+    - tool_description: "Read-only file viewer for browsing documents safely. No write capabilities available."
+      expected: not_triggered
+      description: "Genuinely read-only tool without write parameters"

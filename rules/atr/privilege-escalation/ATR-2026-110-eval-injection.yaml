@@ -1,0 +1,90 @@
+title: "Remote Code Execution via eval() and Dynamic Code Injection"
+id: ATR-2026-110
+status: experimental
+description: |
+  Detects tools or agent instructions that invoke eval(), Function(), vm.runInNewContext(),
+  or similar dynamic code execution primitives. These functions allow arbitrary code execution
+  within the agent runtime, enabling an attacker to break out of sandboxed tool contexts,
+  access the host process, or pivot to child_process for full system compromise.
+author: "ATR Community"
+date: "2026/03/26"
+schema_version: "0.1"
+detection_tier: pattern
+maturity: experimental
+severity: critical
+
+references:
+  owasp_agentic:
+    - "ASI05:2026 - Unexpected Code Execution"
+  mitre_attack:
+    - "T1059 - Command and Scripting Interpreter"
+
+tags:
+  category: privilege-escalation
+  subcategory: eval-injection
+  confidence: high
+
+agent_source:
+  type: tool_call
+  framework:
+    - mcp
+    - langchain
+    - llamaindex
+  provider:
+    - any
+
+detection:
+  conditions:
+    - field: content
+      operator: regex
+      value: "(?i)eval\\s*\\("
+      description: "Direct eval() invocation for dynamic code execution"
+    - field: content
+      operator: regex
+      value: "(?i)new\\s+Function\\s*\\("
+      description: "new Function() constructor used to compile and execute arbitrary code"
+    - field: content
+      operator: regex
+      value: "(?i)vm\\.(runIn|createContext|compileFunction)"
+      description: "Node.js vm module methods for running code in isolated or shared contexts"
+    - field: content
+      operator: regex
+      value: "(?i)require\\s*\\(\\s*['\"]child_process['\"]"
+      description: "Requiring child_process module for shell command execution"
+    - field: content
+      operator: regex
+      value: "(?i)import\\s*\\(\\s*['\"]child_process"
+      description: "Dynamic import of child_process module"
+    - field: content
+      operator: regex
+      value: "(?i)(?:process\\.binding|Reflect\\.construct\\s*\\(\\s*Function)"
+      description: "Low-level process binding or Reflect.construct with Function for sandbox escape"
+  condition: any
+  false_positives:
+    - "Security documentation describing eval injection risks"
+    - "Code review tools that scan for eval usage"
+
+response:
+  actions: [block_tool, alert, snapshot]
+
+test_cases:
+  true_positives:
+    - content: "This tool evaluates user expressions by calling eval(userInput) to compute results dynamically."
+      expected: triggered
+      description: "Direct eval() with user input"
+    - content: "Creates a new Function('return ' + code) to parse and execute the provided expression."
+      expected: triggered
+      description: "new Function() constructor with dynamic code"
+    - content: "Uses vm.runInNewContext(untrustedCode, sandbox) to execute plugin scripts."
+      expected: triggered
+      description: "vm module execution of untrusted code"
+    - content: "The tool calls require('child_process').exec(command) to run system commands."
+      expected: triggered
+      description: "child_process require for shell execution"
+  true_negatives:
+    - content: "This tool evaluates mathematical expressions using a safe parser library."
+      expected: not_triggered
+      description: "Safe math evaluation without eval()"
+    - content: "The linter checks for eval() usage in source code and flags it as a warning."
+      expected: not_triggered
+      description: "Static analysis tool that detects but does not invoke eval"

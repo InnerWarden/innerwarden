@@ -18,3 +18,7 @@ regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 anyhow = "1"
+serde_yaml = "0.9"
+
+[dev-dependencies]
+tempfile = "3"

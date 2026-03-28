@@ -152,6 +152,51 @@ pub async fn send_incident(
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Agent Guard alert webhook
+// ---------------------------------------------------------------------------
+
+/// Send an agent-guard snitch alert via webhook.
+pub async fn send_agent_guard_alert(
+    url: &str,
+    timeout_secs: u64,
+    alert: &crate::dashboard::AgentGuardAlert,
+    _format: &str,
+) -> Result<()> {
+    if url.is_empty() {
+        return Ok(());
+    }
+    let payload = serde_json::json!({
+        "type": "agent_guard_alert",
+        "ts": alert.ts.to_rfc3339(),
+        "agent_name": alert.agent_name,
+        "command": alert.command,
+        "risk_score": alert.risk_score,
+        "severity": alert.severity,
+        "recommendation": alert.recommendation,
+        "signals": alert.signals,
+        "atr_rule_ids": alert.atr_rule_ids,
+        "explanation": alert.explanation,
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_secs))
+        .build()
+        .context("failed to build webhook client")?;
+
+    let resp = client.post(url).json(&payload).send().await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        warn!(
+            status = status.as_u16(),
+            body = body.chars().take(200).collect::<String>(),
+            "agent-guard webhook returned non-2xx"
+        );
+    }
+    Ok(())
+}
+
 // Severity comparison helper (used in main.rs to filter by min_severity)
 // ---------------------------------------------------------------------------
 

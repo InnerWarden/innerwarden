@@ -1,0 +1,174 @@
+title: "High-Risk Tool Invocation Without Human Confirmation"
+id: ATR-2026-099
+status: experimental
+description: |
+  Detects when an AI agent invokes high-risk tools (financial, destructive,
+  communication, or permission-altering) without evidence of human confirmation
+  in the current interaction turn. This is a defense-in-depth rule that
+  complements specific attack detection -- even if no injection is detected,
+  certain tool categories should ALWAYS require human-in-the-loop.
+
+  High-risk tool categories:
+  1. Financial: payments, transfers, purchases, subscriptions
+  2. Destructive: file deletion, database drops, account deletion
+  3. Communication: sending messages, emails, posts on behalf of user
+  4. Permission: granting access, changing roles, modifying auth
+  5. System: process execution, system commands, network operations
+
+  This rule enforces the principle of least privilege for agent tool access.
+  Any tool matching these categories should trigger an "ask" verdict
+  regardless of confidence score.
+author: "ATR Community"
+date: "2026/03/11"
+schema_version: "0.1"
+detection_tier: pattern
+maturity: experimental
+severity: low
+
+references:
+  owasp_llm:
+    - "LLM06:2025 - Excessive Agency"
+  owasp_agentic:
+    - "ASI08:2026 - Excessive Autonomy"
+    - "ASI09:2026 - Inadequate Access Controls"
+    - "ASI10:2026 - Insufficient Human Oversight"
+  mitre_atlas:
+    - "AML.T0053 - LLM Plugin Compromise"
+
+tags:
+  category: excessive-autonomy
+  subcategory: high-risk-tool-gate
+  confidence: medium
+
+agent_source:
+  type: tool_call
+  framework:
+    - any
+  provider:
+    - any
+
+detection:
+  conditions:
+    # -- Category 1: Financial tools --
+    - field: tool_name
+      operator: regex
+      value: "(?i)(?<!get_)(?<!list_)(?<!check_)(?<!view_)(?<!fetch_)(?<!query_)(pay|payment|transfer|transaction|purchase|buy|checkout|billing|invoice|charge|refund|withdraw|deposit|subscribe|红包|紅包|转账|轉帳|付款|支付|汇款|匯款|充值|订阅|訂閱|送金|振込|결제|이체|송금)"
+      description: "Financial tool invocation (excludes read-only get_/list_/check_ prefixed tools)"
+    # -- Category 2: Destructive tools --
+    - field: tool_name
+      operator: regex
+      value: "(?i)(delete|remove|drop|truncate|purge|wipe|destroy|erase|reset|uninstall|revoke|terminate|kill|shutdown|format|删除|刪除|清空|销毁|銷毀|移除|卸载|卸載|削除|삭제|제거)"
+      description: "Destructive tool invocation"
+    # -- Category 3: Communication tools (sending on behalf of user) --
+    - field: tool_name
+      operator: regex
+      value: "(?i)(send_message|send_email|send_sms|send_notification|post_message|post_tweet|post_comment|reply_message|publish|broadcast|发送消息|發送訊息|发邮件|發郵件|发短信|發簡訊|投稿|메시지_보내기)"
+      description: "Communication tool sending messages on behalf of user"
+    # -- Category 4: Permission/auth tools --
+    - field: tool_name
+      operator: regex
+      value: "(?i)(grant_access|change_role|modify_permissions|add_admin|set_owner|update_auth|change_password|reset_password|create_token|generate_key|invite_user|授权|授權|修改权限|修改權限|添加管理|변경_권한)"
+      description: "Permission or authentication modification tool"
+    # -- Category 5: System execution tools --
+    - field: tool_name
+      operator: regex
+      value: "(?i)(exec|execute|run_command|shell|bash|cmd|powershell|system_call|os_exec|subprocess|eval|执行命令|執行命令|실행)"
+      description: "System command execution tool"
+    # -- Tool args: high-value amounts without confirmation flag --
+    - field: tool_args
+      operator: regex
+      value: "(?i)(\"amount\"\\s*:\\s*[1-9]\\d{2,}|\"value\"\\s*:\\s*[1-9]\\d{2,}|\"quantity\"\\s*:\\s*[1-9]\\d{2,})(?!.*\"confirmed\"\\s*:\\s*true)"
+      description: "High-value operation (amount >= 100) without confirmation flag"
+    # -- Tool args: bulk/all operations --
+    - field: tool_args
+      operator: regex
+      value: "(?i)(\"scope\"\\s*:\\s*\"(all|global|everyone)\"|\"target\"\\s*:\\s*\"(all|\\*|everyone)\"|\"recursive\"\\s*:\\s*true|\"force\"\\s*:\\s*true)"
+      description: "Bulk or force operation targeting all/everyone"
+
+  condition: any
+  false_positives:
+    - "Agent running in a sandbox or testing environment with mock tools"
+    - "Legitimate automated workflows with pre-approved tool access"
+    - "Read-only tools that contain action keywords in their name (e.g., 'get_payment_status')"
+    - "Tools with built-in confirmation mechanisms at the platform level"
+
+response:
+  actions:
+    - block_tool
+    - alert
+  auto_response_threshold: medium
+  message_template: |
+    [ATR-2026-099] HIGH: Agent attempting to invoke high-risk tool "{tool_name}"
+    without human confirmation. Tool category requires explicit user approval.
+    Action blocked pending human review. Agent: {agent_id}, Session: {session_id}.
+    To allow: add tool to confirmed-actions whitelist or provide explicit approval.
+
+test_cases:
+  true_positives:
+    - tool_call:
+        name: "send_red_packet"
+        args: "{\"amount\": 200}"
+      expected: triggered
+      description: "Financial tool: red packet"
+    - tool_call:
+        name: "delete_all_files"
+        args: "{\"path\": \"/data\", \"recursive\": true}"
+      expected: triggered
+      description: "Destructive tool: recursive delete"
+    - tool_call:
+        name: "send_email"
+        args: "{\"to\": \"boss@company.com\", \"body\": \"I quit\"}"
+      expected: triggered
+      description: "Communication tool: sending email as user"
+    - tool_call:
+        name: "grant_access"
+        args: "{\"user\": \"stranger\", \"role\": \"admin\"}"
+      expected: triggered
+      description: "Permission tool: granting admin access"
+    - tool_call:
+        name: "bash"
+        args: "{\"command\": \"rm -rf /\"}"
+      expected: triggered
+      description: "System execution tool"
+    - tool_call:
+        name: "转账"
+        args: "{\"金额\": 500}"
+      expected: triggered
+      description: "Chinese-named financial tool"
+    - tool_call:
+        name: "checkout"
+        args: "{\"amount\": 9999, \"force\": true}"
+      expected: triggered
+      description: "High-value purchase with force flag"
+  true_negatives:
+    - tool_call:
+        name: "get_payment_status"
+        args: "{\"order_id\": \"12345\"}"
+      expected: not_triggered
+      description: "Read-only payment status check"
+      notes: "Tool name contains 'payment' but prefixed with 'get_' indicating read-only. May need platform-level get_ prefix exclusion."
+    - tool_call:
+        name: "search_files"
+        args: "{\"query\": \"invoice\"}"
+      expected: not_triggered
+      description: "File search, not destructive despite financial keyword in args"
+    - tool_call:
+        name: "calculate_total"
+        args: "{\"items\": [{\"price\": 500}]}"
+      expected: not_triggered
+      description: "Calculation tool, not financial action"
+    - tool_call:
+        name: "list_transactions"
+        args: "{\"date_range\": \"2026-01-01 to 2026-03-01\"}"
+      expected: not_triggered
+      description: "Read-only transaction listing, not a financial action"
+    - tool_call:
+        name: "read_config"
+        args: "{\"key\": \"notification_settings\"}"
+      expected: not_triggered
+      description: "Reading configuration, not modifying permissions or system"
+    - tool_call:
+        name: "fetch_user_profile"
+        args: "{\"user_id\": \"12345\"}"
+      expected: not_triggered
+      description: "Read-only user profile fetch, not permission modification"

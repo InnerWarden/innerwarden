@@ -145,6 +145,78 @@ impl SlackClient {
 
         Ok(())
     }
+
+    /// Send an agent-guard snitch alert to Slack.
+    pub async fn send_agent_guard_alert(
+        &self,
+        alert: &crate::dashboard::AgentGuardAlert,
+    ) -> Result<()> {
+        let color = match alert.severity.as_str() {
+            "high" => "#f43f5e",
+            "medium" => "#f97316",
+            _ => "#eab308",
+        };
+        let sev_emoji = match alert.severity.as_str() {
+            "high" => "🔴",
+            "medium" => "🟠",
+            _ => "🟡",
+        };
+        let cmd_preview = if alert.command.len() > 120 {
+            format!("{}…", &alert.command[..120])
+        } else {
+            alert.command.clone()
+        };
+        let signals_str = alert.signals.join(", ");
+        let atr_line = if alert.atr_rule_ids.is_empty() {
+            String::new()
+        } else {
+            format!("  |  ATR: {}", alert.atr_rule_ids.join(", "))
+        };
+
+        let payload = json!({
+            "attachments": [{
+                "color": color,
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": format!(
+                                "🤖 *Agent Guard Alert*\n{sev_emoji} {} — {}\n\n*Agent:* {}\n*Command:* `{}`\n*Risk:* {}/100\n*Signals:* {}{}",
+                                alert.severity.to_uppercase(),
+                                alert.recommendation.to_uppercase(),
+                                alert.agent_name,
+                                cmd_preview,
+                                alert.risk_score,
+                                signals_str,
+                                atr_line,
+                            )
+                        }
+                    }
+                ],
+                "fallback": format!("[InnerWarden] Agent Guard: {} attempted {}", alert.agent_name, cmd_preview)
+            }]
+        });
+
+        let resp = self
+            .client
+            .post(&self.webhook_url)
+            .json(&payload)
+            .send()
+            .await
+            .context("Slack agent-guard webhook POST failed")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            warn!(
+                status = status.as_u16(),
+                body = body.chars().take(200).collect::<String>(),
+                "Slack agent-guard webhook returned non-2xx"
+            );
+        }
+        Ok(())
+    }
 }
 
 fn severity_emoji(severity: &str) -> &'static str {

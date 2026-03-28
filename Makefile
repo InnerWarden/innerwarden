@@ -94,9 +94,12 @@ update: test build-linux
 	@echo "→ Uploading binaries..."
 	scp $(RELEASE_DIR)/innerwarden-sensor $(HOST):/tmp/innerwarden-sensor
 	scp $(RELEASE_DIR)/innerwarden-agent  $(HOST):/tmp/innerwarden-agent
+	scp $(RELEASE_DIR)/innerwarden-ctl    $(HOST):/tmp/innerwarden-ctl
 	@echo "→ Installing binaries..."
 	ssh $(HOST) "sudo install -o root -g root -m 755 /tmp/innerwarden-sensor /usr/local/bin/innerwarden-sensor"
 	ssh $(HOST) "sudo install -o root -g root -m 755 /tmp/innerwarden-agent  /usr/local/bin/innerwarden-agent"
+	ssh $(HOST) "sudo install -o root -g root -m 755 /tmp/innerwarden-ctl    /usr/local/bin/innerwarden-ctl"
+	ssh $(HOST) "sudo ln -sf /usr/local/bin/innerwarden-ctl /usr/local/bin/innerwarden"
 	@echo "→ Restarting services..."
 	ssh $(HOST) "sudo systemctl daemon-reload && sudo systemctl start innerwarden-sensor"
 	ssh $(HOST) "sudo systemctl start innerwarden-agent 2>/dev/null || true"
@@ -125,8 +128,11 @@ deploy: build-linux
 	ssh $(HOST) "sudo systemctl stop innerwarden-sensor 2>/dev/null || true"
 	scp $(RELEASE_DIR)/innerwarden-sensor $(HOST):/tmp/innerwarden-sensor
 	scp $(RELEASE_DIR)/innerwarden-agent  $(HOST):/tmp/innerwarden-agent
+	scp $(RELEASE_DIR)/innerwarden-ctl    $(HOST):/tmp/innerwarden-ctl
 	ssh $(HOST) "sudo install -o root -g root -m 755 /tmp/innerwarden-sensor /usr/local/bin/innerwarden-sensor"
 	ssh $(HOST) "sudo install -o root -g root -m 755 /tmp/innerwarden-agent  /usr/local/bin/innerwarden-agent"
+	ssh $(HOST) "sudo install -o root -g root -m 755 /tmp/innerwarden-ctl    /usr/local/bin/innerwarden-ctl"
+	ssh $(HOST) "sudo ln -sf /usr/local/bin/innerwarden-ctl /usr/local/bin/innerwarden"
 	ssh $(HOST) "sudo systemctl daemon-reload && sudo systemctl start innerwarden-sensor"
 	ssh $(HOST) "sudo systemctl start innerwarden-agent 2>/dev/null || true"
 	@echo "Deploy complete - checking status:"

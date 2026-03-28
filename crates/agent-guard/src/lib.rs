@@ -11,6 +11,7 @@
 pub mod detect;
 pub mod mcp;
 pub mod registry;
+pub mod rules;
 pub mod session;
 pub mod signatures;
 pub mod threats;

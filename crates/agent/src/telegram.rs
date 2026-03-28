@@ -354,6 +354,58 @@ impl TelegramClient {
         self.post_json("sendMessage", &body).await
     }
 
+    /// Send an agent-guard snitch alert when an AI agent attempts something dangerous.
+    pub async fn send_agent_guard_alert(
+        &self,
+        alert: &crate::dashboard::AgentGuardAlert,
+    ) -> Result<()> {
+        let sev_emoji = match alert.severity.as_str() {
+            "high" => "\u{1f534}",   // 🔴
+            "medium" => "\u{1f7e0}", // 🟠
+            _ => "\u{1f7e1}",        // 🟡
+        };
+        let rec_label = match alert.recommendation.as_str() {
+            "deny" => "DENIED",
+            "review" => "REVIEW",
+            _ => &alert.recommendation,
+        };
+        let cmd_preview = if alert.command.len() > 120 {
+            format!("{}…", &alert.command[..120])
+        } else {
+            alert.command.clone()
+        };
+        let signals_str = if alert.signals.is_empty() {
+            "—".to_string()
+        } else {
+            alert.signals.join(", ")
+        };
+        let atr_line = if alert.atr_rule_ids.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n<b>ATR rules:</b> {}",
+                alert.atr_rule_ids.join(", ")
+            )
+        };
+
+        let html = format!(
+            "\u{1f916} <b>Agent Guard Alert</b>\n\n\
+             {sev_emoji} <b>{}</b> — {rec_label}\n\n\
+             <b>Agent:</b> {}\n\
+             <b>Command:</b> <code>{}</code>\n\
+             <b>Risk:</b> {}/100\n\
+             <b>Signals:</b> {}{}\n\n\
+             InnerWarden flagged this action by your AI agent.",
+            alert.severity.to_uppercase(),
+            escape_html(&alert.agent_name),
+            escape_html(&cmd_preview),
+            alert.risk_score,
+            escape_html(&signals_str),
+            atr_line,
+        );
+        self.send_raw_html(&html).await
+    }
+
     /// Send the onboarding/welcome message when the operator opens the bot.
     /// Shows current mode, today's stats, and quick-action buttons.
     pub async fn send_onboarding(
