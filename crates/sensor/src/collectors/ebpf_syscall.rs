@@ -516,6 +516,92 @@ fn pin_lsm_policy(bpf: &mut aya::Ebpf) {
             info!("eBPF: LSM enforcement is OFF by default - enable via: bpftool map update pinned {LSM_POLICY_PIN} key 0 0 0 0 value 1 0 0 0");
         }
     }
+
+    // Populate INODE_SIZE map for overlayfs drift detection (Falco trick).
+    // sizeof(struct inode) varies by kernel config; query BTF at runtime.
+    populate_inode_size(bpf);
+}
+
+/// Query sizeof(struct inode) from kernel BTF and write it to the INODE_SIZE map.
+/// This enables the eBPF overlay drift detector to find ovl_inode.__upperdentry
+/// at (inode_ptr + sizeof(struct inode)) without needing BTF for the private ovl_inode.
+#[cfg(feature = "ebpf")]
+fn populate_inode_size(bpf: &mut aya::Ebpf) {
+    use aya::maps::HashMap as BpfHashMap;
+
+    // Try to get sizeof(struct inode) from BTF via bpftool
+    let inode_size = match std::process::Command::new("bpftool")
+        .args([
+            "btf",
+            "dump",
+            "file",
+            "/sys/kernel/btf/vmlinux",
+            "format",
+            "c",
+        ])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let btf_dump = String::from_utf8_lossy(&output.stdout);
+            // Parse: look for "struct inode {" and count to closing "}"
+            // This is heuristic — production should use proper BTF parsing.
+            // Fallback: use bpftool to query the size directly.
+            None.or_else(|| {
+                // Try bpftool btf dump id 1 to get struct sizes
+                let size_output = std::process::Command::new("bpftool")
+                    .args(["btf", "dump", "file", "/sys/kernel/btf/vmlinux"])
+                    .output()
+                    .ok()?;
+                let text = String::from_utf8_lossy(&size_output.stdout);
+                // Look for: [NNN] STRUCT 'inode' size=XXX
+                for line in text.lines() {
+                    if line.contains("STRUCT 'inode'") && line.contains("size=") {
+                        if let Some(size_str) = line.split("size=").nth(1) {
+                            let size_str = size_str.split_whitespace().next().unwrap_or("0");
+                            if let Ok(size) = size_str.parse::<u64>() {
+                                if size > 100 && size < 2000 {
+                                    return Some(size);
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            })
+            .unwrap_or_else(|| {
+                // If BTF dump doesn't contain it, try the raw text from format c
+                // and look for "} __attribute__((preserve_access_index));"
+                // after "struct inode {"
+                drop(btf_dump);
+                0
+            })
+        }
+        _ => 0,
+    };
+
+    if inode_size == 0 {
+        info!("eBPF: could not determine sizeof(struct inode) from BTF — container drift detection disabled");
+        info!("eBPF: ensure bpftool is installed and /sys/kernel/btf/vmlinux exists");
+        return;
+    }
+
+    if let Some(map) = bpf.map_mut("INODE_SIZE") {
+        let mut hash: BpfHashMap<_, u32, u64> = match map.try_into() {
+            Ok(h) => h,
+            Err(e) => {
+                warn!(error = %e, "INODE_SIZE map: wrong type");
+                return;
+            }
+        };
+        if let Err(e) = hash.insert(0u32, inode_size, 0) {
+            warn!(error = %e, "INODE_SIZE map: failed to insert");
+        } else {
+            info!(
+                inode_size,
+                "eBPF: container drift detection enabled (sizeof(struct inode) = {inode_size})"
+            );
+        }
+    }
 }
 
 #[cfg(not(feature = "ebpf"))]
@@ -1437,6 +1523,39 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         details,
                         tags,
                         entities,
+                    })
+                }
+                // ContainerDrift: ExecveEvent layout with kind=26.
+                // Binary executed from overlayfs upper layer (not in original image).
+                26 if data.len() >= 352 => {
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 12..16);
+                    let cgroup_id = read_u64!(data, 24..32);
+                    let comm = bytes_to_string(&data[32..96]);
+                    let filename = bytes_to_string(&data[96..352]);
+
+                    let container_id = resolve_container_id(pid);
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "shell.command_exec".to_string(),
+                        severity: Severity::Critical,
+                        summary: format!(
+                            "Container drift: {comm} executed {filename} (overlay upper layer)"
+                        ),
+                        details: serde_json::json!({
+                            "pid": pid,
+                            "uid": uid,
+                            "comm": comm,
+                            "filename": filename,
+                            "cgroup_id": cgroup_id,
+                            "container_id": container_id.as_deref().unwrap_or(""),
+                            "overlay_upper": true,
+                        }),
+                        tags: vec!["ebpf".to_string(), "container_drift".to_string()],
+                        entities: vec![],
                     })
                 }
                 // ProcessExitEvent layout (#[repr(C)]):

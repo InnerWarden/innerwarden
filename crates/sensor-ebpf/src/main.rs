@@ -758,9 +758,19 @@ fn try_privesc(ctx: &ProbeContext) -> Result<(), i64> {
 
 /// Policy map - controls LSM enforcement.
 /// Key 0 = master switch: 0 = disabled (observe only), 1 = enforce (block).
+/// Key 1 = sensitive write protection: 0 = observe only, 1 = block writes.
 /// Managed by the agent via bpftool on the pinned map.
 #[map]
 static LSM_POLICY: HashMap<u32, u32> = HashMap::with_max_entries(16, 0);
+
+/// sizeof(struct inode) for the running kernel - populated by userspace from BTF.
+/// Used for overlayfs upper-layer detection: __upperdentry is at inode_ptr + sizeof(struct inode).
+/// Key: 0. Value: sizeof(struct inode) in bytes.
+/// Trick from Falco: avoids needing BTF for the private ovl_inode struct.
+#[map]
+static INODE_SIZE: HashMap<u32, u64> = HashMap::with_max_entries(1, 0);
+
+const OVERLAYFS_SUPER_MAGIC: u64 = 0x794c_7630;
 
 #[lsm(hook = "bprm_check_security")]
 pub fn innerwarden_lsm_exec(ctx: LsmContext) -> i32 {
@@ -771,6 +781,20 @@ pub fn innerwarden_lsm_exec(ctx: LsmContext) -> i32 {
 }
 
 fn try_lsm_exec(ctx: &LsmContext) -> Result<i32, i64> {
+    // ── Container drift detection (ALWAYS runs, even without guard mode) ──
+    // Check if the binary is on an overlayfs upper layer (dropped after container start).
+    // Uses the Falco trick: __upperdentry is at inode_ptr + sizeof(struct inode).
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    if cgroup_id != 0 {
+        // In a container — check for overlayfs drift
+        if let Some(&inode_size) = unsafe { INODE_SIZE.get(&0u32) } {
+            if inode_size > 0 {
+                let _ = check_overlay_drift(ctx, cgroup_id, inode_size);
+            }
+        }
+    }
+
+    // ── Guard mode enforcement ──
     // Check if enforcement is enabled (key 0 in policy map)
     let enabled = unsafe { LSM_POLICY.get(&0u32) };
     if enabled.is_none() || *enabled.unwrap() == 0 {
@@ -912,6 +936,131 @@ fn try_lsm_exec(ctx: &LsmContext) -> Result<i32, i64> {
     }
 
     Ok(-1) // -EPERM: deny execution
+}
+
+// ---------------------------------------------------------------------------
+// Container drift detection via overlayfs upper-layer check
+// ---------------------------------------------------------------------------
+//
+// Checks if the binary being executed is in the overlayfs upper layer.
+// The upper layer contains files created/modified after container start —
+// i.e., not in the original image. This is container drift.
+//
+// Technique (from Falco): __upperdentry is the first field after vfs_inode
+// in struct ovl_inode. So its offset = inode_ptr + sizeof(struct inode).
+// sizeof(struct inode) is queried from kernel BTF by userspace and stored
+// in the INODE_SIZE map.
+
+fn check_overlay_drift(
+    ctx: &LsmContext,
+    cgroup_id: u64,
+    inode_size: u64,
+) -> Result<(), i64> {
+    // bprm_check_security(struct linux_binprm *bprm)
+    let bprm_ptr: *const u8 = unsafe { ctx.arg(0) };
+
+    // bprm->file @ offset 48 (kernel 6.x: struct linux_binprm has
+    // struct vm_area_struct *vma, unsigned long limit, mm, flags, etc. before file)
+    const BPRM_FILE_OFFSET: usize = 48;
+    let file_ptr: *const u8 = unsafe {
+        bpf_probe_read_kernel(bprm_ptr.add(BPRM_FILE_OFFSET) as *const *const u8)
+            .map_err(|e| e)?
+    };
+    if file_ptr.is_null() {
+        return Ok(());
+    }
+
+    // file->f_path.dentry @ offset 16 (f_path is { mnt(8), dentry(8) } at offset 8)
+    const F_PATH_DENTRY_OFFSET: usize = 16;
+    let dentry_ptr: *const u8 = unsafe {
+        bpf_probe_read_kernel(file_ptr.add(F_PATH_DENTRY_OFFSET) as *const *const u8)
+            .map_err(|e| e)?
+    };
+    if dentry_ptr.is_null() {
+        return Ok(());
+    }
+
+    // dentry->d_sb @ offset 104 (kernel 6.x)
+    const DENTRY_D_SB_OFFSET: usize = 104;
+    let sb_ptr: *const u8 = unsafe {
+        bpf_probe_read_kernel(dentry_ptr.add(DENTRY_D_SB_OFFSET) as *const *const u8)
+            .map_err(|e| e)?
+    };
+    if sb_ptr.is_null() {
+        return Ok(());
+    }
+
+    // super_block->s_magic @ offset 104 (kernel 6.x)
+    const SB_S_MAGIC_OFFSET: usize = 104;
+    let s_magic: u64 = unsafe {
+        bpf_probe_read_kernel(sb_ptr.add(SB_S_MAGIC_OFFSET) as *const u64).map_err(|e| e)?
+    };
+    if s_magic != OVERLAYFS_SUPER_MAGIC {
+        return Ok(()); // Not overlayfs — skip
+    }
+
+    // dentry->d_inode @ offset 48 (kernel 6.x)
+    const DENTRY_D_INODE_OFFSET: usize = 48;
+    let inode_ptr: *const u8 = unsafe {
+        bpf_probe_read_kernel(dentry_ptr.add(DENTRY_D_INODE_OFFSET) as *const *const u8)
+            .map_err(|e| e)?
+    };
+    if inode_ptr.is_null() {
+        return Ok(());
+    }
+
+    // __upperdentry is at inode_ptr + sizeof(struct inode)
+    let upper_dentry: *const u8 = unsafe {
+        bpf_probe_read_kernel(inode_ptr.add(inode_size as usize) as *const *const u8)
+            .map_err(|e| e)?
+    };
+
+    if upper_dentry.is_null() {
+        return Ok(()); // Lower layer — part of original image, no drift
+    }
+
+    // DRIFT DETECTED: binary is in overlayfs upper layer (dropped after container start)
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let pid = pid_tgid as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+
+    if let Some(mut entry) = EVENTS.reserve::<innerwarden_ebpf_types::ExecveEvent>(0) {
+        let event = unsafe { &mut *entry.as_mut_ptr() };
+        event.kind = innerwarden_ebpf_types::SyscallKind::ContainerDrift as u32;
+        event.pid = pid;
+        event.tgid = (pid_tgid >> 32) as u32;
+        event.uid = uid;
+        event.gid = 0;
+        event.ppid = 0;
+        event.cgroup_id = cgroup_id;
+        event.ts_ns = ts;
+        event.argc = 0;
+        event.argv = [[0u8; 128]; 8];
+
+        // Read the filename from bprm->filename
+        const BPRM_FILENAME_OFFSET: usize = 72;
+        let filename_ptr: *const u8 = unsafe {
+            bpf_probe_read_kernel(bprm_ptr.add(BPRM_FILENAME_OFFSET) as *const *const u8)
+                .unwrap_or(core::ptr::null())
+        };
+        event.filename = [0u8; 256];
+        if !filename_ptr.is_null() {
+            unsafe {
+                let _ = bpf_probe_read_kernel_str_bytes(filename_ptr, &mut event.filename);
+            }
+        }
+
+        if let Ok(comm) = bpf_get_current_comm() {
+            event.comm = [0u8; MAX_COMM_LEN];
+            event.comm[..comm.len().min(MAX_COMM_LEN)]
+                .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+        }
+
+        entry.submit(0);
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

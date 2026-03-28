@@ -75,6 +75,8 @@ pub enum SyscallKind {
     IoUring = 24,
     /// io_uring ring creation (track which processes use io_uring)
     IoUringCreate = 25,
+    /// Container drift: binary executed from overlayfs upper layer (not in original image)
+    ContainerDrift = 26,
 }
 
 /// Event emitted by the eBPF `execve` tracepoint.

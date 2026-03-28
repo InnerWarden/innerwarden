@@ -4,6 +4,7 @@ use chrono::{DateTime, Duration, Utc};
 use innerwarden_core::{entities::EntityRef, event::Event, event::Severity, incident::Incident};
 
 /// Containers that legitimately drop and execute binaries at runtime.
+#[allow(dead_code)]
 const ALLOWED_IMAGES: &[&str] = &[
     // CI/CD builders
     "docker.io/library/docker",
