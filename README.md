@@ -44,6 +44,10 @@ This is **not** a plug-and-play consumer security product. Misconfigured respons
   <sub><a href="https://innerwarden.com/live"><strong>Test the tool in real time</strong></a> &nbsp;·&nbsp; <a href="https://vimeo.com/1175992244">Watch the explainer video</a></sub>
 </p>
 
+
+https://github.com/user-attachments/assets/b55967a6-a2d0-4158-9007-05e689d5bf0c
+
+
 https://github.com/user-attachments/assets/6ea1e124-52c2-48fe-8600-4b2f3d670116
 
 <p align="center">
