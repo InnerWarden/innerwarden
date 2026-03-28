@@ -113,6 +113,8 @@ struct DetectorSet {
     packet_flood: Option<PacketFloodDetector>,
     sensitive_write: Option<detectors::sensitive_write::SensitiveWriteDetector>,
     io_uring_anomaly: Option<detectors::io_uring_anomaly::IoUringAnomalyDetector>,
+    container_drift: Option<detectors::container_drift::ContainerDriftDetector>,
+    host_drift: Option<detectors::host_drift::HostDriftDetector>,
 }
 
 #[derive(Default)]
@@ -576,6 +578,14 @@ async fn main() -> Result<()> {
         io_uring_anomaly: Some({
             info!("io_uring_anomaly detector enabled (io_uring evasion detection)");
             detectors::io_uring_anomaly::IoUringAnomalyDetector::new(&cfg.agent.host_id, 300)
+        }),
+        container_drift: Some({
+            info!("container_drift detector enabled (overlayfs drift detection)");
+            detectors::container_drift::ContainerDriftDetector::new(&cfg.agent.host_id, 600)
+        }),
+        host_drift: Some({
+            info!("host_drift detector enabled (non-standard binary execution)");
+            detectors::host_drift::HostDriftDetector::new(&cfg.agent.host_id, 600)
         }),
     };
 
@@ -1302,6 +1312,18 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.io_uring_anomaly {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.container_drift {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.host_drift {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }
