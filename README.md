@@ -8,13 +8,13 @@
 [![Last Commit](https://img.shields.io/github/last-commit/InnerWarden/innerwarden)](https://github.com/InnerWarden/innerwarden/commits/main)
 
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange)
-![eBPF Hooks](https://img.shields.io/badge/eBPF%20hooks-22-blueviolet)
-![Detectors](https://img.shields.io/badge/detectors-36-blue)
+![eBPF Hooks](https://img.shields.io/badge/eBPF%20hooks-25-blueviolet)
+![Detectors](https://img.shields.io/badge/detectors-40-blue)
 ![Memory](https://img.shields.io/badge/memory-under%20100MB-green)
 ![AI Optional](https://img.shields.io/badge/AI-optional-lightgrey)
 [![Featured on GitHub Awesome](https://img.shields.io/badge/Featured-GitHub%20Awesome-blue)](https://www.youtube.com/watch?v=i9YpWp0hXgg&t=315)
 
-Inner Warden is an autonomous security agent for Linux and macOS. It detects attacks, blocks them at the kernel level, and responds automatically when you allow it. 22 eBPF kernel hooks. 36 detectors. 12 response skills. Mesh collaborative defense. No cloud. No dependencies. Just two Rust daemons and a CLI.
+Inner Warden is an autonomous security agent for Linux and macOS. It detects attacks, blocks them at the kernel level, and responds automatically when you allow it. 25 eBPF kernel hooks. 40 detectors. 12 response skills. AI agent protection (Agent Guard). Mesh collaborative defense. No cloud. No dependencies. Just two Rust daemons and a CLI.
 
 ```bash
 curl -fsSL https://innerwarden.com/install | sudo bash
