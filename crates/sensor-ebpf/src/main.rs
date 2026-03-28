@@ -26,7 +26,8 @@ use aya_ebpf::{
     helpers::{
         bpf_get_current_cgroup_id, bpf_get_current_comm, bpf_get_current_pid_tgid,
         bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_kernel,
-        bpf_probe_read_user, bpf_probe_read_user_str_bytes,
+        bpf_probe_read_kernel_str_bytes, bpf_probe_read_user,
+        bpf_probe_read_user_str_bytes,
     },
     macros::{kprobe, lsm, map, tracepoint, xdp},
     maps::{HashMap, RingBuf},
