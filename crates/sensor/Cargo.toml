@@ -40,3 +40,4 @@ redis-sink = ["redis"]
 
 [dev-dependencies]
 tempfile = "3"
+proptest = "1"
