@@ -324,7 +324,7 @@ fi
 
 if [[ "$OS_TYPE" == "Darwin" ]]; then
   # macOS: create group via dscl if it doesn't exist
-  if ! dscl . list /Groups PrimaryGroupID  | grep "${IW_USER}" >/dev/null 2>&1; then
+  if ! dscl . list /Groups PrimaryGroupID | grep -w "${IW_USER}" >/dev/null 2>&1; then
     log "creating service group: ${IW_USER}"
     # Find an unused GID in the system range
     NEXT_GID=300
@@ -334,6 +334,9 @@ if [[ "$OS_TYPE" == "Darwin" ]]; then
     run_root dscl . -create /Groups/"${IW_USER}"
     run_root dscl . -create /Groups/"${IW_USER}" RealName "Inner Warden"
     run_root dscl . -create /Groups/"${IW_USER}" PrimaryGroupID "${NEXT_GID}"
+  else
+    # Group exists — resolve its GID for user creation below
+    NEXT_GID=$(dscl . -read /Groups/"${IW_USER}" PrimaryGroupID | awk '{print $2}')
   fi
   # macOS: create user via dscl if it doesn't exist
   if ! id "${IW_USER}" >/dev/null 2>&1; then
@@ -351,7 +354,7 @@ if [[ "$OS_TYPE" == "Darwin" ]]; then
     run_root dscl . -create /Users/"${IW_USER}" NFSHomeDirectory /var/empty
   fi
   # macOS: add user to group via dscl if it doesn't exist
-  if ! dscl . read /Groups/"${IW_USER}" GroupMembership  | grep "${IW_USER}" >/dev/null 2>&1; then
+  if ! dscl . read /Groups/"${IW_USER}" GroupMembership 2>/dev/null | grep -w "${IW_USER}" >/dev/null 2>&1; then
     run_root dscl . append /Groups/"${IW_USER}" GroupMembership "${IW_USER}"
   fi
   run_root mkdir -p "${CONFIG_DIR}" "${DATA_DIR}" "${LOG_DIR}"
@@ -383,10 +386,10 @@ else
 fi
 
 log "installing binaries to ${BIN_DIR}"
-run_root install -o ${INSTALL_USER:-root} -g ${INSTALL_GROUP:-root} -m 755 "${IW_SENSOR_BIN}" "${SENSOR_BIN}"
-run_root install -o ${INSTALL_USER:-root} -g ${INSTALL_GROUP:-root} -m 755 "${IW_AGENT_BIN}"  "${AGENT_BIN}"
-run_root install -o ${INSTALL_USER:-root} -g ${INSTALL_GROUP:-root} -m 755 "${IW_CTL_BIN}"    "${BIN_DIR}/innerwarden-ctl"
-run_root install -o ${INSTALL_USER:-root} -g ${INSTALL_GROUP:-root} -m 755 "${IW_CTL_BIN}"    "${BIN_DIR}/innerwarden"
+run_root install -o "${INSTALL_USER:-root}" -g "${INSTALL_GROUP:-root}" -m 755 "${IW_SENSOR_BIN}" "${SENSOR_BIN}"
+run_root install -o "${INSTALL_USER:-root}" -g "${INSTALL_GROUP:-root}" -m 755 "${IW_AGENT_BIN}"  "${AGENT_BIN}"
+run_root install -o "${INSTALL_USER:-root}" -g "${INSTALL_GROUP:-root}" -m 755 "${IW_CTL_BIN}"    "${BIN_DIR}/innerwarden-ctl"
+run_root install -o "${INSTALL_USER:-root}" -g "${INSTALL_GROUP:-root}" -m 755 "${IW_CTL_BIN}"    "${BIN_DIR}/innerwarden"
 
 # ── Install bpftool for eBPF support (Linux only) ────────────────────────
 # bpftool is required for XDP firewall and LSM enforcement management.
@@ -427,8 +430,10 @@ if [[ -f "${SENSOR_CONFIG}" && -f "${AGENT_CONFIG}" ]]; then
   log "backup created: ${SENSOR_CONFIG}.bak.${BAKSUFFIX}"
   run_root cp "${AGENT_CONFIG}" "${AGENT_CONFIG}.bak.${BAKSUFFIX}"
   log "backup created: ${AGENT_CONFIG}.bak.${BAKSUFFIX}"
-  [ -f "${AGENT_ENV}" ] && run_root cp "${AGENT_ENV}" "${AGENT_ENV}.bak.${BAKSUFFIX}" 2>/dev/null \
-   && log "backup created: ${AGENT_ENV}.bak.${BAKSUFFIX}" || true
+  if [ -f "${AGENT_ENV}" ]; then
+    run_root cp "${AGENT_ENV}" "${AGENT_ENV}.bak.${BAKSUFFIX}"
+    log "backup created: ${AGENT_ENV}.bak.${BAKSUFFIX}"
+  fi
 fi
 
 if [[ "${EXISTING_INSTALL}" == "true" ]]; then

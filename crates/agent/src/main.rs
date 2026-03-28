@@ -3278,6 +3278,12 @@ async fn execute_decision(
             //
             // Each layer is independent - failure in one doesn't stop the others.
 
+            // ── Safeguard: reject empty IPs ───────────────────────────
+            if ip.is_empty() {
+                warn!("block decision has empty IP - skipping");
+                return ("skipped: block decision has empty IP".to_string(), false);
+            }
+
             // ── Safeguard: rate limit ──────────────────────────────────
             // Prevent false-positive cascades - max N blocks per minute.
             let now_utc = chrono::Utc::now();
@@ -3335,6 +3341,7 @@ async fn execute_decision(
             }
 
             // Layer 2: Firewall rule (ufw/iptables/nftables - configured backend)
+            // The configured block_backend is always allowed, regardless of allowed_skills.
             let effective_id: String = if cfg.responder.allowed_skills.contains(skill_id) {
                 skill_id.clone()
             } else {
@@ -3356,7 +3363,20 @@ async fn execute_decision(
                             _ => "ufw",
                         });
                         any_success = true;
+                    } else {
+                        warn!(
+                            ip,
+                            skill = effective_id,
+                            reason = fw_result.message,
+                            "firewall block skill execution failed"
+                        );
                     }
+                } else {
+                    warn!(
+                        ip,
+                        skill = effective_id,
+                        "firewall block skill not found in registry"
+                    );
                 }
             }
 

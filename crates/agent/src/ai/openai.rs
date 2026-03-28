@@ -508,7 +508,19 @@ fn parse_decision(content: &str) -> Result<AiDecision> {
         // AI sometimes returns skill IDs instead of action enum names.
         // Map known skill patterns to the correct AiAction.
         a if a.starts_with("block-ip") || a.starts_with("block_ip_") => {
-            let ip = raw.target_ip.clone().unwrap_or_default();
+            let Some(ip) = raw.target_ip.clone().filter(|s| !s.is_empty()) else {
+                warn!("AI returned {a} with no target_ip - downgrading to ignore");
+                return Ok(AiDecision {
+                    action: AiAction::Ignore {
+                        reason: format!("{a} action had no target IP"),
+                    },
+                    confidence: raw.confidence.clamp(0.0, 1.0),
+                    auto_execute: false,
+                    reason: raw.reason,
+                    alternatives: raw.alternatives,
+                    estimated_threat: raw.estimated_threat,
+                });
+            };
             AiAction::BlockIp {
                 ip,
                 skill_id: raw.action.clone(),

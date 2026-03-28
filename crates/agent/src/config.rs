@@ -1233,7 +1233,13 @@ fn default_max_related_incidents() -> usize {
 }
 
 fn default_allowed_skills() -> Vec<String> {
-    vec!["block-ip-ufw".to_string(), "monitor-ip".to_string()]
+    vec![
+        "block-ip-ufw".to_string(),
+        "block-ip-iptables".to_string(),
+        "block-ip-nftables".to_string(),
+        "block-ip-pf".to_string(),
+        "monitor-ip".to_string(),
+    ]
 }
 
 fn default_honeypot_mode() -> String {

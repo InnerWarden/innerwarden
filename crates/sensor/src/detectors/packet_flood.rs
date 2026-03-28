@@ -63,6 +63,8 @@ pub struct PacketFloodDetector {
     rate_m2: f64,
     /// Connections in the current minute bucket
     current_minute_conns: u64,
+    /// Per-IP connection counts in the current minute bucket
+    current_minute_ips: HashMap<String, u64>,
     /// Start of the current minute bucket
     current_minute_start: Option<DateTime<Utc>>,
 
@@ -105,6 +107,7 @@ impl PacketFloodDetector {
             rate_mean: 0.0,
             rate_m2: 0.0,
             current_minute_conns: 0,
+            current_minute_ips: HashMap::new(),
             current_minute_start: None,
             active_patterns: HashMap::new(),
             alerted: HashMap::new(),
@@ -121,7 +124,8 @@ impl PacketFloodDetector {
 
         // Update connection rate baseline for any network-related event
         if is_network_event(event) {
-            self.update_rate(now);
+            let src_ip = extract_source_ip(event);
+            self.update_rate(now, src_ip.as_deref());
         }
 
         // --- SYN flood detection ---
@@ -303,18 +307,24 @@ impl PacketFloodDetector {
         incidents
     }
 
-    fn update_rate(&mut self, now: DateTime<Utc>) {
+    fn update_rate(&mut self, now: DateTime<Utc>, src_ip: Option<&str>) {
         let minute_start = match self.current_minute_start {
             Some(start) => start,
             None => {
                 self.current_minute_start = Some(now);
                 self.current_minute_conns = 1;
+                if let Some(ip) = src_ip {
+                    *self.current_minute_ips.entry(ip.to_string()).or_insert(0) += 1;
+                }
                 return;
             }
         };
 
         if now - minute_start < Duration::minutes(1) {
             self.current_minute_conns += 1;
+            if let Some(ip) = src_ip {
+                *self.current_minute_ips.entry(ip.to_string()).or_insert(0) += 1;
+            }
         } else {
             // Bucket completed: update running stats with Welford's algorithm
             let value = self.current_minute_conns as f64;
@@ -327,10 +337,14 @@ impl PacketFloodDetector {
             // Start new bucket
             self.current_minute_start = Some(now);
             self.current_minute_conns = 1;
+            self.current_minute_ips.clear();
+            if let Some(ip) = src_ip {
+                self.current_minute_ips.insert(ip.to_string(), 1);
+            }
         }
     }
 
-    fn check_rate_anomaly(&mut self, event: &Event, now: DateTime<Utc>) -> Option<Incident> {
+    fn check_rate_anomaly(&mut self, _event: &Event, now: DateTime<Utc>) -> Option<Incident> {
         // Need at least 5 minutes of baseline data
         if self.rate_count < 5 {
             return None;
@@ -346,9 +360,16 @@ impl PacketFloodDetector {
             let alert_key = "packet_flood:rate_anomaly".to_string();
             if !self.is_in_cooldown(&alert_key, now) {
                 self.alerted.insert(alert_key, now);
-                let src_ip = extract_source_ip(event).unwrap_or_default();
+                // Use the top contributing IP from the current minute bucket
+                // instead of the triggering event's IP (which may not have one).
+                let top_ip = self
+                    .current_minute_ips
+                    .iter()
+                    .max_by_key(|(_, count)| *count)
+                    .map(|(ip, _)| ip.clone())
+                    .unwrap_or_default();
                 return Some(self.build_incident(
-                    &src_ip,
+                    &top_ip,
                     now,
                     "rate_anomaly",
                     Severity::High,
