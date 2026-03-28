@@ -8157,17 +8157,37 @@ const INDEX_HTML: &str = r##"<!doctype html>
     const confColor = (v) => v >= 0.85 ? 'good' : v >= 0.7 ? 'warn' : 'bad';
     const healthVal = (v) => v ? '<span class="health-ok">✓ OK</span>' : '<span class="health-fail">✗ Fail</span>';
 
-    // KPI row
+    // Hero KPIs — the 3 numbers that matter most
+    const hcRecent = rw.high_critical_incidents ?? 0;
+    const blocksToday = ai.block_ip_count ?? 0;
+    const totalIncidents = ds.total_incidents ?? 0;
     let html = `<div class="report-section">
-      <div class="report-section-title">Summary - ${esc(r.analyzed_date)}</div>
-      <div class="report-kpi-row">
+      <div class="report-section-title">Summary &mdash; ${esc(r.analyzed_date)}</div>
+      <div class="report-kpi-row" style="grid-template-columns:repeat(3,1fr)">
+        <div class="report-kpi" style="text-align:center">
+          <div class="report-kpi-label">Incidents Today</div>
+          <div class="report-kpi-value" style="font-size:1.8rem">${totalIncidents}</div>
+          <div style="font-size:0.62rem;color:var(--muted)">${ds.total_events ?? 0} events analyzed</div>
+        </div>
+        <div class="report-kpi" style="text-align:center">
+          <div class="report-kpi-label">Auto-Blocked</div>
+          <div class="report-kpi-value" style="font-size:1.8rem;color:var(--ok)">${blocksToday}</div>
+          <div style="font-size:0.62rem;color:var(--muted)">${((ai.average_confidence ?? 0) * 100).toFixed(0)}% avg AI confidence</div>
+        </div>
+        <div class="report-kpi" style="text-align:center">
+          <div class="report-kpi-label">High/Critical (6h)</div>
+          <div class="report-kpi-value ${hcRecent > 0 ? 'bad' : 'good'}" style="font-size:1.8rem">${hcRecent}</div>
+          <div style="font-size:0.62rem;color:var(--muted)">${rw.incidents ?? 0} total last 6 hours</div>
+        </div>
+      </div>
+      <div style="margin-top:8px;cursor:pointer;font-size:0.65rem;color:var(--muted)" onclick="var el=document.getElementById('reportDetailKpis');el.style.display=el.style.display==='none'?'grid':'none'">
+        All metrics &#9662;
+      </div>
+      <div id="reportDetailKpis" class="report-kpi-row" style="display:none;margin-top:8px">
         <div class="report-kpi"><div class="report-kpi-label">Events</div><div class="report-kpi-value">${ds.total_events ?? 0}</div></div>
-        <div class="report-kpi"><div class="report-kpi-label">Incidents</div><div class="report-kpi-value">${ds.total_incidents ?? 0}</div></div>
         <div class="report-kpi"><div class="report-kpi-label">Decisions</div><div class="report-kpi-value">${ai.total_decisions ?? 0}</div></div>
-        <div class="report-kpi"><div class="report-kpi-label">Blocks</div><div class="report-kpi-value">${ai.block_ip_count ?? 0}</div></div>
         <div class="report-kpi"><div class="report-kpi-label">Avg Conf</div><div class="report-kpi-value ${confColor(ai.average_confidence ?? 0)}">${((ai.average_confidence ?? 0) * 100).toFixed(0)}%</div></div>
         <div class="report-kpi"><div class="report-kpi-label">Last 6h Incid.</div><div class="report-kpi-value">${rw.incidents ?? 0}</div></div>
-        <div class="report-kpi"><div class="report-kpi-label">High/Crit 6h</div><div class="report-kpi-value ${(rw.high_critical_incidents ?? 0) > 0 ? 'bad' : 'good'}">${rw.high_critical_incidents ?? 0}</div></div>
       </div>
     </div>`;
 
@@ -9710,6 +9730,41 @@ const INDEX_HTML: &str = r##"<!doctype html>
           ${actionBtns}
         </div>
         ${renderVerdictCard(j)}
+        ${(function() {
+          // TL;DR — auto-generated narrative from key entries
+          const incidents = j.entries.filter(e => e.kind === 'incident');
+          const decisions = j.entries.filter(e => e.kind === 'decision');
+          const blocks = decisions.filter(e => (e.action||'').includes('block'));
+          if (incidents.length === 0 && decisions.length === 0) return '';
+
+          const topIncident = incidents.length > 0 ? incidents[0] : null;
+          const topDetector = topIncident ? (topIncident.detector || 'unknown') : '';
+          const wasBlocked = blocks.length > 0;
+
+          let narrative = '';
+          if (topIncident) {
+            narrative += '<strong>' + esc(topDetector.replace(/_/g, ' ')) + '</strong> detected';
+            if (incidents.length > 1) narrative += ' (' + incidents.length + ' incidents total)';
+            narrative += '. ';
+          }
+          if (wasBlocked) {
+            narrative += 'AI decided to <strong style="color:var(--ok)">block</strong>';
+            if (blocks.length > 1) narrative += ' (' + blocks.length + ' actions)';
+            narrative += '. ';
+          } else if (decisions.length > 0) {
+            const action = decisions[0].action || 'monitor';
+            narrative += 'AI decided to <strong>' + esc(action) + '</strong>. ';
+          }
+          if (j.outcome === 'blocked') {
+            narrative += 'Threat <strong style="color:var(--ok)">contained</strong>.';
+          } else if (j.outcome === 'active') {
+            narrative += 'Threat is <strong style="color:var(--danger)">still active</strong>.';
+          }
+
+          return '<div style="padding:12px 16px;margin-bottom:12px;border-radius:10px;background:rgba(120,229,255,0.04);border:1px solid rgba(120,229,255,0.12)">' +
+            '<div style="font-size:0.68rem;font-weight:700;color:var(--accent);letter-spacing:0.05em;text-transform:uppercase;margin-bottom:4px">TL;DR</div>' +
+            '<div style="font-size:0.8rem;color:var(--text);line-height:1.5">' + narrative + '</div></div>';
+        })()}
         <div class="guided-grid">
           <section class="guided-card">
             <div class="guided-title">Investigation Summary</div>
