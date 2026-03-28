@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Inner Warden Mascot</title>
+<style>
+  :root { --cyan: #78e5ff; --red: #f43f5e; --bg: #050810; --muted: #8b9db8; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: #e0e7ff;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+    min-height: 100vh; padding: 40px 20px; gap: 32px;
+  }
+  .brand h1 { font-size: 1.2rem; letter-spacing: 0.15em; font-weight: 800; text-transform: uppercase; color: var(--cyan); text-align: center; }
+  .brand p { font-size: 0.68rem; color: var(--muted); text-align: center; margin-top: 4px; }
+
+  .mascots { display: flex; gap: 50px; align-items: center; justify-content: center; flex-wrap: wrap; }
+  .mascot { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .mascot-name { font-size: 0.78rem; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; }
+  .mascot-sub { font-size: 0.58rem; color: var(--muted); }
+
+  /* ── PHANTOM ── */
+  @keyframes p-float {
+    0%, 100% { transform: translateY(0) perspective(800px) rotateX(0deg); }
+    50% { transform: translateY(-8px) perspective(800px) rotateX(2deg); }
+  }
+  .p-anim {
+    animation: p-float 3.5s ease-in-out infinite;
+    filter: drop-shadow(0 8px 16px rgba(45,26,96,0.5)) drop-shadow(0 2px 8px rgba(120,229,255,0.15));
+    transition: filter 0.3s;
+  }
+  .p-anim:hover {
+    filter: drop-shadow(0 12px 24px rgba(45,26,96,0.6)) drop-shadow(0 4px 16px rgba(120,229,255,0.3));
+  }
+
+  /* ── NIGHTMARE ── */
+  @keyframes n-pulse {
+    0%, 100% { transform: scale(1) perspective(800px) rotateX(0deg); }
+    25% { transform: scale(1.02) perspective(800px) rotateX(-1deg); }
+    50% { transform: scale(1.04) perspective(800px) rotateX(1deg); }
+    75% { transform: scale(1.02) perspective(800px) rotateX(-0.5deg); }
+  }
+  @keyframes n-glow {
+    0%, 100% { filter: drop-shadow(0 8px 16px rgba(139,26,26,0.5)) drop-shadow(0 2px 10px rgba(244,63,94,0.15)); }
+    50% { filter: drop-shadow(0 12px 28px rgba(139,26,26,0.6)) drop-shadow(0 4px 20px rgba(244,63,94,0.35)) drop-shadow(0 0px 40px rgba(251,191,36,0.1)); }
+  }
+  .n-anim {
+    animation: n-pulse 2.5s ease-in-out infinite, n-glow 2s ease-in-out infinite;
+  }
+
+  /* ── Sizes ── */
+  .sizes { display: flex; gap: 16px; align-items: flex-end; justify-content: center; }
+  .sizes .item { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .sizes .lbl { font-size: 0.5rem; color: var(--muted); }
+  .divider { width: 1px; height: 36px; background: rgba(255,255,255,0.06); align-self: center; margin: 0 6px; }
+
+  /* ── Transform ── */
+  .transform { text-align: center; }
+  .transform-label { font-size: 0.62rem; color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 8px; }
+  .transform-box { position: relative; width: 200px; height: 210px; margin: 0 auto; cursor: pointer; }
+  .transform-box > div { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; transition: opacity 0.6s ease; }
+</style>
+</head>
+<body>
+
+<div class="brand">
+  <h1>Inner Warden</h1>
+  <p>Phantom &amp; Nightmare</p>
+</div>
+
+<div class="mascots">
+  <div class="mascot">
+    <div class="p-anim"><img src="phantom.svg" width="200" height="200" alt="Phantom" /></div>
+    <div class="mascot-name" style="color:var(--cyan)">Phantom</div>
+    <div class="mascot-sub">guardian mode</div>
+  </div>
+  <div class="mascot">
+    <div class="n-anim"><img src="nightmare.svg" width="200" height="200" alt="Nightmare" /></div>
+    <div class="mascot-name" style="color:var(--red)">Nightmare</div>
+    <div class="mascot-sub">attack mode</div>
+  </div>
+</div>
+
+<div class="transform">
+  <div class="transform-label">hover to transform</div>
+  <div class="transform-box" id="mc">
+    <div id="mp"><div class="p-anim"><img src="phantom.svg" width="180" height="180" /></div></div>
+    <div id="mn" style="opacity:0"><div class="n-anim"><img src="nightmare.svg" width="180" height="180" /></div></div>
+  </div>
+</div>
+
+<div class="sizes">
+  <div class="item"><div class="p-anim"><img src="phantom.svg" width="64" height="64" /></div><div class="lbl">64px</div></div>
+  <div class="item"><div class="p-anim"><img src="phantom.svg" width="32" height="32" /></div><div class="lbl">32px</div></div>
+  <div class="divider"></div>
+  <div class="item"><div class="n-anim"><img src="nightmare.svg" width="64" height="64" /></div><div class="lbl">64px</div></div>
+  <div class="item"><div class="n-anim"><img src="nightmare.svg" width="32" height="32" /></div><div class="lbl">32px</div></div>
+</div>
+
+<script>
+  const c=document.getElementById('mc');
+  c.addEventListener('mouseenter',()=>{document.getElementById('mp').style.opacity='0';document.getElementById('mn').style.opacity='1';});
+  c.addEventListener('mouseleave',()=>{document.getElementById('mp').style.opacity='1';document.getElementById('mn').style.opacity='0';});
+</script>
+
+</body>
+</html>

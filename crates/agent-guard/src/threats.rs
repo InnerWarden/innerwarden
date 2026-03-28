@@ -36,20 +36,76 @@ pub struct CommandPattern {
 }
 
 pub const DANGEROUS_COMMANDS: &[CommandPattern] = &[
-    CommandPattern { pattern: r"curl.*\|.*(?:sh|bash)", description: "pipe to shell", block: true },
-    CommandPattern { pattern: r"wget.*\|.*(?:sh|bash)", description: "pipe to shell", block: true },
-    CommandPattern { pattern: r"(?i)eval\s*\(", description: "eval()", block: true },
-    CommandPattern { pattern: r"(?i)exec\s*\(", description: "exec()", block: true },
-    CommandPattern { pattern: r"os\.system\s*\(", description: "os.system()", block: true },
-    CommandPattern { pattern: r"subprocess\.call.*shell.*True", description: "subprocess shell", block: true },
-    CommandPattern { pattern: r"child_process\.exec\s*\(", description: "child_process.exec()", block: true },
-    CommandPattern { pattern: r"rm\s+-rf\s+/", description: "rm -rf /", block: true },
-    CommandPattern { pattern: r"(?i)DROP\s+(?:TABLE|DATABASE)", description: "SQL drop", block: true },
-    CommandPattern { pattern: r"curl.*(?:-d|--data).*@", description: "curl POST file", block: true },
-    CommandPattern { pattern: r"chmod\s+777", description: "world-writable", block: false },
-    CommandPattern { pattern: r"chmod\s+u\+s", description: "setuid", block: true },
-    CommandPattern { pattern: r"crontab\s+-", description: "crontab edit", block: false },
-    CommandPattern { pattern: r"pickle\.load", description: "pickle deserialization", block: false },
+    CommandPattern {
+        pattern: r"curl.*\|.*(?:sh|bash)",
+        description: "pipe to shell",
+        block: true,
+    },
+    CommandPattern {
+        pattern: r"wget.*\|.*(?:sh|bash)",
+        description: "pipe to shell",
+        block: true,
+    },
+    CommandPattern {
+        pattern: r"(?i)eval\s*\(",
+        description: "eval()",
+        block: true,
+    },
+    CommandPattern {
+        pattern: r"(?i)exec\s*\(",
+        description: "exec()",
+        block: true,
+    },
+    CommandPattern {
+        pattern: r"os\.system\s*\(",
+        description: "os.system()",
+        block: true,
+    },
+    CommandPattern {
+        pattern: r"subprocess\.call.*shell.*True",
+        description: "subprocess shell",
+        block: true,
+    },
+    CommandPattern {
+        pattern: r"child_process\.exec\s*\(",
+        description: "child_process.exec()",
+        block: true,
+    },
+    CommandPattern {
+        pattern: r"rm\s+-rf\s+/",
+        description: "rm -rf /",
+        block: true,
+    },
+    CommandPattern {
+        pattern: r"(?i)DROP\s+(?:TABLE|DATABASE)",
+        description: "SQL drop",
+        block: true,
+    },
+    CommandPattern {
+        pattern: r"curl.*(?:-d|--data).*@",
+        description: "curl POST file",
+        block: true,
+    },
+    CommandPattern {
+        pattern: r"chmod\s+777",
+        description: "world-writable",
+        block: false,
+    },
+    CommandPattern {
+        pattern: r"chmod\s+u\+s",
+        description: "setuid",
+        block: true,
+    },
+    CommandPattern {
+        pattern: r"crontab\s+-",
+        description: "crontab edit",
+        block: false,
+    },
+    CommandPattern {
+        pattern: r"pickle\.load",
+        description: "pickle deserialization",
+        block: false,
+    },
 ];
 
 /// API key patterns for credential exposure detection.
@@ -65,21 +121,39 @@ pub const API_KEY_PATTERNS: &[(&str, &str)] = &[
 
 /// Sensitive file paths agents should not access.
 pub const SENSITIVE_PATHS: &[&str] = &[
-    ".ssh/", ".aws/", ".gnupg/", ".kube/", ".azure/", ".gcloud/",
-    ".docker/config.json", ".git-credentials", ".npmrc", ".pypirc",
-    ".env", ".pem", ".key", ".pfx",
+    ".ssh/",
+    ".aws/",
+    ".gnupg/",
+    ".kube/",
+    ".azure/",
+    ".gcloud/",
+    ".docker/config.json",
+    ".git-credentials",
+    ".npmrc",
+    ".pypirc",
+    ".env",
+    ".pem",
+    ".key",
+    ".pfx",
 ];
 
 /// Supply chain IOC indicators.
 pub const SUPPLY_CHAIN_IOCS: &[&str] = &[
-    "webhook.site", "LD_PRELOAD", "DYLD_INSERT",
-    "NODE_OPTIONS=--require", "reverse.shell", "reverse_shell",
+    "webhook.site",
+    "LD_PRELOAD",
+    "DYLD_INSERT",
+    "NODE_OPTIONS=--require",
+    "reverse.shell",
+    "reverse_shell",
 ];
 
 /// Check content for injection patterns. Returns first match.
 pub fn check_injection(content: &str) -> Option<&'static str> {
     let lower = content.to_lowercase();
-    INJECTION_PATTERNS.iter().find(|p| lower.contains(*p)).copied()
+    INJECTION_PATTERNS
+        .iter()
+        .find(|p| lower.contains(*p))
+        .copied()
 }
 
 /// Check content for credential exposure. Returns description of match.
@@ -108,7 +182,10 @@ pub fn check_command(content: &str) -> Option<(&'static str, bool)> {
 
 /// Check for sensitive file access.
 pub fn check_sensitive_path(content: &str) -> Option<&'static str> {
-    SENSITIVE_PATHS.iter().find(|p| content.contains(*p)).copied()
+    SENSITIVE_PATHS
+        .iter()
+        .find(|p| content.contains(*p))
+        .copied()
 }
 
 #[cfg(test)]

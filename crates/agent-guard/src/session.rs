@@ -48,7 +48,11 @@ impl SessionTracker {
         if self.call_times.len() as u32 > MAX_CALLS_PER_MINUTE {
             return Some(Alert {
                 layer: Layer::Warn,
-                reason: format!("{}/min exceeds limit ({})", self.call_times.len(), MAX_CALLS_PER_MINUTE),
+                reason: format!(
+                    "{}/min exceeds limit ({})",
+                    self.call_times.len(),
+                    MAX_CALLS_PER_MINUTE
+                ),
             });
         }
         None
@@ -88,9 +92,11 @@ impl SessionTracker {
         if self.read_files.is_empty() {
             return None;
         }
-        let is_outbound = ["send", "post", "fetch", "request", "webhook", "email", "upload"]
-            .iter()
-            .any(|k| tool_name.contains(k));
+        let is_outbound = [
+            "send", "post", "fetch", "request", "webhook", "email", "upload",
+        ]
+        .iter()
+        .any(|k| tool_name.contains(k));
         if !is_outbound {
             return None;
         }
@@ -111,7 +117,10 @@ impl SessionTracker {
         if !recent.is_empty() {
             return Some(Alert {
                 layer: Layer::Warn,
-                reason: format!("outbound '{tool_name}' after reading: {}", recent.join(", ")),
+                reason: format!(
+                    "outbound '{tool_name}' after reading: {}",
+                    recent.join(", ")
+                ),
             });
         }
         None

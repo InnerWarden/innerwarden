@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::{info, warn};
 
-use crate::signatures::{AgentIndex, AgentSignature, IntegrationLevel};
+use crate::signatures::{Kind, SignatureIndex};
 
 /// A detected AI agent running on the server.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -23,7 +23,7 @@ pub struct DetectedAgent {
 }
 
 /// Scan running processes for known AI agents.
-pub fn scan_processes(index: &AgentIndex) -> Vec<DetectedAgent> {
+pub fn scan_processes(index: &SignatureIndex) -> Vec<DetectedAgent> {
     let mut found: HashMap<String, DetectedAgent> = HashMap::new();
 
     let proc = Path::new("/proc");
@@ -60,17 +60,14 @@ pub fn scan_processes(index: &AgentIndex) -> Vec<DetectedAgent> {
             Err(_) => continue,
         };
 
-        if let Some(agent) = index.identify(&comm) {
-            let key = agent.name.to_string();
+        if let Some(sig) = index.identify(&comm) {
+            let key = sig.name.to_string();
             found.entry(key).or_insert_with(|| DetectedAgent {
-                name: agent.name.to_string(),
-                vendor: agent.vendor.to_string(),
+                name: sig.name.to_string(),
+                vendor: sig.vendor.to_string(),
                 pid,
                 comm: comm.clone(),
-                integration: match agent.integration {
-                    IntegrationLevel::Official => "official".to_string(),
-                    IntegrationLevel::Monitored => "monitored".to_string(),
-                },
+                integration: format!("{:?}", sig.integration).to_lowercase(),
                 mcp_configs: vec![],
             });
         }
@@ -140,19 +137,18 @@ pub fn scan_mcp_configs() -> Vec<PathBuf> {
 }
 
 /// Full detection: scan processes + MCP configs, match them together.
-pub fn detect_all(index: &AgentIndex) -> Vec<DetectedAgent> {
+pub fn detect_all(index: &SignatureIndex) -> Vec<DetectedAgent> {
     let mut agents = scan_processes(index);
     let configs = scan_mcp_configs();
 
     // Associate MCP configs with detected agents
     for agent in &mut agents {
-        if let Some(sig) = index.identify(&agent.comm) {
-            for mcp_path in sig.mcp_config_paths {
-                for config in &configs {
-                    if config.to_string_lossy().contains(mcp_path) {
-                        agent.mcp_configs.push(config.clone());
-                    }
-                }
+        // MCP configs are associated by presence in user home dirs
+        for config in &configs {
+            let config_str = config.to_string_lossy().to_lowercase();
+            let agent_lower = agent.name.to_lowercase();
+            if config_str.contains(&agent_lower) {
+                agent.mcp_configs.push(config.clone());
             }
         }
     }
@@ -187,7 +183,7 @@ mod tests {
 
     #[test]
     fn detect_all_returns_vec() {
-        let index = AgentIndex::new();
+        let index = SignatureIndex::new();
         let agents = detect_all(&index);
         assert!(agents.len() >= 0);
     }

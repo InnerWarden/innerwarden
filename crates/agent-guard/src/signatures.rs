@@ -1,262 +1,254 @@
-//! AI agent process signatures for auto-detection.
+//! AI agent and tool signatures for auto-detection.
+//!
+//! Distinction:
+//! - **Agent**: autonomous, persistent memory, runs 24/7 (OpenClaw, ZeroClaw)
+//!   → installable via `innerwarden agent add`
+//! - **Tool**: CLI/editor, no persistent memory, runs per-task (Claude Code, Aider)
+//!   → auto-detected and monitored, not installed by us
 
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
-pub enum AgentCategory {
-    CodingAssistant,
-    CliAgent,
-    Autonomous,
-    DesktopApp,
-    Framework,
-    LocalLlm,
-    BrowserAgent,
-    DevSecOps,
+pub enum Kind {
+    /// Autonomous agent with persistent memory — installable via `innerwarden agent add`
+    Agent,
+    /// CLI tool / coding assistant — auto-detected, monitored
+    Tool,
+    /// LLM runtime — auto-detected, API monitored
+    Runtime,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum IntegrationLevel {
-    /// Tested, validated, MCP auto-wrap, command validation
+    /// Tested, validated, full integration (MCP wrap, command validation)
     Official,
     /// eBPF monitoring only (process, file, network)
     Monitored,
 }
 
-pub struct AgentSignature {
+pub struct Signature {
     pub name: &'static str,
     pub vendor: &'static str,
-    pub category: AgentCategory,
+    pub kind: Kind,
     pub integration: IntegrationLevel,
     pub process_names: &'static [&'static str],
-    pub mcp_config_paths: &'static [&'static str],
+    pub install_cmd: Option<&'static str>,
 }
 
-pub static KNOWN_AGENTS: &[AgentSignature] = &[
-    // ── Official integrations ──────────────────────────────────
-    AgentSignature {
+pub static KNOWN: &[Signature] = &[
+    // ═══════════════════════════════════════════════════════════
+    // AGENTS — autonomous, persistent memory, `innerwarden agent add`
+    // ═══════════════════════════════════════════════════════════
+    Signature {
+        name: "OpenClaw",
+        vendor: "Peter Steinberger",
+        kind: Kind::Agent,
+        integration: IntegrationLevel::Official,
+        process_names: &["openclaw", "moltbot", "clawdbot", "molty"],
+        install_cmd: Some("npm install -g @anthropic-ai/openclaw"),
+    },
+    Signature {
+        name: "ZeroClaw",
+        vendor: "ZeroClaw Labs",
+        kind: Kind::Agent,
+        integration: IntegrationLevel::Official,
+        process_names: &["zeroclaw", "zeroclaw-agent"],
+        install_cmd: Some("cargo install zeroclaw"),
+    },
+    // ═══════════════════════════════════════════════════════════
+    // TOOLS — CLI / coding assistants, auto-detected
+    // ═══════════════════════════════════════════════════════════
+    Signature {
         name: "Claude Code",
         vendor: "Anthropic",
-        category: AgentCategory::CliAgent,
+        kind: Kind::Tool,
         integration: IntegrationLevel::Official,
         process_names: &["claude", "claude-code"],
-        mcp_config_paths: &[".claude/.mcp.json", ".claude/mcp.json"],
+        install_cmd: None,
     },
-    AgentSignature {
-        name: "OpenClaw",
-        vendor: "Community",
-        category: AgentCategory::Autonomous,
-        integration: IntegrationLevel::Official,
-        process_names: &["openclaw", "moltbot", "clawdbot"],
-        mcp_config_paths: &[".openclaw/mcp.json"],
-    },
-    AgentSignature {
-        name: "Aider",
-        vendor: "Aider-AI",
-        category: AgentCategory::CliAgent,
-        integration: IntegrationLevel::Official,
-        process_names: &["aider"],
-        mcp_config_paths: &[".config/aider/mcp.json"],
-    },
-    AgentSignature {
-        name: "Goose",
-        vendor: "Block",
-        category: AgentCategory::CliAgent,
-        integration: IntegrationLevel::Official,
-        process_names: &["goose"],
-        mcp_config_paths: &[".config/goose/mcp.json"],
-    },
-    AgentSignature {
+    Signature {
         name: "Codex CLI",
         vendor: "OpenAI",
-        category: AgentCategory::CliAgent,
+        kind: Kind::Tool,
         integration: IntegrationLevel::Official,
         process_names: &["codex", "openai-codex"],
-        mcp_config_paths: &[".codex/mcp.json"],
+        install_cmd: None,
     },
-    AgentSignature {
+    Signature {
         name: "Gemini CLI",
         vendor: "Google",
-        category: AgentCategory::CliAgent,
+        kind: Kind::Tool,
         integration: IntegrationLevel::Official,
         process_names: &["gemini", "gemini-cli"],
-        mcp_config_paths: &[".gemini/mcp.json"],
+        install_cmd: None,
     },
-    AgentSignature {
+    Signature {
+        name: "Aider",
+        vendor: "Aider-AI",
+        kind: Kind::Tool,
+        integration: IntegrationLevel::Official,
+        process_names: &["aider"],
+        install_cmd: None,
+    },
+    Signature {
+        name: "Goose",
+        vendor: "Block",
+        kind: Kind::Tool,
+        integration: IntegrationLevel::Official,
+        process_names: &["goose"],
+        install_cmd: None,
+    },
+    Signature {
         name: "Cursor",
         vendor: "Anysphere",
-        category: AgentCategory::CodingAssistant,
+        kind: Kind::Tool,
         integration: IntegrationLevel::Official,
         process_names: &["cursor", "Cursor"],
-        mcp_config_paths: &[".cursor/mcp.json"],
+        install_cmd: None,
     },
-    AgentSignature {
-        name: "CrewAI",
-        vendor: "CrewAI",
-        category: AgentCategory::Framework,
-        integration: IntegrationLevel::Official,
-        process_names: &["crewai"],
-        mcp_config_paths: &[],
-    },
-    AgentSignature {
-        name: "LangChain",
-        vendor: "LangChain",
-        category: AgentCategory::Framework,
-        integration: IntegrationLevel::Official,
-        process_names: &["langchain", "langserve", "langgraph"],
-        mcp_config_paths: &[],
-    },
-    AgentSignature {
-        name: "Ollama",
-        vendor: "Ollama",
-        category: AgentCategory::LocalLlm,
-        integration: IntegrationLevel::Official,
-        process_names: &["ollama", "ollama_llama_server"],
-        mcp_config_paths: &[],
-    },
-    // ── Monitored (eBPF only) ──────────────────────────────────
-    AgentSignature {
+    Signature {
         name: "Windsurf",
         vendor: "Codeium",
-        category: AgentCategory::CodingAssistant,
+        kind: Kind::Tool,
         integration: IntegrationLevel::Monitored,
         process_names: &["windsurf", "Windsurf"],
-        mcp_config_paths: &[],
+        install_cmd: None,
     },
-    AgentSignature {
+    Signature {
+        name: "Cline",
+        vendor: "Community",
+        kind: Kind::Tool,
+        integration: IntegrationLevel::Monitored,
+        process_names: &["cline"],
+        install_cmd: None,
+    },
+    Signature {
         name: "GitHub Copilot",
         vendor: "GitHub",
-        category: AgentCategory::CodingAssistant,
+        kind: Kind::Tool,
         integration: IntegrationLevel::Monitored,
         process_names: &["copilot-agent", "copilot", "copilot-language-server"],
-        mcp_config_paths: &[],
+        install_cmd: None,
     },
-    AgentSignature {
+    Signature {
         name: "Devin",
         vendor: "Cognition",
-        category: AgentCategory::Autonomous,
+        kind: Kind::Tool,
         integration: IntegrationLevel::Monitored,
         process_names: &["devin", "devin-agent"],
-        mcp_config_paths: &[],
+        install_cmd: None,
     },
-    AgentSignature {
+    Signature {
         name: "OpenHands",
         vendor: "All Hands AI",
-        category: AgentCategory::Autonomous,
+        kind: Kind::Tool,
         integration: IntegrationLevel::Monitored,
         process_names: &["openhands", "opendevin"],
-        mcp_config_paths: &[],
+        install_cmd: None,
     },
-    AgentSignature {
+    Signature {
         name: "SWE-agent",
         vendor: "Princeton NLP",
-        category: AgentCategory::Autonomous,
+        kind: Kind::Tool,
         integration: IntegrationLevel::Monitored,
         process_names: &["swe-agent", "sweagent"],
-        mcp_config_paths: &[],
+        install_cmd: None,
     },
-    AgentSignature {
+    Signature {
         name: "AutoGPT",
         vendor: "Significant Gravitas",
-        category: AgentCategory::Autonomous,
+        kind: Kind::Tool,
         integration: IntegrationLevel::Monitored,
         process_names: &["autogpt", "auto-gpt"],
-        mcp_config_paths: &[],
+        install_cmd: None,
     },
-    AgentSignature {
+    Signature {
         name: "MetaGPT",
         vendor: "DeepWisdom",
-        category: AgentCategory::Autonomous,
+        kind: Kind::Tool,
         integration: IntegrationLevel::Monitored,
         process_names: &["metagpt"],
-        mcp_config_paths: &[],
+        install_cmd: None,
     },
-    AgentSignature {
-        name: "AutoGen",
-        vendor: "Microsoft",
-        category: AgentCategory::Framework,
+    // ═══════════════════════════════════════════════════════════
+    // RUNTIMES — LLM servers, API monitored
+    // ═══════════════════════════════════════════════════════════
+    Signature {
+        name: "Ollama",
+        vendor: "Ollama",
+        kind: Kind::Runtime,
         integration: IntegrationLevel::Monitored,
-        process_names: &["autogen"],
-        mcp_config_paths: &[],
+        process_names: &["ollama", "ollama_llama_server"],
+        install_cmd: None,
     },
-    AgentSignature {
+    Signature {
         name: "vLLM",
         vendor: "vLLM Project",
-        category: AgentCategory::LocalLlm,
+        kind: Kind::Runtime,
         integration: IntegrationLevel::Monitored,
         process_names: &["vllm", "vllm-server"],
-        mcp_config_paths: &[],
+        install_cmd: None,
     },
-    AgentSignature {
+    Signature {
         name: "llama.cpp",
         vendor: "ggerganov",
-        category: AgentCategory::LocalLlm,
+        kind: Kind::Runtime,
         integration: IntegrationLevel::Monitored,
         process_names: &["llama-server", "llama-cli"],
-        mcp_config_paths: &[],
+        install_cmd: None,
     },
-    AgentSignature {
-        name: "n8n",
-        vendor: "n8n.io",
-        category: AgentCategory::Framework,
+    Signature {
+        name: "LM Studio",
+        vendor: "LM Studio",
+        kind: Kind::Runtime,
         integration: IntegrationLevel::Monitored,
-        process_names: &["n8n"],
-        mcp_config_paths: &[],
-    },
-    AgentSignature {
-        name: "Dify",
-        vendor: "LangGenius",
-        category: AgentCategory::Framework,
-        integration: IntegrationLevel::Monitored,
-        process_names: &["dify"],
-        mcp_config_paths: &[],
+        process_names: &["lm-studio", "lms"],
+        install_cmd: None,
     },
 ];
 
-pub struct AgentIndex {
+pub struct SignatureIndex {
     by_process: HashMap<String, usize>,
 }
 
-impl AgentIndex {
+impl SignatureIndex {
     pub fn new() -> Self {
         let mut by_process = HashMap::new();
-        for (i, agent) in KNOWN_AGENTS.iter().enumerate() {
-            for name in agent.process_names {
+        for (i, sig) in KNOWN.iter().enumerate() {
+            for name in sig.process_names {
                 by_process.insert(name.to_lowercase(), i);
             }
         }
         Self { by_process }
     }
 
-    pub fn identify(&self, process_name: &str) -> Option<&'static AgentSignature> {
+    pub fn identify(&self, process_name: &str) -> Option<&'static Signature> {
         let lower = process_name.to_lowercase();
         if let Some(&idx) = self.by_process.get(&lower) {
-            return Some(&KNOWN_AGENTS[idx]);
+            return Some(&KNOWN[idx]);
         }
         for (key, &idx) in &self.by_process {
             if lower.starts_with(key.as_str()) {
-                return Some(&KNOWN_AGENTS[idx]);
+                return Some(&KNOWN[idx]);
             }
         }
         None
     }
 
-    pub fn is_agent(&self, process_name: &str) -> bool {
+    pub fn is_known(&self, process_name: &str) -> bool {
         self.identify(process_name).is_some()
     }
 
-    pub fn official_count() -> usize {
-        KNOWN_AGENTS
+    /// Agents that can be installed via `innerwarden agent add`.
+    pub fn installable_agents() -> Vec<&'static Signature> {
+        KNOWN
             .iter()
-            .filter(|a| a.integration == IntegrationLevel::Official)
-            .count()
-    }
-
-    pub fn total_count() -> usize {
-        KNOWN_AGENTS.len()
+            .filter(|s| s.kind == Kind::Agent && s.install_cmd.is_some())
+            .collect()
     }
 }
 
-impl Default for AgentIndex {
+impl Default for SignatureIndex {
     fn default() -> Self {
         Self::new()
     }
@@ -267,30 +259,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn identifies_official_agents() {
-        let idx = AgentIndex::new();
-        let claude = idx.identify("claude").unwrap();
-        assert_eq!(claude.integration, IntegrationLevel::Official);
-        let openclaw = idx.identify("openclaw").unwrap();
-        assert_eq!(openclaw.integration, IntegrationLevel::Official);
+    fn identifies_agents() {
+        let idx = SignatureIndex::new();
+        let oc = idx.identify("openclaw").unwrap();
+        assert_eq!(oc.kind, Kind::Agent);
+        let zc = idx.identify("zeroclaw").unwrap();
+        assert_eq!(zc.kind, Kind::Agent);
     }
 
     #[test]
-    fn identifies_monitored_agents() {
-        let idx = AgentIndex::new();
-        let devin = idx.identify("devin").unwrap();
-        assert_eq!(devin.integration, IntegrationLevel::Monitored);
+    fn identifies_tools() {
+        let idx = SignatureIndex::new();
+        let cc = idx.identify("claude").unwrap();
+        assert_eq!(cc.kind, Kind::Tool);
     }
 
     #[test]
-    fn unknown_process_not_agent() {
-        let idx = AgentIndex::new();
-        assert!(!idx.is_agent("nginx"));
-        assert!(!idx.is_agent("postgres"));
+    fn identifies_runtimes() {
+        let idx = SignatureIndex::new();
+        let ol = idx.identify("ollama").unwrap();
+        assert_eq!(ol.kind, Kind::Runtime);
     }
 
     #[test]
-    fn official_count_at_least_10() {
-        assert!(AgentIndex::official_count() >= 10);
+    fn installable_agents_exist() {
+        let agents = SignatureIndex::installable_agents();
+        assert!(agents.len() >= 2);
+        assert!(agents.iter().any(|a| a.name == "OpenClaw"));
+        assert!(agents.iter().any(|a| a.name == "ZeroClaw"));
+    }
+
+    #[test]
+    fn unknown_not_found() {
+        let idx = SignatureIndex::new();
+        assert!(!idx.is_known("nginx"));
     }
 }
