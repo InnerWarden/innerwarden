@@ -1304,7 +1304,11 @@ async fn main() -> Result<()> {
                 Some(cfg.telegram.dashboard_url.clone())
             };
             match telegram::TelegramClient::new(token, chat_id, dashboard_url) {
-                Ok(c) => {
+                Ok(mut c) => {
+                    if cfg.telegram.dev_mode {
+                        c.dev_mode = true;
+                        info!("Telegram dev mode ON — FP review button on every notification");
+                    }
                     info!("Telegram client initialised (T.1 notifications enabled)");
                     Some(Arc::new(c))
                 }
