@@ -111,6 +111,7 @@ struct DetectorSet {
     ransomware: Option<RansomwareDetector>,
     credential_harvest: Option<CredentialHarvestDetector>,
     packet_flood: Option<PacketFloodDetector>,
+    sensitive_write: Option<detectors::sensitive_write::SensitiveWriteDetector>,
 }
 
 #[derive(Default)]
@@ -566,6 +567,10 @@ async fn main() -> Result<()> {
                 window_seconds: d.window_seconds,
                 cooldown_seconds: d.cooldown_seconds,
             })
+        }),
+        sensitive_write: Some({
+            info!("sensitive_write detector enabled (sensitive path protection)");
+            detectors::sensitive_write::SensitiveWriteDetector::new(&cfg.agent.host_id, 300)
         }),
     };
 
@@ -1281,6 +1286,12 @@ fn process_event(
 
     if let Some(ref mut det) = detectors.packet_flood {
         for incident in det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.sensitive_write {
+        if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }
     }

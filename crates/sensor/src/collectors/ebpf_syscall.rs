@@ -1287,6 +1287,35 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         &host,
                     ))
                 }
+                // FileWrite from LSM file_open hook (same layout as FileOpenEvent)
+                // Emitted when a non-allowlisted process writes to sensitive paths.
+                4 if data.len() >= 348 => {
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let cgroup_id = read_u64!(data, 16..24);
+                    let comm = bytes_to_string(&data[24..88]);
+                    let filename = bytes_to_string(&data[88..344]);
+                    let flags = read_u32!(data, 344..348);
+
+                    if comm.starts_with("innerwarden") {
+                        continue;
+                    }
+
+                    let ppid = resolve_ppid(pid);
+                    let container_id = resolve_container_id(pid);
+
+                    Some(file_open_to_event(
+                        pid,
+                        uid,
+                        ppid,
+                        cgroup_id,
+                        container_id.as_deref(),
+                        &comm,
+                        &filename,
+                        flags,
+                        &host,
+                    ))
+                }
                 // PrivEscEvent layout (#[repr(C)]):
                 //   kind(4) pid(4) tgid(4) old_uid(4) new_uid(4) _pad(4) cgroup_id(8) comm(64) ts_ns(8)
                 //   Offsets: 0  4  8  12  16  20  24  32..96

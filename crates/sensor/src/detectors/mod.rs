@@ -85,5 +85,7 @@ pub mod systemd_persistence;
 pub mod user_creation;
 pub mod web_shell;
 
+pub mod sensitive_write;
+
 // v0.6.0 detectors
 pub mod packet_flood;
