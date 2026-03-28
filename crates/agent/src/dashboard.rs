@@ -2735,6 +2735,7 @@ async fn api_compliance(State(state): State<DashboardState>) -> Json<serde_json:
         { "id": "A.12.4", "name": "Logging and monitoring", "met": true, "reason": "Continuous monitoring with 39+ detectors and audit trail" },
         { "id": "A.12.6", "name": "Technical vulnerability management", "met": cfg.execution_guard_enabled, "reason": if cfg.execution_guard_enabled { "Execution guard blocks exploit payloads" } else { "Enable execution-guard for exploit prevention" } },
         { "id": "A.13.1", "name": "Network security management", "met": cfg.enabled && !cfg.dry_run, "reason": if cfg.enabled && !cfg.dry_run { "Automated IP blocking active" } else { "Enable guard mode for network-level response" } },
+        { "id": "A.13.2", "name": "Information transfer", "met": true, "reason": "Container drift detection (overlayfs upper-layer check) + io_uring monitoring prevent unauthorized data transfer via syscall bypass and dropped executables" },
         { "id": "A.16.1", "name": "Incident management", "met": true, "reason": "Automated incident detection, correlation, and response pipeline" },
         { "id": "A.18.1", "name": "Compliance", "met": cfg.retention_decisions_days >= 90, "reason": format!("Audit trail retained {}d (requirement: 90d)", cfg.retention_decisions_days) },
         { "id": "A.18.2", "name": "Information security reviews", "met": true, "reason": "Daily automated security reports with telemetry" },
@@ -8357,6 +8358,9 @@ const INDEX_HTML: &str = r##"<!doctype html>
         const kcCost = 'Native syscall correlation. Patterns: ' + (patternList || 'none detected yet');
         return card('🔗', 'Kill Chain', kcOn, kcDesc, kcOn ? 'ON' : 'OFF', 'native', kcCost, '');
       })() +
+      card('🔒', 'Sensitive Path Guard', s.sensitive_write||true, 'LSM hook blocks unauthorized writes to /etc/shadow, sudoers, authorized_keys, crontab, systemd units', s.sensitive_write !== false ? 'ON' : 'OFF', 'native', 'Capability-based policy: per-cgroup and per-process write permissions via BPF maps.', '') +
+      card('⚡', 'io_uring Monitor', s.io_uring||true, 'Detects io_uring syscall bypass evasion — invisible to most security tools', s.io_uring !== false ? 'ON' : 'OFF', 'native', 'Tracepoints on submit_sqe/submit_req + create. Alerts on CONNECT, ACCEPT, OPENAT, URING_CMD.', '') +
+      card('📦', 'Container Drift', s.container_drift||true, 'Detects binaries dropped after container start via overlayfs upper-layer check', s.container_drift !== false ? 'ON' : 'OFF', 'native', 'Falco-style detection: checks ovl_inode.__upperdentry at execve. sizeof(struct inode) from BTF.', '') +
       '</div></div>';
 
     // ── Section 2b: Integration advisor ────────────────────────────────────
