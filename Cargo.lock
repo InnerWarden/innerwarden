@@ -1538,6 +1538,7 @@ dependencies = [
  "futures-core",
  "hkdf",
  "hmac",
+ "innerwarden-agent-guard",
  "innerwarden-mesh",
  "innerwarden_core",
  "p256",
@@ -1562,6 +1563,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "innerwarden-agent-guard"
+version = "0.5.3"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "innerwarden_core",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "innerwarden-ctl"
 version = "0.5.3"
 dependencies = [
@@ -1572,6 +1588,7 @@ dependencies = [
  "clap_complete",
  "digest 0.10.7",
  "ed25519-dalek",
+ "innerwarden-agent-guard",
  "innerwarden_core",
  "p256",
  "rand_core 0.6.4",

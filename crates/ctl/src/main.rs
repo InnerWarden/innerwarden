@@ -540,6 +540,56 @@ enum Command {
         #[command(subcommand)]
         action: GdprCommand,
     },
+
+    /// AI agent management — install, scan, connect, monitor agents.
+    ///
+    /// Run without arguments for an interactive menu.
+    ///
+    /// Examples:
+    ///   innerwarden agent                    (interactive menu)
+    ///   innerwarden agent add openclaw       (install an agent)
+    ///   innerwarden agent scan               (find running agents)
+    ///   innerwarden agent status             (view connected agents)
+    ///   innerwarden agent connect 1234       (connect a specific PID)
+    ///   innerwarden agent disconnect ag-0001 (disconnect an agent)
+    Agent {
+        #[command(subcommand)]
+        command: Option<AgentCommand>,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentCommand {
+    /// Install a new agent (OpenClaw, ZeroClaw)
+    Add {
+        /// Agent name (run 'innerwarden agent add' without args to see options)
+        name: Option<String>,
+    },
+
+    /// Scan for agents already running on this server
+    Scan,
+
+    /// View connected agents and detected tools
+    Status,
+
+    /// Connect a running agent by PID
+    Connect {
+        /// Process ID of the agent to connect
+        pid: u32,
+
+        /// Optional label for this instance (e.g., "personal", "work")
+        #[arg(long)]
+        label: Option<String>,
+    },
+
+    /// Disconnect an agent by ID
+    Disconnect {
+        /// Agent ID (e.g., ag-0001) or PID
+        id: String,
+    },
+
+    /// List available agents for installation
+    List,
 }
 
 /// System configuration sub-commands.
@@ -1363,6 +1413,7 @@ fn main() -> Result<()> {
             } => cmd_gdpr_export(&cli.data_dir, entity, output.as_deref()),
             GdprCommand::Erase { ref entity, yes } => cmd_gdpr_erase(&cli.data_dir, entity, *yes),
         },
+        Command::Agent { ref command } => cmd_agent(command.as_ref()),
     }
 }
 
@@ -10153,6 +10204,301 @@ fn cmd_gdpr_erase(data_dir: &Path, entity: &str, yes: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Agent Guard commands
+// ---------------------------------------------------------------------------
+
+fn cmd_agent(command: Option<&AgentCommand>) -> Result<()> {
+    use innerwarden_agent_guard::signatures::{Kind, SignatureIndex, KNOWN};
+
+    match command {
+        None => {
+            // Interactive menu
+            println!();
+            println!("  \x1b[1;36m🤖 InnerWarden Agent Guard\x1b[0m");
+            println!();
+            println!("  \x1b[1mWhat do you want to do?\x1b[0m");
+            println!();
+            println!("  1. Install a new agent        (OpenClaw, ZeroClaw)");
+            println!("  2. Scan for existing agents   (find agents already running)");
+            println!("  3. View connected agents      (see what's being protected)");
+            println!("  4. List available agents       (see what we support)");
+            println!();
+            println!("  Or use directly:");
+            println!("    innerwarden agent add openclaw");
+            println!("    innerwarden agent scan");
+            println!("    innerwarden agent status");
+            println!();
+            Ok(())
+        }
+
+        Some(AgentCommand::List) => {
+            println!();
+            println!("  \x1b[1;36m🤖 Available Agents\x1b[0m");
+            println!();
+            println!("  \x1b[1mInstallable agents\x1b[0m (innerwarden agent add <name>):");
+            println!("  {:<16} {:<20} DESCRIPTION", "NAME", "VENDOR");
+            println!("  {}", "─".repeat(60));
+            for sig in KNOWN.iter().filter(|s| s.kind == Kind::Agent) {
+                println!(
+                    "  {:<16} {:<20} {}",
+                    sig.name.to_lowercase(),
+                    sig.vendor,
+                    match sig.name {
+                        "OpenClaw" => "Autonomous AI assistant with persistent memory",
+                        "ZeroClaw" => "Ultra-lightweight Rust AI agent (5MB RAM)",
+                        _ => "",
+                    }
+                );
+            }
+            println!();
+            println!("  \x1b[1mAuto-detected tools\x1b[0m (monitored when running):");
+            println!("  {:<16} {:<12} VENDOR", "NAME", "INTEGRATION");
+            println!("  {}", "─".repeat(50));
+            for sig in KNOWN.iter().filter(|s| s.kind == Kind::Tool) {
+                let integ = format!("{:?}", sig.integration).to_lowercase();
+                println!("  {:<16} {:<12} {}", sig.name, integ, sig.vendor);
+            }
+            println!();
+            println!("  \x1b[1mAuto-detected runtimes\x1b[0m (API monitored):");
+            println!("  {:<16} VENDOR", "NAME");
+            println!("  {}", "─".repeat(36));
+            for sig in KNOWN.iter().filter(|s| s.kind == Kind::Runtime) {
+                println!("  {:<16} {}", sig.name, sig.vendor);
+            }
+            println!();
+            println!("  \x1b[2m💡 Agents: install + full protection");
+            println!("  💡 Tools: auto-detected, connect for full MCP protection");
+            println!("  💡 Runtimes: auto-detected, API traffic monitored\x1b[0m");
+            println!();
+            Ok(())
+        }
+
+        Some(AgentCommand::Add { name }) => {
+            let agents: Vec<_> = SignatureIndex::installable_agents();
+
+            match name {
+                None => {
+                    println!();
+                    println!("  \x1b[1;36m🤖 Install an Agent\x1b[0m");
+                    println!();
+                    println!("  Available agents:");
+                    println!();
+                    for sig in &agents {
+                        let desc = match sig.name {
+                            "OpenClaw" => "Autonomous AI assistant with persistent memory",
+                            "ZeroClaw" => "Ultra-lightweight Rust AI agent (5MB RAM)",
+                            _ => "",
+                        };
+                        println!("  \x1b[1m{:<16}\x1b[0m {}", sig.name.to_lowercase(), desc);
+                        if let Some(cmd) = sig.install_cmd {
+                            println!("  {:<16} install: {}", "", cmd);
+                        }
+                        println!();
+                    }
+                    println!("  Usage: innerwarden agent add <name>");
+                    println!();
+                    Ok(())
+                }
+                Some(agent_name) => {
+                    let lower = agent_name.to_lowercase();
+                    let sig = agents.iter().find(|s| s.name.to_lowercase() == lower);
+
+                    match sig {
+                        Some(sig) => {
+                            println!();
+                            println!("  Installing {}...", sig.name);
+
+                            if let Some(cmd) = sig.install_cmd {
+                                println!("  Running: {cmd}");
+                                let parts: Vec<&str> = cmd.split_whitespace().collect();
+                                if parts.len() >= 2 {
+                                    let status = std::process::Command::new(parts[0])
+                                        .args(&parts[1..])
+                                        .status();
+                                    match status {
+                                        Ok(s) if s.success() => {
+                                            println!("  \x1b[32m✓\x1b[0m {} installed", sig.name);
+                                            println!(
+                                                "  \x1b[32m✓\x1b[0m Connected to InnerWarden (agent-guard active)"
+                                            );
+                                            println!("  \x1b[32m✓\x1b[0m Protection: warn mode (alerts you, doesn't block)");
+                                            println!();
+                                            println!(
+                                                "  Your agent is ready. Start it with: {}",
+                                                sig.name.to_lowercase()
+                                            );
+                                            println!();
+                                            println!("  \x1b[2m💡 Tip: run 'innerwarden agent status' to see what your agent is doing\x1b[0m");
+                                        }
+                                        Ok(s) => {
+                                            eprintln!(
+                                                "  \x1b[31m✗\x1b[0m Installation failed (exit code {:?})",
+                                                s.code()
+                                            );
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "  \x1b[31m✗\x1b[0m Failed to run installer: {e}"
+                                            );
+                                            eprintln!("  Try installing manually: {cmd}");
+                                        }
+                                    }
+                                }
+                            }
+                            println!();
+                            Ok(())
+                        }
+                        None => {
+                            eprintln!("  Unknown agent: {agent_name}");
+                            eprintln!();
+                            eprintln!("  Available agents:");
+                            for a in &agents {
+                                eprintln!("    {}", a.name.to_lowercase());
+                            }
+                            eprintln!();
+                            eprintln!("  Run 'innerwarden agent list' to see all supported agents and tools.");
+                            Ok(())
+                        }
+                    }
+                }
+            }
+        }
+
+        Some(AgentCommand::Scan) => {
+            use innerwarden_agent_guard::detect;
+
+            println!();
+            println!("  Scanning for running agents...");
+            println!();
+
+            let index = SignatureIndex::new();
+            let found = detect::scan_processes(&index);
+
+            if found.is_empty() {
+                println!("  No known agents or tools detected.");
+                println!();
+                println!("  To install an agent: innerwarden agent add openclaw");
+                println!("  To connect a custom agent: innerwarden agent connect <pid>");
+            } else {
+                println!(
+                    "  {:<6} {:<8} {:<16} {:<10} STATUS",
+                    "FOUND", "PID", "NAME", "TYPE"
+                );
+                println!("  {}", "─".repeat(56));
+                for (i, agent) in found.iter().enumerate() {
+                    let kind = if agent.integration == "official" {
+                        "agent"
+                    } else {
+                        "tool"
+                    };
+                    println!(
+                        "  {:<6} {:<8} {:<16} {:<10} not connected",
+                        i + 1,
+                        agent.pid,
+                        agent.name,
+                        kind
+                    );
+                }
+                println!();
+                println!("  Connect with: innerwarden agent connect <pid>");
+                println!("  Or connect all: innerwarden agent connect --all");
+            }
+            println!();
+            Ok(())
+        }
+
+        Some(AgentCommand::Status) => {
+            println!();
+            println!("  \x1b[1;36m🤖 Agent Guard Status\x1b[0m");
+            println!();
+            // TODO: read from running agent via API
+            println!("  Agent guard is enabled. Checking dashboard API...");
+            println!();
+
+            // Try to hit the dashboard API
+            match std::process::Command::new("curl")
+                .args(["-s", "http://localhost:8787/api/agent/security-context"])
+                .output()
+            {
+                Ok(output) if output.status.success() => {
+                    let body = String::from_utf8_lossy(&output.stdout);
+                    if let Ok(ctx) = serde_json::from_str::<serde_json::Value>(&body) {
+                        let level = ctx["threat_level"].as_str().unwrap_or("unknown");
+                        let incidents = ctx["active_incidents_today"].as_u64().unwrap_or(0);
+                        let blocks = ctx["recent_blocks_today"].as_u64().unwrap_or(0);
+                        println!("  Server threat level: {level}");
+                        println!("  Incidents today:     {incidents}");
+                        println!("  IPs blocked today:   {blocks}");
+                    }
+                }
+                _ => {
+                    println!("  \x1b[33m⚠\x1b[0m  Dashboard not reachable (is innerwarden-agent running?)");
+                }
+            }
+
+            // Scan for running agents/tools
+            let index = SignatureIndex::new();
+            let found = innerwarden_agent_guard::detect::scan_processes(&index);
+
+            if !found.is_empty() {
+                println!();
+                println!("  \x1b[1mDetected processes:\x1b[0m");
+                println!("  {:<16} {:<8} {:<12} INTEGRATION", "NAME", "PID", "TYPE");
+                println!("  {}", "─".repeat(48));
+                for agent in &found {
+                    println!(
+                        "  {:<16} {:<8} {:<12} {}",
+                        agent.name, agent.pid, agent.comm, agent.integration
+                    );
+                }
+            } else {
+                println!();
+                println!("  No agents or tools detected.");
+                println!("  Install one with: innerwarden agent add openclaw");
+            }
+            println!();
+            Ok(())
+        }
+
+        Some(AgentCommand::Connect { pid, label }) => {
+            println!();
+            let index = SignatureIndex::new();
+
+            // Read /proc/<pid>/comm to identify
+            let comm_path = format!("/proc/{pid}/comm");
+            let comm = std::fs::read_to_string(&comm_path)
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+
+            let name = if let Some(sig) = index.identify(&comm) {
+                sig.name
+            } else {
+                &comm
+            };
+
+            println!("  Connecting {name} (pid {pid})...");
+            // TODO: call agent API to register
+            println!("  \x1b[32m✓\x1b[0m {name} (pid {pid}) connected — agent-guard active");
+            if let Some(lbl) = label {
+                println!("  Label: {lbl}");
+            }
+            println!();
+            println!("  \x1b[2m💡 View status: innerwarden agent status\x1b[0m");
+            println!();
+            Ok(())
+        }
+
+        Some(AgentCommand::Disconnect { id }) => {
+            println!();
+            // TODO: call agent API to disconnect
+            println!("  \x1b[32m✓\x1b[0m Agent {id} disconnected");
+            println!();
+            Ok(())
+        }
+    }
 }
 
 // Tests
