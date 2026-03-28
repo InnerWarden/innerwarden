@@ -5972,7 +5972,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
     /* ── Left panel ──────────────────────────────────────────────── */
     .left-panel {
-      width: 300px; flex-shrink: 0;
+      width: 380px; flex-shrink: 0;
       overflow-y: auto; overflow-x: hidden;
       border-right: 1px solid var(--line);
       padding: 12px 10px;
@@ -7745,16 +7745,37 @@ const INDEX_HTML: &str = r##"<!doctype html>
       html += '<div class="hud-card"><div class="hud-val">' + (data.detectors||[]).length + '</div><div class="hud-label">Detectors Firing</div></div>';
       cards.innerHTML = html;
 
-      // Per-source rows
+      // Per-source rows — split into active vs available
       const srcEl = document.getElementById('sensorSources');
       if (srcEl) {
-        let shtml = '';
-        for (const s of (data.sources || [])) {
+        const allSources = data.sources || [];
+        const active = allSources.filter(s => s.count > 0);
+        const idle = allSources.filter(s => s.count === 0);
+        const totalActive = active.length;
+        const totalAll = allSources.length;
+
+        let shtml = '<div style="font-size:0.72rem;font-weight:700;color:var(--ok);letter-spacing:0.05em;margin-bottom:6px">' +
+          'DATA COLLECTION &mdash; ' + totalActive + '/' + totalAll + ' active</div>';
+        shtml += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px">';
+        for (const s of active) {
           const c = sensorColor(s.name);
           shtml += '<div class="hud-source">' +
             '<div class="hud-source-dot" style="background:' + c + ';box-shadow:0 0 6px ' + c + ';"></div>' +
             '<span class="hud-source-name">' + s.name + '</span>' +
             '<span class="hud-source-count" style="color:' + c + ';">' + s.count.toLocaleString() + '</span></div>';
+        }
+        shtml += '</div>';
+        if (idle.length > 0) {
+          shtml += '<div style="font-size:0.65rem;color:var(--muted);margin-top:8px;cursor:pointer" onclick="var el=document.getElementById(\'idleSources\');el.style.display=el.style.display===\'none\'?\'grid\':\'none\'">' +
+            idle.length + ' available but idle &#9662;</div>' +
+            '<div id="idleSources" style="display:none;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px;margin-top:4px;opacity:0.5">';
+          for (const s of idle) {
+            shtml += '<div class="hud-source">' +
+              '<div class="hud-source-dot" style="background:var(--muted);"></div>' +
+              '<span class="hud-source-name">' + s.name + '</span>' +
+              '<span class="hud-source-count" style="color:var(--muted);">0</span></div>';
+          }
+          shtml += '</div>';
         }
         srcEl.innerHTML = shtml;
       }
@@ -8699,17 +8720,60 @@ const INDEX_HTML: &str = r##"<!doctype html>
           '<div style="font-size:0.62rem;color:var(--muted);margin-top:8px">Configure in <code>[data]</code> section of agent.toml. GDPR export/erase: <code>innerwarden gdpr export</code> / <code>innerwarden gdpr erase</code></div>';
       }
 
-      // ISO 27001 controls
+      // ISO 27001 controls — with progress bar and actionable grouping
       const ctrlEl = document.getElementById('comp-iso-controls');
       if (ctrlEl && iso.controls) {
-        ctrlEl.innerHTML = iso.controls.map(c =>
-          '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">' +
-          '<span style="font-size:1rem">' + (c.met ? '\u2705' : '\u274c') + '</span>' +
-          '<span style="font-size:0.72rem;font-weight:700;color:var(--accent);min-width:50px">' + esc(c.id) + '</span>' +
-          '<span style="font-size:0.78rem;font-weight:600;color:var(--text);min-width:180px">' + esc(c.name) + '</span>' +
-          '<span style="font-size:0.68rem;color:' + (c.met ? 'var(--ok)' : 'var(--warn)') + ';flex:1">' + esc(c.reason) + '</span>' +
-          '</div>'
-        ).join('');
+        const met = iso.controls.filter(c => c.met);
+        const notMet = iso.controls.filter(c => !c.met);
+        const pct = iso.total > 0 ? Math.round((iso.met / iso.total) * 100) : 0;
+        const barColor = pct === 100 ? 'var(--ok)' : pct >= 80 ? 'var(--warn)' : 'var(--danger)';
+
+        let isoHtml = '';
+
+        // Progress bar
+        isoHtml += '<div style="margin-bottom:16px">' +
+          '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">' +
+          '<span style="font-size:0.78rem;font-weight:700;color:var(--text)">ISO 27001 Readiness</span>' +
+          '<span style="font-size:0.85rem;font-weight:800;color:' + barColor + '">' + pct + '%</span></div>' +
+          '<div style="height:8px;border-radius:4px;background:var(--line);overflow:hidden">' +
+          '<div style="height:100%;width:' + pct + '%;background:' + barColor + ';border-radius:4px;transition:width 0.6s ease"></div>' +
+          '</div>' +
+          '<div style="font-size:0.62rem;color:var(--muted);margin-top:4px">' + iso.met + ' of ' + iso.total + ' controls met &mdash; <a href="https://www.iso.org/standard/27001" target="_blank" style="color:var(--accent)">What is ISO 27001?</a></div>' +
+          '</div>';
+
+        // Actions needed (not met) — shown first, prominent
+        if (notMet.length > 0) {
+          isoHtml += '<div style="margin-bottom:14px">' +
+            '<div style="font-size:0.7rem;font-weight:700;color:var(--warn);letter-spacing:0.05em;text-transform:uppercase;margin-bottom:8px">Actions Needed</div>';
+          for (const c of notMet) {
+            isoHtml += '<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 12px;margin-bottom:6px;border-radius:8px;background:rgba(255,184,77,0.06);border:1px solid rgba(255,184,77,0.15)">' +
+              '<span style="font-size:0.72rem;font-weight:700;color:var(--accent);min-width:50px;padding-top:1px">' + esc(c.id) + '</span>' +
+              '<div><div style="font-size:0.78rem;font-weight:600;color:var(--text)">' + esc(c.name) + '</div>' +
+              '<div style="font-size:0.68rem;color:var(--warn);margin-top:2px">' + esc(c.reason) + '</div></div></div>';
+          }
+          isoHtml += '</div>';
+        }
+
+        // Met controls — compact, collapsed by default if many
+        if (met.length > 0) {
+          const showAll = met.length <= 5;
+          isoHtml += '<div>' +
+            '<div style="font-size:0.7rem;font-weight:700;color:var(--ok);letter-spacing:0.05em;text-transform:uppercase;margin-bottom:8px;cursor:pointer" ' +
+            'onclick="var el=document.getElementById(\'isoMetList\');el.style.display=el.style.display===\'none\'?\'block\':\'none\'">' +
+            'Controls Met (' + met.length + ') &#9662;</div>' +
+            '<div id="isoMetList" style="display:' + (showAll ? 'block' : 'none') + '">';
+          for (const c of met) {
+            isoHtml += '<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.03)">' +
+              '<span style="font-size:0.85rem">\u2705</span>' +
+              '<span style="font-size:0.72rem;font-weight:700;color:var(--accent);min-width:50px">' + esc(c.id) + '</span>' +
+              '<span style="font-size:0.75rem;color:var(--text)">' + esc(c.name) + '</span>' +
+              '<span style="font-size:0.62rem;color:var(--muted);margin-left:auto">' + esc(c.reason) + '</span>' +
+              '</div>';
+          }
+          isoHtml += '</div></div>';
+        }
+
+        ctrlEl.innerHTML = isoHtml;
       }
 
       // Admin actions list
@@ -9425,6 +9489,17 @@ const INDEX_HTML: &str = r##"<!doctype html>
       card.classList.toggle('hidden', !match);
       if (match) visible++;
     });
+    // Show result count next to search box
+    let countEl = document.getElementById('searchCount');
+    if (!countEl) {
+      countEl = document.createElement('span');
+      countEl.id = 'searchCount';
+      countEl.style.cssText = 'font-size:0.62rem;color:var(--muted);margin-left:6px';
+      const searchBox = document.getElementById('entitySearch');
+      if (searchBox && searchBox.parentNode) searchBox.parentNode.appendChild(countEl);
+    }
+    countEl.textContent = q ? visible + ' of ' + cards.length : '';
+
     // Show a "no results" message if every card is hidden
     let noRes = document.getElementById('searchNoResults');
     if (!visible && q) {
