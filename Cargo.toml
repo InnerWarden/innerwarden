@@ -5,6 +5,7 @@ members = [
   "crates/agent",
   "crates/ctl",
   "crates/sensor-ebpf-types",
+  "crates/agent-guard",
 ]
 exclude = ["crates/sensor-ebpf"]
 # crates/sensor-ebpf compiles to bpfel-unknown-none target (separate build)

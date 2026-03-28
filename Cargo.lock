@@ -1562,6 +1562,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "innerwarden-agent-guard"
+version = "0.5.3"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "innerwarden_core",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "innerwarden-ctl"
 version = "0.5.3"
 dependencies = [

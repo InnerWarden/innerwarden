@@ -1,0 +1,20 @@
+[package]
+name = "innerwarden-agent-guard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "AI agent protection module for InnerWarden — auto-detect agents, wrap MCP servers, enforce security policies"
+
+[dependencies]
+innerwarden_core = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+regex = "1"
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+anyhow = "1"
