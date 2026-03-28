@@ -1,2 +1,3 @@
-// Library re-exports for integration tests and external consumers.
+// Library re-exports for integration/property tests.
+
 pub mod detectors;

@@ -381,7 +381,7 @@ mod tests {
                 auth: "test_auth".to_string(),
             },
         };
-        save_subscriptions(dir.path(), &[sub.clone()]).unwrap();
+        save_subscriptions(dir.path(), std::slice::from_ref(&sub)).unwrap();
         let loaded = load_subscriptions(dir.path());
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].endpoint, sub.endpoint);

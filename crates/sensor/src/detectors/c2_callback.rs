@@ -387,8 +387,8 @@ mod tests {
             ));
             if i >= 2 {
                 // Should fire after 3+ connections with regular intervals
-                if result.is_some() {
-                    assert_eq!(result.unwrap().severity, Severity::Critical);
+                if let Some(inc) = result {
+                    assert_eq!(inc.severity, Severity::Critical);
                     return;
                 }
             }

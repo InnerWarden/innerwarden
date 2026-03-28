@@ -169,6 +169,7 @@ pub enum ExecutionMode {
 }
 
 impl ExecutionMode {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(_s: &str) -> Self {
         // Only "observe" is implemented in v0.1; "contain" and "strict" are reserved.
         ExecutionMode::Observe
