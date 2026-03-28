@@ -472,6 +472,38 @@ fn attach_lsm(bpf: &mut aya::Ebpf) {
         }
     }
 
+    // Attach LSM file_open hook for sensitive path write protection.
+    // Non-critical — if it fails, we still have observe-only via the openat tracepoint.
+    match bpf.program_mut("innerwarden_lsm_file_open") {
+        Some(prog) => {
+            let lsm: &mut Lsm = match prog.try_into() {
+                Ok(l) => l,
+                Err(e) => {
+                    info!(error = %e, "innerwarden_lsm_file_open: not available");
+                    // Continue — the exec LSM is the critical one
+                    return pin_lsm_policy(bpf);
+                }
+            };
+            if let Err(e) = lsm.load("file_open", &btf.as_ref().unwrap()) {
+                info!(error = %e, "innerwarden_lsm_file_open: failed to load");
+            } else if let Err(e) = lsm.attach() {
+                warn!(error = %e, "innerwarden_lsm_file_open: failed to attach");
+            } else {
+                info!("eBPF: innerwarden_lsm_file_open → file_open (sensitive path protection) ✅");
+            }
+        }
+        None => {
+            info!(
+                "eBPF: innerwarden_lsm_file_open not found — sensitive path blocking unavailable"
+            );
+        }
+    }
+
+    pin_lsm_policy(bpf);
+}
+
+#[cfg(feature = "ebpf")]
+fn pin_lsm_policy(bpf: &mut aya::Ebpf) {
     // Pin the LSM_POLICY map so the agent can enable/disable enforcement.
     // Remove stale pin first — on sensor restart, the old pin points to a dead
     // map from the previous instance, causing map.pin() to fail with EEXIST.
@@ -1114,6 +1146,28 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
             }
         }
     }
+
+    // io_uring monitoring (non-critical — requires kernel 5.10+ with io_uring tracepoints)
+    // Try the 6.4+ name first, fall back to the pre-6.4 name.
+    if !attach_tp(
+        &mut bpf,
+        "innerwarden_io_uring_submit",
+        "io_uring",
+        "io_uring_submit_req",
+    ) {
+        attach_tp(
+            &mut bpf,
+            "innerwarden_io_uring_submit",
+            "io_uring",
+            "io_uring_submit_sqe",
+        );
+    }
+    attach_tp(
+        &mut bpf,
+        "innerwarden_io_uring_create",
+        "io_uring",
+        "io_uring_create",
+    );
 
     // Attach LSM execution policy (non-critical - requires lsm=bpf in kernel cmdline)
     attach_lsm(&mut bpf);

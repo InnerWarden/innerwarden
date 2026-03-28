@@ -2341,6 +2341,150 @@ fn try_efi_call(_ctx: &ProbeContext) -> Result<(), i64> {
 }
 
 // ---------------------------------------------------------------------------
+// io_uring monitoring - detect syscall bypass evasion
+// ---------------------------------------------------------------------------
+//
+// io_uring submits operations via shared ring buffers, bypassing traditional
+// syscall interception (seccomp, audit). Attackers use this for invisible
+// file I/O, network connections, and data exfiltration.
+//
+// Tracepoint name changed in kernel 6.4:
+//   5.10-6.3: io_uring:io_uring_submit_sqe
+//   6.4+:     io_uring:io_uring_submit_req
+// Both have identical layout for the fields we read.
+//
+// Offsets (from tracepoint format, after 8-byte common header):
+//   ctx(8) req(8) user_data(8) opcode(1) _pad(3) flags(4) sq_thread(1)
+
+/// io_uring SQE submission — fires on every submitted operation.
+/// We use the 6.4+ name; the userspace loader tries both names.
+#[tracepoint]
+pub fn innerwarden_io_uring_submit(ctx: TracePointContext) -> u32 {
+    match try_io_uring_submit(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+fn try_io_uring_submit(ctx: &TracePointContext) -> Result<(), i64> {
+    // Offsets after 8-byte common header
+    let opcode: u8 = unsafe { ctx.read_at(32)? };
+
+    // Only emit events for security-relevant opcodes to avoid flooding
+    let is_relevant = matches!(
+        opcode,
+        9  | // SENDMSG
+        10 | // RECVMSG
+        13 | // ACCEPT
+        16 | // CONNECT
+        18 | // OPENAT
+        26 | // SEND
+        27 | // RECV
+        28 | // OPENAT2
+        35 | // RENAMEAT
+        36 | // UNLINKAT
+        45 | // SOCKET
+        46 | // URING_CMD
+        53   // SEND_ZC
+    );
+    if !is_relevant {
+        return Ok(());
+    }
+
+    // Noise filters
+    if is_comm_allowed(2) || is_cgroup_allowed() {
+        return Ok(());
+    }
+
+    let pid = bpf_get_current_pid_tgid() as u32;
+    if is_rate_limited(pid) {
+        return Ok(());
+    }
+
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    let flags: u32 = unsafe { ctx.read_at(36).unwrap_or(0) };
+
+    let mut entry = match EVENTS.reserve::<innerwarden_ebpf_types::IoUringEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = innerwarden_ebpf_types::SyscallKind::IoUring as u32;
+    event.pid = pid;
+    event.uid = uid;
+    event.opcode = opcode;
+    event.sqe_flags = 0;
+    event._pad = 0;
+    event.fd = -1; // fd not directly available in the tracepoint
+    event.cgroup_id = cgroup_id;
+    event.ts_ns = ts;
+    event.comm = [0u8; MAX_COMM_LEN];
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
+}
+
+/// io_uring ring creation — fires when a process creates an io_uring instance.
+#[tracepoint]
+pub fn innerwarden_io_uring_create(ctx: TracePointContext) -> u32 {
+    match try_io_uring_create(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+fn try_io_uring_create(ctx: &TracePointContext) -> Result<(), i64> {
+    if is_comm_allowed(2) || is_cgroup_allowed() {
+        return Ok(());
+    }
+
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    // Offsets after 8-byte common header
+    let ring_fd: i32 = unsafe { ctx.read_at(8).unwrap_or(-1) };
+    // ctx pointer at offset 16, skip it
+    let sq_entries: u32 = unsafe { ctx.read_at(24).unwrap_or(0) };
+    let cq_entries: u32 = unsafe { ctx.read_at(28).unwrap_or(0) };
+    let flags: u32 = unsafe { ctx.read_at(32).unwrap_or(0) };
+
+    let mut entry = match EVENTS.reserve::<innerwarden_ebpf_types::IoUringCreateEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = innerwarden_ebpf_types::SyscallKind::IoUringCreate as u32;
+    event.pid = pid;
+    event.uid = uid;
+    event.ring_fd = ring_fd;
+    event.sq_entries = sq_entries;
+    event.cq_entries = cq_entries;
+    event.flags = flags;
+    event.cgroup_id = cgroup_id;
+    event.ts_ns = ts;
+    event.comm = [0u8; MAX_COMM_LEN];
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Panic handler (required for no_std)
 // ---------------------------------------------------------------------------
 
