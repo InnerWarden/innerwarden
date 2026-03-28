@@ -1587,6 +1587,7 @@ dependencies = [
  "clap_complete",
  "digest 0.10.7",
  "ed25519-dalek",
+ "innerwarden-agent-guard",
  "innerwarden_core",
  "p256",
  "rand_core 0.6.4",

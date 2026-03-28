@@ -15,6 +15,7 @@ name = "innerwarden-ctl"
 path = "src/main.rs"
 
 [dependencies]
+innerwarden-agent-guard = { path = "../agent-guard" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
