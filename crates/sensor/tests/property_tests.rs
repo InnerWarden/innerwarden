@@ -334,8 +334,15 @@ mod host_drift {
     /// INVARIANT: Execution from trusted paths NEVER generates incidents.
     #[test]
     fn trusted_paths_never_alert() {
-        let trusted = ["/usr/bin/", "/usr/sbin/", "/usr/local/bin/",
-                       "/bin/", "/sbin/", "/opt/", "/snap/"];
+        let trusted = [
+            "/usr/bin/",
+            "/usr/sbin/",
+            "/usr/local/bin/",
+            "/bin/",
+            "/sbin/",
+            "/opt/",
+            "/snap/",
+        ];
 
         proptest!(|(
             comm in "[a-z]{3,8}",
