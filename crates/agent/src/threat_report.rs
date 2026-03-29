@@ -129,21 +129,33 @@ pub fn report_exists(data_dir: &Path, month: &str) -> bool {
         .exists()
 }
 
+/// Validate and canonicalize a directory path.
+///
+/// Returns `Some(canonical_path)` only if the path resolves to an existing
+/// absolute directory. This is a sanitizer function for CWE-22 prevention.
+fn validate_directory(dir: &Path) -> Option<std::path::PathBuf> {
+    let canonical = dir.canonicalize().ok()?;
+    if canonical.is_dir() && canonical.is_absolute() {
+        Some(canonical)
+    } else {
+        None
+    }
+}
+
 /// List available months that have report files or data.
+///
+/// Scans filenames in the data directory for monthly report and incident
+/// files. Only extracts basenames — never constructs paths from the names.
 pub fn available_months(data_dir: &Path) -> Vec<String> {
     let mut months = HashSet::new();
 
-    // Validate data_dir: must be an existing absolute directory (CWE-22)
-    let safe_dir = match data_dir.canonicalize() {
-        Ok(d) if d.is_dir() && d.is_absolute() => d,
-        _ => return Vec::new(),
+    let safe_dir = match validate_directory(data_dir) {
+        Some(d) => d,
+        None => return Vec::new(),
     };
 
-    // Only list filenames — never use full paths from entries for file I/O.
-    // read_dir is safe here: we only extract file_name() strings for parsing.
     if let Ok(entries) = std::fs::read_dir(safe_dir) {
         for entry in entries.flatten() {
-            // file_name() is the basename only — no path traversal possible
             let name = entry.file_name().to_string_lossy().to_string();
             if let Some(month) = name
                 .strip_prefix("monthly-report-")
