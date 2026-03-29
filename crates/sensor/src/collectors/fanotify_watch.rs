@@ -80,7 +80,7 @@ pub async fn run(
     };
 
     if paths.is_empty() {
-        info!("fanotify_watch: no paths to monitor");
+        warn!("fanotify_watch: no valid paths to monitor — filesystem monitoring disabled");
         return;
     }
 

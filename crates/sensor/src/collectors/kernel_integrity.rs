@@ -14,7 +14,6 @@
 //! Also monitors `/proc/modules` for new kernel modules loaded after boot.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use chrono::{DateTime, Duration, Utc};
 use tokio::sync::mpsc;
@@ -242,7 +241,10 @@ fn read_kallsyms() -> HashMap<String, String> {
     let mut syscalls = HashMap::new();
     let content = match std::fs::read_to_string("/proc/kallsyms") {
         Ok(c) => c,
-        Err(_) => return syscalls,
+        Err(e) => {
+            warn!("kernel_integrity: cannot read /proc/kallsyms: {e}");
+            return syscalls;
+        }
     };
 
     for line in content.lines() {

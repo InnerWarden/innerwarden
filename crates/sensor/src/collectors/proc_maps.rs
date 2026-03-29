@@ -14,10 +14,10 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use chrono::Utc;
+use tracing::warn;
 use innerwarden_core::entities::EntityRef;
 use innerwarden_core::event::{Event, Severity};
 use tokio::sync::mpsc;
-use tracing::warn;
 
 /// Suspicious memory region found in a process.
 #[derive(Debug, Clone)]
@@ -172,7 +172,10 @@ fn scan_all_processes() -> Vec<SuspiciousRegion> {
 
     let entries = match std::fs::read_dir(proc_dir) {
         Ok(e) => e,
-        Err(_) => return findings,
+        Err(e) => {
+            warn!("proc_maps: cannot read /proc: {e}");
+            return findings;
+        }
     };
 
     for entry in entries.flatten() {

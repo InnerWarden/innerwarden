@@ -20,7 +20,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use innerwarden_core::entities::EntityRef;
 use innerwarden_core::event::{Event, Severity};
@@ -108,23 +108,22 @@ pub async fn run(
     host: String,
     _poll_seconds: u64,
 ) {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "ebpf"))]
     {
         if let Err(e) = run_linux(tx, host).await {
             warn!("TLS fingerprint collector failed: {e} (requires CAP_NET_RAW)");
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(all(target_os = "linux", feature = "ebpf")))]
     {
-        info!("TLS fingerprint collector: not available on this platform (Linux only)");
-        // Keep the task alive so the tx clone isn't dropped immediately
-        let _ = (tx, host);
+        info!("TLS fingerprint collector: requires Linux + ebpf feature (CAP_NET_RAW)");
+        let _ = (tx, host, _poll_seconds);
         tokio::time::sleep(std::time::Duration::from_secs(u64::MAX)).await;
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "ebpf"))]
 async fn run_linux(
     tx: mpsc::Sender<Event>,
     host: String,
