@@ -420,8 +420,8 @@ fn serde_yaml_to_json(yaml: &str) -> Option<serde_json::Value> {
         }
 
         // Array item: "  - value"
-        if trimmed.starts_with("- ") {
-            let value = trimmed[2..].trim().trim_matches('"').trim_matches('\'');
+        if let Some(rest) = trimmed.strip_prefix("- ") {
+            let value = rest.trim().trim_matches('"').trim_matches('\'');
             current_array.push(serde_json::Value::String(value.to_string()));
             continue;
         }

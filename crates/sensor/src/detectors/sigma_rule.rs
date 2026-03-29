@@ -362,8 +362,10 @@ fn parse_sigma_yaml(content: &str) -> Option<SigmaRule> {
         }
 
         // Parse tags
-        if in_tags && trimmed.starts_with("- ") {
-            tags.push(trimmed[2..].trim().trim_matches('"').trim_matches('\'').to_string());
+        if in_tags {
+            if let Some(rest) = trimmed.strip_prefix("- ") {
+                tags.push(rest.trim().trim_matches('"').trim_matches('\'').to_string());
+            }
         }
     }
 
