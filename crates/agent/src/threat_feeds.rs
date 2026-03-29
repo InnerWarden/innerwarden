@@ -173,10 +173,10 @@ impl ThreatFeedClient {
                 if self.state.malicious_hashes.insert(trimmed.to_lowercase()) {
                     added += 1;
                 }
-            } else if is_domain_like(trimmed) {
-                if self.state.malicious_domains.insert(trimmed.to_lowercase()) {
-                    added += 1;
-                }
+            } else if is_domain_like(trimmed)
+                && self.state.malicious_domains.insert(trimmed.to_lowercase())
+            {
+                added += 1;
             }
         }
 

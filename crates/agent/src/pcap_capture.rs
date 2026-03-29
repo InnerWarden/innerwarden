@@ -108,7 +108,6 @@ impl PcapCapture {
 
         // Spawn tcpdump in background — non-blocking
         self.active_captures += 1;
-        let active_counter = self.active_captures;
         std::thread::spawn(move || {
             let result = std::process::Command::new("tcpdump")
                 .args([

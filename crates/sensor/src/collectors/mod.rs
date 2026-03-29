@@ -15,5 +15,6 @@ pub mod suricata_eve;
 pub mod syslog_firewall;
 pub mod fanotify_watch;
 pub mod proc_maps;
+#[cfg(feature = "ebpf")]
 pub mod tls_fingerprint;
 pub mod wazuh_alerts;

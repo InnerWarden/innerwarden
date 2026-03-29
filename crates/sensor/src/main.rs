@@ -965,7 +965,8 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Spawn TLS fingerprint collector (JA3/JA4 — requires CAP_NET_RAW on Linux)
+    // Spawn TLS fingerprint collector (JA3/JA4 — requires CAP_NET_RAW + libc)
+    #[cfg(feature = "ebpf")]
     {
         let tx_tls = tx.clone();
         let host_id = cfg.agent.host_id.clone();
@@ -1167,7 +1168,7 @@ fn process_event(
             tags: ev.tags.clone(),
             entities: ev.entities.clone(),
         };
-        write_incident(writer, stats, incident);
+        write_incident(writer, stats, incident, syslog);
     }
 
     // Incident passthrough: tools that already ran their own detection
@@ -1176,7 +1177,7 @@ fn process_event(
         let is_actionable = matches!(ev.severity, Severity::High | Severity::Critical);
         if is_actionable {
             if let Some(incident) = passthrough_incident(&ev) {
-                write_incident(writer, stats, incident);
+                write_incident(writer, stats, incident, syslog);
             }
         }
         // Passthrough sources don't need InnerWarden detectors - return early.
@@ -1185,265 +1186,265 @@ fn process_event(
 
     if let Some(ref mut det) = detectors.ssh {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.credential_stuffing {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.port_scan {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.sudo_abuse {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.search_abuse {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.web_scan {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.user_agent_scanner {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.execution_guard {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.suricata_alert {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.docker_anomaly {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.integrity_alert {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.log_tampering {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.osquery_anomaly {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.distributed_ssh {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.suspicious_login {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.c2_callback {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.process_tree {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.container_escape {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.privesc {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.fileless {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.dns_tunneling {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.lateral_movement {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.crypto_miner {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.outbound_anomaly {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.rootkit {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.reverse_shell {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.ssh_key_injection {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.web_shell {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.kernel_module_load {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.crontab_persistence {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.data_exfiltration {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.process_injection {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.user_creation {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.systemd_persistence {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.ransomware {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.credential_harvest {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.packet_flood {
         for incident in det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.sensitive_write {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.io_uring_anomaly {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.container_drift {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.host_drift {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.data_exfil_ebpf {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.yara_scan {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 
     if let Some(ref mut det) = detectors.sigma_rule {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident);
+            write_incident(writer, stats, incident, syslog);
         }
     }
 }
@@ -1495,6 +1496,7 @@ fn write_incident(
     writer: &mut JsonlWriter,
     stats: &mut WriteStats,
     incident: innerwarden_core::incident::Incident,
+    syslog: &mut Option<sinks::syslog_cef::SyslogCefWriter>,
 ) {
     info!(
         incident_id = %incident.incident_id,
@@ -1506,6 +1508,9 @@ fn write_incident(
         warn!(incident_id = %incident.incident_id, "failed to write incident: {e:#}");
     } else {
         stats.incidents_written += 1;
-        // Note: Syslog CEF incident writing is handled in process_event scope
+    }
+    // Syslog CEF output for incidents
+    if let Some(ref mut cef) = syslog {
+        cef.write_incident(&incident);
     }
 }

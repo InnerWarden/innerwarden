@@ -421,7 +421,7 @@ fn render_markdown(r: &MonthlyThreatReport) -> String {
 
     // Executive Summary
     md.push_str("## Executive Summary\n\n");
-    md.push_str(&format!("| Metric | Value |\n|--------|-------|\n"));
+    md.push_str("| Metric | Value |\n|--------|-------|\n");
     md.push_str(&format!("| Total Events | {} |\n", s.total_events));
     md.push_str(&format!("| Total Incidents | {} |\n", s.total_incidents));
     md.push_str(&format!("| Total Decisions | {} |\n", s.total_decisions));

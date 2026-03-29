@@ -415,7 +415,7 @@ pub fn compute_risk_score(profile: &mut AttackerProfile) {
     let mut score: u32 = 0;
 
     // Incident volume (max 30)
-    score += (profile.total_incidents as u32 * 3).min(30);
+    score += (profile.total_incidents * 3).min(30);
 
     // AbuseIPDB reputation (max 20)
     if let Some(abuse) = profile.abuseipdb_score {
@@ -423,7 +423,7 @@ pub fn compute_risk_score(profile: &mut AttackerProfile) {
     }
 
     // Recurrence (max 15)
-    score += (profile.visit_count as u32 * 5).min(15);
+    score += (profile.visit_count * 5).min(15);
 
     // Cross-detector diversity (max 15)
     score += (profile.detectors_triggered.len() as u32 * 5).min(15);
@@ -773,7 +773,7 @@ pub fn detect_campaigns(profiles: &HashMap<String, AttackerProfile>) -> Vec<Camp
     let mut campaigns = Vec::new();
     let mut camp_id = 0;
 
-    for (_, members) in &components {
+    for members in components.values() {
         if members.len() < 2 {
             continue;
         }

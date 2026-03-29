@@ -1704,11 +1704,21 @@ async fn main() -> Result<()> {
     {
         let vt_key = threat_feeds::resolve_vt_api_key(&cfg.abuseipdb.api_key);
         // Threat feeds are always initialized (even without VT key, for IOC feed support)
-        state.threat_feed = Some(threat_feeds::ThreatFeedClient::new(
+        let client = threat_feeds::ThreatFeedClient::new(
             vt_key,
             Vec::new(), // IOC feed URLs would come from config
             &cli.data_dir,
-        ));
+        );
+        let feed_state = client.state();
+        if feed_state.total_iocs > 0 {
+            info!(
+                ips = feed_state.malicious_ips.len(),
+                domains = feed_state.malicious_domains.len(),
+                hashes = feed_state.malicious_hashes.len(),
+                "threat feeds: loaded cached IOCs"
+            );
+        }
+        state.threat_feed = Some(client);
     }
 
     // Connect Redis reader if configured
@@ -2007,10 +2017,14 @@ async fn main() -> Result<()> {
                             .pending_honeypot_choices
                             .retain(|_, choice| choice.expires_at > now_utc);
 
-                        // ── Threat feed save ──
-                        if let Some(ref tf) = state.threat_feed {
+                        // ── Threat feed poll + save ──
+                        if let Some(ref mut tf) = state.threat_feed {
+                            tf.poll_feeds().await;
                             tf.save(&cli.data_dir);
                         }
+
+                        // ── Pcap capture cooldown cleanup ──
+                        state.pcap_capture.cleanup();
 
                         // ── Baseline rate anomaly check + save ──
                         {
