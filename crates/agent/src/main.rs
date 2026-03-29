@@ -1771,6 +1771,9 @@ async fn main() -> Result<()> {
         ));
         let mut mesh_ticker =
             tokio::time::interval(tokio::time::Duration::from_secs(cfg.mesh.poll_secs.max(10)));
+        let mut firmware_ticker = tokio::time::interval(tokio::time::Duration::from_secs(
+            cfg.firmware.poll_secs.max(60),
+        ));
 
         // SIGTERM / SIGINT
         #[cfg(unix)]
@@ -1968,6 +1971,12 @@ async fn main() -> Result<()> {
                     }
                     false
                 }
+                _ = firmware_ticker.tick() => {
+                    if cfg.firmware.enabled {
+                        process_firmware_tick(&cli.data_dir, &cfg, &mut state).await;
+                    }
+                    false
+                }
                 _ = sigterm.recv() => {
                     info!("SIGTERM received - shutting down");
                     true
@@ -2066,6 +2075,12 @@ async fn main() -> Result<()> {
                             }
                         }
                         m.persist().ok();
+                    }
+                    false
+                }
+                _ = firmware_ticker.tick() => {
+                    if cfg.firmware.enabled {
+                        process_firmware_tick(&cli.data_dir, &cfg, &mut state).await;
                     }
                     false
                 }
@@ -6188,6 +6203,205 @@ fn check_advisory_match(
         .iter()
         .find(|e| e.command_hash == command_hash)
         .cloned()
+}
+
+// ---------------------------------------------------------------------------
+// Firmware security monitoring (innerwarden-smm integration)
+// ---------------------------------------------------------------------------
+
+/// Periodic firmware audit. Runs innerwarden-smm's full_audit(), compares
+/// against baseline, and emits incidents when trust degrades or threats correlate.
+async fn process_firmware_tick(
+    data_dir: &std::path::Path,
+    cfg: &config::AgentConfig,
+    state: &mut AgentState,
+) {
+    use innerwarden_core::incident::Incident;
+    use std::io::Write;
+
+    // Run the full firmware audit (blocking I/O — spawn_blocking).
+    let data_dir_owned = data_dir.to_path_buf();
+    let report = match tokio::task::spawn_blocking(move || {
+        // Override baseline path to use agent's data_dir.
+        let baseline_path = data_dir_owned.join("firmware_baseline.json");
+        if !baseline_path.exists() {
+            // Auto-capture baseline on first run.
+            let baseline = innerwarden_smm::baseline::FirmwareBaseline::capture();
+            if let Err(e) = baseline.save(&baseline_path) {
+                tracing::warn!(error = %e, "firmware: failed to save initial baseline");
+            } else {
+                tracing::info!("firmware: initial baseline captured");
+            }
+        }
+        innerwarden_smm::full_audit()
+    })
+    .await
+    {
+        Ok(report) => report,
+        Err(e) => {
+            warn!(error = %e, "firmware tick: audit task panicked");
+            return;
+        }
+    };
+
+    let host = std::fs::read_to_string("/etc/hostname")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "unknown".into());
+    let today = chrono::Local::now().date_naive().format("%Y-%m-%d");
+
+    let mut incidents = Vec::new();
+
+    // Check trust score degradation.
+    if report.trust_score < cfg.firmware.trust_score_threshold {
+        let critical_checks: Vec<String> = report
+            .checks
+            .iter()
+            .filter(|c| c.status == innerwarden_smm::CheckStatus::Critical)
+            .map(|c| format!("[{}] {}", c.id, c.name))
+            .collect();
+
+        incidents.push(Incident {
+            ts: chrono::Utc::now(),
+            host: host.clone(),
+            incident_id: format!(
+                "firmware:trust_degraded:{}",
+                (report.trust_score * 100.0) as u32
+            ),
+            severity: if report.trust_score < 0.3 {
+                innerwarden_core::event::Severity::Critical
+            } else if report.trust_score < 0.6 {
+                innerwarden_core::event::Severity::High
+            } else {
+                innerwarden_core::event::Severity::Medium
+            },
+            title: format!(
+                "Firmware trust score degraded to {:.0}%",
+                report.trust_score * 100.0
+            ),
+            summary: format!(
+                "Trust score {:.0}% (threshold: {:.0}%). Critical checks: {}",
+                report.trust_score * 100.0,
+                cfg.firmware.trust_score_threshold * 100.0,
+                if critical_checks.is_empty() {
+                    "none".to_string()
+                } else {
+                    critical_checks.join(", ")
+                },
+            ),
+            evidence: serde_json::json!({
+                "trust_score": report.trust_score,
+                "threshold": cfg.firmware.trust_score_threshold,
+                "checks": report.checks.iter()
+                    .filter(|c| c.status != innerwarden_smm::CheckStatus::Unavailable)
+                    .map(|c| serde_json::json!({
+                        "id": c.id,
+                        "name": c.name,
+                        "status": format!("{:?}", c.status),
+                        "confidence": c.confidence,
+                    }))
+                    .collect::<Vec<_>>(),
+            }),
+            recommended_checks: vec![
+                "Review firmware audit: innerwarden-smm".into(),
+                "Check for unauthorized firmware modifications".into(),
+            ],
+            tags: vec!["firmware".to_string(), "ring-minus-2".to_string()],
+            entities: vec![],
+        });
+    }
+
+    // Emit incidents for correlated threats.
+    for threat in &report.correlated_threats {
+        incidents.push(Incident {
+            ts: chrono::Utc::now(),
+            host: host.clone(),
+            incident_id: format!("firmware:corr:{}", threat.id),
+            severity: if threat.confidence >= 0.9 {
+                innerwarden_core::event::Severity::Critical
+            } else if threat.confidence >= 0.7 {
+                innerwarden_core::event::Severity::High
+            } else {
+                innerwarden_core::event::Severity::Medium
+            },
+            title: threat.name.clone(),
+            summary: threat.detail.clone(),
+            evidence: serde_json::json!({
+                "correlation_id": threat.id,
+                "confidence": threat.confidence,
+                "evidence": threat.evidence,
+            }),
+            recommended_checks: vec!["Run innerwarden-smm for full report".into()],
+            tags: vec![
+                "firmware".to_string(),
+                "correlated".to_string(),
+                "ring-minus-2".to_string(),
+            ],
+            entities: vec![],
+        });
+    }
+
+    if incidents.is_empty() {
+        let secure = report
+            .checks
+            .iter()
+            .filter(|c| c.status == innerwarden_smm::CheckStatus::Secure)
+            .count();
+        tracing::debug!(
+            trust_score = format!("{:.0}%", report.trust_score * 100.0),
+            secure_checks = secure,
+            "firmware tick: all clear"
+        );
+        return;
+    }
+
+    // Write incidents to JSONL.
+    let path = data_dir.join(format!("incidents-{today}.jsonl"));
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(mut f) => {
+            for inc in &incidents {
+                if let Ok(line) = serde_json::to_string(inc) {
+                    let _ = writeln!(f, "{line}");
+                }
+            }
+        }
+        Err(e) => warn!(error = %e, "firmware tick: failed to write incidents"),
+    }
+
+    info!(
+        count = incidents.len(),
+        trust_score = format!("{:.0}%", report.trust_score * 100.0),
+        "firmware tick: emitted incidents"
+    );
+
+    // Telegram notification for firmware incidents.
+    if let Some(ref tg) = state.telegram_client {
+        for inc in &incidents {
+            let sev = match inc.severity {
+                innerwarden_core::event::Severity::Critical => "🔴 CRITICAL",
+                innerwarden_core::event::Severity::High => "🟠 HIGH",
+                _ => "🟡 MEDIUM",
+            };
+            let msg = format!(
+                "🔧 <b>Firmware Alert</b>\n\n\
+                 {sev}\n\
+                 <b>{}</b>\n\
+                 {}\n\n\
+                 Trust Score: {:.0}%",
+                inc.title,
+                inc.summary,
+                report.trust_score * 100.0,
+            );
+            let tg = tg.clone();
+            let msg_owned = msg;
+            tokio::spawn(async move {
+                let _ = tg.send_raw_html(&msg_owned).await;
+            });
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

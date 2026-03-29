@@ -50,6 +50,9 @@ pub struct AgentConfig {
     /// Dashboard settings
     #[serde(default)]
     pub dashboard: DashboardConfig,
+    /// Firmware security monitoring (innerwarden-smm)
+    #[serde(default)]
+    pub firmware: FirmwareConfig,
     /// Redis URL for reading events from Redis Streams instead of JSONL files.
     /// When set, events are consumed via XREADGROUP. Incidents still read from JSONL.
     #[serde(default)]
@@ -92,6 +95,40 @@ fn default_session_timeout_minutes() -> u64 {
 }
 fn default_max_sessions() -> usize {
     5
+}
+
+/// Firmware security monitoring via innerwarden-smm.
+#[derive(Debug, Deserialize)]
+pub struct FirmwareConfig {
+    /// Enable periodic firmware audits. Default: true.
+    #[serde(default = "default_firmware_enabled")]
+    pub enabled: bool,
+    /// Audit interval in seconds. Default: 300 (5 minutes).
+    #[serde(default = "default_firmware_poll_secs")]
+    pub poll_secs: u64,
+    /// Trust score threshold for emitting incidents. Default: 0.85.
+    #[serde(default = "default_firmware_trust_threshold")]
+    pub trust_score_threshold: f64,
+}
+
+impl Default for FirmwareConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            poll_secs: default_firmware_poll_secs(),
+            trust_score_threshold: default_firmware_trust_threshold(),
+        }
+    }
+}
+
+fn default_firmware_enabled() -> bool {
+    true
+}
+fn default_firmware_poll_secs() -> u64 {
+    300
+}
+fn default_firmware_trust_threshold() -> f64 {
+    0.85
 }
 
 /// Mesh network config - mirrors innerwarden_mesh::MeshConfig

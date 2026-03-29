@@ -1540,6 +1540,7 @@ dependencies = [
  "hmac",
  "innerwarden-agent-guard",
  "innerwarden-mesh",
+ "innerwarden-smm",
  "innerwarden_core",
  "p256",
  "rand_core 0.6.4",
@@ -1655,6 +1656,21 @@ dependencies = [
  "tracing-subscriber",
  "tree-sitter",
  "tree-sitter-bash",
+]
+
+[[package]]
+name = "innerwarden-smm"
+version = "0.1.0"
+source = "git+https://github.com/InnerWarden/innerwarden-smm.git#1eacc2497de1779414ce8ebd8ab7f362d89fff15"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hex",
+ "nix",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tracing",
 ]
 
 [[package]]
