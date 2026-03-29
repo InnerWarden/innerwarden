@@ -504,6 +504,31 @@ fn attach_lsm(bpf: &mut aya::Ebpf) {
         }
     }
 
+    // Phase 2: LSM bpf hook — monitor eBPF program loading (VoidLink defense)
+    match bpf.program_mut("innerwarden_lsm_bpf") {
+        Some(prog) => {
+            let lsm: &mut aya::programs::Lsm = match prog.try_into() {
+                Ok(l) => l,
+                Err(e) => {
+                    info!(error = %e, "innerwarden_lsm_bpf: not available");
+                    pin_lsm_policy(bpf);
+                    return;
+                }
+            };
+            let btf = aya::Btf::from_sys_fs().ok();
+            if let Err(e) = lsm.load("bpf", &btf.as_ref().unwrap()) {
+                info!(error = %e, "innerwarden_lsm_bpf: failed to load");
+            } else if let Err(e) = lsm.attach() {
+                warn!(error = %e, "innerwarden_lsm_bpf: failed to attach");
+            } else {
+                info!("eBPF: innerwarden_lsm_bpf → bpf (eBPF program loading) ✅");
+            }
+        }
+        None => {
+            info!("eBPF: innerwarden_lsm_bpf not found — BPF load monitoring unavailable");
+        }
+    }
+
     pin_lsm_policy(bpf);
 }
 
@@ -1281,6 +1306,38 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     // Attach XDP firewall (non-critical - continues without it)
     attach_xdp(&mut bpf);
 
+    // Phase 2: Firmware security hooks (non-critical on ARM — some x86 only)
+    // MSR write monitoring (x86 only — kprobe on native_write_msr)
+    if let Some(prog) = bpf.program_mut("innerwarden_msr_write") {
+        use aya::programs::KProbe;
+        if let Ok(kp) = TryInto::<&mut KProbe>::try_into(prog) {
+            if kp.load().is_ok() {
+                match kp.attach("native_write_msr", 0) {
+                    Ok(_) => info!("eBPF: innerwarden_msr_write → native_write_msr ✅"),
+                    Err(e) => info!(error = %e, "innerwarden_msr_write: not available (x86 only)"),
+                }
+            }
+        }
+    }
+    // I/O port access (ioperm syscall — x86 only, harmless no-op on ARM)
+    attach_tp(&mut bpf, "innerwarden_ioperm", "syscalls", "sys_enter_ioperm");
+    // I/O privilege level (iopl syscall — x86 only)
+    attach_tp(&mut bpf, "innerwarden_iopl", "syscalls", "sys_enter_iopl");
+    // ACPI method evaluation (kprobe — available on any system with ACPI)
+    if let Some(prog) = bpf.program_mut("innerwarden_acpi_eval") {
+        use aya::programs::KProbe;
+        if let Ok(kp) = TryInto::<&mut KProbe>::try_into(prog) {
+            if kp.load().is_ok() {
+                match kp.attach("acpi_evaluate_object", 0) {
+                    Ok(_) => info!("eBPF: innerwarden_acpi_eval → acpi_evaluate_object ✅"),
+                    Err(e) => info!(error = %e, "innerwarden_acpi_eval: ACPI not available"),
+                }
+            }
+        }
+    }
+    // BPF program loading (LSM hook — requires lsm=bpf)
+    // This is attached via attach_lsm() which handles LSM hooks.
+
     // Populate kernel-level noise filters BEFORE taking ring buffer borrow
     populate_kernel_filters(&mut bpf);
 
@@ -1293,7 +1350,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     };
 
-    info!("eBPF collector active - kernel-level syscall monitoring (22 hooks)");
+    info!("eBPF collector active - kernel-level syscall monitoring (27 hooks + 5 firmware)");
 
     // Setup epoll-based wakeup via AsyncFd wrapping the ring buffer's raw fd.
     // Falls back to 100ms sleep polling if fd duplication or AsyncFd fails.
@@ -2125,6 +2182,161 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                             "cgroup_id": cgroup_id,
                         }),
                         tags: vec!["ebpf".to_string(), "io_uring".to_string()],
+                        entities: vec![],
+                    })
+                }
+                // ── Phase 2: Firmware hooks ──────────────────────
+
+                // MsrWriteEvent: kind(4) pid(4) uid(4) pad(4) msr_addr(8) lo(4) hi(4) cgroup(8) comm(64) ts(8)
+                27 if data.len() >= 104 => {
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let msr_addr = read_u64!(data, 16..24);
+                    let msr_lo = read_u32!(data, 24..28);
+                    let msr_hi = read_u32!(data, 28..32);
+                    let cgroup_id = read_u64!(data, 32..40);
+                    let comm = bytes_to_string(&data[40..104]);
+
+                    let msr_name = match msr_addr {
+                        0xC0000081 => "STAR",
+                        0xC0000082 => "LSTAR (syscall entry)",
+                        0xC0000083 => "CSTAR",
+                        0xC0000084 => "SF_MASK",
+                        0x1F2 => "IA32_SMRR_PHYSBASE",
+                        0x1F3 => "IA32_SMRR_PHYSMASK",
+                        0x3A => "IA32_FEATURE_CONTROL",
+                        _ => "UNKNOWN",
+                    };
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "firmware.msr_write".to_string(),
+                        severity: Severity::Critical,
+                        summary: format!(
+                            "{comm} (pid={pid}) wrote to MSR {msr_name} (0x{msr_addr:X}) = 0x{msr_hi:08X}{msr_lo:08X}"
+                        ),
+                        details: serde_json::json!({
+                            "pid": pid, "uid": uid, "comm": comm,
+                            "msr_address": format!("0x{msr_addr:X}"),
+                            "msr_name": msr_name,
+                            "msr_value": format!("0x{msr_hi:08X}{msr_lo:08X}"),
+                            "cgroup_id": cgroup_id,
+                        }),
+                        tags: vec!["ebpf".to_string(), "firmware".to_string(), "msr".to_string()],
+                        entities: vec![],
+                    })
+                }
+                // IopermEvent: kind(4) pid(4) uid(4) pad(4) from(8) num(8) turn_on(8) cgroup(8) comm(64) ts(8)
+                28 if data.len() >= 112 => {
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let port_from = read_u64!(data, 16..24);
+                    let port_num = read_u64!(data, 24..32);
+                    let cgroup_id = read_u64!(data, 40..48);
+                    let comm = bytes_to_string(&data[48..112]);
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "firmware.ioperm".to_string(),
+                        severity: Severity::High,
+                        summary: format!(
+                            "{comm} (pid={pid}) requested I/O port access: ports 0x{port_from:X}-0x{:X}",
+                            port_from + port_num
+                        ),
+                        details: serde_json::json!({
+                            "pid": pid, "uid": uid, "comm": comm,
+                            "port_from": port_from, "port_num": port_num,
+                            "cgroup_id": cgroup_id,
+                        }),
+                        tags: vec!["ebpf".to_string(), "firmware".to_string(), "hardware".to_string()],
+                        entities: vec![],
+                    })
+                }
+                // IoplEvent: kind(4) pid(4) uid(4) pad(4) level(8) cgroup(8) comm(64) ts(8)
+                29 if data.len() >= 96 => {
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let level = read_u64!(data, 16..24);
+                    let cgroup_id = read_u64!(data, 24..32);
+                    let comm = bytes_to_string(&data[32..96]);
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "firmware.iopl".to_string(),
+                        severity: Severity::High,
+                        summary: format!(
+                            "{comm} (pid={pid}) elevated I/O privilege level to {level}"
+                        ),
+                        details: serde_json::json!({
+                            "pid": pid, "uid": uid, "comm": comm,
+                            "level": level, "cgroup_id": cgroup_id,
+                        }),
+                        tags: vec!["ebpf".to_string(), "firmware".to_string(), "hardware".to_string()],
+                        entities: vec![],
+                    })
+                }
+                // AcpiEvalEvent: kind(4) pid(4) uid(4) pad(4) cgroup(8) pathname(64) comm(64) ts(8)
+                30 if data.len() >= 160 => {
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let cgroup_id = read_u64!(data, 16..24);
+                    let pathname = bytes_to_string(&data[24..88]);
+                    let comm = bytes_to_string(&data[88..152]);
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "firmware.acpi_eval".to_string(),
+                        severity: Severity::Debug,
+                        summary: format!(
+                            "{comm} (pid={pid}) ACPI evaluate: {pathname}"
+                        ),
+                        details: serde_json::json!({
+                            "pid": pid, "uid": uid, "comm": comm,
+                            "pathname": pathname, "cgroup_id": cgroup_id,
+                        }),
+                        tags: vec!["ebpf".to_string(), "firmware".to_string(), "acpi".to_string()],
+                        entities: vec![],
+                    })
+                }
+                // BpfLoadEvent: kind(4) pid(4) uid(4) bpf_cmd(4) cgroup(8) comm(64) ts(8)
+                31 if data.len() >= 96 => {
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 8..12);
+                    let bpf_cmd = read_u32!(data, 12..16);
+                    let cgroup_id = read_u64!(data, 16..24);
+                    let comm = bytes_to_string(&data[24..88]);
+
+                    let cmd_name = match bpf_cmd {
+                        0 => "BPF_MAP_CREATE",
+                        5 => "BPF_PROG_LOAD",
+                        18 => "BPF_BTF_LOAD",
+                        28 => "BPF_LINK_CREATE",
+                        _ => "UNKNOWN",
+                    };
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.to_string(),
+                        source: "ebpf".to_string(),
+                        kind: "firmware.bpf_load".to_string(),
+                        severity: Severity::Medium,
+                        summary: format!(
+                            "{comm} (pid={pid}) loaded eBPF: {cmd_name} (cmd={bpf_cmd})"
+                        ),
+                        details: serde_json::json!({
+                            "pid": pid, "uid": uid, "comm": comm,
+                            "bpf_cmd": bpf_cmd, "cmd_name": cmd_name,
+                            "cgroup_id": cgroup_id,
+                        }),
+                        tags: vec!["ebpf".to_string(), "firmware".to_string(), "bpf_load".to_string()],
                         entities: vec![],
                     })
                 }

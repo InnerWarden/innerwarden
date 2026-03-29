@@ -40,10 +40,11 @@ use aya_ebpf::{
 use aya_ebpf::{macros::raw_tracepoint, maps::ProgramArray, programs::RawTracePointContext};
 use aya_log_ebpf::info;
 use innerwarden_ebpf_types::{
-    AcceptEvent, CloneEvent, ConnectEvent, DupEvent, ExecveEvent, KillEvent, ListenEvent,
-    MemfdCreateEvent, ModuleLoadEvent, MountEvent, MprotectEvent, PrctlEvent, PrivEscEvent,
-    ProcessExitEvent, PtraceEvent, RenameEvent, SetUidEvent, SocketBindEvent, SyscallKind,
-    UnlinkEvent, MAX_COMM_LEN, MAX_FILENAME_LEN,
+    AcceptEvent, AcpiEvalEvent, BpfLoadEvent, CloneEvent, ConnectEvent, DupEvent, ExecveEvent,
+    IopermEvent, IoplEvent, KillEvent, ListenEvent, MemfdCreateEvent, ModuleLoadEvent, MountEvent,
+    MprotectEvent, MsrWriteEvent, PrctlEvent, PrivEscEvent, ProcessExitEvent, PtraceEvent,
+    RenameEvent, SetUidEvent, SocketBindEvent, SyscallKind, UnlinkEvent, MAX_COMM_LEN,
+    MAX_FILENAME_LEN,
 };
 
 // ---------------------------------------------------------------------------
@@ -2667,6 +2668,284 @@ fn try_io_uring_create(ctx: &TracePointContext) -> Result<(), i64> {
 
     entry.submit(0);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: Firmware security hooks
+// ---------------------------------------------------------------------------
+
+/// Kprobe on native_write_msr — detects writes to sensitive MSRs.
+/// Sensitive: LSTAR (syscall entry point), STAR, CSTAR, SF_MASK, SMRR, APIC_BASE.
+/// A rootkit that hooks syscalls rewrites LSTAR. Any unexpected MSR write is critical.
+#[kprobe]
+pub fn innerwarden_msr_write(ctx: ProbeContext) -> u32 {
+    match try_msr_write(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+#[inline(always)]
+fn try_msr_write(ctx: &ProbeContext) -> Result<(), i64> {
+    // native_write_msr(unsigned int msr, u64 val)
+    let msr_addr: u64 = unsafe { ctx.arg(0).ok_or(1i64)? };
+
+    // Only alert on security-sensitive MSRs.
+    // 0xC0000081 = STAR, 0xC0000082 = LSTAR (syscall entry), 0xC0000083 = CSTAR,
+    // 0xC0000084 = SF_MASK, 0x1F2 = IA32_SMRR_PHYSBASE, 0x1F3 = IA32_SMRR_PHYSMASK,
+    // 0xFEE00000 region = APIC, 0x3A = IA32_FEATURE_CONTROL
+    let sensitive = matches!(
+        msr_addr,
+        0xC0000081 | 0xC0000082 | 0xC0000083 | 0xC0000084 | 0x1F2 | 0x1F3 | 0x3A
+    );
+    if !sensitive {
+        return Ok(());
+    }
+
+    let msr_value: u64 = unsafe { ctx.arg(1).ok_or(1i64)? };
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    let ts = unsafe { bpf_ktime_get_ns() };
+
+    let mut entry = match EVENTS.reserve::<MsrWriteEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::MsrWrite as u32;
+    event.pid = pid;
+    event.uid = uid;
+    event._pad = 0;
+    event.msr_address = msr_addr;
+    event.msr_value_lo = msr_value as u32;
+    event.msr_value_hi = (msr_value >> 32) as u32;
+    event.cgroup_id = cgroup_id;
+    event.ts_ns = ts;
+    event.comm = [0u8; MAX_COMM_LEN];
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
+}
+
+/// Tracepoint on sys_enter_ioperm — detects I/O port access requests.
+/// No legitimate userspace process needs direct I/O port access in production.
+/// This targets SPI controller probing (ports 0xCF8/0xCFC on x86).
+#[tracepoint]
+pub fn innerwarden_ioperm(ctx: TracePointContext) -> u32 {
+    match try_ioperm(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+#[inline(always)]
+fn try_ioperm(ctx: &TracePointContext) -> Result<(), i64> {
+    let from: u64 = unsafe { ctx.read_at(16)? };
+    let num: u64 = unsafe { ctx.read_at(24)? };
+    let turn_on: u64 = unsafe { ctx.read_at(32)? };
+
+    // Only alert when enabling access (turn_on = 1).
+    if turn_on != 1 {
+        return Ok(());
+    }
+
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    let ts = unsafe { bpf_ktime_get_ns() };
+
+    let mut entry = match EVENTS.reserve::<IopermEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Ioperm as u32;
+    event.pid = pid;
+    event.uid = uid;
+    event._pad = 0;
+    event.port_from = from;
+    event.port_num = num;
+    event.turn_on = turn_on;
+    event.cgroup_id = cgroup_id;
+    event.ts_ns = ts;
+    event.comm = [0u8; MAX_COMM_LEN];
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
+}
+
+/// Tracepoint on sys_enter_iopl — detects I/O privilege level elevation.
+/// Level > 0 grants direct hardware access. Almost never legitimate in production.
+#[tracepoint]
+pub fn innerwarden_iopl(ctx: TracePointContext) -> u32 {
+    match try_iopl(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+#[inline(always)]
+fn try_iopl(ctx: &TracePointContext) -> Result<(), i64> {
+    let level: u64 = unsafe { ctx.read_at(16)? };
+
+    // Level 0 = normal, no alert needed.
+    if level == 0 {
+        return Ok(());
+    }
+
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    let ts = unsafe { bpf_ktime_get_ns() };
+
+    let mut entry = match EVENTS.reserve::<IoplEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Iopl as u32;
+    event.pid = pid;
+    event.uid = uid;
+    event._pad = 0;
+    event.level = level;
+    event.cgroup_id = cgroup_id;
+    event.ts_ns = ts;
+    event.comm = [0u8; MAX_COMM_LEN];
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
+}
+
+/// Kprobe on acpi_evaluate_object — monitors ACPI method execution.
+/// ACPI rootkits embed code in AML methods (DSDT/SSDT). Monitoring which
+/// methods execute at runtime creates a behavioral baseline.
+#[kprobe]
+pub fn innerwarden_acpi_eval(ctx: ProbeContext) -> u32 {
+    match try_acpi_eval(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+#[inline(always)]
+fn try_acpi_eval(ctx: &ProbeContext) -> Result<(), i64> {
+    // acpi_evaluate_object(handle, pathname, params, return_buf)
+    // arg1 = pathname (char * — ACPI method name like "\_SB.PCI0._STA")
+    let pathname_ptr: *const u8 = unsafe { ctx.arg::<u64>(1).ok_or(1i64)? as *const u8 };
+
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    let ts = unsafe { bpf_ktime_get_ns() };
+
+    let mut entry = match EVENTS.reserve::<AcpiEvalEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::AcpiEval as u32;
+    event.pid = pid;
+    event.uid = uid;
+    event._pad = 0;
+    event.cgroup_id = cgroup_id;
+    event.ts_ns = ts;
+    event.pathname = [0u8; MAX_COMM_LEN];
+    event.comm = [0u8; MAX_COMM_LEN];
+
+    // Read ACPI method pathname from kernel memory.
+    if !pathname_ptr.is_null() {
+        let _ = unsafe {
+            bpf_probe_read_kernel_str_bytes(pathname_ptr, &mut event.pathname)
+        };
+    }
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
+}
+
+/// LSM hook on bpf — monitors all BPF syscall operations.
+/// Detects unauthorized eBPF program loading (VoidLink rootkit defense).
+/// Logs BPF_PROG_LOAD, BPF_MAP_CREATE, etc. from non-innerwarden processes.
+#[lsm(hook = "bpf")]
+pub fn innerwarden_lsm_bpf(ctx: LsmContext) -> i32 {
+    match try_lsm_bpf(&ctx) {
+        Ok(ret) => ret,
+        Err(_) => 0, // allow on error (fail-open)
+    }
+}
+
+#[inline(always)]
+fn try_lsm_bpf(ctx: &LsmContext) -> Result<i32, i64> {
+    // LSM bpf hook: int security_bpf(int cmd, ...)
+    // arg0 = BPF command (BPF_PROG_LOAD=5, BPF_MAP_CREATE=0)
+    let bpf_cmd: u32 = unsafe { ctx.arg::<u32>(0).ok_or(1i64)? };
+
+    // Only log program loads and map creates (not lookups/reads).
+    // BPF_MAP_CREATE=0, BPF_PROG_LOAD=5, BPF_BTF_LOAD=18, BPF_LINK_CREATE=28
+    if bpf_cmd != 0 && bpf_cmd != 5 && bpf_cmd != 18 && bpf_cmd != 28 {
+        return Ok(0);
+    }
+
+    // Skip our own process.
+    let comm = bpf_get_current_comm().map_err(|_| 1i64)?;
+    // "innerwarden" starts with "in" + "ne" — quick check first 4 bytes.
+    if comm.len() >= 12
+        && comm[0] == b'i'
+        && comm[1] == b'n'
+        && comm[2] == b'n'
+        && comm[3] == b'e'
+    {
+        return Ok(0);
+    }
+
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    let ts = unsafe { bpf_ktime_get_ns() };
+
+    let mut entry = match EVENTS.reserve::<BpfLoadEvent>(0) {
+        Some(e) => e,
+        None => return Ok(0),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::BpfLoad as u32;
+    event.pid = pid;
+    event.uid = uid;
+    event.bpf_cmd = bpf_cmd;
+    event.cgroup_id = cgroup_id;
+    event.ts_ns = ts;
+    event.comm = [0u8; MAX_COMM_LEN];
+    event.comm[..comm.len().min(MAX_COMM_LEN)]
+        .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+
+    entry.submit(0);
+    Ok(0) // always allow (monitoring only, not enforcement)
 }
 
 // ---------------------------------------------------------------------------

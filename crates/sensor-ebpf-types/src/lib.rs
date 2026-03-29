@@ -106,6 +106,18 @@ pub enum SyscallKind {
     IoUringCreate = 25,
     /// Container drift: binary executed from overlayfs upper layer (not in original image)
     ContainerDrift = 26,
+
+    // ── Phase 2: Firmware hooks ────────────────────────────────────────
+    /// MSR write (kprobe on native_write_msr) — detect SMRR/LSTAR tampering
+    MsrWrite = 27,
+    /// I/O port access request (ioperm syscall) — detect SPI controller probing
+    Ioperm = 28,
+    /// I/O privilege level elevation (iopl syscall) — detect direct hardware access
+    Iopl = 29,
+    /// ACPI method evaluation (kprobe on acpi_evaluate_object) — detect ACPI rootkit
+    AcpiEval = 30,
+    /// BPF program loading (LSM bpf hook) — detect eBPF weaponization (VoidLink)
+    BpfLoad = 31,
 }
 
 /// Event emitted by the eBPF `execve` tracepoint.
@@ -541,6 +553,93 @@ pub struct IoUringCreateEvent {
     /// Cgroup ID
     pub cgroup_id: u64,
     /// Process name
+    pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: Firmware event types
+// ---------------------------------------------------------------------------
+
+/// MSR write event — emitted when a process writes to a sensitive MSR.
+/// Sensitive MSRs: LSTAR (syscall entry), STAR, CSTAR, APIC_BASE, SMRR.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MsrWriteEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub _pad: u32,
+    /// MSR address being written (e.g., 0xc0000082 = LSTAR).
+    pub msr_address: u64,
+    /// Value written (lower 32 bits).
+    pub msr_value_lo: u32,
+    /// Value written (upper 32 bits).
+    pub msr_value_hi: u32,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+/// I/O port access event — emitted on ioperm() syscall.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct IopermEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub _pad: u32,
+    /// Starting I/O port number.
+    pub port_from: u64,
+    /// Number of ports requested.
+    pub port_num: u64,
+    /// 1 = enable access, 0 = disable.
+    pub turn_on: u64,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+/// I/O privilege level event — emitted on iopl() syscall.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct IoplEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub _pad: u32,
+    /// Requested IOPL level (0-3).
+    pub level: u64,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+/// ACPI method evaluation event — emitted on acpi_evaluate_object().
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AcpiEvalEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub _pad: u32,
+    pub cgroup_id: u64,
+    /// ACPI method pathname (e.g., "\\_SB.PCI0._STA").
+    pub pathname: [u8; MAX_COMM_LEN],
+    pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+/// BPF program load event — emitted on bpf() syscall (LSM hook).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct BpfLoadEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    /// BPF command (BPF_PROG_LOAD=5, BPF_MAP_CREATE=0, etc.).
+    pub bpf_cmd: u32,
+    pub cgroup_id: u64,
     pub comm: [u8; MAX_COMM_LEN],
     pub ts_ns: u64,
 }
