@@ -6062,7 +6062,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       to   { background-position: 48px 48px; }
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; overflow: hidden; }
+    html, body { height: 100%; overflow: hidden; overflow-y: auto; }
     body {
       font-family: "Space Grotesk", system-ui, -apple-system, sans-serif;
       color: var(--text);
@@ -6076,7 +6076,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
 
     /* ── App shell ───────────────────────────────────────────────── */
-    .app { display: flex; flex-direction: column; height: 100vh; position: relative; z-index: 1; }
+    .app { display: flex; flex-direction: column; min-height: 100vh; position: relative; z-index: 1; }
 
     .app-header {
       display: flex; align-items: center; gap: 10px;
@@ -6137,7 +6137,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
     #refreshStatus { margin-left: auto; font-size: 0.7rem; color: var(--muted); }
 
-    .app-body { display: flex; flex: 1; overflow: hidden; }
+    .app-body { display: flex; flex: 1; overflow: visible; }
 
     /* ── Left panel ──────────────────────────────────────────────── */
     .left-panel {
