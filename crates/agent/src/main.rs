@@ -1424,6 +1424,31 @@ async fn main() -> Result<()> {
                     "agent-guard snitch alert"
                 );
 
+                // JSONL audit trail (write first, before network calls that may block).
+                {
+                    let today = chrono::Local::now().date_naive().format("%Y-%m-%d");
+                    let path =
+                        alert_data_dir.join(format!("agent-guard-events-{today}.jsonl"));
+                    match serde_json::to_string(&alert) {
+                        Ok(line) => {
+                            use std::io::Write;
+                            match std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(&path)
+                            {
+                                Ok(mut f) => {
+                                    if let Err(e) = writeln!(f, "{line}") {
+                                        warn!(error = %e, path = %path.display(), "failed to write agent-guard event");
+                                    }
+                                }
+                                Err(e) => warn!(error = %e, path = %path.display(), "failed to open agent-guard events file"),
+                            }
+                        }
+                        Err(e) => warn!(error = %e, "failed to serialize agent-guard alert"),
+                    }
+                }
+
                 // Telegram notification.
                 if let Some(ref tg) = tg {
                     if let Err(e) = tg.send_agent_guard_alert(&alert).await {
@@ -1446,20 +1471,6 @@ async fn main() -> Result<()> {
                     .await
                     {
                         warn!(error = %e, "agent-guard webhook alert failed");
-                    }
-                }
-
-                // JSONL audit trail.
-                let today = chrono::Local::now().date_naive().format("%Y-%m-%d");
-                let path = alert_data_dir.join(format!("agent-guard-events-{today}.jsonl"));
-                if let Ok(line) = serde_json::to_string(&alert) {
-                    use std::io::Write;
-                    if let Ok(mut f) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&path)
-                    {
-                        let _ = writeln!(f, "{line}");
                     }
                 }
             }
