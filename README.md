@@ -3,18 +3,20 @@
 [![CI](https://github.com/InnerWarden/innerwarden/actions/workflows/ci.yml/badge.svg)](https://github.com/InnerWarden/innerwarden/actions/workflows/ci.yml)
 [![Security](https://github.com/InnerWarden/innerwarden/actions/workflows/security.yml/badge.svg)](https://github.com/InnerWarden/innerwarden/actions/workflows/security.yml)
 [![Release](https://img.shields.io/github/v/release/InnerWarden/innerwarden?label=release&color=blue)](https://github.com/InnerWarden/innerwarden/releases/latest)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/InnerWarden/innerwarden)](https://github.com/InnerWarden/innerwarden/stargazers)
 [![Last Commit](https://img.shields.io/github/last-commit/InnerWarden/innerwarden)](https://github.com/InnerWarden/innerwarden/commits/main)
 
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange)
-![eBPF Hooks](https://img.shields.io/badge/eBPF%20hooks-25-blueviolet)
-![Detectors](https://img.shields.io/badge/detectors-40-blue)
+![eBPF Hooks](https://img.shields.io/badge/eBPF%20hooks-38-blueviolet)
+![Detectors](https://img.shields.io/badge/detectors-48-blue)
+![Correlation Rules](https://img.shields.io/badge/correlation%20rules-23-purple)
+![Tests](https://img.shields.io/badge/tests-1779-brightgreen)
 ![Memory](https://img.shields.io/badge/memory-under%20100MB-green)
 ![AI Optional](https://img.shields.io/badge/AI-optional-lightgrey)
 [![Featured on GitHub Awesome](https://img.shields.io/badge/Featured-GitHub%20Awesome-blue)](https://www.youtube.com/watch?v=i9YpWp0hXgg&t=315)
 
-Inner Warden is an autonomous security agent for Linux and macOS. It detects attacks, blocks them at the kernel level, and responds automatically when you allow it. 25 eBPF kernel hooks. 40 detectors. 12 response skills. AI agent protection (Agent Guard). Mesh collaborative defense. No cloud. No dependencies. Just two Rust daemons and a CLI.
+Inner Warden is an autonomous security agent for Linux and macOS. Full-stack visibility from Ring -2 (firmware) to Ring 3 (userspace). 38 eBPF kernel hooks. 48 detectors. 20 collectors. 23 cross-layer correlation rules. Behavioral DNA attacker fingerprinting. Baseline anomaly detection. JA3/JA4 TLS fingerprinting. YARA + Sigma rule engines. Automated playbook response. Monthly threat reports. AI agent protection (Agent Guard). Mesh collaborative defense. No cloud. No dependencies. Just two Rust daemons and a CLI.
 
 ```bash
 curl -fsSL https://innerwarden.com/install | sudo bash
@@ -70,10 +72,10 @@ https://github.com/user-attachments/assets/6ea1e124-52c2-48fe-8600-4b2f3d670116
                          │                        KERNEL                               │
                          │                                                             │
                          │  ┌──────────────┐  ┌──────────┐  ┌───────┐  ┌───────────┐  │
-                         │  │19 tracepoints │  │ 1 kprobe │  │  LSM  │  │    XDP    │  │
-                         │  │  execve,      │  │ commit_  │  │ kill  │  │ wire-speed│  │
-                         │  │  connect,     │  │ creds    │  │ chain │  │ IP drop   │  │
-                         │  │  openat, ...  │  │          │  │ 8 pat │  │ 10M+ pps  │  │
+                         │  │23 tracepoints │  │3 kprobes │  │ 3 LSM │  │    XDP    │  │
+                         │  │  execve,      │  │ creds,   │  │ kill  │  │ wire-speed│  │
+                         │  │  connect,     │  │ MSR,     │  │ chain │  │ IP drop   │  │
+                         │  │  openat, ...  │  │ ACPI     │  │ 8 pat │  │ 10M+ pps  │  │
                          │  └──────┬───────┘  └────┬─────┘  └───┬───┘  └─────┬─────┘  │
                          │         │               │            │            │         │
                          │         └───────┬───────┘            │            │         │
@@ -94,7 +96,7 @@ https://github.com/user-attachments/assets/6ea1e124-52c2-48fe-8600-4b2f3d670116
 │       └───────────┴──────────┴───────────────┘           │    │            │
 │                          │                                │    │            │
 │                    ┌─────▼──────┐                         │    │            │
-│                    │36 detectors│                         │    │            │
+│                    │48 detectors│                         │    │            │
 │                    │ stateful   │                         │    │            │
 │                    └─────┬──────┘                         │    │            │
 │                          │                                │    │            │
@@ -122,7 +124,7 @@ https://github.com/user-attachments/assets/6ea1e124-52c2-48fe-8600-4b2f3d670116
 │                       ▼                                        │            │  │
 │              ┌─────────────────┐     ┌──────────────┐          │            │  │
 │              │ Skill Executor  │────►│ LSM enforce  │◄─────────┘            │  │
-│              │ 12 skills       │     │ XDP block    │◄──────────────────────┘  │
+│              │ 12 skills +     │     │ XDP block    │◄──────────────────────┘  │
 │              │                 │     └──────────────┘                         │
 │              │ block_ip (5)    │     ┌──────────────┐   ┌──────────────┐      │
 │              │ kill_chain_resp │────►│ Cloudflare   │   │ Mesh Network │      │
@@ -150,12 +152,13 @@ https://github.com/user-attachments/assets/6ea1e124-52c2-48fe-8600-4b2f3d670116
 
 ## What it does
 
-1. **Watches**: collects signals from your host (SSH, Docker, nginx, sudo, shell audit, firewall logs, eBPF kernel tracing with 22 hooks covering every process, connection, file access, privilege change, and network bind)
-2. **Detects**: 36 stateful detectors identify brute-force, credential stuffing, port scans, C2 callbacks, privilege escalation, container escapes, reverse shells, ransomware, rootkits, DNS tunneling, and more
-3. **Blocks at the kernel**: LSM enforcement stops reverse shells and /tmp execution before they run. XDP drops attack traffic at wire speed. 8 kill chain patterns detected and blocked without signatures. Blocks propagate to mesh peers.
-4. **Alerts you**: Telegram, Slack, webhook (PagerDuty, Discord, Teams, DingTalk, and more), real time, on your phone
-5. **Decides**: optionally asks AI for a confidence-scored recommendation (not required)
-6. **Acts**: blocks the IP, suspends sudo, deploys a honeypot, captures traffic. Or does nothing. Your call.
+1. **Watches**: 20 collectors across all layers — eBPF syscall tracing (38 kernel hooks), firmware integrity (ESP, UEFI, ACPI, TPM), memory forensics (/proc/maps RWX detection), JA3/JA4 TLS fingerprinting, filesystem real-time monitoring, cgroup resource abuse, kernel integrity (syscall table + eBPF inventory), plus auth.log, journald, Docker, nginx, Suricata, osquery, CloudTrail
+2. **Detects**: 48 stateful detectors + 8 YARA malware rules + 8 Sigma log rules identify brute-force, credential stuffing, port scans, C2 callbacks, privilege escalation, container escapes, reverse shells (eBPF syscall sequence — impossible to evade), ransomware (entropy analysis), rootkits, DNS tunneling, data exfiltration (sensitive file read → outbound connect by PID), and more
+3. **Correlates**: 23 cross-layer rules connect Firmware × Kernel × Userspace × Network × Honeypot events. Detects multi-stage attacks no single detector can see: firmware tampering → rootkit install, recon → brute force → data exfil, honeypot engagement → real attack on same IP
+4. **Learns**: baseline anomaly detection trains for 7 days then alerts on deviations — event rate drops (silence = compromise), new process lineages (nginx→sh), unusual login times, unknown network destinations. No rules needed.
+5. **Blocks at the kernel**: LSM enforcement stops reverse shells and /tmp execution before they run. XDP drops attack traffic at wire speed. 8 kill chain patterns detected and blocked without signatures. Blocks propagate to mesh peers.
+6. **Responds automatically**: 6 built-in playbooks (ransomware, reverse shell, data exfil, malware, firmware-to-rootkit chain, recon-to-exfil chain) execute ordered response sequences — kill process, block IP, capture forensics, pcap, notify, escalate
+7. **Fingerprints attackers**: behavioral DNA (SHA-256 of detectors + tools + targets + timing patterns), campaign detection via IOC clustering, recurrence tracking, risk scoring 0-100, monthly threat reports with MITRE heatmap
 
 Everything is local, audited, and reversible.
 
@@ -206,7 +209,7 @@ Blocking is **layered**: a single block decision triggers XDP (instant kernel dr
 
 ## What it detects
 
-36 stateful detectors covering the full attack lifecycle. Highlights:
+48 stateful detectors + 8 YARA rules + 8 Sigma rules covering the full attack lifecycle. Highlights:
 
 | Detector | Threat | MITRE |
 |----------|--------|-------|
@@ -237,7 +240,7 @@ Blocking is **layered**: a single block decision triggers XDP (instant kernel dr
 | `packet_flood` | DDoS / volumetric attack detection | - |
 | `user_agent_scanner` | Known scanner signatures (Nikto, sqlmap, Nuclei, 20+) | T1595.002 |
 
-Plus: `docker_anomaly`, `osquery_anomaly`, `suricata_alert`, `search_abuse`, `credential_harvest`, `ssh_key_injection`, `user_creation`, `crontab_persistence`, `systemd_persistence`, `process_injection`, `outbound_anomaly`.
+Plus: `docker_anomaly`, `osquery_anomaly`, `suricata_alert`, `search_abuse`, `credential_harvest`, `ssh_key_injection`, `user_creation`, `crontab_persistence`, `systemd_persistence`, `process_injection`, `outbound_anomaly`, `data_exfil_ebpf` (sensitive file read → outbound connect by PID), `yara_scan` (8 built-in rules: XMRig, webshells, Cobalt Strike, Metasploit, rootkits), `sigma_rule` (8 built-in rules: cron modification, /tmp execution, shadow access, docker.sock), `cgroup_abuse` (CPU/memory resource abuse), `io_uring_anomaly`, `container_drift`, `host_drift`, `sensitive_write`.
 
 `execution_guard` parses commands structurally using tree-sitter-bash. It catches `curl | sh` pipelines, `/tmp` execution, reverse shell patterns, and staged download-chmod-execute sequences.
 
@@ -249,15 +252,17 @@ Plus: `docker_anomaly`, `osquery_anomaly`, `suricata_alert`, `search_abuse`, `cr
 
 ## How it works
 
-**Sensor**: deterministic signal collection. No AI, no HTTP. 15 collectors (auth.log, journald, Docker events, file integrity, firmware integrity, nginx access/error, shell audit, macOS unified log, syslog firewall, eBPF syscall tracing with 22 kernel hooks). Optional: Suricata, osquery, Wazuh, AWS CloudTrail, Falco. Events flow through Redis Streams to the agent.
+**Sensor**: deterministic signal collection. No AI, no HTTP. 20 collectors (auth.log, journald, Docker events, file integrity, firmware integrity, nginx access/error, shell audit, macOS unified log, syslog firewall, eBPF syscall tracing with 38 kernel hooks, JA3/JA4 TLS fingerprinting, memory forensics via /proc/maps, real-time filesystem monitoring with entropy analysis, kernel integrity monitoring, cgroup resource abuse detection). Optional: Suricata, osquery, Wazuh, AWS CloudTrail, Falco. Events flow through JSONL files or Redis Streams to the agent. Syslog CEF output for SIEM integration.
 
-**eBPF**: 22 kernel hooks running inside Linux (5.8+, CO-RE/BTF portable):
-- **19 tracepoints**: execve, connect, openat, ptrace, setuid, bind, mount, memfd_create, init_module, dup2/dup3, listen, mprotect, clone, unlinkat, renameat2, kill, prctl, accept4, sched_process_exit
-- **1 kprobe** (`commit_creds`): detects privilege escalation before any log is written
-- **LSM enforcement** (`bprm_check_security`): blocks execution from /tmp and /dev/shm at the kernel level, plus **kill chain detection** with 8 generic patterns (reverse shell, bind shell, code injection, exploit-to-shell, inject-to-shell, exploit-to-C2, full exploit chain, data exfiltration) blocked at execve. No CVE signatures needed. All 8 patterns tested and blocking on production.
+**eBPF**: 38 kernel hooks running inside Linux (5.8+, CO-RE/BTF portable):
+- **23 tracepoints**: execve, connect, openat, ptrace, setuid, bind, mount, memfd_create, init_module, dup2/dup3, listen, mprotect, clone, unlinkat, renameat2, kill, prctl, accept4, sched_process_exit, ioperm, iopl, io_uring_submit, io_uring_create
+- **3 kprobes**: `commit_creds` (privilege escalation), `native_write_msr` (firmware MSR tampering), `acpi_evaluate_object` (ACPI rootkit detection)
+- **3 LSM hooks**: `bprm_check_security` (exec blocking + kill chain with 8 attack patterns), `file_open` (sensitive path write protection), `bpf` (eBPF weaponization / VoidLink defense)
+- **4 kprobe/kretprobe pairs** (Trace of the Times): iterate_dir, filldir64, tcp4_seq_show, proc_pid_readdir — timing-based rootkit detection
 - **XDP program**: wire-speed IP blocking at the network driver (10M+ pps drop rate)
+- **Phase 2 firmware hooks**: MSR write guard (LSTAR/SMRR), I/O port access (SPI controller probing), ACPI method execution monitoring
 
-> **Looking for the eBPF source code?** All 22 kernel programs live in a single file: [`crates/sensor-ebpf/src/main.rs`](crates/sensor-ebpf/src/main.rs).
+> **Looking for the eBPF source code?** All 38 kernel programs live in a single file: [`crates/sensor-ebpf/src/main.rs`](crates/sensor-ebpf/src/main.rs).
 
 **Kernel-level noise filters** keep overhead near zero: COMM_ALLOWLIST (137 trusted processes like sshd, systemd, docker), CGROUP_ALLOWLIST, PID_RATE_LIMIT, and PID_CHAIN. Tail call dispatcher routes events through a single attach point to N handlers via ProgramArray. Ring buffer with epoll wakeup delivers events in microseconds.
 
@@ -272,9 +277,9 @@ innerwarden mesh add-peer https://peer-server:8790
 
 Container-aware via cgroup ID. Zero performance overhead.
 
-**Agent**: reads incidents from Redis Streams, applies algorithm gate (skip low severity, private IPs, already-blocked), enriches with AbuseIPDB + GeoIP + CrowdSec, optionally sends to AI for confidence-scored triage, executes the chosen skill. Policy-gated: nothing runs unless you've explicitly enabled it.
+**Agent**: reads incidents from JSONL or Redis Streams. Fast loop (2s): algorithm gate → enrichment (AbuseIPDB, GeoIP, CrowdSec, threat feeds) → VirusTotal hash check on YARA matches → AI triage → playbook evaluation → skill execution → pcap capture on High/Critical → audit trail. Slow loop (30s): cross-layer correlation (23 rules) → baseline learning → attacker intelligence consolidation (DNA + campaigns) → monthly report generation → narrative summary.
 
-Two Rust daemons. No external dependencies. Under 50 MB RAM total. Dashboard with auth, live SSE feed, MITRE ATT&CK mapping, attack map, 20 integration cards, ISO 27001 compliance tab with hash chain verification. Sleeps after 15 min of inactivity.
+Two Rust daemons. No external dependencies. Under 50 MB RAM total. Dashboard with 10 views: Sensors HUD, Threats investigation, Report, Health, Honeypot, Compliance (ISO 27001), Intelligence (Profiles, Campaigns, Chains, Baseline, Playbooks), Monthly Report. Live SSE feed, MITRE ATT&CK mapping, 20 integration cards. Sleeps after 15 min of inactivity.
 
 ---
 
