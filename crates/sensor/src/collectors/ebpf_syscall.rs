@@ -1338,6 +1338,47 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     // BPF program loading (LSM hook — requires lsm=bpf)
     // This is attached via attach_lsm() which handles LSM hooks.
 
+    // Trace of the Times: attach kprobe/kretprobe pairs for timing measurement.
+    {
+        let timing_targets = [
+            ("innerwarden_tot_iterate_dir_entry", "innerwarden_tot_iterate_dir_ret", "iterate_dir"),
+            ("innerwarden_tot_filldir64_entry", "innerwarden_tot_filldir64_ret", "filldir64"),
+            ("innerwarden_tot_tcp4_entry", "innerwarden_tot_tcp4_ret", "tcp4_seq_show"),
+            ("innerwarden_tot_procdir_entry", "innerwarden_tot_procdir_ret", "proc_pid_readdir"),
+        ];
+        for (entry_prog, ret_prog, func_name) in &timing_targets {
+            // Attach kprobe (entry).
+            let entry_ok = if let Some(prog) = bpf.program_mut(entry_prog) {
+                use aya::programs::KProbe;
+                if let Ok(kp) = TryInto::<&mut KProbe>::try_into(prog) {
+                    kp.load().is_ok() && kp.attach(func_name, 0).is_ok()
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            // Attach kretprobe (return).
+            let ret_ok = if let Some(prog) = bpf.program_mut(ret_prog) {
+                use aya::programs::KProbe;
+                if let Ok(kp) = TryInto::<&mut KProbe>::try_into(prog) {
+                    kp.load().is_ok() && kp.attach(func_name, 0).is_ok()
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if entry_ok && ret_ok {
+                info!("eBPF: ToT timing probe → {func_name} (entry+return) ✅");
+            } else if entry_ok || ret_ok {
+                warn!("eBPF: ToT {func_name}: partial attach (entry={entry_ok}, ret={ret_ok})");
+            } else {
+                info!("eBPF: ToT {func_name}: not available on this kernel");
+            }
+        }
+    }
+
     // Populate kernel-level noise filters BEFORE taking ring buffer borrow
     populate_kernel_filters(&mut bpf);
 
@@ -2305,6 +2346,52 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         tags: vec!["ebpf".to_string(), "firmware".to_string(), "acpi".to_string()],
                         entities: vec![],
                     })
+                }
+                // TimingProbeEvent: kind(4) pid(4) target(4) pad(4) delta_ns(8) cgroup(8) comm(64) ts(8)
+                32 if data.len() >= 96 => {
+                    let pid = read_u32!(data, 4..8);
+                    let target = read_u32!(data, 8..12);
+                    let delta_ns = read_u64!(data, 16..24);
+                    let cgroup_id = read_u64!(data, 24..32);
+                    let comm = bytes_to_string(&data[32..96]);
+
+                    let target_name = match target {
+                        1 => "iterate_dir",
+                        2 => "filldir64",
+                        3 => "tcp4_seq_show",
+                        4 => "proc_pid_readdir",
+                        _ => "unknown",
+                    };
+
+                    // Timing events are high-volume. Only emit as events
+                    // when delta is unusually large (> 1ms = possible hook).
+                    // Normal deltas are sub-microsecond.
+                    if delta_ns > 1_000_000 {
+                        Some(Event {
+                            ts: chrono::Utc::now(),
+                            host: host.to_string(),
+                            source: "ebpf".to_string(),
+                            kind: "firmware.timing_anomaly".to_string(),
+                            severity: Severity::High,
+                            summary: format!(
+                                "{target_name} took {:.1}ms (pid={pid} {comm}) — possible kernel hook",
+                                delta_ns as f64 / 1_000_000.0,
+                            ),
+                            details: serde_json::json!({
+                                "pid": pid, "comm": comm,
+                                "target": target_name,
+                                "delta_ns": delta_ns,
+                                "delta_ms": delta_ns as f64 / 1_000_000.0,
+                                "cgroup_id": cgroup_id,
+                            }),
+                            tags: vec!["ebpf".to_string(), "firmware".to_string(), "timing".to_string()],
+                            entities: vec![],
+                        })
+                    } else {
+                        // Normal timing — silently collected for baseline building.
+                        // TODO: accumulate in a buffer for periodic Trace of the Times analysis.
+                        None
+                    }
                 }
                 // BpfLoadEvent: kind(4) pid(4) uid(4) bpf_cmd(4) cgroup(8) comm(64) ts(8)
                 31 if data.len() >= 96 => {

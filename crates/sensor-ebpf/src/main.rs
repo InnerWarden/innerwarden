@@ -29,9 +29,9 @@ use aya_ebpf::{
         bpf_probe_read_kernel_str_bytes, bpf_probe_read_user,
         bpf_probe_read_user_str_bytes,
     },
-    macros::{kprobe, lsm, map, tracepoint, xdp},
+    macros::{kprobe, kretprobe, lsm, map, tracepoint, xdp},
     maps::{HashMap, RingBuf},
-    programs::{LsmContext, ProbeContext, TracePointContext, XdpContext},
+    programs::{LsmContext, ProbeContext, RetProbeContext, TracePointContext, XdpContext},
     EbpfContext,
 };
 
@@ -43,8 +43,8 @@ use innerwarden_ebpf_types::{
     AcceptEvent, AcpiEvalEvent, BpfLoadEvent, CloneEvent, ConnectEvent, DupEvent, ExecveEvent,
     IopermEvent, IoplEvent, KillEvent, ListenEvent, MemfdCreateEvent, ModuleLoadEvent, MountEvent,
     MprotectEvent, MsrWriteEvent, PrctlEvent, PrivEscEvent, ProcessExitEvent, PtraceEvent,
-    RenameEvent, SetUidEvent, SocketBindEvent, SyscallKind, UnlinkEvent, MAX_COMM_LEN,
-    MAX_FILENAME_LEN,
+    RenameEvent, SetUidEvent, SocketBindEvent, SyscallKind, TimingProbeEvent, TimingTarget,
+    UnlinkEvent, MAX_COMM_LEN, MAX_FILENAME_LEN,
 };
 
 // ---------------------------------------------------------------------------
@@ -2946,6 +2946,131 @@ fn try_lsm_bpf(ctx: &LsmContext) -> Result<i32, i64> {
 
     entry.submit(0);
     Ok(0) // always allow (monitoring only, not enforcement)
+}
+
+// ---------------------------------------------------------------------------
+// Trace of the Times — kernel function timing probes
+// ---------------------------------------------------------------------------
+//
+// Each target function gets a kprobe (entry) + kretprobe (return) pair.
+// The kprobe stores bpf_ktime_get_ns() keyed by (pid_tgid << 4 | target_id).
+// The kretprobe reads it, computes the delta, and sends a TimingProbeEvent.
+
+/// Temporary storage for kprobe entry timestamps.
+/// Key: (pid_tgid << 4) | target_id — unique per thread+function.
+/// Value: entry timestamp in nanoseconds.
+#[map]
+static TIMING_ENTRY: HashMap<u64, u64> = HashMap::with_max_entries(4096, 0);
+
+/// Inline: record kprobe entry timestamp.
+#[inline(always)]
+fn timing_entry(target: TimingTarget) {
+    let key = (bpf_get_current_pid_tgid() << 4) | (target as u64);
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let _ = TIMING_ENTRY.insert(&key, &ts, 0);
+}
+
+/// Inline: compute delta and emit timing event on kretprobe.
+#[inline(always)]
+fn timing_return(target: TimingTarget) -> Result<(), i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let key = (pid_tgid << 4) | (target as u64);
+
+    let entry_ts = match unsafe { TIMING_ENTRY.get(&key) } {
+        Some(ts) => *ts,
+        None => return Ok(()), // no matching entry (missed or filtered)
+    };
+    let _ = TIMING_ENTRY.remove(&key);
+
+    let now = unsafe { bpf_ktime_get_ns() };
+    let delta = now.saturating_sub(entry_ts);
+
+    // Skip very short deltas (< 100ns = likely noise or inline function).
+    if delta < 100 {
+        return Ok(());
+    }
+
+    let pid = pid_tgid as u32;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    let mut entry = match EVENTS.reserve::<TimingProbeEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::TimingProbe as u32;
+    event.pid = pid;
+    event.target = target as u32;
+    event._pad = 0;
+    event.delta_ns = delta;
+    event.cgroup_id = cgroup_id;
+    event.ts_ns = now;
+    event.comm = [0u8; MAX_COMM_LEN];
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
+}
+
+// ── iterate_dir: primary getdents handler (file hiding) ─────────────────
+
+#[kprobe]
+pub fn innerwarden_tot_iterate_dir_entry(_ctx: ProbeContext) -> u32 {
+    timing_entry(TimingTarget::IterateDir);
+    0
+}
+
+#[kretprobe]
+pub fn innerwarden_tot_iterate_dir_ret(_ctx: RetProbeContext) -> u32 {
+    let _ = timing_return(TimingTarget::IterateDir);
+    0
+}
+
+// ── filldir64: directory entry callback (filtered by rootkits) ──────────
+
+#[kprobe]
+pub fn innerwarden_tot_filldir64_entry(_ctx: ProbeContext) -> u32 {
+    timing_entry(TimingTarget::Filldir64);
+    0
+}
+
+#[kretprobe]
+pub fn innerwarden_tot_filldir64_ret(_ctx: RetProbeContext) -> u32 {
+    let _ = timing_return(TimingTarget::Filldir64);
+    0
+}
+
+// ── tcp4_seq_show: /proc/net/tcp display (hidden connections) ───────────
+
+#[kprobe]
+pub fn innerwarden_tot_tcp4_entry(_ctx: ProbeContext) -> u32 {
+    timing_entry(TimingTarget::Tcp4SeqShow);
+    0
+}
+
+#[kretprobe]
+pub fn innerwarden_tot_tcp4_ret(_ctx: RetProbeContext) -> u32 {
+    let _ = timing_return(TimingTarget::Tcp4SeqShow);
+    0
+}
+
+// ── proc_pid_readdir: /proc process listing (process hiding) ────────────
+
+#[kprobe]
+pub fn innerwarden_tot_procdir_entry(_ctx: ProbeContext) -> u32 {
+    timing_entry(TimingTarget::ProcPidReaddir);
+    0
+}
+
+#[kretprobe]
+pub fn innerwarden_tot_procdir_ret(_ctx: RetProbeContext) -> u32 {
+    let _ = timing_return(TimingTarget::ProcPidReaddir);
+    0
 }
 
 // ---------------------------------------------------------------------------

@@ -118,6 +118,18 @@ pub enum SyscallKind {
     AcpiEval = 30,
     /// BPF program loading (LSM bpf hook) — detect eBPF weaponization (VoidLink)
     BpfLoad = 31,
+    /// Kernel function timing probe (kprobe/kretprobe delta for Trace of the Times)
+    TimingProbe = 32,
+}
+
+/// Identifies which kernel function a timing probe measured.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TimingTarget {
+    IterateDir = 1,
+    Filldir64 = 2,
+    Tcp4SeqShow = 3,
+    ProcPidReaddir = 4,
 }
 
 /// Event emitted by the eBPF `execve` tracepoint.
@@ -639,6 +651,23 @@ pub struct BpfLoadEvent {
     pub uid: u32,
     /// BPF command (BPF_PROG_LOAD=5, BPF_MAP_CREATE=0, etc.).
     pub bpf_cmd: u32,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+/// Kernel function timing measurement (kprobe entry → kretprobe return delta).
+/// Used by Trace of the Times rootkit detection.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TimingProbeEvent {
+    pub kind: u32,
+    pub pid: u32,
+    /// Which kernel function was timed (TimingTarget enum).
+    pub target: u32,
+    pub _pad: u32,
+    /// Execution time in nanoseconds (return_ts - entry_ts).
+    pub delta_ns: u64,
     pub cgroup_id: u64,
     pub comm: [u8; MAX_COMM_LEN],
     pub ts_ns: u64,
