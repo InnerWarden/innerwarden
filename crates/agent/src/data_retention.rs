@@ -87,7 +87,9 @@ pub fn cleanup(data_dir: &Path, cfg: &DataRetentionConfig) -> usize {
             let name = name.to_string_lossy();
 
             for (prefix, suffix, keep_days) in monthly_patterns {
-                let Some(mid) = name.strip_prefix(prefix).and_then(|s| s.strip_suffix(*suffix))
+                let Some(mid) = name
+                    .strip_prefix(prefix)
+                    .and_then(|s| s.strip_suffix(*suffix))
                 else {
                     continue;
                 };

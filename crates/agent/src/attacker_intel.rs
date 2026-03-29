@@ -62,7 +62,7 @@ pub struct AttackerProfile {
     // ── Honeypot intel ──
     pub honeypot_sessions: u32,
     pub credentials_attempted: Vec<(String, String)>, // (user, pass), capped
-    pub commands_executed: Vec<String>,                // capped
+    pub commands_executed: Vec<String>,               // capped
     pub iocs: IocsCompact,
 
     // ── Behavioral DNA ──
@@ -213,9 +213,10 @@ pub fn observe_incident(profile: &mut AttackerProfile, incident: &Incident) {
     let detector = mitre::detector_from_incident_id(&incident.incident_id);
     profile.detectors_triggered.insert(detector.to_string());
     if let Some(mapping) = mitre::map_detector(detector) {
-        profile
-            .mitre_techniques
-            .insert(format!("{} ({})", mapping.technique_id, mapping.technique_name));
+        profile.mitre_techniques.insert(format!(
+            "{} ({})",
+            mapping.technique_id, mapping.technique_name
+        ));
     }
 
     // Severity (keep max)
@@ -695,7 +696,11 @@ pub fn detect_campaigns(profiles: &HashMap<String, AttackerProfile>) -> Vec<Camp
     let mut link_reasons: HashMap<(usize, usize), Vec<String>> = HashMap::new();
 
     // Phase 1: DNA signature clustering
-    let signatures: Vec<String> = active.iter().take(n).map(|p| behavioral_signature(p)).collect();
+    let signatures: Vec<String> = active
+        .iter()
+        .take(n)
+        .map(|p| behavioral_signature(p))
+        .collect();
     for i in 0..n {
         for j in (i + 1)..n {
             if signatures[i] == signatures[j] {
@@ -822,9 +827,7 @@ pub fn detect_campaigns(profiles: &HashMap<String, AttackerProfile>) -> Vec<Camp
         // Shared IOCs
         let shared_iocs: Vec<String> = all_reasons
             .iter()
-            .filter(|r| {
-                r.starts_with("url:") || r.starts_with("c2:") || r.starts_with("domain:")
-            })
+            .filter(|r| r.starts_with("url:") || r.starts_with("c2:") || r.starts_with("domain:"))
             .cloned()
             .collect();
 
@@ -835,7 +838,11 @@ pub fn detect_campaigns(profiles: &HashMap<String, AttackerProfile>) -> Vec<Camp
             .map(|r| r.strip_prefix("detector:").unwrap_or("").to_string())
             .collect();
 
-        let max_risk = member_profiles.iter().map(|p| p.risk_score).max().unwrap_or(0);
+        let max_risk = member_profiles
+            .iter()
+            .map(|p| p.risk_score)
+            .max()
+            .unwrap_or(0);
         let total_inc: u32 = member_profiles.iter().map(|p| p.total_incidents).sum();
         let total_days: u32 = member_profiles.iter().map(|p| p.total_days_active).sum();
 
@@ -1002,8 +1009,7 @@ mod tests {
         // 3 visit days → 3×5 = 15
         p.visit_count = 3;
         // 2 detectors → 2×5 = 10
-        p.detectors_triggered
-            .insert("ssh_bruteforce".to_string());
+        p.detectors_triggered.insert("ssh_bruteforce".to_string());
         p.detectors_triggered
             .insert("credential_stuffing".to_string());
         // severity high → 7

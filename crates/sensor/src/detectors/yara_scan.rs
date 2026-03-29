@@ -275,8 +275,11 @@ fn scan_content<'a>(content: &[u8], rules: &'a [ScanRule]) -> Vec<&'a ScanRule> 
                 .map(|pattern| hex_pattern_match(content, pattern))
                 .collect();
 
-            let all_matches: Vec<bool> =
-                string_matches.iter().chain(hex_matches.iter()).copied().collect();
+            let all_matches: Vec<bool> = string_matches
+                .iter()
+                .chain(hex_matches.iter())
+                .copied()
+                .collect();
 
             if all_matches.is_empty() {
                 return false;
@@ -356,7 +359,11 @@ fn parse_rule_yaml(content: &str) -> Option<ScanRule> {
 
     let id = val.get("id")?.as_str()?.to_string();
     let name = val.get("name")?.as_str()?.to_string();
-    let severity = match val.get("severity").and_then(|v| v.as_str()).unwrap_or("high") {
+    let severity = match val
+        .get("severity")
+        .and_then(|v| v.as_str())
+        .unwrap_or("high")
+    {
         "critical" => Severity::Critical,
         "high" => Severity::High,
         "medium" => Severity::Medium,
@@ -367,13 +374,21 @@ fn parse_rule_yaml(content: &str) -> Option<ScanRule> {
     let strings: Vec<String> = val
         .get("strings")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     let hex_patterns: Vec<Vec<HexByte>> = val
         .get("hex_patterns")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(parse_hex_pattern)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(parse_hex_pattern))
+                .collect()
+        })
         .unwrap_or_default();
 
     let condition = match val
@@ -388,7 +403,11 @@ fn parse_rule_yaml(content: &str) -> Option<ScanRule> {
     let tags: Vec<String> = val
         .get("tags")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     if strings.is_empty() && hex_patterns.is_empty() {
@@ -449,7 +468,9 @@ fn serde_yaml_to_json(yaml: &str) -> Option<serde_json::Value> {
                 let items: Vec<serde_json::Value> = inner
                     .split(',')
                     .map(|s| {
-                        serde_json::Value::String(s.trim().trim_matches('"').trim_matches('\'').to_string())
+                        serde_json::Value::String(
+                            s.trim().trim_matches('"').trim_matches('\'').to_string(),
+                        )
                     })
                     .collect();
                 map.insert(key, serde_json::Value::Array(items));
@@ -499,10 +520,7 @@ fn builtin_rules() -> Vec<ScanRule> {
             id: "MAL-001".into(),
             name: "XMRig Cryptominer".into(),
             severity: Severity::Critical,
-            strings: vec![
-                "stratum+tcp://".into(),
-                "stratum+ssl://".into(),
-            ],
+            strings: vec!["stratum+tcp://".into(), "stratum+ssl://".into()],
             hex_patterns: vec![],
             condition: MatchCondition::Any,
             tags: vec!["cryptominer".into(), "xmrig".into()],
@@ -526,9 +544,7 @@ fn builtin_rules() -> Vec<ScanRule> {
             id: "MAL-003".into(),
             name: "ELF Packer/Obfuscation".into(),
             severity: Severity::High,
-            strings: vec![
-                "UPX!".into(),
-            ],
+            strings: vec!["UPX!".into()],
             hex_patterns: vec![
                 // UPX magic at typical offset
                 parse_hex_pattern("55 50 58 21"),
@@ -553,11 +569,7 @@ fn builtin_rules() -> Vec<ScanRule> {
             id: "MAL-005".into(),
             name: "Credential Harvesting Tool".into(),
             severity: Severity::Critical,
-            strings: vec![
-                "mimikatz".into(),
-                "LaZagne".into(),
-                "secretsdump".into(),
-            ],
+            strings: vec!["mimikatz".into(), "LaZagne".into(), "secretsdump".into()],
             hex_patterns: vec![],
             condition: MatchCondition::Any,
             tags: vec!["credential_theft".into()],
@@ -579,11 +591,7 @@ fn builtin_rules() -> Vec<ScanRule> {
             id: "MAL-007".into(),
             name: "Metasploit Payload".into(),
             severity: Severity::Critical,
-            strings: vec![
-                "meterpreter".into(),
-                "met_server".into(),
-                "stdapi_".into(),
-            ],
+            strings: vec!["meterpreter".into(), "met_server".into(), "stdapi_".into()],
             hex_patterns: vec![],
             condition: MatchCondition::Any,
             tags: vec!["metasploit".into(), "meterpreter".into()],
@@ -688,7 +696,11 @@ mod tests {
             id: "TEST".into(),
             name: "Test".into(),
             severity: Severity::High,
-            strings: vec!["xmrig".into(), "stratum+tcp://".into(), "nonexistent".into()],
+            strings: vec![
+                "xmrig".into(),
+                "stratum+tcp://".into(),
+                "nonexistent".into(),
+            ],
             hex_patterns: vec![],
             condition: MatchCondition::Any,
             tags: vec![],
@@ -697,7 +709,11 @@ mod tests {
             id: "TEST".into(),
             name: "Test".into(),
             severity: Severity::High,
-            strings: vec!["xmrig".into(), "stratum+tcp://".into(), "nonexistent".into()],
+            strings: vec![
+                "xmrig".into(),
+                "stratum+tcp://".into(),
+                "nonexistent".into(),
+            ],
             hex_patterns: vec![],
             condition: MatchCondition::All,
             tags: vec![],

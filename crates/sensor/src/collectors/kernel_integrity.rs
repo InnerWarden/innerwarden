@@ -59,11 +59,7 @@ struct KernelBaseline {
 }
 
 /// Run the kernel integrity monitor.
-pub async fn run(
-    tx: mpsc::Sender<Event>,
-    host: String,
-    poll_seconds: u64,
-) {
+pub async fn run(tx: mpsc::Sender<Event>, host: String, poll_seconds: u64) {
     // Establish baseline at startup
     let baseline = KernelBaseline {
         syscall_addresses: read_kallsyms(),
@@ -203,18 +199,13 @@ pub async fn run(
                         source: "kernel_integrity".to_string(),
                         kind: "kernel.new_module_post_boot".to_string(),
                         severity: Severity::High,
-                        summary: format!(
-                            "Kernel module loaded after boot: {module}"
-                        ),
+                        summary: format!("Kernel module loaded after boot: {module}"),
                         details: serde_json::json!({
                             "module": module,
                             "baseline_modules": baseline.known_modules.len(),
                             "current_modules": current_modules.len(),
                         }),
-                        tags: vec![
-                            "kernel_integrity".to_string(),
-                            "module".to_string(),
-                        ],
+                        tags: vec!["kernel_integrity".to_string(), "module".to_string()],
                         entities: vec![EntityRef::service(module)],
                     };
                     if tx.send(ev).await.is_err() {
@@ -301,9 +292,7 @@ fn read_bpf_program_info(id: u32) -> Option<String> {
     }
 
     let val: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    val.get("name")
-        .and_then(|v| v.as_str())
-        .map(String::from)
+    val.get("name").and_then(|v| v.as_str()).map(String::from)
 }
 
 /// Read loaded kernel modules from /proc/modules.
@@ -339,11 +328,7 @@ mod tests {
 
     #[test]
     fn innerwarden_prefix_detection() {
-        let is_iw = |name: &str| {
-            INNERWARDEN_BPF_PREFIXES
-                .iter()
-                .any(|p| name.starts_with(p))
-        };
+        let is_iw = |name: &str| INNERWARDEN_BPF_PREFIXES.iter().any(|p| name.starts_with(p));
         assert!(is_iw("innerwarden_xdp"));
         assert!(is_iw("iw_kprobe_commit_creds"));
         assert!(is_iw("tracepoint__syscalls__sys_enter_execve"));

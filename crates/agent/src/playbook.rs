@@ -172,7 +172,11 @@ impl PlaybookEngine {
     }
 
     /// Evaluate against a correlation chain rule ID.
-    pub fn evaluate_chain(&mut self, chain_rule_id: &str, incident: &Incident) -> Option<PlaybookExecution> {
+    pub fn evaluate_chain(
+        &mut self,
+        chain_rule_id: &str,
+        incident: &Incident,
+    ) -> Option<PlaybookExecution> {
         let now = Utc::now();
 
         for playbook in &self.playbooks {
@@ -412,9 +416,7 @@ fn builtin_playbooks() -> Vec<Playbook> {
                 },
                 PlaybookStep {
                     action: "escalate".into(),
-                    params: [("to".into(), "critical".into())]
-                        .into_iter()
-                        .collect(),
+                    params: [("to".into(), "critical".into())].into_iter().collect(),
                 },
             ],
             run_in_dry_run: false,
@@ -505,9 +507,15 @@ fn builtin_playbooks() -> Vec<Playbook> {
                 },
                 PlaybookStep {
                     action: "escalate".into(),
-                    params: [("to".into(), "critical".into()), ("note".into(), "firmware compromise requires physical investigation".into())]
-                        .into_iter()
-                        .collect(),
+                    params: [
+                        ("to".into(), "critical".into()),
+                        (
+                            "note".into(),
+                            "firmware compromise requires physical investigation".into(),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
                 },
             ],
             run_in_dry_run: true, // Always run forensics even in dry-run
@@ -611,7 +619,11 @@ mod tests {
         assert!(matches_trigger(&trigger, "ransomware", &Severity::Critical));
         assert!(matches_trigger(&trigger, "ransomware", &Severity::High));
         assert!(!matches_trigger(&trigger, "ransomware", &Severity::Medium));
-        assert!(!matches_trigger(&trigger, "ssh_bruteforce", &Severity::Critical));
+        assert!(!matches_trigger(
+            &trigger,
+            "ssh_bruteforce",
+            &Severity::Critical
+        ));
     }
 
     #[test]

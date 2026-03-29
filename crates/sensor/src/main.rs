@@ -1042,7 +1042,13 @@ async fn main() -> Result<()> {
             }
         }
 
-        process_event(ev, &mut writer, &mut detectors, &mut stats, &mut syslog_writer);
+        process_event(
+            ev,
+            &mut writer,
+            &mut detectors,
+            &mut stats,
+            &mut syslog_writer,
+        );
 
         // Also flush every 50 events as a safety net
         if stats.events_written > 0 && stats.events_written % 50 == 0 {

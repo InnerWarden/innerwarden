@@ -947,7 +947,10 @@ pub async fn serve(
         .route("/api/compliance", get(api_compliance))
         // Attacker Intelligence & Monthly Reports
         .route("/api/attacker-profiles", get(api_attacker_profiles))
-        .route("/api/attacker-profiles/:ip", get(api_attacker_profile_detail))
+        .route(
+            "/api/attacker-profiles/:ip",
+            get(api_attacker_profile_detail),
+        )
         .route("/api/threat-report", get(api_threat_report))
         .route("/api/threat-report/months", get(api_threat_report_months))
         .route("/api/campaigns", get(api_campaigns))
@@ -1713,8 +1716,10 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResp
     let real_incidents: Vec<&Incident> = incidents.iter().filter(|i| !is_internal(i)).collect();
 
     // Build incident IDs set for matching decisions to real attacks only.
-    let real_ids: std::collections::HashSet<&str> =
-        real_incidents.iter().map(|i| i.incident_id.as_str()).collect();
+    let real_ids: std::collections::HashSet<&str> = real_incidents
+        .iter()
+        .map(|i| i.incident_id.as_str())
+        .collect();
 
     let total_today = real_incidents.len();
     let total_blocked = decisions
@@ -2039,21 +2044,15 @@ async fn api_attacker_profiles(
         .collect();
 
     match sort {
-        "last_seen" => filtered.sort_by(|a, b| {
-            b["last_seen"]
-                .as_str()
-                .cmp(&a["last_seen"].as_str())
-        }),
+        "last_seen" => {
+            filtered.sort_by(|a, b| b["last_seen"].as_str().cmp(&a["last_seen"].as_str()))
+        }
         "incidents" => filtered.sort_by(|a, b| {
             b["total_incidents"]
                 .as_u64()
                 .cmp(&a["total_incidents"].as_u64())
         }),
-        _ => filtered.sort_by(|a, b| {
-            b["risk_score"]
-                .as_u64()
-                .cmp(&a["risk_score"].as_u64())
-        }),
+        _ => filtered.sort_by(|a, b| b["risk_score"].as_u64().cmp(&a["risk_score"].as_u64())),
     }
 
     let total = filtered.len();
@@ -2130,11 +2129,12 @@ async fn api_threat_report(
                 })
                 .map(|v| v.into_iter().map(|p| (p.ip.clone(), p)).collect())
                 .unwrap_or_default();
-        crate::threat_report::generate_monthly(&data_dir, &month_clone, &profiles)
-            .and_then(|report| {
+        crate::threat_report::generate_monthly(&data_dir, &month_clone, &profiles).and_then(
+            |report| {
                 crate::threat_report::write_report(&report, &data_dir)?;
                 Ok(report)
-            })
+            },
+        )
     })
     .await
     {
@@ -2153,9 +2153,7 @@ struct ThreatReportQuery {
 }
 
 /// `GET /api/threat-report/months` - list available months.
-async fn api_threat_report_months(
-    State(state): State<DashboardState>,
-) -> Json<Vec<String>> {
+async fn api_threat_report_months(State(state): State<DashboardState>) -> Json<Vec<String>> {
     Json(crate::threat_report::available_months(&state.data_dir))
 }
 
@@ -4296,8 +4294,7 @@ fn run_analysis(
     command: &str,
     agent_name: Option<&str>,
 ) -> serde_json::Value {
-    let analysis =
-        innerwarden_agent_guard::mcp::analyze_command(command, Some(&state.rule_engine));
+    let analysis = innerwarden_agent_guard::mcp::analyze_command(command, Some(&state.rule_engine));
 
     // Emit snitch alert if deny or review.
     if analysis.recommendation == "deny" || analysis.recommendation == "review" {
@@ -4312,11 +4309,7 @@ fn run_analysis(
             risk_score: analysis.risk_score,
             severity: analysis.severity.clone(),
             recommendation: analysis.recommendation.clone(),
-            signals: analysis
-                .signals
-                .iter()
-                .map(|s| s.signal.clone())
-                .collect(),
+            signals: analysis.signals.iter().map(|s| s.signal.clone()).collect(),
             atr_rule_ids: analysis
                 .atr_matches
                 .iter()
@@ -4343,7 +4336,11 @@ async fn api_agent_check_command(
     State(state): State<DashboardState>,
     Json(body): Json<CheckCommandRequest>,
 ) -> Json<serde_json::Value> {
-    Json(run_analysis(&state, &body.command, body.agent_name.as_deref()))
+    Json(run_analysis(
+        &state,
+        &body.command,
+        body.agent_name.as_deref(),
+    ))
 }
 
 /// POST /api/advisor/check-command - analyze + cache advisory for deny/review results

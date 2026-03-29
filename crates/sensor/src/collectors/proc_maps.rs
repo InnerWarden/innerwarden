@@ -14,10 +14,10 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use chrono::Utc;
-use tracing::warn;
 use innerwarden_core::entities::EntityRef;
 use innerwarden_core::event::{Event, Severity};
 use tokio::sync::mpsc;
+use tracing::warn;
 
 /// Suspicious memory region found in a process.
 #[derive(Debug, Clone)]
@@ -84,11 +84,7 @@ const SKIP_COMMS: &[&str] = &[
 ///
 /// Scans all processes every `poll_seconds` and emits events for suspicious
 /// memory regions.
-pub async fn run(
-    tx: mpsc::Sender<Event>,
-    host: String,
-    poll_seconds: u64,
-) {
+pub async fn run(tx: mpsc::Sender<Event>, host: String, poll_seconds: u64) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(poll_seconds));
     let mut seen_alerts: HashMap<String, chrono::DateTime<chrono::Utc>> = HashMap::new();
     let cooldown = chrono::Duration::seconds(600); // 10min cooldown per PID+type
@@ -100,7 +96,12 @@ pub async fn run(
         let now = Utc::now();
 
         for finding in findings {
-            let key = format!("{}:{}:{}", finding.pid, finding.region_type.label(), finding.comm);
+            let key = format!(
+                "{}:{}:{}",
+                finding.pid,
+                finding.region_type.label(),
+                finding.comm
+            );
 
             // Cooldown: don't re-alert for same PID+type within window
             if let Some(&last) = seen_alerts.get(&key) {

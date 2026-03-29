@@ -122,8 +122,7 @@ impl ThreatFeedClient {
         }
 
         let body: serde_json::Value = resp.json().await.ok()?;
-        let stats = body
-            .pointer("/data/attributes/last_analysis_stats")?;
+        let stats = body.pointer("/data/attributes/last_analysis_stats")?;
 
         let malicious = stats["malicious"].as_u64().unwrap_or(0) as u32;
         let suspicious = stats["suspicious"].as_u64().unwrap_or(0) as u32;
@@ -180,9 +179,7 @@ impl ThreatFeedClient {
             }
         }
 
-        self.state
-            .last_poll
-            .insert(url.to_string(), Utc::now());
+        self.state.last_poll.insert(url.to_string(), Utc::now());
         info!(url = %url, added, "IOC feed polled");
         Ok(())
     }
@@ -254,7 +251,7 @@ mod tests {
         assert!(is_ip_like("2001:db8::1"));
         assert!(!is_ip_like("example.com"));
 
-        assert!(is_hash_like("a" .repeat(64).as_str()));
+        assert!(is_hash_like("a".repeat(64).as_str()));
         assert!(is_hash_like("b".repeat(40).as_str())); // SHA-1
         assert!(!is_hash_like("short"));
 

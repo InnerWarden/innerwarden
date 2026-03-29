@@ -133,10 +133,7 @@ impl DataExfilEbpfDetector {
                 return Some(Incident {
                     ts: now,
                     host: self.host.clone(),
-                    incident_id: format!(
-                        "data_exfil_ebpf:{pid}:{}",
-                        now.format("%Y-%m-%dT%H:%MZ")
-                    ),
+                    incident_id: format!("data_exfil_ebpf:{pid}:{}", now.format("%Y-%m-%dT%H:%MZ")),
                     severity: Severity::Critical,
                     title: format!(
                         "Data exfiltration: {comm} read {} then connected to {dst_ip}:{dst_port}",
@@ -164,7 +161,10 @@ impl DataExfilEbpfDetector {
                     recommended_checks: vec![
                         format!("Kill process: kill -9 {pid}"),
                         format!("Block destination: {dst_ip}"),
-                        format!("Check if {} was exfiltrated — rotate credentials if so", read.filename),
+                        format!(
+                            "Check if {} was exfiltrated — rotate credentials if so",
+                            read.filename
+                        ),
                         "Review process tree for attack origin".to_string(),
                     ],
                     tags: vec![
@@ -250,7 +250,12 @@ mod tests {
 
         // Step 2: connect to external IP
         let inc = det
-            .process(&connect_event(1234, "5.6.7.8", 443, now + Duration::seconds(5)))
+            .process(&connect_event(
+                1234,
+                "5.6.7.8",
+                443,
+                now + Duration::seconds(5),
+            ))
             .unwrap();
         assert_eq!(inc.severity, Severity::Critical);
         assert!(inc.title.contains("/etc/shadow"));
@@ -266,7 +271,12 @@ mod tests {
         det.process(&read_event(1234, "/etc/shadow", now));
 
         // Different PID 5678 connects → should NOT trigger
-        let inc = det.process(&connect_event(5678, "5.6.7.8", 443, now + Duration::seconds(5)));
+        let inc = det.process(&connect_event(
+            5678,
+            "5.6.7.8",
+            443,
+            now + Duration::seconds(5),
+        ));
         assert!(inc.is_none());
     }
 
@@ -279,7 +289,12 @@ mod tests {
         det.process(&read_event(1234, "/var/log/syslog", now));
 
         // Connect → should NOT trigger (file was not sensitive)
-        let inc = det.process(&connect_event(1234, "5.6.7.8", 443, now + Duration::seconds(5)));
+        let inc = det.process(&connect_event(
+            1234,
+            "5.6.7.8",
+            443,
+            now + Duration::seconds(5),
+        ));
         assert!(inc.is_none());
     }
 
@@ -322,14 +337,15 @@ mod tests {
         let mut det = DataExfilEbpfDetector::new("test", 60, 300);
         let now = Utc::now();
 
-        det.process(&read_event(
-            1234,
-            "/home/admin/.ssh/id_rsa",
-            now,
-        ));
+        det.process(&read_event(1234, "/home/admin/.ssh/id_rsa", now));
 
         let inc = det
-            .process(&connect_event(1234, "8.8.8.8", 80, now + Duration::seconds(2)))
+            .process(&connect_event(
+                1234,
+                "8.8.8.8",
+                80,
+                now + Duration::seconds(2),
+            ))
             .unwrap();
         assert!(inc.title.contains("id_rsa"));
     }

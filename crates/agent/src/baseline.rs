@@ -268,10 +268,7 @@ impl BaselineStore {
                                     "User '{}' logged in at {}:00 UTC (never seen at this hour)",
                                     entity.value, hour
                                 ),
-                                expected: format!(
-                                    "Login hours: {}",
-                                    format_active_hours(profile)
-                                ),
+                                expected: format!("Login hours: {}", format_active_hours(profile)),
                                 observed: format!("{}:00 UTC", hour),
                                 confidence: 0.6,
                                 severity: Severity::Medium,
@@ -639,13 +636,11 @@ mod tests {
         store.mature = true;
         store.training_days = 7;
         let hour = Utc::now().hour() as usize;
-        store
-            .event_rate_by_hour
-            .insert("auth_log".into(), {
-                let mut arr = [0.0f32; 24];
-                arr[hour] = 100.0; // baseline: 100 events at this hour
-                arr
-            });
+        store.event_rate_by_hour.insert("auth_log".into(), {
+            let mut arr = [0.0f32; 24];
+            arr[hour] = 100.0; // baseline: 100 events at this hour
+            arr
+        });
         // Current hour: only 5 events (95% drop)
         store.current_hour = hour as u8;
         store.current_hour_counts.insert("auth_log".into(), 5);
@@ -665,13 +660,11 @@ mod tests {
         store.mature = true;
         store.training_days = 7;
         let hour = Utc::now().hour() as usize;
-        store
-            .event_rate_by_hour
-            .insert("auth_log".into(), {
-                let mut arr = [0.0f32; 24];
-                arr[hour] = 10.0; // baseline: 10 events at this hour
-                arr
-            });
+        store.event_rate_by_hour.insert("auth_log".into(), {
+            let mut arr = [0.0f32; 24];
+            arr[hour] = 10.0; // baseline: 10 events at this hour
+            arr
+        });
         store.current_hour = hour as u8;
         store.current_hour_counts.insert("auth_log".into(), 50); // 5x spike
 

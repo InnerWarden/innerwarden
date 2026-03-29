@@ -1320,7 +1320,12 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         }
     }
     // I/O port access (ioperm syscall — x86 only, harmless no-op on ARM)
-    attach_tp(&mut bpf, "innerwarden_ioperm", "syscalls", "sys_enter_ioperm");
+    attach_tp(
+        &mut bpf,
+        "innerwarden_ioperm",
+        "syscalls",
+        "sys_enter_ioperm",
+    );
     // I/O privilege level (iopl syscall — x86 only)
     attach_tp(&mut bpf, "innerwarden_iopl", "syscalls", "sys_enter_iopl");
     // ACPI method evaluation (kprobe — available on any system with ACPI)
@@ -1341,10 +1346,26 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     // Trace of the Times: attach kprobe/kretprobe pairs for timing measurement.
     {
         let timing_targets = [
-            ("innerwarden_tot_iterate_dir_entry", "innerwarden_tot_iterate_dir_ret", "iterate_dir"),
-            ("innerwarden_tot_filldir64_entry", "innerwarden_tot_filldir64_ret", "filldir64"),
-            ("innerwarden_tot_tcp4_entry", "innerwarden_tot_tcp4_ret", "tcp4_seq_show"),
-            ("innerwarden_tot_procdir_entry", "innerwarden_tot_procdir_ret", "proc_pid_readdir"),
+            (
+                "innerwarden_tot_iterate_dir_entry",
+                "innerwarden_tot_iterate_dir_ret",
+                "iterate_dir",
+            ),
+            (
+                "innerwarden_tot_filldir64_entry",
+                "innerwarden_tot_filldir64_ret",
+                "filldir64",
+            ),
+            (
+                "innerwarden_tot_tcp4_entry",
+                "innerwarden_tot_tcp4_ret",
+                "tcp4_seq_show",
+            ),
+            (
+                "innerwarden_tot_procdir_entry",
+                "innerwarden_tot_procdir_ret",
+                "proc_pid_readdir",
+            ),
         ];
         for (entry_prog, ret_prog, func_name) in &timing_targets {
             // Attach kprobe (entry).
@@ -2318,7 +2339,11 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                             "pid": pid, "uid": uid, "comm": comm,
                             "level": level, "cgroup_id": cgroup_id,
                         }),
-                        tags: vec!["ebpf".to_string(), "firmware".to_string(), "hardware".to_string()],
+                        tags: vec![
+                            "ebpf".to_string(),
+                            "firmware".to_string(),
+                            "hardware".to_string(),
+                        ],
                         entities: vec![],
                     })
                 }
@@ -2336,14 +2361,16 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         source: "ebpf".to_string(),
                         kind: "firmware.acpi_eval".to_string(),
                         severity: Severity::Debug,
-                        summary: format!(
-                            "{comm} (pid={pid}) ACPI evaluate: {pathname}"
-                        ),
+                        summary: format!("{comm} (pid={pid}) ACPI evaluate: {pathname}"),
                         details: serde_json::json!({
                             "pid": pid, "uid": uid, "comm": comm,
                             "pathname": pathname, "cgroup_id": cgroup_id,
                         }),
-                        tags: vec!["ebpf".to_string(), "firmware".to_string(), "acpi".to_string()],
+                        tags: vec![
+                            "ebpf".to_string(),
+                            "firmware".to_string(),
+                            "acpi".to_string(),
+                        ],
                         entities: vec![],
                     })
                 }
@@ -2423,7 +2450,11 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                             "bpf_cmd": bpf_cmd, "cmd_name": cmd_name,
                             "cgroup_id": cgroup_id,
                         }),
-                        tags: vec!["ebpf".to_string(), "firmware".to_string(), "bpf_load".to_string()],
+                        tags: vec![
+                            "ebpf".to_string(),
+                            "firmware".to_string(),
+                            "bpf_load".to_string(),
+                        ],
                         entities: vec![],
                     })
                 }

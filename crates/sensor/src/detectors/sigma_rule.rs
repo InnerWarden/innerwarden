@@ -131,11 +131,7 @@ impl SigmaRuleDetector {
                 return Some(Incident {
                     ts: now,
                     host: self.host.clone(),
-                    incident_id: format!(
-                        "sigma:{}:{}",
-                        rule.id,
-                        now.format("%Y-%m-%dT%H:%MZ")
-                    ),
+                    incident_id: format!("sigma:{}:{}", rule.id, now.format("%Y-%m-%dT%H:%MZ")),
                     severity: rule.level.clone(),
                     title: format!("Sigma rule matched: {}", rule.title),
                     summary: format!(
@@ -218,16 +214,13 @@ fn extract_field(event: &Event, field: &str) -> Option<String> {
         "severity" => Some(format!("{:?}", event.severity).to_lowercase()),
         _ if field.starts_with("details.") => {
             let detail_key = &field["details.".len()..];
-            event
-                .details
-                .get(detail_key)
-                .and_then(|v| {
-                    if v.is_string() {
-                        v.as_str().map(String::from)
-                    } else {
-                        Some(v.to_string())
-                    }
-                })
+            event.details.get(detail_key).and_then(|v| {
+                if v.is_string() {
+                    v.as_str().map(String::from)
+                } else {
+                    Some(v.to_string())
+                }
+            })
         }
         _ => None,
     }
@@ -299,8 +292,10 @@ fn parse_sigma_yaml(content: &str) -> Option<SigmaRule> {
             in_selection = false;
             continue;
         }
-        if trimmed.starts_with("condition:") || trimmed.starts_with("product:")
-            || trimmed.starts_with("category:") || trimmed.starts_with("service:")
+        if trimmed.starts_with("condition:")
+            || trimmed.starts_with("product:")
+            || trimmed.starts_with("category:")
+            || trimmed.starts_with("service:")
         {
             continue; // skip Sigma metadata fields
         }
@@ -336,7 +331,11 @@ fn parse_sigma_yaml(content: &str) -> Option<SigmaRule> {
         if in_selection && trimmed.contains(':') {
             if let Some((field_spec, value)) = trimmed.split_once(':') {
                 let field_spec = field_spec.trim();
-                let value = value.trim().trim_matches('"').trim_matches('\'').to_string();
+                let value = value
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string();
                 if value.is_empty() {
                     continue;
                 }
@@ -392,13 +391,11 @@ fn builtin_sigma_rules() -> Vec<SigmaRule> {
             id: "SIGMA-001".into(),
             title: "Suspicious Cron Modification".into(),
             level: Severity::High,
-            selection: vec![
-                FieldMatcher {
-                    field: "kind".into(),
-                    op: MatchOp::Contains,
-                    values: vec!["crontab".into(), "cron".into()],
-                },
-            ],
+            selection: vec![FieldMatcher {
+                field: "kind".into(),
+                op: MatchOp::Contains,
+                values: vec!["crontab".into(), "cron".into()],
+            }],
             tags: vec!["persistence".into(), "t1053".into()],
         },
         SigmaRule {
@@ -513,14 +510,16 @@ fn builtin_sigma_rules() -> Vec<SigmaRule> {
             id: "SIGMA-008".into(),
             title: "Docker Socket Accessed by Non-Root".into(),
             level: Severity::High,
-            selection: vec![
-                FieldMatcher {
-                    field: "details.filename".into(),
-                    op: MatchOp::Contains,
-                    values: vec!["docker.sock".into()],
-                },
+            selection: vec![FieldMatcher {
+                field: "details.filename".into(),
+                op: MatchOp::Contains,
+                values: vec!["docker.sock".into()],
+            }],
+            tags: vec![
+                "privilege_escalation".into(),
+                "container".into(),
+                "t1611".into(),
             ],
-            tags: vec!["privilege_escalation".into(), "container".into(), "t1611".into()],
         },
     ]
 }
@@ -571,7 +570,11 @@ mod tests {
     #[test]
     fn sigma_matches_cron_modification() {
         let mut det = SigmaRuleDetector::new("test", Path::new("/nonexistent"), 300);
-        let ev = make_event("crontab.modified", "audit", "crontab modified by user admin");
+        let ev = make_event(
+            "crontab.modified",
+            "audit",
+            "crontab modified by user admin",
+        );
         let inc = det.process(&ev);
         assert!(inc.is_some());
         assert!(inc.unwrap().title.contains("Cron"));
@@ -645,8 +648,14 @@ tags:
             "shell.command_exec",
             serde_json::json!({"filename": "/tmp/test", "pid": 42}),
         );
-        assert_eq!(extract_field(&ev, "kind"), Some("shell.command_exec".into()));
-        assert_eq!(extract_field(&ev, "details.filename"), Some("/tmp/test".into()));
+        assert_eq!(
+            extract_field(&ev, "kind"),
+            Some("shell.command_exec".into())
+        );
+        assert_eq!(
+            extract_field(&ev, "details.filename"),
+            Some("/tmp/test".into())
+        );
         assert_eq!(extract_field(&ev, "details.pid"), Some("42".into()));
         assert_eq!(extract_field(&ev, "nonexistent"), None);
     }

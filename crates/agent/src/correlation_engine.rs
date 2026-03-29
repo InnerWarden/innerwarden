@@ -171,8 +171,11 @@ impl CorrelationEngine {
                 pc.matched_events.push(event.clone());
                 // Add all entity values to the set for next-stage matching
                 for entity in &event.entities {
-                    pc.matched_entities
-                        .insert(format!("{}:{}", entity_type_str(&entity.r#type), entity.value));
+                    pc.matched_entities.insert(format!(
+                        "{}:{}",
+                        entity_type_str(&entity.r#type),
+                        entity.value
+                    ));
                 }
                 pc.next_stage += 1;
 
@@ -219,16 +222,8 @@ impl CorrelationEngine {
                 0.70
             };
 
-            let start_ts = pc
-                .matched_events
-                .first()
-                .map(|e| e.ts)
-                .unwrap_or(now);
-            let last_ts = pc
-                .matched_events
-                .last()
-                .map(|e| e.ts)
-                .unwrap_or(now);
+            let start_ts = pc.matched_events.first().map(|e| e.ts).unwrap_or(now);
+            let last_ts = pc.matched_events.last().map(|e| e.ts).unwrap_or(now);
 
             let summary = format!(
                 "{}: {} stages across {} layers in {}s",
@@ -277,8 +272,11 @@ impl CorrelationEngine {
             if matches_stage(first_stage, &event, &HashSet::new()) {
                 let mut entities = HashSet::new();
                 for entity in &event.entities {
-                    entities
-                        .insert(format!("{}:{}", entity_type_str(&entity.r#type), entity.value));
+                    entities.insert(format!(
+                        "{}:{}",
+                        entity_type_str(&entity.r#type),
+                        entity.value
+                    ));
                 }
 
                 self.pending_chains.push(PendingChain {
@@ -546,10 +544,7 @@ fn builtin_rules() -> Vec<CorrelationRule> {
                 },
                 RuleStage {
                     layer: Some(Layer::Kernel),
-                    kind_patterns: vec![
-                        "privilege.escalation".into(),
-                        "process_injection".into(),
-                    ],
+                    kind_patterns: vec!["privilege.escalation".into(), "process_injection".into()],
                     entity_must_match: false,
                 },
                 RuleStage {
@@ -569,10 +564,7 @@ fn builtin_rules() -> Vec<CorrelationRule> {
             stages: vec![
                 RuleStage {
                     layer: None,
-                    kind_patterns: vec![
-                        "container_drift".into(),
-                        "container_escape".into(),
-                    ],
+                    kind_patterns: vec!["container_drift".into(), "container_escape".into()],
                     entity_must_match: false,
                 },
                 RuleStage {
@@ -662,13 +654,11 @@ fn builtin_rules() -> Vec<CorrelationRule> {
         CorrelationRule {
             id: "CL-009".into(),
             name: "Silence After Compromise".into(),
-            stages: vec![
-                RuleStage {
-                    layer: None,
-                    kind_patterns: vec!["__silence_placeholder__".into()],
-                    entity_must_match: false,
-                },
-            ],
+            stages: vec![RuleStage {
+                layer: None,
+                kind_patterns: vec!["__silence_placeholder__".into()],
+                entity_must_match: false,
+            }],
             window_secs: 300,
             min_confidence: 0.6,
             severity: Severity::High,
@@ -678,13 +668,11 @@ fn builtin_rules() -> Vec<CorrelationRule> {
         CorrelationRule {
             id: "CL-010".into(),
             name: "Multi-Low Severity Elevation".into(),
-            stages: vec![
-                RuleStage {
-                    layer: None,
-                    kind_patterns: vec!["__multi_low_placeholder__".into()],
-                    entity_must_match: false,
-                },
-            ],
+            stages: vec![RuleStage {
+                layer: None,
+                kind_patterns: vec!["__multi_low_placeholder__".into()],
+                entity_must_match: false,
+            }],
             window_secs: 600,
             min_confidence: 0.6,
             severity: Severity::High,
@@ -859,10 +847,7 @@ fn builtin_rules() -> Vec<CorrelationRule> {
                 },
                 RuleStage {
                     layer: None,
-                    kind_patterns: vec![
-                        "privilege.escalation".into(),
-                        "process_injection".into(),
-                    ],
+                    kind_patterns: vec!["privilege.escalation".into(), "process_injection".into()],
                     entity_must_match: false,
                 },
             ],
@@ -922,7 +907,10 @@ fn builtin_rules() -> Vec<CorrelationRule> {
             stages: vec![
                 RuleStage {
                     layer: None,
-                    kind_patterns: vec!["file.encrypted_write".into(), "file.ransomware_burst".into()],
+                    kind_patterns: vec![
+                        "file.encrypted_write".into(),
+                        "file.ransomware_burst".into(),
+                    ],
                     entity_must_match: false,
                 },
                 RuleStage {
@@ -1076,12 +1064,7 @@ mod tests {
         }
     }
 
-    fn make_event_at(
-        layer: Layer,
-        kind: &str,
-        ip: &str,
-        ts: DateTime<Utc>,
-    ) -> CorrelationEvent {
+    fn make_event_at(layer: Layer, kind: &str, ip: &str, ts: DateTime<Utc>) -> CorrelationEvent {
         CorrelationEvent {
             ts,
             layer,
@@ -1163,12 +1146,7 @@ mod tests {
 
         // Stage 2 at T=2000s (beyond CL-002 window of 1800s)
         let later = now + chrono::Duration::seconds(2000);
-        engine.observe(make_event_at(
-            Layer::Userspace,
-            "ssh_bruteforce",
-            ip,
-            later,
-        ));
+        engine.observe(make_event_at(Layer::Userspace, "ssh_bruteforce", ip, later));
 
         // Pending chain should have expired
         // New chain started from stage 2, but stage 3 not met
@@ -1250,10 +1228,7 @@ mod tests {
 
     #[test]
     fn classify_layer_honeypot() {
-        assert_eq!(
-            classify_layer("honeypot", "honeypot_ssh"),
-            Layer::Honeypot
-        );
+        assert_eq!(classify_layer("honeypot", "honeypot_ssh"), Layer::Honeypot);
     }
 
     #[test]

@@ -25,8 +25,7 @@ const NOTIFICATION_COOLDOWNS: TableDefinition<&str, i64> =
 const BLOCK_COUNTS: TableDefinition<&str, u32> = TableDefinition::new("block_counts");
 const XDP_BLOCK_TIMES: TableDefinition<&str, &[u8]> = TableDefinition::new("xdp_block_times");
 const TRUST_RULES: TableDefinition<&str, u8> = TableDefinition::new("trust_rules");
-const ATTACKER_PROFILES: TableDefinition<&str, &[u8]> =
-    TableDefinition::new("attacker_profiles");
+const ATTACKER_PROFILES: TableDefinition<&str, &[u8]> = TableDefinition::new("attacker_profiles");
 
 /// Persistent state store for the agent.
 pub struct StateStore {
@@ -534,7 +533,8 @@ mod tests {
     fn trim_attacker_profiles_keeps_highest_risk() {
         let (_dir, store) = make_store();
         for i in 0..5u64 {
-            let val = serde_json::json!({"risk_score": i * 10, "last_seen": "2026-01-01T00:00:00Z"});
+            let val =
+                serde_json::json!({"risk_score": i * 10, "last_seen": "2026-01-01T00:00:00Z"});
             store.set_attacker_profile(&format!("10.0.0.{i}"), &val);
         }
         assert_eq!(store.attacker_profiles_len(), 5);

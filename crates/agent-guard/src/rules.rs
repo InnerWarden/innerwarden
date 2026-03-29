@@ -139,12 +139,20 @@ impl RuleEngine {
 
     /// Check content against rules targeting user_input + content fields.
     pub fn check_user_input(&self, content: &str) -> Vec<AtrMatch> {
-        self.check_indices(&self.user_input_idx, content, &[AtrField::UserInput, AtrField::Content])
+        self.check_indices(
+            &self.user_input_idx,
+            content,
+            &[AtrField::UserInput, AtrField::Content],
+        )
     }
 
     /// Check content against rules targeting tool_args + content fields.
     pub fn check_tool_args(&self, content: &str) -> Vec<AtrMatch> {
-        self.check_indices(&self.tool_args_idx, content, &[AtrField::ToolArgs, AtrField::Content])
+        self.check_indices(
+            &self.tool_args_idx,
+            content,
+            &[AtrField::ToolArgs, AtrField::Content],
+        )
     }
 
     /// Check content against rules targeting tool_response + content fields.
@@ -370,10 +378,7 @@ fn collect_yaml_files(dir: &Path) -> anyhow::Result<Vec<std::path::PathBuf>> {
     Ok(files)
 }
 
-fn collect_yaml_recursive(
-    dir: &Path,
-    out: &mut Vec<std::path::PathBuf>,
-) -> anyhow::Result<()> {
+fn collect_yaml_recursive(dir: &Path, out: &mut Vec<std::path::PathBuf>) -> anyhow::Result<()> {
     let entries = std::fs::read_dir(dir)?;
     for entry in entries {
         let entry = entry?;

@@ -38,11 +38,7 @@ struct CgroupState {
 }
 
 /// Run the cgroup abuse detector as a periodic scanner.
-pub async fn run(
-    tx: mpsc::Sender<Event>,
-    host: String,
-    poll_seconds: u64,
-) {
+pub async fn run(tx: mpsc::Sender<Event>, host: String, poll_seconds: u64) {
     let cgroup_base = Path::new("/sys/fs/cgroup");
     if !cgroup_base.exists() {
         info!("cgroup_abuse: /sys/fs/cgroup not found, disabling");
@@ -78,7 +74,10 @@ pub async fn run(
                     last_alert: None,
                 });
 
-                let elapsed_us = (now - state.last_read_at).num_microseconds().unwrap_or(1).max(1) as u64;
+                let elapsed_us = (now - state.last_read_at)
+                    .num_microseconds()
+                    .unwrap_or(1)
+                    .max(1) as u64;
                 let cpu_delta = cpu_us.saturating_sub(state.last_cpu_usage_us);
                 let cpu_rate = cpu_delta * 1_000_000 / elapsed_us;
 
@@ -93,10 +92,7 @@ pub async fn run(
 
                 // Alert after sustained high CPU
                 if state.high_cpu_count >= CPU_MIN_READINGS {
-                    let should_alert = state
-                        .last_alert
-                        .map(|t| now - t > cooldown)
-                        .unwrap_or(true);
+                    let should_alert = state.last_alert.map(|t| now - t > cooldown).unwrap_or(true);
 
                     if should_alert {
                         state.last_alert = Some(now);
@@ -142,10 +138,7 @@ pub async fn run(
                         last_alert: None,
                     });
 
-                    let should_alert = state
-                        .last_alert
-                        .map(|t| now - t > cooldown)
-                        .unwrap_or(true);
+                    let should_alert = state.last_alert.map(|t| now - t > cooldown).unwrap_or(true);
 
                     if should_alert {
                         state.last_alert = Some(now);
@@ -166,10 +159,7 @@ pub async fn run(
                                 "memory_mb": mem_bytes / (1024 * 1024),
                                 "threshold_mb": MEMORY_SPIKE_THRESHOLD / (1024 * 1024),
                             }),
-                            tags: vec![
-                                "cgroup".to_string(),
-                                "resource_abuse".to_string(),
-                            ],
+                            tags: vec!["cgroup".to_string(), "resource_abuse".to_string()],
                             entities: vec![EntityRef::container(&cgroup_name)],
                         };
                         if tx.send(ev).await.is_err() {

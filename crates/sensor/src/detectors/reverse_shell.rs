@@ -137,7 +137,11 @@ impl ReverseShellDetector {
         }
 
         // Check: is this redirecting stdin (0) or stdout (1)?
-        let newfd = event.details.get("newfd").and_then(|v| v.as_u64()).unwrap_or(99);
+        let newfd = event
+            .details
+            .get("newfd")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(99);
         if newfd > 2 {
             return None; // Not redirecting stdio
         }

@@ -169,7 +169,11 @@ pub async fn run(
                     summary: format!(
                         "File modified: {} (hash changed{})",
                         path_str,
-                        if encrypted { ", HIGH ENTROPY - possible encryption" } else { "" }
+                        if encrypted {
+                            ", HIGH ENTROPY - possible encryption"
+                        } else {
+                            ""
+                        }
                     ),
                     details: serde_json::json!({
                         "path": path_str,
@@ -180,10 +184,7 @@ pub async fn run(
                         "entropy": entropy,
                         "encrypted": encrypted,
                     }),
-                    tags: vec![
-                        "filesystem".to_string(),
-                        "integrity".to_string(),
-                    ],
+                    tags: vec!["filesystem".to_string(), "integrity".to_string()],
                     entities: vec![EntityRef::path(&path_str)],
                 };
 
@@ -216,10 +217,7 @@ pub async fn run(
                                 "window_seconds": RANSOMWARE_WINDOW_SECS,
                                 "latest_file": path_str,
                             }),
-                            tags: vec![
-                                "ransomware".to_string(),
-                                "filesystem".to_string(),
-                            ],
+                            tags: vec!["ransomware".to_string(), "filesystem".to_string()],
                             entities: vec![],
                         };
                         if tx.send(ev).await.is_err() {

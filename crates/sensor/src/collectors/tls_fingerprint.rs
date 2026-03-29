@@ -90,8 +90,8 @@ const KNOWN_MALICIOUS_JA3: &[(&str, &str)] = &[
 
 // GREASE values (should be ignored in JA3 computation per spec)
 const GREASE_VALUES: &[u16] = &[
-    0x0a0a, 0x1a1a, 0x2a2a, 0x3a3a, 0x4a4a, 0x5a5a, 0x6a6a, 0x7a7a,
-    0x8a8a, 0x9a9a, 0xaaaa, 0xbaba, 0xcaca, 0xdada, 0xeaea, 0xfafa,
+    0x0a0a, 0x1a1a, 0x2a2a, 0x3a3a, 0x4a4a, 0x5a5a, 0x6a6a, 0x7a7a, 0x8a8a, 0x9a9a, 0xaaaa, 0xbaba,
+    0xcaca, 0xdada, 0xeaea, 0xfafa,
 ];
 
 // ---------------------------------------------------------------------------
@@ -103,11 +103,7 @@ const GREASE_VALUES: &[u16] = &[
 /// On Linux with CAP_NET_RAW, opens an AF_PACKET socket to capture TLS
 /// ClientHello packets. On other platforms or without privileges, returns
 /// immediately (graceful degradation).
-pub async fn run(
-    tx: mpsc::Sender<Event>,
-    host: String,
-    _poll_seconds: u64,
-) {
+pub async fn run(tx: mpsc::Sender<Event>, host: String, _poll_seconds: u64) {
     #[cfg(all(target_os = "linux", feature = "ebpf"))]
     {
         if let Err(e) = run_linux(tx, host).await {
@@ -124,10 +120,7 @@ pub async fn run(
 }
 
 #[cfg(all(target_os = "linux", feature = "ebpf"))]
-async fn run_linux(
-    tx: mpsc::Sender<Event>,
-    host: String,
-) -> anyhow::Result<()> {
+async fn run_linux(tx: mpsc::Sender<Event>, host: String) -> anyhow::Result<()> {
     use std::os::fd::FromRawFd;
 
     // Open AF_PACKET socket (ETH_P_IP = 0x0800)
@@ -211,7 +204,11 @@ async fn run_linux(
         let summary = if let Some((_, name)) = malicious {
             format!(
                 "MALICIOUS TLS fingerprint: {} ({}) from {} → {}:{}",
-                name, &fp.ja3_hash[..12], fp.src_ip, fp.dst_ip, fp.dst_port
+                name,
+                &fp.ja3_hash[..12],
+                fp.src_ip,
+                fp.dst_ip,
+                fp.dst_port
             )
         } else {
             format!(
@@ -259,10 +256,7 @@ async fn run_linux(
                 }
                 t
             },
-            entities: vec![
-                EntityRef::ip(&fp.src_ip),
-                EntityRef::ip(&fp.dst_ip),
-            ],
+            entities: vec![EntityRef::ip(&fp.src_ip), EntityRef::ip(&fp.dst_ip)],
         };
 
         if tx.send(ev).await.is_err() {
@@ -354,7 +348,14 @@ pub fn parse_packet(data: &[u8]) -> Option<ClientHello> {
     }
 
     // Parse ClientHello
-    parse_client_hello(&data[hs_start..], record_version, src_ip, dst_ip, src_port, dst_port)
+    parse_client_hello(
+        &data[hs_start..],
+        record_version,
+        src_ip,
+        dst_ip,
+        src_port,
+        dst_port,
+    )
 }
 
 /// Parse the ClientHello handshake message.
@@ -441,8 +442,7 @@ pub fn parse_client_hello(
                 // SNI (Server Name Indication)
                 0x0000 => {
                     if pos + 5 <= ext_data_end {
-                        let name_len =
-                            u16::from_be_bytes([data[pos + 3], data[pos + 4]]) as usize;
+                        let name_len = u16::from_be_bytes([data[pos + 3], data[pos + 4]]) as usize;
                         if pos + 5 + name_len <= ext_data_end {
                             sni = String::from_utf8_lossy(&data[pos + 5..pos + 5 + name_len])
                                 .to_string();
@@ -452,12 +452,10 @@ pub fn parse_client_hello(
                 // Supported Groups (elliptic curves)
                 0x000a => {
                     if pos + 2 <= ext_data_end {
-                        let list_len =
-                            u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+                        let list_len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
                         let mut j = 2;
                         while j + 1 < 2 + list_len && pos + j + 1 < ext_data_end {
-                            let curve =
-                                u16::from_be_bytes([data[pos + j], data[pos + j + 1]]);
+                            let curve = u16::from_be_bytes([data[pos + j], data[pos + j + 1]]);
                             if !GREASE_VALUES.contains(&curve) {
                                 elliptic_curves.push(curve);
                             }
@@ -479,17 +477,15 @@ pub fn parse_client_hello(
                 // ALPN
                 0x0010 => {
                     if pos + 2 <= ext_data_end {
-                        let list_len =
-                            u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+                        let list_len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
                         let mut j = 2;
                         while j < 2 + list_len && pos + j < ext_data_end {
                             let proto_len = data[pos + j] as usize;
                             j += 1;
                             if pos + j + proto_len <= ext_data_end {
-                                let proto = String::from_utf8_lossy(
-                                    &data[pos + j..pos + j + proto_len],
-                                )
-                                .to_string();
+                                let proto =
+                                    String::from_utf8_lossy(&data[pos + j..pos + j + proto_len])
+                                        .to_string();
                                 alpn.push(proto);
                                 j += proto_len;
                             } else {
@@ -605,23 +601,21 @@ pub fn md5_hex(data: &[u8]) -> String {
 /// Minimal MD5 implementation (RFC 1321).
 pub fn md5_compute(input: &[u8]) -> [u8; 16] {
     const S: [u32; 64] = [
-        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-        5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
-        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
+        9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,
+        15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
     ];
     const K: [u32; 64] = [
-        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a,
-        0xa8304613, 0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
-        0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340,
-        0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
-        0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8,
-        0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
-        0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
-        0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
-        0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92,
-        0xffeff47d, 0x85845dd1, 0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
-        0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613,
+        0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193,
+        0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d,
+        0x02441453, 0xd8a1e681, 0xe7d3fbc8, 0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122,
+        0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
+        0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665, 0xf4292244,
+        0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb,
+        0xeb86d391,
     ];
 
     let mut a0: u32 = 0x67452301;
@@ -663,10 +657,7 @@ pub fn md5_compute(input: &[u8]) -> [u8; 16] {
             d = c;
             c = b;
             b = b.wrapping_add(
-                (a.wrapping_add(f)
-                    .wrapping_add(K[i])
-                    .wrapping_add(m[g]))
-                .rotate_left(S[i]),
+                (a.wrapping_add(f).wrapping_add(K[i]).wrapping_add(m[g])).rotate_left(S[i]),
             );
             a = temp;
         }

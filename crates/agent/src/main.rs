@@ -11,9 +11,9 @@ mod allowlist;
 mod attacker_intel;
 mod baseline;
 mod cloudflare;
-mod correlation_engine;
 mod config;
 mod correlation;
+mod correlation_engine;
 mod crowdsec;
 mod dashboard;
 mod data_retention;
@@ -32,12 +32,12 @@ mod reader;
 mod redis_reader;
 mod report;
 mod skills;
-mod threat_feeds;
-mod threat_report;
 mod slack;
 mod state_store;
 mod telegram;
 mod telemetry;
+mod threat_feeds;
+mod threat_report;
 mod web_push;
 mod webhook;
 
@@ -439,8 +439,7 @@ fn scan_honeypot_for_profiles(
     };
 
     // Collect IPs we care about (owned to avoid borrow conflict with get_mut)
-    let profile_ips: std::collections::HashSet<String> =
-        profiles.keys().cloned().collect();
+    let profile_ips: std::collections::HashSet<String> = profiles.keys().cloned().collect();
 
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -1294,11 +1293,10 @@ async fn main() -> Result<()> {
         // Load ATR rule engine from rules directory.
         let rules_dir = std::path::Path::new("/etc/innerwarden/rules");
         let rule_engine = std::sync::Arc::new(
-            innerwarden_agent_guard::rules::RuleEngine::load(rules_dir)
-                .unwrap_or_else(|e| {
-                    warn!(error = %e, "failed to load ATR rules, starting with empty engine");
-                    innerwarden_agent_guard::rules::RuleEngine::empty()
-                }),
+            innerwarden_agent_guard::rules::RuleEngine::load(rules_dir).unwrap_or_else(|e| {
+                warn!(error = %e, "failed to load ATR rules, starting with empty engine");
+                innerwarden_agent_guard::rules::RuleEngine::empty()
+            }),
         );
 
         let agent_alert_tx = agent_alert_tx.clone();
@@ -1506,8 +1504,7 @@ async fn main() -> Result<()> {
                 // JSONL audit trail (write first, before network calls that may block).
                 {
                     let today = chrono::Local::now().date_naive().format("%Y-%m-%d");
-                    let path =
-                        alert_data_dir.join(format!("agent-guard-events-{today}.jsonl"));
+                    let path = alert_data_dir.join(format!("agent-guard-events-{today}.jsonl"));
                     match serde_json::to_string(&alert) {
                         Ok(line) => {
                             use std::io::Write;
@@ -1521,7 +1518,9 @@ async fn main() -> Result<()> {
                                         warn!(error = %e, path = %path.display(), "failed to write agent-guard event");
                                     }
                                 }
-                                Err(e) => warn!(error = %e, path = %path.display(), "failed to open agent-guard events file"),
+                                Err(e) => {
+                                    warn!(error = %e, path = %path.display(), "failed to open agent-guard events file")
+                                }
                             }
                         }
                         Err(e) => warn!(error = %e, "failed to serialize agent-guard alert"),
@@ -1544,10 +1543,9 @@ async fn main() -> Result<()> {
 
                 // Webhook notification.
                 if wh_enabled {
-                    if let Err(e) = webhook::send_agent_guard_alert(
-                        &wh_url, wh_timeout, &alert, &wh_format,
-                    )
-                    .await
+                    if let Err(e) =
+                        webhook::send_agent_guard_alert(&wh_url, wh_timeout, &alert, &wh_format)
+                            .await
                     {
                         warn!(error = %e, "agent-guard webhook alert failed");
                     }
@@ -5652,7 +5650,10 @@ async fn process_narrative_tick(
 
             // Evaluate chain-triggered playbooks
             for incident in &new_incidents.entries {
-                if let Some(exec) = state.playbook_engine.evaluate_chain(&chain.rule_id, incident) {
+                if let Some(exec) = state
+                    .playbook_engine
+                    .evaluate_chain(&chain.rule_id, incident)
+                {
                     info!(
                         playbook = %exec.playbook_id,
                         chain = %chain.rule_id,
@@ -5680,7 +5681,10 @@ async fn process_narrative_tick(
             if existing.len() > 100 {
                 existing = existing.split_off(existing.len() - 100);
             }
-            let _ = std::fs::write(&chains_path, serde_json::to_string(&existing).unwrap_or_default());
+            let _ = std::fs::write(
+                &chains_path,
+                serde_json::to_string(&existing).unwrap_or_default(),
+            );
         }
 
         // Check for multi-low elevation

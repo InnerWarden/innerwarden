@@ -190,7 +190,8 @@ pub fn generate_monthly(
     let mut weekly: Vec<WeeklyBucket> = (0..4)
         .map(|w| {
             let start = month_start + chrono::Duration::days(w * 7);
-            let end = (start + chrono::Duration::days(6)).min(next_month - chrono::Duration::days(1));
+            let end =
+                (start + chrono::Duration::days(6)).min(next_month - chrono::Duration::days(1));
             WeeklyBucket {
                 week_label: format!("W{}", w + 1),
                 date_range: format!("{} — {}", start.format("%b %d"), end.format("%b %d")),
@@ -233,7 +234,9 @@ pub fn generate_monthly(
                         // Extract detector from incident_id
                         if let Some(iid) = val["incident_id"].as_str() {
                             let detector = mitre::detector_from_incident_id(iid);
-                            *incidents_by_detector.entry(detector.to_string()).or_default() += 1;
+                            *incidents_by_detector
+                                .entry(detector.to_string())
+                                .or_default() += 1;
                         }
 
                         // Extract attacker IPs
@@ -295,11 +298,7 @@ pub fn generate_monthly(
     // Build top attackers from profiles
     let mut month_profiles: Vec<&AttackerProfile> = profiles
         .values()
-        .filter(|p| {
-            p.visit_dates
-                .iter()
-                .any(|d| d.starts_with(month))
-        })
+        .filter(|p| p.visit_dates.iter().any(|d| d.starts_with(month)))
         .collect();
     month_profiles.sort_by(|a, b| b.risk_score.cmp(&a.risk_score));
 
@@ -352,8 +351,14 @@ pub fn generate_monthly(
 
     // Mesh summary (from profiles)
     let mesh = MeshSummary {
-        threats_shared: month_profiles.iter().map(|p| p.mesh_peer_confirmations as u64).sum(),
-        threats_received: month_profiles.iter().map(|p| p.mesh_signals_received as u64).sum(),
+        threats_shared: month_profiles
+            .iter()
+            .map(|p| p.mesh_peer_confirmations as u64)
+            .sum(),
+        threats_received: month_profiles
+            .iter()
+            .map(|p| p.mesh_signals_received as u64)
+            .sum(),
         peer_count: 0, // would need live mesh state
     };
 
@@ -410,10 +415,7 @@ fn render_markdown(r: &MonthlyThreatReport) -> String {
     let mut md = String::with_capacity(8192);
     let s = &r.executive_summary;
 
-    md.push_str(&format!(
-        "# InnerWarden Threat Report — {}\n\n",
-        r.month
-    ));
+    md.push_str(&format!("# InnerWarden Threat Report — {}\n\n", r.month));
     md.push_str(&format!(
         "*Generated: {}*\n\n",
         r.generated_at.format("%Y-%m-%d %H:%M UTC")
@@ -429,7 +431,10 @@ fn render_markdown(r: &MonthlyThreatReport) -> String {
     md.push_str(&format!("| Unique Attackers | {} |\n", s.unique_attackers));
     md.push_str(&format!("| Unique Countries | {} |\n", s.unique_countries));
     md.push_str(&format!("| Top Detector | {} |\n", s.top_detector));
-    md.push_str(&format!("| Top MITRE Technique | {} |\n", s.top_mitre_technique));
+    md.push_str(&format!(
+        "| Top MITRE Technique | {} |\n",
+        s.top_mitre_technique
+    ));
     md.push_str(&format!(
         "| Avg Incidents/Day | {:.1} |\n",
         s.avg_incidents_per_day
@@ -552,12 +557,7 @@ fn render_markdown(r: &MonthlyThreatReport) -> String {
         for w in &r.weekly_trends {
             md.push_str(&format!(
                 "| {} | {} | {} | {} | {} | {} |\n",
-                w.week_label,
-                w.date_range,
-                w.events,
-                w.incidents,
-                w.blocks,
-                w.unique_attackers
+                w.week_label, w.date_range, w.events, w.incidents, w.blocks, w.unique_attackers
             ));
         }
         md.push('\n');
@@ -598,7 +598,9 @@ fn build_mitre_coverage(
                 )
             });
             entry.3 += count;
-            *tactics_counts.entry(mapping.tactic.to_string()).or_default() += count;
+            *tactics_counts
+                .entry(mapping.tactic.to_string())
+                .or_default() += count;
         }
     }
 
@@ -737,11 +739,7 @@ mod tests {
     #[test]
     fn available_months_finds_reports() {
         let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(
-            dir.path().join("monthly-report-2026-03.json"),
-            "{}",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("monthly-report-2026-03.json"), "{}").unwrap();
         let months = available_months(dir.path());
         assert!(months.contains(&"2026-03".to_string()));
     }
@@ -749,8 +747,16 @@ mod tests {
     #[test]
     fn campaign_detection_uses_dna_engine() {
         let mut profiles = HashMap::new();
-        let p1 = make_profile("1.1.1.1", 80, &["ssh_bruteforce", "port_scan", "credential_stuffing"]);
-        let p2 = make_profile("2.2.2.2", 70, &["ssh_bruteforce", "port_scan", "credential_stuffing"]);
+        let p1 = make_profile(
+            "1.1.1.1",
+            80,
+            &["ssh_bruteforce", "port_scan", "credential_stuffing"],
+        );
+        let p2 = make_profile(
+            "2.2.2.2",
+            70,
+            &["ssh_bruteforce", "port_scan", "credential_stuffing"],
+        );
         let p3 = make_profile("3.3.3.3", 50, &["web_scan"]);
         profiles.insert("1.1.1.1".into(), p1);
         profiles.insert("2.2.2.2".into(), p2);
