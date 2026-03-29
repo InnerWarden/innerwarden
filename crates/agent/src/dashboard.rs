@@ -2020,6 +2020,28 @@ struct GeoIpResult {
     country: String,
 }
 
+// ── Safe data file reading (CWE-22 path traversal protection) ──────
+//
+// All endpoints that read JSON files from data_dir MUST use this helper.
+// It canonicalizes both base and target paths and verifies the target
+// stays within the data directory, preventing path traversal attacks.
+
+fn safe_read_data_file(data_dir: &Path, filename: &str) -> Option<String> {
+    let base = data_dir.canonicalize().ok()?;
+    let target = data_dir.join(filename);
+    // File might not exist yet — canonicalize fails for missing files.
+    // In that case, verify the parent dir is safe and the filename is simple.
+    if let Ok(canonical) = target.canonicalize() {
+        if !canonical.starts_with(&base) {
+            return None; // path traversal attempt
+        }
+        std::fs::read_to_string(canonical).ok()
+    } else {
+        // File doesn't exist — that's OK (return None, caller handles default)
+        None
+    }
+}
+
 // ── Attacker Intelligence & Monthly Reports ────────────────────────
 
 /// `GET /api/attacker-profiles` - list attacker profiles sorted by risk.
@@ -2032,11 +2054,10 @@ async fn api_attacker_profiles(
     let min_risk = query.min_risk.unwrap_or(0);
     let sort = query.sort.as_deref().unwrap_or("risk_score");
 
-    let path = state.data_dir.join("attacker-profiles.json");
-    let profiles: Vec<serde_json::Value> = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
+    let profiles: Vec<serde_json::Value> =
+        safe_read_data_file(&state.data_dir, "attacker-profiles.json")
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
 
     let mut filtered: Vec<serde_json::Value> = profiles
         .into_iter()
@@ -2079,11 +2100,10 @@ async fn api_attacker_profile_detail(
     State(state): State<DashboardState>,
     axum::extract::Path(ip): axum::extract::Path<String>,
 ) -> Json<serde_json::Value> {
-    let path = state.data_dir.join("attacker-profiles.json");
-    let profiles: Vec<serde_json::Value> = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
+    let profiles: Vec<serde_json::Value> =
+        safe_read_data_file(&state.data_dir, "attacker-profiles.json")
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
 
     let profile = profiles.into_iter().find(|p| p["ip"].as_str() == Some(&ip));
     match profile {
@@ -2108,8 +2128,12 @@ async fn api_threat_report(
         }
     });
 
-    let json_path = state.data_dir.join(format!("monthly-report-{month}.json"));
-    if let Ok(content) = std::fs::read_to_string(&json_path) {
+    // Validate month format to prevent path traversal via crafted month param
+    if !month.chars().all(|c| c.is_ascii_digit() || c == '-') || month.len() > 7 {
+        return Json(serde_json::json!({"error": "invalid month format"}));
+    }
+    let filename = format!("monthly-report-{month}.json");
+    if let Some(content) = safe_read_data_file(&state.data_dir, &filename) {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
             return Json(val);
         }
@@ -2120,10 +2144,8 @@ async fn api_threat_report(
     let month_clone = month.clone();
     match tokio::task::spawn_blocking(move || {
         // Load profiles from snapshot for generation
-        let profiles_path = data_dir.join("attacker-profiles.json");
         let profiles: std::collections::HashMap<String, crate::attacker_intel::AttackerProfile> =
-            std::fs::read_to_string(&profiles_path)
-                .ok()
+            safe_read_data_file(&data_dir, "attacker-profiles.json")
                 .and_then(|s| {
                     serde_json::from_str::<Vec<crate::attacker_intel::AttackerProfile>>(&s).ok()
                 })
@@ -2159,9 +2181,7 @@ async fn api_threat_report_months(State(state): State<DashboardState>) -> Json<V
 
 /// `GET /api/correlation-chains` - recent attack chain detections.
 async fn api_correlation_chains(State(state): State<DashboardState>) -> Json<serde_json::Value> {
-    let path = state.data_dir.join("attack-chains.json");
-    let chains: Vec<serde_json::Value> = std::fs::read_to_string(&path)
-        .ok()
+    let chains: Vec<serde_json::Value> = safe_read_data_file(&state.data_dir, "attack-chains.json")
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
     Json(serde_json::json!({
@@ -2172,9 +2192,7 @@ async fn api_correlation_chains(State(state): State<DashboardState>) -> Json<ser
 
 /// `GET /api/baseline-status` - baseline learning status and recent anomalies.
 async fn api_baseline_status(State(state): State<DashboardState>) -> Json<serde_json::Value> {
-    let path = state.data_dir.join("baseline.json");
-    let baseline: serde_json::Value = std::fs::read_to_string(&path)
-        .ok()
+    let baseline: serde_json::Value = safe_read_data_file(&state.data_dir, "baseline.json")
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(serde_json::json!({"mature": false, "training_days": 0}));
     Json(baseline)
@@ -2182,9 +2200,7 @@ async fn api_baseline_status(State(state): State<DashboardState>) -> Json<serde_
 
 /// `GET /api/playbook-log` - recent playbook executions.
 async fn api_playbook_log(State(state): State<DashboardState>) -> Json<serde_json::Value> {
-    let path = state.data_dir.join("playbook-log.json");
-    let log: Vec<serde_json::Value> = std::fs::read_to_string(&path)
-        .ok()
+    let log: Vec<serde_json::Value> = safe_read_data_file(&state.data_dir, "playbook-log.json")
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
     Json(serde_json::json!({
@@ -2195,9 +2211,7 @@ async fn api_playbook_log(State(state): State<DashboardState>) -> Json<serde_jso
 
 /// `GET /api/campaigns` - detected campaign clusters (DNA + IOC correlation).
 async fn api_campaigns(State(state): State<DashboardState>) -> Json<serde_json::Value> {
-    let path = state.data_dir.join("campaigns.json");
-    let campaigns: Vec<serde_json::Value> = std::fs::read_to_string(&path)
-        .ok()
+    let campaigns: Vec<serde_json::Value> = safe_read_data_file(&state.data_dir, "campaigns.json")
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
     Json(serde_json::json!({

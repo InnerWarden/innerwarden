@@ -133,8 +133,14 @@ pub fn report_exists(data_dir: &Path, month: &str) -> bool {
 pub fn available_months(data_dir: &Path) -> Vec<String> {
     let mut months = HashSet::new();
 
+    // Canonicalize data_dir to prevent path traversal (CWE-22)
+    let safe_dir = match data_dir.canonicalize() {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+
     // Existing reports
-    if let Ok(entries) = std::fs::read_dir(data_dir) {
+    if let Ok(entries) = std::fs::read_dir(&safe_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if let Some(month) = name
