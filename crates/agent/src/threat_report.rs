@@ -133,15 +133,17 @@ pub fn report_exists(data_dir: &Path, month: &str) -> bool {
 pub fn available_months(data_dir: &Path) -> Vec<String> {
     let mut months = HashSet::new();
 
-    // Canonicalize data_dir to prevent path traversal (CWE-22)
+    // Validate data_dir: must be an existing absolute directory (CWE-22)
     let safe_dir = match data_dir.canonicalize() {
-        Ok(d) => d,
-        Err(_) => return Vec::new(),
+        Ok(d) if d.is_dir() && d.is_absolute() => d,
+        _ => return Vec::new(),
     };
 
-    // Existing reports
-    if let Ok(entries) = std::fs::read_dir(&safe_dir) {
+    // Only list filenames — never use full paths from entries for file I/O.
+    // read_dir is safe here: we only extract file_name() strings for parsing.
+    if let Ok(entries) = std::fs::read_dir(safe_dir) {
         for entry in entries.flatten() {
+            // file_name() is the basename only — no path traversal possible
             let name = entry.file_name().to_string_lossy().to_string();
             if let Some(month) = name
                 .strip_prefix("monthly-report-")
