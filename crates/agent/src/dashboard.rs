@@ -17,7 +17,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use rand_core::{OsRng, RngCore};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -945,6 +945,18 @@ pub async fn serve(
         .route("/api/admin-actions", get(api_admin_actions))
         .route("/api/advisory-cache", get(api_advisory_cache))
         .route("/api/compliance", get(api_compliance))
+        // Attacker Intelligence & Monthly Reports
+        .route("/api/attacker-profiles", get(api_attacker_profiles))
+        .route(
+            "/api/attacker-profiles/:ip",
+            get(api_attacker_profile_detail),
+        )
+        .route("/api/threat-report", get(api_threat_report))
+        .route("/api/threat-report/months", get(api_threat_report_months))
+        .route("/api/campaigns", get(api_campaigns))
+        .route("/api/correlation-chains", get(api_correlation_chains))
+        .route("/api/baseline-status", get(api_baseline_status))
+        .route("/api/playbook-log", get(api_playbook_log))
         // D6 - SSE live event stream
         .route("/api/events/stream", get(api_events_stream))
         // Web Push
@@ -1704,8 +1716,10 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResp
     let real_incidents: Vec<&Incident> = incidents.iter().filter(|i| !is_internal(i)).collect();
 
     // Build incident IDs set for matching decisions to real attacks only.
-    let real_ids: std::collections::HashSet<&str> =
-        real_incidents.iter().map(|i| i.incident_id.as_str()).collect();
+    let real_ids: std::collections::HashSet<&str> = real_incidents
+        .iter()
+        .map(|i| i.incident_id.as_str())
+        .collect();
 
     let total_today = real_incidents.len();
     let total_blocked = decisions
@@ -2004,6 +2018,206 @@ struct GeoIpResult {
     lat: f64,
     lon: f64,
     country: String,
+}
+
+// ── Safe data file reading (CWE-22 path traversal protection) ──────
+//
+// All endpoints that read JSON files from data_dir MUST use this helper.
+// It canonicalizes both base and target paths and verifies the target
+// stays within the data directory, preventing path traversal attacks.
+
+fn safe_read_data_file(data_dir: &Path, filename: &str) -> Option<String> {
+    let base = data_dir.canonicalize().ok()?;
+    let target = data_dir.join(filename);
+    // File might not exist yet — canonicalize fails for missing files.
+    // In that case, verify the parent dir is safe and the filename is simple.
+    if let Ok(canonical) = target.canonicalize() {
+        if !canonical.starts_with(&base) {
+            return None; // path traversal attempt
+        }
+        std::fs::read_to_string(canonical).ok()
+    } else {
+        // File doesn't exist — that's OK (return None, caller handles default)
+        None
+    }
+}
+
+// ── Attacker Intelligence & Monthly Reports ────────────────────────
+
+/// `GET /api/attacker-profiles` - list attacker profiles sorted by risk.
+async fn api_attacker_profiles(
+    State(state): State<DashboardState>,
+    Query(query): Query<AttackerProfilesQuery>,
+) -> Json<serde_json::Value> {
+    let limit = query.limit.unwrap_or(50).min(500);
+    let offset = query.offset.unwrap_or(0);
+    let min_risk = query.min_risk.unwrap_or(0);
+    let sort = query.sort.as_deref().unwrap_or("risk_score");
+
+    let profiles: Vec<serde_json::Value> =
+        safe_read_data_file(&state.data_dir, "attacker-profiles.json")
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
+    let mut filtered: Vec<serde_json::Value> = profiles
+        .into_iter()
+        .filter(|p| p["risk_score"].as_u64().unwrap_or(0) >= min_risk as u64)
+        .collect();
+
+    match sort {
+        "last_seen" => {
+            filtered.sort_by(|a, b| b["last_seen"].as_str().cmp(&a["last_seen"].as_str()))
+        }
+        "incidents" => filtered.sort_by(|a, b| {
+            b["total_incidents"]
+                .as_u64()
+                .cmp(&a["total_incidents"].as_u64())
+        }),
+        _ => filtered.sort_by(|a, b| b["risk_score"].as_u64().cmp(&a["risk_score"].as_u64())),
+    }
+
+    let total = filtered.len();
+    let page: Vec<serde_json::Value> = filtered.into_iter().skip(offset).take(limit).collect();
+
+    Json(serde_json::json!({
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "profiles": page,
+    }))
+}
+
+#[derive(Deserialize)]
+struct AttackerProfilesQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+    sort: Option<String>,
+    min_risk: Option<u8>,
+}
+
+/// `GET /api/attacker-profiles/:ip` - single attacker profile detail.
+async fn api_attacker_profile_detail(
+    State(state): State<DashboardState>,
+    axum::extract::Path(ip): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let profiles: Vec<serde_json::Value> =
+        safe_read_data_file(&state.data_dir, "attacker-profiles.json")
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
+    let profile = profiles.into_iter().find(|p| p["ip"].as_str() == Some(&ip));
+    match profile {
+        Some(p) => Json(p),
+        None => Json(serde_json::json!({"error": "profile not found"})),
+    }
+}
+
+/// `GET /api/threat-report?month=YYYY-MM` - monthly threat report.
+async fn api_threat_report(
+    State(state): State<DashboardState>,
+    Query(query): Query<ThreatReportQuery>,
+) -> Json<serde_json::Value> {
+    let month = query.month.unwrap_or_else(|| {
+        // Default to previous month if available, else current
+        let today = chrono::Local::now().date_naive();
+        if today.day() >= 2 {
+            let prev = today - chrono::Duration::days(today.day() as i64);
+            prev.format("%Y-%m").to_string()
+        } else {
+            today.format("%Y-%m").to_string()
+        }
+    });
+
+    // Validate month format to prevent path traversal via crafted month param
+    if !month.chars().all(|c| c.is_ascii_digit() || c == '-') || month.len() > 7 {
+        return Json(serde_json::json!({"error": "invalid month format"}));
+    }
+    let filename = format!("monthly-report-{month}.json");
+    if let Some(content) = safe_read_data_file(&state.data_dir, &filename) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+            return Json(val);
+        }
+    }
+
+    // Report doesn't exist - generate on demand
+    let data_dir = state.data_dir.clone();
+    let month_clone = month.clone();
+    match tokio::task::spawn_blocking(move || {
+        // Load profiles from snapshot for generation
+        let profiles: std::collections::HashMap<String, crate::attacker_intel::AttackerProfile> =
+            safe_read_data_file(&data_dir, "attacker-profiles.json")
+                .and_then(|s| {
+                    serde_json::from_str::<Vec<crate::attacker_intel::AttackerProfile>>(&s).ok()
+                })
+                .map(|v| v.into_iter().map(|p| (p.ip.clone(), p)).collect())
+                .unwrap_or_default();
+        crate::threat_report::generate_monthly(&data_dir, &month_clone, &profiles).and_then(
+            |report| {
+                crate::threat_report::write_report(&report, &data_dir)?;
+                Ok(report)
+            },
+        )
+    })
+    .await
+    {
+        Ok(Ok(report)) => match serde_json::to_value(&report) {
+            Ok(val) => Json(val),
+            Err(_) => Json(serde_json::json!({"error": "serialization failed"})),
+        },
+        Ok(Err(e)) => Json(serde_json::json!({"error": format!("{e:#}")})),
+        Err(e) => Json(serde_json::json!({"error": format!("task failed: {e}")})),
+    }
+}
+
+#[derive(Deserialize)]
+struct ThreatReportQuery {
+    month: Option<String>,
+}
+
+/// `GET /api/threat-report/months` - list available months.
+async fn api_threat_report_months(State(state): State<DashboardState>) -> Json<Vec<String>> {
+    Json(crate::threat_report::available_months(&state.data_dir))
+}
+
+/// `GET /api/correlation-chains` - recent attack chain detections.
+async fn api_correlation_chains(State(state): State<DashboardState>) -> Json<serde_json::Value> {
+    let chains: Vec<serde_json::Value> = safe_read_data_file(&state.data_dir, "attack-chains.json")
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    Json(serde_json::json!({
+        "total": chains.len(),
+        "chains": chains,
+    }))
+}
+
+/// `GET /api/baseline-status` - baseline learning status and recent anomalies.
+async fn api_baseline_status(State(state): State<DashboardState>) -> Json<serde_json::Value> {
+    let baseline: serde_json::Value = safe_read_data_file(&state.data_dir, "baseline.json")
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::json!({"mature": false, "training_days": 0}));
+    Json(baseline)
+}
+
+/// `GET /api/playbook-log` - recent playbook executions.
+async fn api_playbook_log(State(state): State<DashboardState>) -> Json<serde_json::Value> {
+    let log: Vec<serde_json::Value> = safe_read_data_file(&state.data_dir, "playbook-log.json")
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    Json(serde_json::json!({
+        "total": log.len(),
+        "executions": log,
+    }))
+}
+
+/// `GET /api/campaigns` - detected campaign clusters (DNA + IOC correlation).
+async fn api_campaigns(State(state): State<DashboardState>) -> Json<serde_json::Value> {
+    let campaigns: Vec<serde_json::Value> = safe_read_data_file(&state.data_dir, "campaigns.json")
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    Json(serde_json::json!({
+        "total": campaigns.len(),
+        "campaigns": campaigns,
+    }))
 }
 
 /// `GET /api/events/stream` - SSE live event stream (D6).
@@ -4094,8 +4308,7 @@ fn run_analysis(
     command: &str,
     agent_name: Option<&str>,
 ) -> serde_json::Value {
-    let analysis =
-        innerwarden_agent_guard::mcp::analyze_command(command, Some(&state.rule_engine));
+    let analysis = innerwarden_agent_guard::mcp::analyze_command(command, Some(&state.rule_engine));
 
     // Emit snitch alert if deny or review.
     if analysis.recommendation == "deny" || analysis.recommendation == "review" {
@@ -4110,11 +4323,7 @@ fn run_analysis(
             risk_score: analysis.risk_score,
             severity: analysis.severity.clone(),
             recommendation: analysis.recommendation.clone(),
-            signals: analysis
-                .signals
-                .iter()
-                .map(|s| s.signal.clone())
-                .collect(),
+            signals: analysis.signals.iter().map(|s| s.signal.clone()).collect(),
             atr_rule_ids: analysis
                 .atr_matches
                 .iter()
@@ -4141,7 +4350,11 @@ async fn api_agent_check_command(
     State(state): State<DashboardState>,
     Json(body): Json<CheckCommandRequest>,
 ) -> Json<serde_json::Value> {
-    Json(run_analysis(&state, &body.command, body.agent_name.as_deref()))
+    Json(run_analysis(
+        &state,
+        &body.command,
+        body.agent_name.as_deref(),
+    ))
 }
 
 /// POST /api/advisor/check-command - analyze + cache advisory for deny/review results
@@ -7099,6 +7312,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
       <button type="button" class="main-nav-btn" id="navStatus" onclick="showView('status')">Health</button>
       <button type="button" class="main-nav-btn" id="navHoneypot" onclick="showView('honeypot')">🍯 Honeypot</button>
       <button type="button" class="main-nav-btn" id="navCompliance" onclick="showView('compliance')">🛡️ Compliance</button>
+      <button type="button" class="main-nav-btn" id="navIntel" onclick="showView('intel')">🧠 Intelligence</button>
+      <button type="button" class="main-nav-btn" id="navMonthly" onclick="showView('monthly')">📊 Monthly</button>
     </div>
     <button type="button" class="panel-toggle-btn" id="panelToggleBtn" onclick="toggleLeftPanel()" aria-label="Toggle panel">
       <span id="panelToggleIcon">▲</span> List
@@ -7425,6 +7640,41 @@ const INDEX_HTML: &str = r##"<!doctype html>
     </div>
   </div>
 
+  <!-- Intelligence tab view -->
+  <div class="report-view" id="viewIntel" style="display:none">
+    <div class="report-toolbar">
+      <button type="button" class="report-refresh-btn" onclick="loadIntel()">↻ Refresh</button>
+      <button type="button" id="intelTabProfiles" onclick="switchIntelTab('profiles')" style="margin-left:8px;padding:4px 12px;border-radius:4px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer;">Profiles</button>
+      <button type="button" id="intelTabCampaigns" onclick="switchIntelTab('campaigns')" style="margin-left:4px;padding:4px 12px;border-radius:4px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);cursor:pointer;">Campaigns</button>
+      <button type="button" id="intelTabChains" onclick="switchIntelTab('chains')" style="margin-left:4px;padding:4px 12px;border-radius:4px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);cursor:pointer;">Chains</button>
+      <button type="button" id="intelTabBaseline" onclick="switchIntelTab('baseline')" style="margin-left:4px;padding:4px 12px;border-radius:4px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);cursor:pointer;">Baseline</button>
+      <button type="button" id="intelTabPlaybooks" onclick="switchIntelTab('playbooks')" style="margin-left:4px;padding:4px 12px;border-radius:4px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);cursor:pointer;">Playbooks</button>
+      <select id="intelSort" onchange="loadIntel()" style="margin-left:8px;padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);">
+        <option value="risk_score">Sort: Risk Score</option>
+        <option value="last_seen">Sort: Last Seen</option>
+        <option value="incidents">Sort: Incidents</option>
+      </select>
+      <input type="number" id="intelMinRisk" placeholder="Min risk" min="0" max="100" value="0" onchange="loadIntel()" style="margin-left:8px;width:80px;padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);">
+      <span id="intelViewStatus" class="report-status"></span>
+    </div>
+    <div id="intelContent" class="report-content" style="padding:16px;">
+      <p style="color:var(--dim);">Loading attacker profiles...</p>
+    </div>
+  </div>
+
+  <!-- Monthly Report tab view -->
+  <div class="report-view" id="viewMonthly" style="display:none">
+    <div class="report-toolbar">
+      <button type="button" class="report-refresh-btn" onclick="loadMonthly()">↻ Refresh</button>
+      <select id="monthlyPicker" onchange="loadMonthly()" style="margin-left:8px;padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);">
+      </select>
+      <span id="monthlyViewStatus" class="report-status"></span>
+    </div>
+    <div id="monthlyContent" class="report-content" style="padding:16px;">
+      <p style="color:var(--dim);">Select a month to view the threat report...</p>
+    </div>
+  </div>
+
   <!-- D3 - toast notification -->
   <div class="toast" id="toast"></div>
 
@@ -7445,8 +7695,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
   // ── D10 - View switcher ──────────────────────────────────────────────────
   function showView(name) {
-    const views = { sensors: 'viewSensors', investigate: 'viewInvestigate', report: 'viewReport', status: 'viewStatus', honeypot: 'viewHoneypot', compliance: 'viewCompliance' };
-    const btns  = { sensors: 'navSensors', investigate: 'navInvestigate', report: 'navReport', status: 'navStatus', honeypot: 'navHoneypot', compliance: 'navCompliance' };
+    const views = { sensors: 'viewSensors', investigate: 'viewInvestigate', report: 'viewReport', status: 'viewStatus', honeypot: 'viewHoneypot', compliance: 'viewCompliance', intel: 'viewIntel', monthly: 'viewMonthly' };
+    const btns  = { sensors: 'navSensors', investigate: 'navInvestigate', report: 'navReport', status: 'navStatus', honeypot: 'navHoneypot', compliance: 'navCompliance', intel: 'navIntel', monthly: 'navMonthly' };
     Object.keys(views).forEach(k => {
       const el = document.getElementById(views[k]);
       const btn = document.getElementById(btns[k]);
@@ -7460,6 +7710,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
     if (name === 'status') loadStatus();
     if (name === 'honeypot') loadHoneypot();
     if (name === 'compliance') loadCompliance();
+    if (name === 'intel') loadIntel();
+    if (name === 'monthly') loadMonthly();
   }
 
   // ── E2 - Home state ─────────────────────────────────────────────────────
@@ -10138,6 +10390,561 @@ const INDEX_HTML: &str = r##"<!doctype html>
     armFallback();
     connect();
   })();
+
+  // ── Intelligence tab ──────────────────────────────────────────────
+  async function loadIntel() {
+    const status = document.getElementById('intelViewStatus');
+    const content = document.getElementById('intelContent');
+    if (status) status.textContent = 'Loading…';
+    try {
+      const sort = document.getElementById('intelSort')?.value || 'risk_score';
+      const minRisk = document.getElementById('intelMinRisk')?.value || '0';
+      const data = await loadJson(`/api/attacker-profiles?sort=${sort}&min_risk=${minRisk}&limit=100`);
+      if (!data || !data.profiles) { content.innerHTML = '<p style="color:var(--dim)">No attacker profiles yet.</p>'; return; }
+
+      let html = `<div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px;">
+        <div class="kpi-card"><div class="kpi-value">${data.total}</div><div class="kpi-label">Total Profiles</div></div>
+        <div class="kpi-card"><div class="kpi-value">${data.profiles.filter(p=>p.risk_score>=70).length}</div><div class="kpi-label">High Risk (≥70)</div></div>
+        <div class="kpi-card"><div class="kpi-value">${new Set(data.profiles.map(p=>p.dna?.pattern_class).filter(Boolean)).size}</div><div class="kpi-label">Pattern Types</div></div>
+        <div class="kpi-card"><div class="kpi-value">${new Set(data.profiles.map(p=>p.geo?.country_code).filter(Boolean)).size}</div><div class="kpi-label">Countries</div></div>
+      </div>`;
+
+      html += `<table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+        <thead><tr style="border-bottom:2px solid var(--border);text-align:left;">
+          <th style="padding:6px;">Risk</th><th style="padding:6px;">IP</th><th style="padding:6px;">Country</th>
+          <th style="padding:6px;">Incidents</th><th style="padding:6px;">Blocks</th><th style="padding:6px;">Detectors</th>
+          <th style="padding:6px;">Pattern</th><th style="padding:6px;">DNA</th><th style="padding:6px;">Last Seen</th>
+        </tr></thead><tbody>`;
+
+      for (const p of data.profiles) {
+        const riskColor = p.risk_score >= 70 ? '#e74c3c' : p.risk_score >= 40 ? '#f39c12' : '#27ae60';
+        const riskBar = `<div style="display:flex;align-items:center;gap:6px;">
+          <div style="width:40px;height:8px;background:var(--border);border-radius:4px;overflow:hidden;">
+            <div style="width:${p.risk_score}%;height:100%;background:${riskColor};"></div>
+          </div><span style="color:${riskColor};font-weight:600;">${p.risk_score}</span></div>`;
+        const country = p.geo?.country_code || '??';
+        const detectors = (p.detectors_triggered || []).slice(0, 3).join(', ');
+        const pattern = p.dna?.pattern_class || 'unknown';
+        const dnaShort = (p.dna?.hash || '').slice(0, 10);
+        const lastSeen = p.last_seen ? new Date(p.last_seen).toLocaleDateString() : '—';
+        const patternBadge = pattern === 'regular_scanner' ? '🔄' : pattern === 'targeted' ? '🎯' : pattern === 'opportunistic' ? '🎲' : '❓';
+
+        html += `<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="showProfileDetail('${p.ip}')">
+          <td style="padding:6px;">${riskBar}</td>
+          <td style="padding:6px;font-family:monospace;">${p.ip}</td>
+          <td style="padding:6px;">${country}</td>
+          <td style="padding:6px;">${p.total_incidents}</td>
+          <td style="padding:6px;">${p.total_blocks}</td>
+          <td style="padding:6px;font-size:0.75rem;">${detectors}</td>
+          <td style="padding:6px;">${patternBadge} ${pattern}</td>
+          <td style="padding:6px;font-family:monospace;font-size:0.7rem;color:var(--dim);">${dnaShort}</td>
+          <td style="padding:6px;font-size:0.75rem;">${lastSeen}</td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+      content.innerHTML = html;
+      if (status) status.textContent = `${data.total} profiles`;
+    } catch(e) {
+      content.innerHTML = `<p style="color:#e74c3c;">Failed to load: ${e.message}</p>`;
+      if (status) status.textContent = 'Error';
+    }
+  }
+
+  async function showProfileDetail(ip) {
+    const content = document.getElementById('intelContent');
+    try {
+      const p = await loadJson(`/api/attacker-profiles/${encodeURIComponent(ip)}`);
+      if (!p || p.error) { content.innerHTML = `<p style="color:#e74c3c">${p?.error || 'Not found'}</p>`; return; }
+
+      const riskColor = p.risk_score >= 70 ? '#e74c3c' : p.risk_score >= 40 ? '#f39c12' : '#27ae60';
+      let html = `<button type="button" onclick="loadIntel()" style="margin-bottom:12px;padding:4px 12px;border-radius:4px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);cursor:pointer;">← Back</button>`;
+
+      html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">`;
+
+      // Left: Identity + Timeline
+      html += `<div class="kpi-card" style="padding:16px;">
+        <h3 style="margin:0 0 12px;">🎯 ${p.ip}</h3>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <div style="width:120px;height:12px;background:var(--border);border-radius:6px;overflow:hidden;">
+            <div style="width:${p.risk_score}%;height:100%;background:${riskColor};"></div>
+          </div>
+          <span style="font-size:1.5rem;font-weight:700;color:${riskColor};">${p.risk_score}/100</span>
+        </div>
+        <table style="font-size:0.8rem;"><tbody>
+          <tr><td style="padding:2px 8px;color:var(--dim);">Country</td><td>${p.geo?.country || '—'} (${p.geo?.country_code || '??'})</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--dim);">ISP</td><td>${p.geo?.isp || '—'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--dim);">ASN</td><td>${p.geo?.asn || '—'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--dim);">AbuseIPDB</td><td>${p.abuseipdb_score ?? '—'}/100</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--dim);">CrowdSec</td><td>${p.crowdsec_listed ? '⚠️ Listed' : '✅ Clean'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--dim);">Tor</td><td>${p.is_tor ? '🧅 Yes' : 'No'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--dim);">First Seen</td><td>${p.first_seen ? new Date(p.first_seen).toLocaleString() : '—'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--dim);">Last Seen</td><td>${p.last_seen ? new Date(p.last_seen).toLocaleString() : '—'}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--dim);">Visit Count</td><td>${p.visit_count} days</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--dim);">Pattern</td><td>${p.dna?.pattern_class || 'unknown'}</td></tr>
+        </tbody></table>
+      </div>`;
+
+      // Right: Attack Profile
+      html += `<div class="kpi-card" style="padding:16px;">
+        <h3 style="margin:0 0 12px;">⚔️ Attack Profile</h3>
+        <table style="font-size:0.8rem;"><tbody>
+          <tr><td style="padding:2px 8px;color:var(--dim);">Incidents</td><td>${p.total_incidents}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--dim);">Blocks</td><td>${p.total_blocks}</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--dim);">Honeypot</td><td>${p.total_honeypot_diversions} diversions, ${p.honeypot_sessions} sessions</td></tr>
+          <tr><td style="padding:2px 8px;color:var(--dim);">Max Severity</td><td style="font-weight:600;">${p.max_severity}</td></tr>
+        </tbody></table>
+        <h4 style="margin:12px 0 4px;font-size:0.8rem;color:var(--dim);">Detectors Triggered</h4>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;">${(p.detectors_triggered||[]).map(d=>`<span style="padding:2px 6px;border-radius:4px;background:var(--border);font-size:0.7rem;">${d}</span>`).join('')}</div>
+        <h4 style="margin:12px 0 4px;font-size:0.8rem;color:var(--dim);">MITRE Techniques</h4>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;">${(p.mitre_techniques||[]).map(t=>`<span style="padding:2px 6px;border-radius:4px;background:#2c1810;color:#f39c12;font-size:0.7rem;">${t}</span>`).join('')}</div>
+      </div>`;
+      html += `</div>`;
+
+      // DNA section
+      html += `<div class="kpi-card" style="padding:16px;margin-top:16px;">
+        <h3 style="margin:0 0 12px;">🧬 Behavioral DNA</h3>
+        <div style="font-family:monospace;font-size:0.75rem;color:var(--dim);margin-bottom:8px;">Hash: ${p.dna?.hash || '—'}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">
+          <div><h4 style="font-size:0.8rem;color:var(--dim);margin:0 0 4px;">Hour Distribution</h4>
+            <div style="display:flex;align-items:flex-end;gap:1px;height:40px;">${(p.dna?.hour_distribution||[]).map((v,i)=>`<div title="${i}:00 — ${v} events" style="flex:1;background:${v>0?'#3498db':'var(--border)'};height:${v?Math.max(4,v/Math.max(...(p.dna?.hour_distribution||[1]))*40):2}px;border-radius:1px;"></div>`).join('')}</div>
+            <div style="display:flex;justify-content:space-between;font-size:0.6rem;color:var(--dim);"><span>0h</span><span>12h</span><span>23h</span></div>
+          </div>
+          <div><h4 style="font-size:0.8rem;color:var(--dim);margin:0 0 4px;">Target Users</h4>
+            ${(p.dna?.target_users||[]).map(u=>`<div style="font-family:monospace;font-size:0.75rem;">${u}</div>`).join('')||'<span style="color:var(--dim);font-size:0.75rem;">none</span>'}
+          </div>
+          <div><h4 style="font-size:0.8rem;color:var(--dim);margin:0 0 4px;">Tool Signatures</h4>
+            ${(p.dna?.tool_signatures||[]).map(t=>`<span style="padding:2px 6px;border-radius:4px;background:#1a2634;color:#3498db;font-size:0.7rem;margin:2px;">${t}</span>`).join('')||'<span style="color:var(--dim);font-size:0.75rem;">none</span>'}
+          </div>
+        </div>
+      </div>`;
+
+      // Honeypot Intel
+      if (p.honeypot_sessions > 0) {
+        html += `<div class="kpi-card" style="padding:16px;margin-top:16px;">
+          <h3 style="margin:0 0 12px;">🍯 Honeypot Intel</h3>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+            <div><h4 style="font-size:0.8rem;color:var(--dim);margin:0 0 4px;">Credentials Attempted</h4>
+              <table style="font-size:0.75rem;"><tbody>
+                ${(p.credentials_attempted||[]).slice(0,10).map(([u,pw])=>`<tr><td style="padding:1px 6px;font-family:monospace;">${u}</td><td style="padding:1px 6px;font-family:monospace;color:var(--dim);">${pw}</td></tr>`).join('')}
+              </tbody></table>
+            </div>
+            <div><h4 style="font-size:0.8rem;color:var(--dim);margin:0 0 4px;">Commands Executed</h4>
+              ${(p.commands_executed||[]).slice(0,10).map(c=>`<div style="font-family:monospace;font-size:0.7rem;padding:2px 0;border-bottom:1px solid var(--border);">${c}</div>`).join('')}
+            </div>
+          </div>
+          ${(p.iocs?.urls||[]).length > 0 ? `<h4 style="font-size:0.8rem;color:var(--dim);margin:12px 0 4px;">IOCs</h4>
+            ${(p.iocs.urls||[]).map(u=>`<div style="font-family:monospace;font-size:0.7rem;">🔗 ${u}</div>`).join('')}
+            ${(p.iocs.ips||[]).map(i=>`<div style="font-family:monospace;font-size:0.7rem;">🌐 ${i}</div>`).join('')}` : ''}
+        </div>`;
+      }
+
+      content.innerHTML = html;
+    } catch(e) {
+      content.innerHTML = `<p style="color:#e74c3c">Failed: ${e.message}</p><button type="button" onclick="loadIntel()">← Back</button>`;
+    }
+  }
+
+  let currentIntelTab = 'profiles';
+  function switchIntelTab(tab) {
+    currentIntelTab = tab;
+    const tabs = ['Profiles','Campaigns','Chains','Baseline','Playbooks'];
+    tabs.forEach(t => {
+      const btn = document.getElementById('intelTab'+t);
+      if (btn) { const active = t.toLowerCase() === tab; btn.style.background = active ? 'var(--accent)' : 'var(--card-bg)'; btn.style.color = active ? '#fff' : 'var(--text)'; btn.style.borderColor = active ? 'var(--accent)' : 'var(--border)'; }
+    });
+    if (tab === 'campaigns') loadCampaigns();
+    else if (tab === 'chains') loadChains();
+    else if (tab === 'baseline') loadBaseline();
+    else if (tab === 'playbooks') loadPlaybooks();
+    else loadIntel();
+  }
+
+  async function loadCampaigns() {
+    const status = document.getElementById('intelViewStatus');
+    const content = document.getElementById('intelContent');
+    if (status) status.textContent = 'Loading campaigns…';
+    try {
+      const data = await loadJson('/api/campaigns');
+      if (!data || !data.campaigns || data.campaigns.length === 0) {
+        content.innerHTML = `<div style="text-align:center;padding:40px;">
+          <div style="font-size:2rem;margin-bottom:8px;">🔍</div>
+          <p style="color:var(--dim);">No campaigns detected yet.</p>
+          <p style="font-size:0.8rem;color:var(--dim);">Campaigns are detected when multiple IPs share the same behavioral DNA, IOCs (C2 servers, malware URLs), or attack patterns.</p>
+        </div>`;
+        if (status) status.textContent = '0 campaigns';
+        return;
+      }
+
+      let html = `<div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px;">
+        <div class="kpi-card"><div class="kpi-value">${data.total}</div><div class="kpi-label">Active Campaigns</div></div>
+        <div class="kpi-card"><div class="kpi-value">${data.campaigns.reduce((s,c)=>s+c.member_ips.length,0)}</div><div class="kpi-label">IPs Involved</div></div>
+        <div class="kpi-card"><div class="kpi-value">${data.campaigns.filter(c=>c.confidence==='high').length}</div><div class="kpi-label">High Confidence</div></div>
+        <div class="kpi-card"><div class="kpi-value">${new Set(data.campaigns.flatMap(c=>c.countries)).size}</div><div class="kpi-label">Countries</div></div>
+      </div>`;
+
+      for (const c of data.campaigns) {
+        const confColor = c.confidence === 'high' ? '#e74c3c' : c.confidence === 'medium' ? '#f39c12' : '#27ae60';
+        const typeIcon = c.correlation_type.includes('dna') && c.correlation_type.includes('ioc') ? '🧬+🔗'
+          : c.correlation_type.includes('dna') ? '🧬'
+          : c.correlation_type.includes('ioc') ? '🔗' : '📡';
+
+        html += `<div class="kpi-card" style="padding:16px;margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="font-weight:700;font-size:1.1rem;">${c.campaign_id}</span>
+              <span style="font-size:1.2rem;">${typeIcon}</span>
+              <span style="padding:2px 8px;border-radius:4px;background:${confColor}20;color:${confColor};font-size:0.75rem;font-weight:600;">${c.confidence}</span>
+              <span style="padding:2px 8px;border-radius:4px;background:var(--border);font-size:0.7rem;">${c.correlation_type}</span>
+            </div>
+            <div style="text-align:right;">
+              <span style="font-weight:600;color:${confColor};">Risk: ${c.max_risk_score}</span>
+              <span style="margin-left:8px;font-size:0.8rem;color:var(--dim);">${c.total_incidents} incidents</span>
+            </div>
+          </div>
+
+          <div style="font-size:0.85rem;margin-bottom:8px;">${c.summary}</div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div>
+              <div style="font-size:0.75rem;color:var(--dim);margin-bottom:4px;">Member IPs (${c.member_ips.length})</div>
+              <div style="display:flex;flex-wrap:wrap;gap:4px;">
+                ${c.member_ips.map(ip=>`<span onclick="switchIntelTab('profiles');setTimeout(()=>showProfileDetail('${ip}'),100)" style="padding:2px 8px;border-radius:4px;background:var(--border);font-family:monospace;font-size:0.75rem;cursor:pointer;">${ip}</span>`).join('')}
+              </div>
+              ${c.countries.length ? `<div style="font-size:0.7rem;color:var(--dim);margin-top:4px;">Countries: ${c.countries.join(', ')}</div>` : ''}
+            </div>
+            <div>
+              ${c.shared_dna_signature ? `<div style="margin-bottom:4px;">
+                <span style="font-size:0.75rem;color:var(--dim);">DNA Signature:</span>
+                <code style="font-size:0.7rem;margin-left:4px;">${c.shared_dna_signature}</code>
+              </div>` : ''}
+              ${c.shared_iocs.length ? `<div style="margin-bottom:4px;">
+                <div style="font-size:0.75rem;color:var(--dim);margin-bottom:2px;">Shared IOCs:</div>
+                ${c.shared_iocs.slice(0,5).map(i=>`<div style="font-family:monospace;font-size:0.7rem;color:#e74c3c;">${i}</div>`).join('')}
+              </div>` : ''}
+              ${c.shared_detectors.length ? `<div>
+                <div style="font-size:0.75rem;color:var(--dim);margin-bottom:2px;">Shared Detectors:</div>
+                <div style="display:flex;flex-wrap:wrap;gap:3px;">
+                  ${c.shared_detectors.map(d=>`<span style="padding:1px 6px;border-radius:3px;background:#1a2634;color:#3498db;font-size:0.65rem;">${d}</span>`).join('')}
+                </div>
+              </div>` : ''}
+            </div>
+          </div>
+        </div>`;
+      }
+
+      content.innerHTML = html;
+      if (status) status.textContent = `${data.total} campaigns`;
+    } catch(e) {
+      content.innerHTML = `<p style="color:#e74c3c;">Failed to load: ${e.message}</p>`;
+      if (status) status.textContent = 'Error';
+    }
+  }
+
+  // ── Chains sub-tab ─────────────────────────────────────────────────
+  async function loadChains() {
+    const content = document.getElementById('intelContent');
+    const status = document.getElementById('intelViewStatus');
+    if (status) status.textContent = 'Loading chains…';
+    try {
+      const data = await loadJson('/api/correlation-chains');
+      if (!data?.chains?.length) {
+        content.innerHTML = '<div style="text-align:center;padding:40px;"><div style="font-size:2rem;">⛓️</div><p style="color:var(--dim);">No attack chains detected yet.</p><p style="font-size:0.8rem;color:var(--dim);">Chains are multi-stage attacks that span multiple security layers (firmware, kernel, network, userspace).</p></div>';
+        if (status) status.textContent = '0 chains';
+        return;
+      }
+      let html = `<div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px;">
+        <div class="kpi-card"><div class="kpi-value">${data.total}</div><div class="kpi-label">Attack Chains</div></div>
+        <div class="kpi-card"><div class="kpi-value">${data.chains.filter(c=>c.severity==='Critical').length}</div><div class="kpi-label">Critical</div></div>
+        <div class="kpi-card"><div class="kpi-value">${new Set(data.chains.flatMap(c=>c.layers_involved||[])).size}</div><div class="kpi-label">Layers Involved</div></div>
+      </div>`;
+      for (const c of data.chains) {
+        const sevColor = c.severity === 'Critical' ? '#e74c3c' : c.severity === 'High' ? '#f39c12' : '#27ae60';
+        const layers = (c.layers_involved||[]).map(l=>`<span style="padding:1px 6px;border-radius:3px;background:#1a2634;color:#3498db;font-size:0.65rem;">${l}</span>`).join(' → ');
+        html += `<div class="kpi-card" style="padding:12px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div><span style="font-weight:700;">${c.chain_id}</span> <span style="font-size:0.8rem;color:var(--dim);">${c.rule_name}</span></div>
+            <span style="padding:2px 8px;border-radius:4px;background:${sevColor}20;color:${sevColor};font-size:0.75rem;">${c.severity}</span>
+          </div>
+          <div style="font-size:0.85rem;margin:6px 0;">${c.summary}</div>
+          <div style="margin:4px 0;">Layers: ${layers}</div>
+          <div style="font-size:0.75rem;color:var(--dim);">Confidence: ${(c.confidence*100).toFixed(0)}% · ${c.stages_matched} stages · Rule: ${c.rule_id}</div>
+          <div style="font-size:0.7rem;color:var(--dim);margin-top:4px;">${c.start_ts ? new Date(c.start_ts).toLocaleString() : ''} → ${c.last_ts ? new Date(c.last_ts).toLocaleString() : ''}</div>
+        </div>`;
+      }
+      content.innerHTML = html;
+      if (status) status.textContent = `${data.total} chains`;
+    } catch(e) { content.innerHTML = `<p style="color:#e74c3c">Failed: ${e.message}</p>`; }
+  }
+
+  // ── Baseline sub-tab ──────────────────────────────────────────────
+  async function loadBaseline() {
+    const content = document.getElementById('intelContent');
+    const status = document.getElementById('intelViewStatus');
+    if (status) status.textContent = 'Loading baseline…';
+    try {
+      const b = await loadJson('/api/baseline-status');
+      let html = `<div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px;">
+        <div class="kpi-card"><div class="kpi-value">${b.mature ? '✅ Active' : '📊 Training'}</div><div class="kpi-label">Status</div></div>
+        <div class="kpi-card"><div class="kpi-value">${b.training_days||0}/7</div><div class="kpi-label">Training Days</div></div>
+        <div class="kpi-card"><div class="kpi-value">${b.total_observations?.toLocaleString()||0}</div><div class="kpi-label">Observations</div></div>
+        <div class="kpi-card"><div class="kpi-value">${Object.keys(b.process_lineages||{}).length||0}</div><div class="kpi-label">Known Lineages</div></div>
+      </div>`;
+
+      // Event rate by hour
+      const rates = b.event_rate_by_hour || {};
+      if (Object.keys(rates).length > 0) {
+        html += '<h3 style="margin:16px 0 8px;">Event Rate Baseline (by hour)</h3>';
+        for (const [source, hours] of Object.entries(rates)) {
+          const max = Math.max(...hours, 1);
+          html += `<div style="margin-bottom:12px;"><div style="font-weight:600;font-size:0.8rem;margin-bottom:4px;">${source}</div>
+            <div style="display:flex;align-items:flex-end;gap:1px;height:30px;">
+              ${hours.map((v,i)=>`<div title="${i}:00 — ${v.toFixed(0)} events" style="flex:1;background:${v>0?'#3498db':'var(--border)'};height:${Math.max(2,v/max*30)}px;border-radius:1px;"></div>`).join('')}
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:0.55rem;color:var(--dim);"><span>0h</span><span>12h</span><span>23h</span></div>
+          </div>`;
+        }
+      }
+
+      // User login hours
+      const logins = b.user_login_hours || {};
+      if (Object.keys(logins).length > 0) {
+        html += '<h3 style="margin:16px 0 8px;">User Login Patterns</h3>';
+        html += '<table style="font-size:0.75rem;border-collapse:collapse;"><thead><tr><th style="padding:2px 8px;">User</th><th style="padding:2px 8px;">Active Hours</th></tr></thead><tbody>';
+        for (const [user, hours] of Object.entries(logins)) {
+          const active = hours.map((v,i)=>v>0?`${i}:00`:null).filter(Boolean).join(', ');
+          html += `<tr><td style="padding:2px 8px;font-family:monospace;">${user}</td><td style="padding:2px 8px;">${active||'none'}</td></tr>`;
+        }
+        html += '</tbody></table>';
+      }
+
+      // Process destinations
+      const dests = b.process_destinations || {};
+      if (Object.keys(dests).length > 0) {
+        html += '<h3 style="margin:16px 0 8px;">Known Outbound Destinations</h3>';
+        html += '<table style="font-size:0.75rem;border-collapse:collapse;"><thead><tr><th style="padding:2px 8px;">Process</th><th style="padding:2px 8px;">Known Destinations</th></tr></thead><tbody>';
+        for (const [proc, ips] of Object.entries(dests)) {
+          html += `<tr><td style="padding:2px 8px;font-family:monospace;">${proc}</td><td style="padding:2px 8px;">${Array.isArray(ips)?ips.length:0} IPs</td></tr>`;
+        }
+        html += '</tbody></table>';
+      }
+
+      content.innerHTML = html;
+      if (status) status.textContent = b.mature ? 'Anomaly detection active' : `Training: ${b.training_days||0}/7 days`;
+    } catch(e) { content.innerHTML = `<p style="color:#e74c3c">Failed: ${e.message}</p>`; }
+  }
+
+  // ── Playbooks sub-tab ─────────────────────────────────────────────
+  async function loadPlaybooks() {
+    const content = document.getElementById('intelContent');
+    const status = document.getElementById('intelViewStatus');
+    if (status) status.textContent = 'Loading playbooks…';
+    try {
+      const data = await loadJson('/api/playbook-log');
+      if (!data?.executions?.length) {
+        content.innerHTML = '<div style="text-align:center;padding:40px;"><div style="font-size:2rem;">📋</div><p style="color:var(--dim);">No playbook executions yet.</p><p style="font-size:0.8rem;color:var(--dim);">Playbooks trigger automatically when incidents match predefined patterns (ransomware, reverse shell, data exfil, etc.).</p></div>';
+        if (status) status.textContent = '0 executions';
+        return;
+      }
+      let html = `<div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px;">
+        <div class="kpi-card"><div class="kpi-value">${data.total}</div><div class="kpi-label">Total Executions</div></div>
+        <div class="kpi-card"><div class="kpi-value">${data.executions.filter(e=>e.overall_status==='ok').length}</div><div class="kpi-label">Successful</div></div>
+        <div class="kpi-card"><div class="kpi-value">${new Set(data.executions.map(e=>e.playbook_id)).size}</div><div class="kpi-label">Unique Playbooks</div></div>
+      </div>`;
+      for (const exec of data.executions) {
+        const statusColor = exec.overall_status === 'ok' ? '#27ae60' : exec.overall_status === 'pending' ? '#f39c12' : '#e74c3c';
+        html += `<div class="kpi-card" style="padding:12px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div><span style="font-weight:700;">${exec.playbook_name||exec.playbook_id}</span></div>
+            <span style="padding:2px 8px;border-radius:4px;background:${statusColor}20;color:${statusColor};font-size:0.75rem;">${exec.overall_status}</span>
+          </div>
+          <div style="font-size:0.8rem;color:var(--dim);margin:4px 0;">Incident: ${exec.incident_id}</div>
+          <div style="font-size:0.75rem;margin-top:4px;">Steps: ${(exec.steps||[]).map(s=>`<span style="padding:1px 6px;border-radius:3px;background:var(--border);margin:1px;font-size:0.7rem;">${s.action} (${s.status})</span>`).join(' → ')}</div>
+          <div style="font-size:0.65rem;color:var(--dim);margin-top:4px;">${exec.triggered_at ? new Date(exec.triggered_at).toLocaleString() : ''}</div>
+        </div>`;
+      }
+      content.innerHTML = html;
+      if (status) status.textContent = `${data.total} executions`;
+    } catch(e) { content.innerHTML = `<p style="color:#e74c3c">Failed: ${e.message}</p>`; }
+  }
+
+  // ── Monthly Report tab ────────────────────────────────────────────
+  let monthlyMonthsLoaded = false;
+
+  async function loadMonthly() {
+    const status = document.getElementById('monthlyViewStatus');
+    const content = document.getElementById('monthlyContent');
+    const picker = document.getElementById('monthlyPicker');
+
+    // Load available months on first visit
+    if (!monthlyMonthsLoaded && picker) {
+      try {
+        const months = await loadJson('/api/threat-report/months');
+        picker.innerHTML = (months||[]).map(m => `<option value="${m}">${m}</option>`).join('');
+        if (!months || months.length === 0) {
+          picker.innerHTML = '<option value="">No data</option>';
+          content.innerHTML = '<p style="color:var(--dim);">No monthly data available yet. Reports are generated on the 1st of each month, or you can trigger one manually.</p>';
+          return;
+        }
+        monthlyMonthsLoaded = true;
+      } catch(e) {
+        content.innerHTML = `<p style="color:#e74c3c">Failed to load months: ${e.message}</p>`;
+        return;
+      }
+    }
+
+    const month = picker?.value;
+    if (!month) return;
+    if (status) status.textContent = 'Loading…';
+
+    try {
+      const r = await loadJson(`/api/threat-report?month=${month}`);
+      if (!r || r.error) { content.innerHTML = `<p style="color:#e74c3c">${r?.error || 'Failed to generate report'}</p>`; return; }
+      const s = r.executive_summary || {};
+
+      let html = `<h2 style="margin:0 0 16px;">Threat Report — ${r.month}</h2>
+        <div style="font-size:0.75rem;color:var(--dim);margin-bottom:16px;">Generated: ${r.generated_at ? new Date(r.generated_at).toLocaleString() : '—'}</div>`;
+
+      // KPIs
+      html += `<div class="kpi-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:20px;">
+        <div class="kpi-card"><div class="kpi-value">${s.total_events?.toLocaleString()||0}</div><div class="kpi-label">Events</div></div>
+        <div class="kpi-card"><div class="kpi-value">${s.total_incidents?.toLocaleString()||0}</div><div class="kpi-label">Incidents</div></div>
+        <div class="kpi-card"><div class="kpi-value">${s.total_blocks||0}</div><div class="kpi-label">Blocks</div></div>
+        <div class="kpi-card"><div class="kpi-value">${s.unique_attackers||0}</div><div class="kpi-label">Attackers</div></div>
+        <div class="kpi-card"><div class="kpi-value">${s.unique_countries||0}</div><div class="kpi-label">Countries</div></div>
+      </div>`;
+
+      // Top Attackers
+      if (r.top_attackers?.length > 0) {
+        html += `<h3 style="margin:16px 0 8px;">Top Attackers</h3>
+          <table style="width:100%;border-collapse:collapse;font-size:0.8rem;">
+          <thead><tr style="border-bottom:2px solid var(--border);text-align:left;">
+            <th style="padding:4px 6px;">#</th><th style="padding:4px 6px;">IP</th><th style="padding:4px 6px;">Risk</th>
+            <th style="padding:4px 6px;">Country</th><th style="padding:4px 6px;">Incidents</th>
+            <th style="padding:4px 6px;">Pattern</th><th style="padding:4px 6px;">Action</th>
+          </tr></thead><tbody>`;
+        r.top_attackers.forEach((a,i) => {
+          const rc = a.risk_score >= 70 ? '#e74c3c' : a.risk_score >= 40 ? '#f39c12' : '#27ae60';
+          html += `<tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:4px 6px;">${i+1}</td><td style="padding:4px 6px;font-family:monospace;">${a.ip}</td>
+            <td style="padding:4px 6px;color:${rc};font-weight:600;">${a.risk_score}</td>
+            <td style="padding:4px 6px;">${a.country||'??'}</td><td style="padding:4px 6px;">${a.total_incidents}</td>
+            <td style="padding:4px 6px;">${a.pattern_class}</td><td style="padding:4px 6px;">${a.action_taken}</td>
+          </tr>`;
+        });
+        html += '</tbody></table>';
+      }
+
+      // MITRE Coverage
+      if (r.mitre_coverage?.techniques_seen?.length > 0) {
+        html += `<h3 style="margin:20px 0 8px;">MITRE ATT&CK Coverage (${r.mitre_coverage.total_unique_techniques} techniques)</h3>
+          <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px;">`;
+        const tactics = r.mitre_coverage.tactics_counts || {};
+        Object.entries(tactics).sort((a,b)=>b[1]-a[1]).forEach(([t,c]) => {
+          html += `<span style="padding:3px 8px;border-radius:4px;background:#2c1810;color:#f39c12;font-size:0.75rem;">${t}: ${c}</span>`;
+        });
+        html += `</div><table style="width:100%;border-collapse:collapse;font-size:0.8rem;">
+          <thead><tr style="border-bottom:2px solid var(--border);text-align:left;">
+            <th style="padding:4px 6px;">Technique</th><th style="padding:4px 6px;">Tactic</th>
+            <th style="padding:4px 6px;">Incidents</th><th style="padding:4px 6px;">Attackers</th>
+          </tr></thead><tbody>`;
+        r.mitre_coverage.techniques_seen.forEach(t => {
+          html += `<tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:4px 6px;">${t.technique_id} (${t.technique_name})</td>
+            <td style="padding:4px 6px;">${t.tactic}</td>
+            <td style="padding:4px 6px;">${t.incident_count}</td>
+            <td style="padding:4px 6px;">${t.attacker_count}</td></tr>`;
+        });
+        html += '</tbody></table>';
+      }
+
+      // Geographic Distribution
+      if (r.geographic_distribution?.by_country?.length > 0) {
+        html += `<h3 style="margin:20px 0 8px;">Geographic Distribution</h3>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;">`;
+        r.geographic_distribution.by_country.slice(0,12).forEach(c => {
+          html += `<div class="kpi-card" style="padding:8px;">
+            <div style="font-weight:600;">${c.country_code} ${c.country}</div>
+            <div style="font-size:0.75rem;color:var(--dim);">${c.attacker_count} attackers · ${c.incident_count} incidents</div>
+          </div>`;
+        });
+        html += `</div>`;
+      }
+
+      // Campaigns
+      if (r.campaigns?.length > 0) {
+        html += `<h3 style="margin:20px 0 8px;">Detected Campaigns (${r.campaigns.length})</h3>`;
+        r.campaigns.forEach(c => {
+          const confColor = c.confidence === 'high' ? '#e74c3c' : c.confidence === 'medium' ? '#f39c12' : '#27ae60';
+          const typeIcon = (c.correlation_type||'').includes('dna') ? '🧬' : '🔗';
+          html += `<div class="kpi-card" style="padding:12px;margin-bottom:8px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div><span style="font-weight:600;">${c.campaign_id}</span> <span>${typeIcon}</span>
+                <span style="padding:2px 6px;border-radius:3px;background:var(--border);font-size:0.7rem;margin-left:4px;">${c.correlation_type||'unknown'}</span></div>
+              <div><span style="padding:2px 8px;border-radius:4px;background:${confColor}20;color:${confColor};font-size:0.75rem;">${c.confidence}</span>
+                <span style="font-size:0.8rem;color:var(--dim);margin-left:8px;">Risk: ${c.max_risk_score||0}</span></div>
+            </div>
+            <div style="font-size:0.8rem;margin-top:4px;">${c.summary||''}</div>
+            <div style="font-size:0.8rem;margin-top:4px;">IPs (${(c.member_ips||c.attacker_ips||[]).length}): ${(c.member_ips||c.attacker_ips||[]).map(i=>`<code>${i}</code>`).join(', ')}</div>
+            ${c.shared_iocs?.length ? `<div style="font-size:0.75rem;color:#e74c3c;margin-top:2px;">IOCs: ${c.shared_iocs.slice(0,5).join(', ')}</div>` : ''}
+            ${c.shared_dna_signature ? `<div style="font-size:0.7rem;color:var(--dim);margin-top:2px;">DNA: <code>${c.shared_dna_signature}</code></div>` : ''}
+          </div>`;
+        });
+      }
+
+      // Weekly Trends
+      if (r.weekly_trends?.length > 0) {
+        html += `<h3 style="margin:20px 0 8px;">Weekly Trends</h3>
+          <table style="width:100%;border-collapse:collapse;font-size:0.8rem;">
+          <thead><tr style="border-bottom:2px solid var(--border);text-align:left;">
+            <th style="padding:4px 6px;">Week</th><th style="padding:4px 6px;">Period</th>
+            <th style="padding:4px 6px;">Events</th><th style="padding:4px 6px;">Incidents</th>
+            <th style="padding:4px 6px;">Blocks</th><th style="padding:4px 6px;">Attackers</th>
+          </tr></thead><tbody>`;
+        r.weekly_trends.forEach(w => {
+          html += `<tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:4px 6px;font-weight:600;">${w.week_label}</td>
+            <td style="padding:4px 6px;font-size:0.75rem;">${w.date_range}</td>
+            <td style="padding:4px 6px;">${w.events.toLocaleString()}</td>
+            <td style="padding:4px 6px;">${w.incidents}</td>
+            <td style="padding:4px 6px;">${w.blocks}</td>
+            <td style="padding:4px 6px;">${w.unique_attackers}</td>
+          </tr>`;
+        });
+        html += '</tbody></table>';
+      }
+
+      // Honeypot Intel
+      if (r.honeypot_intelligence?.total_sessions > 0) {
+        const h = r.honeypot_intelligence;
+        html += `<h3 style="margin:20px 0 8px;">Honeypot Intelligence</h3>
+          <div style="font-size:0.8rem;margin-bottom:8px;">${h.total_sessions} sessions from ${h.unique_ips} unique IPs</div>`;
+        if (h.top_credentials?.length > 0) {
+          html += `<h4 style="font-size:0.8rem;color:var(--dim);margin:8px 0 4px;">Top Credentials</h4>
+            <table style="border-collapse:collapse;font-size:0.75rem;"><tbody>`;
+          h.top_credentials.slice(0,10).forEach(([u,p,c]) => {
+            html += `<tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:2px 8px;font-family:monospace;">${u}</td>
+              <td style="padding:2px 8px;font-family:monospace;color:var(--dim);">${p}</td>
+              <td style="padding:2px 8px;">${c}x</td></tr>`;
+          });
+          html += '</tbody></table>';
+        }
+        if (h.top_commands?.length > 0) {
+          html += `<h4 style="font-size:0.8rem;color:var(--dim);margin:8px 0 4px;">Top Commands</h4>`;
+          h.top_commands.slice(0,10).forEach(([cmd,c]) => {
+            html += `<div style="font-family:monospace;font-size:0.7rem;padding:2px 0;"><code>${cmd}</code> <span style="color:var(--dim);">(${c}x)</span></div>`;
+          });
+        }
+      }
+
+      content.innerHTML = html;
+      if (status) status.textContent = `Report: ${r.month}`;
+    } catch(e) {
+      content.innerHTML = `<p style="color:#e74c3c">Failed: ${e.message}</p>`;
+      if (status) status.textContent = 'Error';
+    }
+  }
+
 </script>
 </body>
 </html>

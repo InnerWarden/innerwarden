@@ -1661,7 +1661,7 @@ dependencies = [
 [[package]]
 name = "innerwarden-smm"
 version = "0.1.0"
-source = "git+https://github.com/InnerWarden/innerwarden-smm.git#1eacc2497de1779414ce8ebd8ab7f362d89fff15"
+source = "git+https://github.com/InnerWarden/innerwarden-smm.git#5d6abbb5baa974a0007f47bc94345295711a1911"
 dependencies = [
  "anyhow",
  "chrono",

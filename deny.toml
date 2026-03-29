@@ -21,6 +21,7 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
     "CDLA-Permissive-2.0",
+    "BUSL-1.1",
 ]
 
 [bans]
@@ -31,4 +32,7 @@ wildcards = "allow"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = ["https://github.com/InnerWarden/innerwarden-mesh"]
+allow-git = [
+    "https://github.com/InnerWarden/innerwarden-mesh",
+    "https://github.com/InnerWarden/innerwarden-smm",
+]

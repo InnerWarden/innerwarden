@@ -382,10 +382,7 @@ impl TelegramClient {
         let atr_line = if alert.atr_rule_ids.is_empty() {
             String::new()
         } else {
-            format!(
-                "\n<b>ATR rules:</b> {}",
-                alert.atr_rule_ids.join(", ")
-            )
+            format!("\n<b>ATR rules:</b> {}", alert.atr_rule_ids.join(", "))
         };
 
         let html = format!(

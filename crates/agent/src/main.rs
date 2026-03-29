@@ -8,9 +8,12 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 mod abuseipdb;
 mod ai;
 mod allowlist;
+mod attacker_intel;
+mod baseline;
 mod cloudflare;
 mod config;
 mod correlation;
+mod correlation_engine;
 mod crowdsec;
 mod dashboard;
 mod data_retention;
@@ -22,6 +25,8 @@ mod ioc;
 mod mesh;
 mod mitre;
 mod narrative;
+mod pcap_capture;
+mod playbook;
 mod reader;
 #[cfg(feature = "redis-reader")]
 mod redis_reader;
@@ -31,6 +36,8 @@ mod slack;
 mod state_store;
 mod telegram;
 mod telemetry;
+mod threat_feeds;
+mod threat_report;
 mod web_push;
 mod webhook;
 
@@ -40,7 +47,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use chrono::Timelike as _;
+use chrono::{Datelike as _, Timelike as _};
 use clap::Parser;
 use tracing::{debug, info, warn};
 
@@ -315,6 +322,20 @@ struct AgentState {
     /// Persistent state store (redb) - cooldowns, block_counts, ip_reputations,
     /// xdp_block_times, trust_rules. Primary source of truth for reads.
     store: state_store::StateStore,
+    /// Attacker intelligence profiles: IP → unified profile.
+    attacker_profiles: HashMap<String, attacker_intel::AttackerProfile>,
+    /// Last attacker intel consolidation timestamp (5-minute interval).
+    last_intel_consolidation_at: Option<std::time::Instant>,
+    /// Cross-layer correlation engine: detects multi-stage attack chains.
+    correlation_engine: correlation_engine::CorrelationEngine,
+    /// Baseline learning: detects anomalies from normal behavior.
+    baseline: baseline::BaselineStore,
+    /// Playbook engine: automated response sequences.
+    playbook_engine: playbook::PlaybookEngine,
+    /// Selective packet capture on incidents.
+    pcap_capture: pcap_capture::PcapCapture,
+    /// Threat feed client for external intelligence (None when disabled).
+    threat_feed: Option<threat_feeds::ThreatFeedClient>,
     /// Redis stream reader for events (None when redis_url is not configured).
     #[cfg(feature = "redis-reader")]
     redis_reader: Option<redis_reader::RedisStreamReader>,
@@ -402,6 +423,63 @@ fn persist_ip_reputations(data_dir: &Path, reputations: &HashMap<String, LocalIp
             }
         }
         Err(e) => warn!("failed to serialize ip reputations: {e}"),
+    }
+}
+
+/// Scan honeypot session files for IPs in attacker profiles and feed session
+/// data into their profiles (credentials, commands, IOCs).
+fn scan_honeypot_for_profiles(
+    data_dir: &Path,
+    profiles: &mut HashMap<String, attacker_intel::AttackerProfile>,
+) {
+    let honeypot_dir = data_dir.join("honeypot");
+    let entries = match std::fs::read_dir(&honeypot_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    // Collect IPs we care about (owned to avoid borrow conflict with get_mut)
+    let profile_ips: std::collections::HashSet<String> = profiles.keys().cloned().collect();
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("listener-session-") || !name.ends_with(".jsonl") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        for line in content.lines() {
+            if line.is_empty() || !line.starts_with('{') {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let Some(peer_ip) = v["peer_ip"].as_str() else {
+                continue;
+            };
+            if !profile_ips.contains(peer_ip as &str) {
+                continue;
+            }
+            if let Some(profile) = profiles.get_mut(peer_ip) {
+                // Only observe if session not yet counted (check session_id uniqueness)
+                let session_id = v["session_id"].as_str().unwrap_or("");
+                if !session_id.is_empty() {
+                    // Use commands_executed as a proxy: if we already have commands
+                    // from this session, skip. Simple dedup by command presence.
+                    let already_has = v["shell_commands"]
+                        .as_array()
+                        .and_then(|arr| arr.first())
+                        .and_then(|c| c["command"].as_str())
+                        .is_some_and(|cmd| profile.commands_executed.contains(&cmd.to_string()));
+                    if !already_has {
+                        attacker_intel::observe_honeypot(profile, &v);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1215,11 +1293,10 @@ async fn main() -> Result<()> {
         // Load ATR rule engine from rules directory.
         let rules_dir = std::path::Path::new("/etc/innerwarden/rules");
         let rule_engine = std::sync::Arc::new(
-            innerwarden_agent_guard::rules::RuleEngine::load(rules_dir)
-                .unwrap_or_else(|e| {
-                    warn!(error = %e, "failed to load ATR rules, starting with empty engine");
-                    innerwarden_agent_guard::rules::RuleEngine::empty()
-                }),
+            innerwarden_agent_guard::rules::RuleEngine::load(rules_dir).unwrap_or_else(|e| {
+                warn!(error = %e, "failed to load ATR rules, starting with empty engine");
+                innerwarden_agent_guard::rules::RuleEngine::empty()
+            }),
         );
 
         let agent_alert_tx = agent_alert_tx.clone();
@@ -1427,8 +1504,7 @@ async fn main() -> Result<()> {
                 // JSONL audit trail (write first, before network calls that may block).
                 {
                     let today = chrono::Local::now().date_naive().format("%Y-%m-%d");
-                    let path =
-                        alert_data_dir.join(format!("agent-guard-events-{today}.jsonl"));
+                    let path = alert_data_dir.join(format!("agent-guard-events-{today}.jsonl"));
                     match serde_json::to_string(&alert) {
                         Ok(line) => {
                             use std::io::Write;
@@ -1442,7 +1518,9 @@ async fn main() -> Result<()> {
                                         warn!(error = %e, path = %path.display(), "failed to write agent-guard event");
                                     }
                                 }
-                                Err(e) => warn!(error = %e, path = %path.display(), "failed to open agent-guard events file"),
+                                Err(e) => {
+                                    warn!(error = %e, path = %path.display(), "failed to open agent-guard events file")
+                                }
                             }
                         }
                         Err(e) => warn!(error = %e, "failed to serialize agent-guard alert"),
@@ -1465,10 +1543,9 @@ async fn main() -> Result<()> {
 
                 // Webhook notification.
                 if wh_enabled {
-                    if let Err(e) = webhook::send_agent_guard_alert(
-                        &wh_url, wh_timeout, &alert, &wh_format,
-                    )
-                    .await
+                    if let Err(e) =
+                        webhook::send_agent_guard_alert(&wh_url, wh_timeout, &alert, &wh_format)
+                            .await
                     {
                         warn!(error = %e, "agent-guard webhook alert failed");
                     }
@@ -1601,9 +1678,46 @@ async fn main() -> Result<()> {
         narrative_incidents_offset: 0,
         forensics: forensics::ForensicsCapture::new(&cli.data_dir),
         store,
+        attacker_profiles: HashMap::new(), // loaded from redb below
+        last_intel_consolidation_at: None,
+        correlation_engine: correlation_engine::CorrelationEngine::new(),
+        baseline: baseline::BaselineStore::load(&cli.data_dir),
+        playbook_engine: playbook::PlaybookEngine::new(&cli.data_dir),
+        pcap_capture: pcap_capture::PcapCapture::new(&cli.data_dir),
+        threat_feed: None, // initialized below if configured
         #[cfg(feature = "redis-reader")]
         redis_reader: None,
     };
+
+    // Load attacker intelligence profiles from persistent store
+    state.attacker_profiles = attacker_intel::load_from_store(&state.store);
+    if !state.attacker_profiles.is_empty() {
+        info!(
+            profiles = state.attacker_profiles.len(),
+            "loaded attacker profiles from state store"
+        );
+    }
+
+    // Initialize threat feed client if VT API key or IOC feed URLs are configured
+    {
+        let vt_key = threat_feeds::resolve_vt_api_key(&cfg.abuseipdb.api_key);
+        // Threat feeds are always initialized (even without VT key, for IOC feed support)
+        let client = threat_feeds::ThreatFeedClient::new(
+            vt_key,
+            Vec::new(), // IOC feed URLs would come from config
+            &cli.data_dir,
+        );
+        let feed_state = client.state();
+        if feed_state.total_iocs > 0 {
+            info!(
+                ips = feed_state.malicious_ips.len(),
+                domains = feed_state.malicious_domains.len(),
+                hashes = feed_state.malicious_hashes.len(),
+                "threat feeds: loaded cached IOCs"
+            );
+        }
+        state.threat_feed = Some(client);
+    }
 
     // Connect Redis reader if configured
     #[cfg(feature = "redis-reader")]
@@ -1900,6 +2014,101 @@ async fn main() -> Result<()> {
                         state
                             .pending_honeypot_choices
                             .retain(|_, choice| choice.expires_at > now_utc);
+
+                        // ── Threat feed poll + save ──
+                        if let Some(ref mut tf) = state.threat_feed {
+                            tf.poll_feeds().await;
+                            tf.save(&cli.data_dir);
+                        }
+
+                        // ── Pcap capture cooldown cleanup ──
+                        state.pcap_capture.cleanup();
+
+                        // ── Baseline rate anomaly check + save ──
+                        {
+                            let rate_anomalies = state.baseline.check_rate_anomalies();
+                            for anomaly in &rate_anomalies {
+                                info!(
+                                    anomaly_type = ?anomaly.anomaly_type,
+                                    severity = ?anomaly.severity,
+                                    "baseline rate anomaly: {}",
+                                    anomaly.description
+                                );
+                            }
+                            state.baseline.save(&cli.data_dir);
+                        }
+
+                        // ── Attacker intelligence consolidation (every 5 min) ──
+                        const INTEL_INTERVAL_SECS: u64 = 300;
+                        let should_consolidate = state
+                            .last_intel_consolidation_at
+                            .map(|t| t.elapsed().as_secs() >= INTEL_INTERVAL_SECS)
+                            .unwrap_or(true);
+                        if should_consolidate && !state.attacker_profiles.is_empty() {
+                            // Scan honeypot sessions for known attacker IPs
+                            scan_honeypot_for_profiles(
+                                &cli.data_dir,
+                                &mut state.attacker_profiles,
+                            );
+
+                            attacker_intel::consolidation_tick(
+                                &mut state.attacker_profiles,
+                                &state.store,
+                                &cli.data_dir,
+                            );
+                            state.last_intel_consolidation_at = Some(Instant::now());
+                        }
+
+                        // Cap attacker profiles to 10,000 by risk score
+                        const MAX_ATTACKER_PROFILES: usize = 10_000;
+                        if state.attacker_profiles.len() > MAX_ATTACKER_PROFILES {
+                            let mut entries: Vec<_> =
+                                state.attacker_profiles.drain().collect();
+                            entries.sort_by(|a, b| b.1.risk_score.cmp(&a.1.risk_score));
+                            entries.truncate(MAX_ATTACKER_PROFILES);
+                            state.attacker_profiles = entries.into_iter().collect();
+                        }
+
+                        // ── Monthly threat report auto-generation (1st of month) ──
+                        {
+                            let today = chrono::Local::now().date_naive();
+                            if today.day() == 1 {
+                                let prev_month = (today - chrono::Duration::days(1))
+                                    .format("%Y-%m")
+                                    .to_string();
+                                if !threat_report::report_exists(&cli.data_dir, &prev_month) {
+                                    let profiles = state.attacker_profiles.clone();
+                                    let data_dir = cli.data_dir.clone();
+                                    tokio::spawn(async move {
+                                        match threat_report::generate_monthly(
+                                            &data_dir,
+                                            &prev_month,
+                                            &profiles,
+                                        ) {
+                                            Ok(report) => {
+                                                if let Err(e) =
+                                                    threat_report::write_report(&report, &data_dir)
+                                                {
+                                                    warn!(
+                                                        "monthly report write failed: {e:#}"
+                                                    );
+                                                } else {
+                                                    info!(
+                                                        month = %prev_month,
+                                                        "monthly threat report generated"
+                                                    );
+                                                }
+                                            }
+                                            Err(e) => {
+                                                warn!(
+                                                    "monthly report generation failed: {e:#}"
+                                                );
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        }
                     }
 
                     if let Err(e) = cursor.save(&state_path) {
@@ -2328,7 +2537,45 @@ async fn process_incidents(
     for incident in &new_incidents.entries {
         state.telemetry.observe_incident(incident);
 
-        // Update local IP reputation for every incident that mentions an IP.
+        // VirusTotal enrichment: when YARA scanner detects a binary, check its
+        // SHA-256 hash against VT. Result logged for operator context.
+        if incident.incident_id.starts_with("yara_scan:") {
+            if let Some(hash) = incident
+                .evidence
+                .get(0)
+                .and_then(|e| e.get("sha256"))
+                .and_then(|v| v.as_str())
+            {
+                if let Some(ref tf) = state.threat_feed {
+                    match tf.check_virustotal(hash).await {
+                        Some(vt) if vt.is_malicious => {
+                            info!(
+                                incident_id = %incident.incident_id,
+                                sha256 = %hash,
+                                malicious = vt.malicious,
+                                suspicious = vt.suspicious,
+                                "VirusTotal CONFIRMED malicious: {}/{} engines",
+                                vt.malicious,
+                                vt.malicious + vt.suspicious + vt.undetected
+                            );
+                        }
+                        Some(vt) => {
+                            info!(
+                                incident_id = %incident.incident_id,
+                                sha256 = %hash,
+                                malicious = vt.malicious,
+                                "VirusTotal: {}/{} engines flagged",
+                                vt.malicious,
+                                vt.malicious + vt.suspicious + vt.undetected
+                            );
+                        }
+                        None => {} // VT not configured or request failed
+                    }
+                }
+            }
+        }
+
+        // Update local IP reputation and attacker profile for every incident IP.
         for entity in &incident.entities {
             if entity.r#type == innerwarden_core::entities::EntityType::Ip {
                 state
@@ -2336,6 +2583,13 @@ async fn process_incidents(
                     .entry(entity.value.clone())
                     .or_insert_with(LocalIpReputation::new)
                     .record_incident();
+
+                // Attacker intelligence: build unified profile
+                let profile = state
+                    .attacker_profiles
+                    .entry(entity.value.clone())
+                    .or_insert_with(|| attacker_intel::new_profile(&entity.value, incident.ts));
+                attacker_intel::observe_incident(profile, incident);
             }
         }
 
@@ -2354,6 +2608,23 @@ async fn process_incidents(
                         incident_id = %incident.incident_id,
                         exe = ?report.exe,
                         "forensics: process state captured"
+                    );
+                }
+            }
+
+            // Selective pcap capture: capture traffic for the attacker IP
+            let primary_ip = incident
+                .entities
+                .iter()
+                .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
+                .map(|e| e.value.as_str());
+            if let Some(ip) = primary_ip {
+                if let Some(result) = state.pcap_capture.try_capture(ip, &incident.incident_id) {
+                    info!(
+                        ip = %result.ip,
+                        pcap = %result.pcap_path.display(),
+                        duration = result.duration_secs,
+                        "pcap: capture initiated for incident"
                     );
                 }
             }
@@ -2779,6 +3050,9 @@ async fn process_incidents(
                                 cfg.responder.dry_run,
                                 &execution_result,
                             );
+                            if let Some(profile) = state.attacker_profiles.get_mut(&ip) {
+                                attacker_intel::observe_decision(profile, &entry);
+                            }
                             if let Err(e) = writer.write(&entry) {
                                 warn!("failed to write abuseipdb auto-block decision: {e:#}");
                             }
@@ -2804,6 +3078,21 @@ async fn process_incidents(
                                 } else {
                                     None
                                 };
+                                // Enrich attacker profile with AbuseIPDB + GeoIP
+                                if let Some(profile) = state.attacker_profiles.get_mut(&ip) {
+                                    if profile.geo.is_none() {
+                                        let crowdsec_listed = state
+                                            .crowdsec
+                                            .as_ref()
+                                            .is_some_and(|cs| cs.is_known_threat(&ip));
+                                        attacker_intel::enrich_identity(
+                                            profile,
+                                            geo.as_ref(),
+                                            Some(rep),
+                                            crowdsec_listed,
+                                        );
+                                    }
+                                }
                                 let country = geo.as_ref().map(|g| g.country_code.clone());
                                 let isp = geo.as_ref().map(|g| g.isp.clone());
                                 tokio::spawn(async move {
@@ -2886,12 +3175,34 @@ async fn process_incidents(
                             cfg.responder.dry_run,
                             &execution_result,
                         );
+                        if let Some(profile) = state.attacker_profiles.get_mut(ip.as_str()) {
+                            attacker_intel::observe_decision(profile, &entry);
+                        }
                         if let Err(e) = writer.write(&entry) {
                             warn!("failed to write CrowdSec decision: {e:#}");
                         }
                     }
                     handled += 1;
                     continue;
+                }
+            }
+        }
+
+        // Threat feed gate: if the IP is in any threat feed, log it for enrichment.
+        // This is informational — does not auto-block (feeds may have false positives).
+        if let Some(ref tf) = state.threat_feed {
+            let primary_ip = incident
+                .entities
+                .iter()
+                .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
+                .map(|e| e.value.as_str());
+            if let Some(ip) = primary_ip {
+                if tf.is_known_malicious_ip(ip) {
+                    info!(
+                        ip,
+                        incident_id = %incident.incident_id,
+                        "threat feed match: IP found in external IOC feed"
+                    );
                 }
             }
         }
@@ -2993,6 +3304,31 @@ async fn process_incidents(
         } else {
             None
         };
+
+        // Enrich attacker profile with GeoIP + AbuseIPDB (only on first encounter)
+        if ip_geo.is_some() || ip_reputation.is_some() {
+            let primary_ip = incident
+                .entities
+                .iter()
+                .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
+                .map(|e| e.value.as_str());
+            if let Some(ip) = primary_ip {
+                if let Some(profile) = state.attacker_profiles.get_mut(ip) {
+                    if profile.geo.is_none() || profile.abuseipdb_score.is_none() {
+                        let crowdsec_listed = state
+                            .crowdsec
+                            .as_ref()
+                            .is_some_and(|cs| cs.is_known_threat(ip));
+                        attacker_intel::enrich_identity(
+                            profile,
+                            ip_geo.as_ref(),
+                            ip_reputation.as_ref(),
+                            crowdsec_listed,
+                        );
+                    }
+                }
+            }
+        }
 
         let ctx = ai::DecisionContext {
             incident,
@@ -3311,10 +3647,40 @@ async fn process_incidents(
                 cfg.responder.dry_run,
                 &execution_result,
             );
+            // Attacker intelligence: observe this decision
+            if let Some(ref ip) = entry.target_ip {
+                if let Some(profile) = state.attacker_profiles.get_mut(ip) {
+                    attacker_intel::observe_decision(profile, &entry);
+                }
+            }
             if let Err(e) = writer.write(&entry) {
                 state.telemetry.observe_error("decision_writer");
                 warn!("failed to write decision entry: {e:#}");
             }
+        }
+
+        // Playbook evaluation: check if this incident triggers a playbook
+        if let Some(exec) = state.playbook_engine.evaluate(incident) {
+            info!(
+                playbook = %exec.playbook_id,
+                incident = %exec.incident_id,
+                steps = exec.steps.len(),
+                "playbook triggered: {}",
+                exec.playbook_name
+            );
+            // Persist playbook execution to JSON log
+            let log_path = data_dir.join("playbook-log.json");
+            let mut log: Vec<serde_json::Value> = std::fs::read_to_string(&log_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+            if let Ok(val) = serde_json::to_value(&exec) {
+                log.push(val);
+            }
+            if log.len() > 100 {
+                log = log.split_off(log.len() - 100);
+            }
+            let _ = std::fs::write(&log_path, serde_json::to_string(&log).unwrap_or_default());
         }
 
         // In GUARD/DryRun mode, send a post-execution Telegram report so the
@@ -5235,6 +5601,20 @@ async fn process_narrative_tick(
     state.narrative_acc.reset_for_date(&today);
     state.narrative_acc.ingest_events(&events_entries);
 
+    // Feed events into cross-layer correlation engine and baseline learning
+    for ev in &events_entries {
+        let corr_event = correlation_engine::CorrelationEngine::classify_event(ev);
+        state.correlation_engine.observe(corr_event);
+        let anomalies = state.baseline.observe_event(ev);
+        for anomaly in anomalies {
+            info!(
+                anomaly_type = ?anomaly.anomaly_type,
+                description = %anomaly.description,
+                "baseline anomaly detected"
+            );
+        }
+    }
+
     // Also ingest any new incidents incrementally
     let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
     let new_incidents = reader::read_new_entries::<innerwarden_core::incident::Incident>(
@@ -5247,6 +5627,74 @@ async fn process_narrative_tick(
     if !new_incidents.entries.is_empty() {
         state.narrative_acc.ingest_incidents(&new_incidents.entries);
         state.narrative_incidents_offset = new_incidents.new_offset;
+
+        // Feed incidents into cross-layer correlation engine
+        for incident in &new_incidents.entries {
+            let corr_event = correlation_engine::CorrelationEngine::classify_incident(incident);
+            state.correlation_engine.observe(corr_event);
+        }
+
+        // Check for completed attack chains
+        let chains = state.correlation_engine.drain_completed();
+        for chain in &chains {
+            info!(
+                chain_id = %chain.chain_id,
+                rule = %chain.rule_id,
+                name = %chain.rule_name,
+                stages = chain.stages_matched,
+                layers = chain.layers_involved.len(),
+                confidence = chain.confidence,
+                "cross-layer attack chain detected: {}",
+                chain.summary
+            );
+
+            // Evaluate chain-triggered playbooks
+            for incident in &new_incidents.entries {
+                if let Some(exec) = state
+                    .playbook_engine
+                    .evaluate_chain(&chain.rule_id, incident)
+                {
+                    info!(
+                        playbook = %exec.playbook_id,
+                        chain = %chain.rule_id,
+                        steps = exec.steps.len(),
+                        "chain-triggered playbook: {}",
+                        exec.playbook_name
+                    );
+                }
+            }
+        }
+
+        // Persist detected chains to JSON for dashboard
+        if !chains.is_empty() {
+            let chains_path = data_dir.join("attack-chains.json");
+            let mut existing: Vec<serde_json::Value> = std::fs::read_to_string(&chains_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+            for chain in &chains {
+                if let Ok(val) = serde_json::to_value(chain) {
+                    existing.push(val);
+                }
+            }
+            // Keep last 100 chains
+            if existing.len() > 100 {
+                existing = existing.split_off(existing.len() - 100);
+            }
+            let _ = std::fs::write(
+                &chains_path,
+                serde_json::to_string(&existing).unwrap_or_default(),
+            );
+        }
+
+        // Check for multi-low elevation
+        if let Some(chain) = state.correlation_engine.check_multi_low_elevation() {
+            info!(
+                chain_id = %chain.chain_id,
+                "multi-low severity elevation: {}",
+                chain.summary
+            );
+        }
     }
 
     // Regenerate daily summary when there are new events, subject to a minimum
@@ -6598,6 +7046,13 @@ mod tests {
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
             store: state_store::StateStore::open(dir.path()).unwrap(),
+            attacker_profiles: HashMap::new(),
+            last_intel_consolidation_at: None,
+            correlation_engine: correlation_engine::CorrelationEngine::new(),
+            baseline: baseline::BaselineStore::new(),
+            playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
+            pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            threat_feed: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -6729,6 +7184,13 @@ mod tests {
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
             store: state_store::StateStore::open(dir.path()).unwrap(),
+            attacker_profiles: HashMap::new(),
+            last_intel_consolidation_at: None,
+            correlation_engine: correlation_engine::CorrelationEngine::new(),
+            baseline: baseline::BaselineStore::new(),
+            playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
+            pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            threat_feed: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -6835,6 +7297,13 @@ mod tests {
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
             store: state_store::StateStore::open(dir.path()).unwrap(),
+            attacker_profiles: HashMap::new(),
+            last_intel_consolidation_at: None,
+            correlation_engine: correlation_engine::CorrelationEngine::new(),
+            baseline: baseline::BaselineStore::new(),
+            playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
+            pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            threat_feed: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -6953,6 +7422,13 @@ mod tests {
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
             store: state_store::StateStore::open(dir.path()).unwrap(),
+            attacker_profiles: HashMap::new(),
+            last_intel_consolidation_at: None,
+            correlation_engine: correlation_engine::CorrelationEngine::new(),
+            baseline: baseline::BaselineStore::new(),
+            playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
+            pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            threat_feed: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -7048,6 +7524,13 @@ mod tests {
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
             store: state_store::StateStore::open(dir.path()).unwrap(),
+            attacker_profiles: HashMap::new(),
+            last_intel_consolidation_at: None,
+            correlation_engine: correlation_engine::CorrelationEngine::new(),
+            baseline: baseline::BaselineStore::new(),
+            playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
+            pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            threat_feed: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -7155,6 +7638,13 @@ mod tests {
             narrative_incidents_offset: 0,
             forensics: forensics::ForensicsCapture::new(dir.path()),
             store: state_store::StateStore::open(dir.path()).unwrap(),
+            attacker_profiles: HashMap::new(),
+            last_intel_consolidation_at: None,
+            correlation_engine: correlation_engine::CorrelationEngine::new(),
+            baseline: baseline::BaselineStore::new(),
+            playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
+            pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            threat_feed: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };

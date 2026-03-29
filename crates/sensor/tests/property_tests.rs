@@ -73,9 +73,13 @@ mod sensitive_write {
             user in "[a-z]{3,8}",
             comm in "[a-z]{3,8}"
         )| {
-            let allowlisted = ["dpkg", "apt", "passwd", "useradd", "usermod",
-                               "sshd", "sudo", "systemd", "cron", "yum", "rpm",
-                               "cloud", "puppet", "chef", "ansible", "salt",
+            let allowlisted = ["dpkg", "apt", "passwd", "chpasswd", "useradd",
+                               "usermod", "userdel", "groupadd", "groupmod", "groupdel",
+                               "visudo", "sudo", "sshd", "cron", "crond", "anacron",
+                               "systemd", "systemctl", "cloud", "puppet", "chef",
+                               "ansible", "salt", "vipw", "vigr", "chsh", "chfn",
+                               "adduser", "deluser", "pam", "faillock", "nscd",
+                               "sss", "yum", "dnf", "rpm", "snap",
                                "innerwarden"];
             if allowlisted.iter().any(|a| comm.starts_with(a)) {
                 return Ok(());

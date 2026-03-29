@@ -10,6 +10,7 @@
 //!   - block_counts:          IP → count (u32)
 //!   - xdp_block_times:       IP → JSON { blocked_at_ms, ttl_secs }
 //!   - trust_rules:           "detector:action" → 1
+//!   - attacker_profiles:     IP → JSON (AttackerProfile)
 
 use anyhow::{Context, Result};
 use redb::{Database, ReadableTable, TableDefinition};
@@ -24,6 +25,7 @@ const NOTIFICATION_COOLDOWNS: TableDefinition<&str, i64> =
 const BLOCK_COUNTS: TableDefinition<&str, u32> = TableDefinition::new("block_counts");
 const XDP_BLOCK_TIMES: TableDefinition<&str, &[u8]> = TableDefinition::new("xdp_block_times");
 const TRUST_RULES: TableDefinition<&str, u8> = TableDefinition::new("trust_rules");
+const ATTACKER_PROFILES: TableDefinition<&str, &[u8]> = TableDefinition::new("attacker_profiles");
 
 /// Persistent state store for the agent.
 pub struct StateStore {
@@ -47,6 +49,7 @@ impl StateStore {
             let _ = write_txn.open_table(BLOCK_COUNTS)?;
             let _ = write_txn.open_table(XDP_BLOCK_TIMES)?;
             let _ = write_txn.open_table(TRUST_RULES)?;
+            let _ = write_txn.open_table(ATTACKER_PROFILES)?;
         }
         write_txn.commit()?;
 
@@ -347,6 +350,89 @@ impl StateStore {
         }
     }
 
+    // ── Attacker Profiles ────────────────────────────────────────────
+
+    pub fn get_attacker_profile(&self, ip: &str) -> Option<serde_json::Value> {
+        let read_txn = self.db.begin_read().ok()?;
+        let table = read_txn.open_table(ATTACKER_PROFILES).ok()?;
+        let entry = table.get(ip).ok()??;
+        serde_json::from_slice(entry.value()).ok()
+    }
+
+    pub fn set_attacker_profile(&self, ip: &str, value: &serde_json::Value) {
+        let data = serde_json::to_vec(value).unwrap_or_default();
+        if let Ok(write_txn) = self.db.begin_write() {
+            if let Ok(mut table) = write_txn.open_table(ATTACKER_PROFILES) {
+                let _ = table.insert(ip, data.as_slice());
+            }
+            let _ = write_txn.commit();
+        }
+    }
+
+    pub fn all_attacker_profiles(&self) -> Vec<(String, serde_json::Value)> {
+        let mut result = Vec::new();
+        if let Ok(read_txn) = self.db.begin_read() {
+            if let Ok(table) = read_txn.open_table(ATTACKER_PROFILES) {
+                if let Ok(iter) = table.iter() {
+                    for entry in iter.flatten() {
+                        let (k, v) = entry;
+                        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(v.value()) {
+                            result.push((k.value().to_string(), val));
+                        }
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    pub fn remove_attacker_profile(&self, ip: &str) {
+        if let Ok(write_txn) = self.db.begin_write() {
+            if let Ok(mut table) = write_txn.open_table(ATTACKER_PROFILES) {
+                let _ = table.remove(ip);
+            }
+            let _ = write_txn.commit();
+        }
+    }
+
+    pub fn attacker_profiles_len(&self) -> usize {
+        let Ok(read_txn) = self.db.begin_read() else {
+            return 0;
+        };
+        let Ok(table) = read_txn.open_table(ATTACKER_PROFILES) else {
+            return 0;
+        };
+        table.iter().map(|i| i.count()).unwrap_or(0)
+    }
+
+    /// Remove entries beyond `max` by keeping those with the highest risk_score.
+    pub fn trim_attacker_profiles(&self, max: usize) {
+        let len = self.attacker_profiles_len();
+        if len <= max {
+            return;
+        }
+        let mut all = self.all_attacker_profiles();
+        // Sort by risk_score descending, then last_seen descending
+        all.sort_by(|a, b| {
+            let score_a = a.1["risk_score"].as_u64().unwrap_or(0);
+            let score_b = b.1["risk_score"].as_u64().unwrap_or(0);
+            score_b.cmp(&score_a).then_with(|| {
+                let ts_a = a.1["last_seen"].as_str().unwrap_or("");
+                let ts_b = b.1["last_seen"].as_str().unwrap_or("");
+                ts_b.cmp(ts_a)
+            })
+        });
+        let to_remove: Vec<String> = all.into_iter().skip(max).map(|(k, _)| k).collect();
+        if let Ok(write_txn) = self.db.begin_write() {
+            if let Ok(mut table) = write_txn.open_table(ATTACKER_PROFILES) {
+                for ip in &to_remove {
+                    let _ = table.remove(ip.as_str());
+                }
+            }
+            let _ = write_txn.commit();
+        }
+    }
+
     /// Compact the database file (reclaim disk space).
     pub fn compact(&mut self) {
         if let Err(e) = self.db.compact() {
@@ -431,6 +517,32 @@ mod tests {
         store.retain_cooldowns(CooldownTable::Decision, cutoff);
         assert!(!store.has_cooldown(CooldownTable::Decision, "old:key"));
         assert!(store.has_cooldown(CooldownTable::Decision, "new:key"));
+    }
+
+    #[test]
+    fn attacker_profile_roundtrip() {
+        let (_dir, store) = make_store();
+        let val = serde_json::json!({"ip": "10.0.0.1", "risk_score": 75, "last_seen": "2026-03-29T00:00:00Z"});
+        store.set_attacker_profile("10.0.0.1", &val);
+        let got = store.get_attacker_profile("10.0.0.1").unwrap();
+        assert_eq!(got["risk_score"], 75);
+        assert_eq!(store.attacker_profiles_len(), 1);
+    }
+
+    #[test]
+    fn trim_attacker_profiles_keeps_highest_risk() {
+        let (_dir, store) = make_store();
+        for i in 0..5u64 {
+            let val =
+                serde_json::json!({"risk_score": i * 10, "last_seen": "2026-01-01T00:00:00Z"});
+            store.set_attacker_profile(&format!("10.0.0.{i}"), &val);
+        }
+        assert_eq!(store.attacker_profiles_len(), 5);
+        store.trim_attacker_profiles(3);
+        assert_eq!(store.attacker_profiles_len(), 3);
+        // Lowest risk (0, 10) should be removed
+        assert!(store.get_attacker_profile("10.0.0.4").is_some()); // risk 40
+        assert!(store.get_attacker_profile("10.0.0.0").is_none()); // risk 0
     }
 
     #[test]
