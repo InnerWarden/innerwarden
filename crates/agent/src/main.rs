@@ -84,8 +84,8 @@ struct Cli {
     #[arg(long)]
     dashboard: bool,
 
-    /// Bind address for dashboard mode (default: all interfaces - use with reverse proxy + auth)
-    #[arg(long, default_value = "0.0.0.0:8787")]
+    /// Bind address for dashboard mode (default: localhost only — use 0.0.0.0:8787 to expose)
+    #[arg(long, default_value = "127.0.0.1:8787")]
     dashboard_bind: String,
 
     /// Utility: generate Argon2 password hash for dashboard auth and exit.
