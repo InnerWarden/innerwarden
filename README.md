@@ -12,7 +12,7 @@
 ![Detectors](https://img.shields.io/badge/detectors-48-blue)
 ![Correlation Rules](https://img.shields.io/badge/correlation%20rules-23-purple)
 ![Tests](https://img.shields.io/badge/tests-1779-brightgreen)
-![Memory](https://img.shields.io/badge/memory-under%20100MB-green)
+![Memory](https://img.shields.io/badge/memory-~150MB%20(full%20stack)-green)
 ![AI Optional](https://img.shields.io/badge/AI-optional-lightgrey)
 [![Featured on GitHub Awesome](https://img.shields.io/badge/Featured-GitHub%20Awesome-blue)](https://www.youtube.com/watch?v=i9YpWp0hXgg&t=315)
 
@@ -279,7 +279,7 @@ Container-aware via cgroup ID. Zero performance overhead.
 
 **Agent**: reads incidents from JSONL or Redis Streams. Fast loop (2s): algorithm gate → enrichment (AbuseIPDB, GeoIP, CrowdSec, threat feeds) → VirusTotal hash check on YARA matches → AI triage → playbook evaluation → skill execution → pcap capture on High/Critical → audit trail. Slow loop (30s): cross-layer correlation (23 rules) → baseline learning → attacker intelligence consolidation (DNA + campaigns) → monthly report generation → narrative summary.
 
-Two Rust daemons. No external dependencies. Under 50 MB RAM total. Dashboard with 10 views: Sensors HUD, Threats investigation, Report, Health, Honeypot, Compliance (ISO 27001), Intelligence (Profiles, Campaigns, Chains, Baseline, Playbooks), Monthly Report. Live SSE feed, MITRE ATT&CK mapping, 20 integration cards. Sleeps after 15 min of inactivity.
+Two Rust daemons. No external dependencies. ~150 MB RAM with all features active (sensor 32MB + agent 89MB + DNA 11MB + shield 9MB + killchain 7MB). Dashboard with 10 views: Sensors HUD, Threats investigation, Report, Health, Honeypot, Compliance (ISO 27001), Intelligence (Profiles, Campaigns, Chains, Baseline, Playbooks), Monthly Report. Live SSE feed, MITRE ATT&CK mapping, 20 integration cards. Sleeps after 15 min of inactivity.
 
 ---
 
