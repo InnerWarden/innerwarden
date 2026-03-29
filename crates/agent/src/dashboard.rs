@@ -1658,6 +1658,8 @@ struct LiveFeedResponse {
     total_today: usize,
     total_blocked: usize,
     total_high: usize,
+    /// Number of unique source IPs across all real incidents today.
+    unique_sources: usize,
     items: Vec<LiveFeedItem>,
 }
 
@@ -1672,18 +1674,6 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResp
         .collect();
     let reputation_map = load_ip_reputation_map(&state.data_dir);
 
-    // Real totals for the entire day
-    let total_today = incidents.len();
-    let total_blocked = decisions
-        .iter()
-        .filter(|d| d.action_type == "block_ip")
-        .count();
-    let total_high = incidents
-        .iter()
-        .filter(|i| matches!(i.severity, Severity::High | Severity::Critical))
-        .count();
-
-    // Last 30 for display
     // Public feed: filter out system daemon privesc (legitimate setuid) and
     // Inner Warden's own operations. These are noise, not attacks.
     let is_internal = |inc: &Incident| -> bool {
@@ -1709,10 +1699,39 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResp
             || t.contains("(find)")     // find in cron jobs
             || t.contains("(install)") // install command (package managers)
     };
-    let mut items: Vec<LiveFeedItem> = incidents
+
+    // Filter real attacks only (exclude internal noise) for consistent stats.
+    let real_incidents: Vec<&Incident> = incidents.iter().filter(|i| !is_internal(i)).collect();
+
+    // Build incident IDs set for matching decisions to real attacks only.
+    let real_ids: std::collections::HashSet<&str> =
+        real_incidents.iter().map(|i| i.incident_id.as_str()).collect();
+
+    let total_today = real_incidents.len();
+    let total_blocked = decisions
+        .iter()
+        .filter(|d| d.action_type == "block_ip" && real_ids.contains(d.incident_id.as_str()))
+        .count();
+    let total_high = real_incidents
+        .iter()
+        .filter(|i| matches!(i.severity, Severity::High | Severity::Critical))
+        .count();
+    let unique_sources = {
+        let ips: std::collections::HashSet<&str> = real_incidents
+            .iter()
+            .flat_map(|i| {
+                i.entities
+                    .iter()
+                    .filter(|e| e.r#type == EntityType::Ip)
+                    .map(|e| e.value.as_str())
+            })
+            .collect();
+        ips.len()
+    };
+
+    let mut items: Vec<LiveFeedItem> = real_incidents
         .iter()
         .rev()
-        .filter(|inc| !is_internal(inc))
         .take(30)
         .map(|inc| {
             let ip = inc
@@ -1755,6 +1774,7 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResp
         total_today,
         total_blocked,
         total_high,
+        unique_sources,
         items,
     })
 }
