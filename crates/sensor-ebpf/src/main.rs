@@ -2688,7 +2688,7 @@ pub fn innerwarden_msr_write(ctx: ProbeContext) -> u32 {
 #[inline(always)]
 fn try_msr_write(ctx: &ProbeContext) -> Result<(), i64> {
     // native_write_msr(unsigned int msr, u64 val)
-    let msr_addr: u64 = unsafe { ctx.arg(0).ok_or(1i64)? };
+    let msr_addr: u64 = ctx.arg(0).ok_or(1i64)?;
 
     // Only alert on security-sensitive MSRs.
     // 0xC0000081 = STAR, 0xC0000082 = LSTAR (syscall entry), 0xC0000083 = CSTAR,
@@ -2702,7 +2702,7 @@ fn try_msr_write(ctx: &ProbeContext) -> Result<(), i64> {
         return Ok(());
     }
 
-    let msr_value: u64 = unsafe { ctx.arg(1).ok_or(1i64)? };
+    let msr_value: u64 = ctx.arg(1).ok_or(1i64)?;
     let pid = bpf_get_current_pid_tgid() as u32;
     let uid = bpf_get_current_uid_gid() as u32;
     let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
@@ -2850,7 +2850,7 @@ pub fn innerwarden_acpi_eval(ctx: ProbeContext) -> u32 {
 fn try_acpi_eval(ctx: &ProbeContext) -> Result<(), i64> {
     // acpi_evaluate_object(handle, pathname, params, return_buf)
     // arg1 = pathname (char * — ACPI method name like "\_SB.PCI0._STA")
-    let pathname_ptr: *const u8 = unsafe { ctx.arg::<u64>(1).ok_or(1i64)? as *const u8 };
+    let pathname_ptr: *const u8 = ctx.arg::<u64>(1).ok_or(1i64)? as *const u8;
 
     let pid = bpf_get_current_pid_tgid() as u32;
     let uid = bpf_get_current_uid_gid() as u32;
@@ -2903,7 +2903,7 @@ pub fn innerwarden_lsm_bpf(ctx: LsmContext) -> i32 {
 fn try_lsm_bpf(ctx: &LsmContext) -> Result<i32, i64> {
     // LSM bpf hook: int security_bpf(int cmd, ...)
     // arg0 = BPF command (BPF_PROG_LOAD=5, BPF_MAP_CREATE=0)
-    let bpf_cmd: u32 = unsafe { ctx.arg::<u32>(0).ok_or(1i64)? };
+    let bpf_cmd: u32 = unsafe { ctx.arg::<u32>(0) };
 
     // Only log program loads and map creates (not lookups/reads).
     // BPF_MAP_CREATE=0, BPF_PROG_LOAD=5, BPF_BTF_LOAD=18, BPF_LINK_CREATE=28
