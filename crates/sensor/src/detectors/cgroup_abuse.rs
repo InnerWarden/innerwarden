@@ -13,7 +13,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Duration, Utc};
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::info;
 
 use innerwarden_core::entities::EntityRef;
 use innerwarden_core::event::{Event, Severity};
