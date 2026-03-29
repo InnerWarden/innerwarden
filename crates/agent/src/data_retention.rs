@@ -24,6 +24,13 @@ pub fn cleanup(data_dir: &Path, cfg: &DataRetentionConfig) -> usize {
         ("agent-guard-events-", ".jsonl", cfg.decisions_keep_days),
         ("trial-report-", ".json", cfg.reports_keep_days),
         ("trial-report-", ".md", cfg.reports_keep_days),
+        ("summary-", ".md", cfg.reports_keep_days),
+    ];
+
+    // Monthly files: prefix-YYYY-MM.ext (different date format)
+    let monthly_patterns: &[(&str, &str, usize)] = &[
+        ("monthly-report-", ".json", cfg.reports_keep_days),
+        ("monthly-report-", ".md", cfg.reports_keep_days),
     ];
 
     let entries = match fs::read_dir(data_dir) {
@@ -70,6 +77,46 @@ pub fn cleanup(data_dir: &Path, cfg: &DataRetentionConfig) -> usize {
                 }
             }
             break; // matched this pattern, no need to check other patterns for same file
+        }
+    }
+
+    // Monthly file cleanup: monthly-report-YYYY-MM.{json,md}
+    if let Ok(entries) = fs::read_dir(data_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+
+            for (prefix, suffix, keep_days) in monthly_patterns {
+                let Some(mid) = name.strip_prefix(prefix).and_then(|s| s.strip_suffix(*suffix))
+                else {
+                    continue;
+                };
+                // Parse YYYY-MM format: treat as 1st of that month
+                let Ok(file_date) = NaiveDate::parse_from_str(&format!("{mid}-01"), "%Y-%m-%d")
+                else {
+                    continue;
+                };
+                let age_days = (today - file_date).num_days();
+                if age_days <= 0 || age_days <= *keep_days as i64 {
+                    break;
+                }
+                let path = entry.path();
+                match fs::remove_file(&path) {
+                    Ok(()) => {
+                        debug!(
+                            path = %path.display(),
+                            age_days,
+                            keep_days,
+                            "data_retention: removed old monthly file"
+                        );
+                        removed += 1;
+                    }
+                    Err(e) => {
+                        warn!(path = %path.display(), "data_retention: failed to remove: {e:#}");
+                    }
+                }
+                break;
+            }
         }
     }
 

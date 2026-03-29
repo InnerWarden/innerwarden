@@ -115,6 +115,9 @@ struct DetectorSet {
     io_uring_anomaly: Option<detectors::io_uring_anomaly::IoUringAnomalyDetector>,
     container_drift: Option<detectors::container_drift::ContainerDriftDetector>,
     host_drift: Option<detectors::host_drift::HostDriftDetector>,
+    data_exfil_ebpf: Option<detectors::data_exfil_ebpf::DataExfilEbpfDetector>,
+    yara_scan: Option<detectors::yara_scan::YaraScanDetector>,
+    sigma_rule: Option<detectors::sigma_rule::SigmaRuleDetector>,
 }
 
 #[derive(Default)]
@@ -176,6 +179,32 @@ async fn main() -> Result<()> {
     let write_events_jsonl = cfg.output.write_events;
 
     let mut writer = JsonlWriter::new(data_dir, write_events_jsonl)?;
+    // Optional syslog CEF output (configured via env or future config section)
+    let mut syslog_writer: Option<sinks::syslog_cef::SyslogCefWriter> = {
+        let syslog_host = std::env::var("INNERWARDEN_SYSLOG_HOST").unwrap_or_default();
+        if syslog_host.is_empty() {
+            None
+        } else {
+            let port: u16 = std::env::var("INNERWARDEN_SYSLOG_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(514);
+            let protocol = if std::env::var("INNERWARDEN_SYSLOG_TCP").is_ok() {
+                sinks::syslog_cef::SyslogProtocol::Tcp
+            } else {
+                sinks::syslog_cef::SyslogProtocol::Udp
+            };
+            info!(host = %syslog_host, port, "Syslog CEF output enabled");
+            Some(sinks::syslog_cef::SyslogCefWriter::new(
+                sinks::syslog_cef::SyslogCefConfig {
+                    host: syslog_host,
+                    port,
+                    protocol,
+                },
+                env!("CARGO_PKG_VERSION"),
+            ))
+        }
+    };
     let (tx, mut rx) = mpsc::channel(1024);
 
     // Shared state - updated by collectors, read on shutdown for persistence.
@@ -587,6 +616,20 @@ async fn main() -> Result<()> {
             info!("host_drift detector enabled (non-standard binary execution)");
             detectors::host_drift::HostDriftDetector::new(&cfg.agent.host_id, 600)
         }),
+        data_exfil_ebpf: Some({
+            info!("data_exfil_ebpf detector enabled (sensitive file read + outbound connect)");
+            detectors::data_exfil_ebpf::DataExfilEbpfDetector::new(&cfg.agent.host_id, 60, 600)
+        }),
+        yara_scan: Some({
+            let rules_dir = std::path::Path::new("rules/yara");
+            info!("YARA binary scanner enabled");
+            detectors::yara_scan::YaraScanDetector::new(&cfg.agent.host_id, rules_dir, 3600)
+        }),
+        sigma_rule: Some({
+            let rules_dir = std::path::Path::new("rules/sigma");
+            info!("Sigma rule engine enabled");
+            detectors::sigma_rule::SigmaRuleDetector::new(&cfg.agent.host_id, rules_dir, 300)
+        }),
     };
 
     // Spawn auth_log collector
@@ -879,6 +922,58 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Spawn proc_maps collector (memory forensics: RWX, deleted files, LD_PRELOAD)
+    {
+        let tx_maps = tx.clone();
+        let host_id = cfg.agent.host_id.clone();
+        tokio::spawn(async move {
+            collectors::proc_maps::run(tx_maps, host_id, 60).await;
+        });
+    }
+
+    // Spawn fanotify filesystem monitor (real-time file modification + ransomware detection)
+    {
+        let tx_fan = tx.clone();
+        let host_id = cfg.agent.host_id.clone();
+        let watch_paths = cfg
+            .collectors
+            .integrity
+            .paths
+            .iter()
+            .map(|p| p.to_string())
+            .collect();
+        tokio::spawn(async move {
+            collectors::fanotify_watch::run(tx_fan, host_id, watch_paths, 5).await;
+        });
+    }
+
+    // Spawn kernel integrity monitor (syscall table + eBPF inventory + module baseline)
+    {
+        let tx_kern = tx.clone();
+        let host_id = cfg.agent.host_id.clone();
+        tokio::spawn(async move {
+            collectors::kernel_integrity::run(tx_kern, host_id, 120).await;
+        });
+    }
+
+    // Spawn cgroup resource abuse detector (CPU/memory abuse, cryptominer detection)
+    {
+        let tx_cg = tx.clone();
+        let host_id = cfg.agent.host_id.clone();
+        tokio::spawn(async move {
+            detectors::cgroup_abuse::run(tx_cg, host_id, 30).await;
+        });
+    }
+
+    // Spawn TLS fingerprint collector (JA3/JA4 — requires CAP_NET_RAW on Linux)
+    {
+        let tx_tls = tx.clone();
+        let host_id = cfg.agent.host_id.clone();
+        tokio::spawn(async move {
+            collectors::tls_fingerprint::run(tx_tls, host_id, 0).await;
+        });
+    }
+
     // Drop the original tx - each collector holds its own clone.
     // When all collector tasks finish, all senders drop and rx.recv() returns None.
     drop(tx);
@@ -946,7 +1041,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        process_event(ev, &mut writer, &mut detectors, &mut stats);
+        process_event(ev, &mut writer, &mut detectors, &mut stats, &mut syslog_writer);
 
         // Also flush every 50 events as a safety net
         if stats.events_written > 0 && stats.events_written % 50 == 0 {
@@ -1019,6 +1114,7 @@ fn process_event(
     writer: &mut JsonlWriter,
     detectors: &mut DetectorSet,
     stats: &mut WriteStats,
+    syslog: &mut Option<sinks::syslog_cef::SyslogCefWriter>,
 ) {
     use innerwarden_core::event::Severity;
 
@@ -1027,6 +1123,10 @@ fn process_event(
         warn!(kind = %ev.kind, "failed to write event: {e:#}");
     } else {
         stats.events_written += 1;
+    }
+    // Syslog CEF output (if configured)
+    if let Some(ref mut cef) = syslog {
+        cef.write_event(&ev);
     }
 
     // LSM blocked execution → immediate Critical incident.
@@ -1328,6 +1428,24 @@ fn process_event(
             write_incident(writer, stats, incident);
         }
     }
+
+    if let Some(ref mut det) = detectors.data_exfil_ebpf {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.yara_scan {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.sigma_rule {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
 }
 
 /// Build an Incident directly from an event emitted by a passthrough source
@@ -1388,5 +1506,6 @@ fn write_incident(
         warn!(incident_id = %incident.incident_id, "failed to write incident: {e:#}");
     } else {
         stats.incidents_written += 1;
+        // Note: Syslog CEF incident writing is handled in process_event scope
     }
 }
