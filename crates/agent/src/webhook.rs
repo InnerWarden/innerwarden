@@ -135,13 +135,13 @@ pub async fn send_incident(
             client.post(url).json(&payload).send().await
         }
     }
-    .with_context(|| format!("webhook POST to {url} failed"))?;
+    .with_context(|| format!("webhook POST to {} failed", redact_url(url)))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         warn!(
-            url,
+            url = redact_url(url),
             status = status.as_u16(),
             body = body.chars().take(200).collect::<String>(),
             "webhook returned non-2xx"
@@ -151,7 +151,15 @@ pub async fn send_incident(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
+/// Redact query string from URL to prevent leaking tokens/keys in logs.
+/// "https://hooks.slack.com/T123/B456?token=secret" → "https://hooks.slack.com/T123/B456?[REDACTED]"
+fn redact_url(url: &str) -> String {
+    match url.find('?') {
+        Some(pos) => format!("{}?[REDACTED]", &url[..pos]),
+        None => url.to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Agent Guard alert webhook
 // ---------------------------------------------------------------------------

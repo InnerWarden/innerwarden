@@ -3659,6 +3659,17 @@ async fn api_action_suspend_user(
 ) -> Json<ActionResponse> {
     let skill_id = "suspend-user-sudo".to_string();
 
+    if state.insecure_http {
+        return Json(ActionResponse {
+            success: false,
+            dry_run: state.action_cfg.dry_run,
+            message: "actions disabled - dashboard is exposed over HTTP without TLS. \
+                      Use a reverse proxy with TLS or bind to 127.0.0.1."
+                .to_string(),
+            skill_id,
+        });
+    }
+
     if !state.action_cfg.enabled {
         return Json(ActionResponse {
             success: false,
@@ -3732,6 +3743,17 @@ async fn api_action_honeypot(
     Json(body): Json<HoneypotTestRequest>,
 ) -> Json<ActionResponse> {
     let skill_id = "honeypot".to_string();
+
+    if state.insecure_http {
+        return Json(ActionResponse {
+            success: false,
+            dry_run: state.action_cfg.dry_run,
+            message: "actions disabled - dashboard is exposed over HTTP without TLS. \
+                      Use a reverse proxy with TLS or bind to 127.0.0.1."
+                .to_string(),
+            skill_id,
+        });
+    }
 
     if !state.action_cfg.enabled {
         return Json(ActionResponse {
