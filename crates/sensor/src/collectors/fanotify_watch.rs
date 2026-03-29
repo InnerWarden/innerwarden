@@ -147,6 +147,10 @@ pub async fn run(
                     .get(path)
                     .map(|s| s.hash.clone())
                     .unwrap_or_default();
+                let prev_modified = file_states
+                    .get(path)
+                    .map(|s| s.last_modified.to_rfc3339())
+                    .unwrap_or_default();
 
                 let ev = Event {
                     ts: now,
@@ -171,6 +175,7 @@ pub async fn run(
                         "path": path_str,
                         "new_hash": current.hash,
                         "old_hash": prev_hash,
+                        "previous_check": prev_modified,
                         "new_size": current.size,
                         "entropy": entropy,
                         "encrypted": encrypted,

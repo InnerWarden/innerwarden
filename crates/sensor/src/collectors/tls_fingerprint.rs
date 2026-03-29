@@ -284,7 +284,7 @@ async fn run_linux(
 // ---------------------------------------------------------------------------
 
 /// Parse a raw Ethernet frame looking for a TLS ClientHello.
-fn parse_packet(data: &[u8]) -> Option<ClientHello> {
+pub fn parse_packet(data: &[u8]) -> Option<ClientHello> {
     // Ethernet header: 14 bytes (dst[6] + src[6] + ethertype[2])
     if data.len() < 14 {
         return None;
@@ -358,7 +358,7 @@ fn parse_packet(data: &[u8]) -> Option<ClientHello> {
 }
 
 /// Parse the ClientHello handshake message.
-fn parse_client_hello(
+pub fn parse_client_hello(
     data: &[u8],
     record_version: u16,
     src_ip: String,
@@ -577,7 +577,7 @@ pub fn compute_fingerprints(hello: &ClientHello) -> TlsFingerprint {
     }
 }
 
-fn join_u16(values: &[u16]) -> String {
+pub fn join_u16(values: &[u16]) -> String {
     values
         .iter()
         .map(|v| v.to_string())
@@ -585,7 +585,7 @@ fn join_u16(values: &[u16]) -> String {
         .join("-")
 }
 
-fn join_u8(values: &[u8]) -> String {
+pub fn join_u8(values: &[u8]) -> String {
     values
         .iter()
         .map(|v| v.to_string())
@@ -595,7 +595,7 @@ fn join_u8(values: &[u8]) -> String {
 
 /// Simple MD5 implementation for JA3 (the spec requires MD5).
 /// We implement it here to avoid adding a dependency.
-fn md5_hex(data: &[u8]) -> String {
+pub fn md5_hex(data: &[u8]) -> String {
     // Using a minimal MD5 for JA3 hash computation.
     // MD5 is cryptographically broken but JA3 spec mandates it.
     let digest = md5_compute(data);
@@ -603,7 +603,7 @@ fn md5_hex(data: &[u8]) -> String {
 }
 
 /// Minimal MD5 implementation (RFC 1321).
-fn md5_compute(input: &[u8]) -> [u8; 16] {
+pub fn md5_compute(input: &[u8]) -> [u8; 16] {
     const S: [u32; 64] = [
         7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
         5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
