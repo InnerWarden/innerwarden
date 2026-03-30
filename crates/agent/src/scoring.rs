@@ -122,6 +122,10 @@ pub struct ScoringEngine {
     detection_count: u32,
     /// Score threshold for alerting
     threshold: f32,
+    /// Cooldown: last alert timestamp
+    last_alert_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Cooldown duration in seconds
+    cooldown_secs: i64,
 }
 
 impl ScoringEngine {
@@ -140,6 +144,8 @@ impl ScoringEngine {
             recent_ips: std::collections::VecDeque::with_capacity(20),
             detection_count: 0,
             threshold,
+            last_alert_at: None,
+            cooldown_secs: 300, // 5 minutes between alerts
         }
     }
 
@@ -178,7 +184,15 @@ impl ScoringEngine {
 
         debug!(score = format!("{:.3}", score), events = self.recent_kinds.len(), "scoring: model inference");
 
+        // Cooldown: don't alert more than once per cooldown_secs
+        if let Some(last) = self.last_alert_at {
+            if (chrono::Utc::now() - last).num_seconds() < self.cooldown_secs {
+                return None;
+            }
+        }
+
         if score > self.threshold {
+            self.last_alert_at = Some(chrono::Utc::now());
             let explanation = format!(
                 "Neural model scored {:.0}% attack probability from {} recent events (kinds: {})",
                 score * 100.0,
