@@ -140,9 +140,9 @@ fn parse_packet(raw: &[u8]) -> Option<(String, u16, String, u16, &[u8])> {
     let ethertype = u16::from_be_bytes([raw[12], raw[13]]);
 
     let ip_offset = match ethertype {
-        0x0800 => 14,       // IPv4
-        0x8100 => 18,       // VLAN tagged
-        _ => return None,   // Skip IPv6 for now
+        0x0800 => 14,     // IPv4
+        0x8100 => 18,     // VLAN tagged
+        _ => return None, // Skip IPv6 for now
     };
 
     if raw.len() < ip_offset + 20 {
@@ -158,8 +158,14 @@ fn parse_packet(raw: &[u8]) -> Option<(String, u16, String, u16, &[u8])> {
         return None;
     }
 
-    let src_ip = format!("{}.{}.{}.{}", ip_header[12], ip_header[13], ip_header[14], ip_header[15]);
-    let dst_ip = format!("{}.{}.{}.{}", ip_header[16], ip_header[17], ip_header[18], ip_header[19]);
+    let src_ip = format!(
+        "{}.{}.{}.{}",
+        ip_header[12], ip_header[13], ip_header[14], ip_header[15]
+    );
+    let dst_ip = format!(
+        "{}.{}.{}.{}",
+        ip_header[16], ip_header[17], ip_header[18], ip_header[19]
+    );
 
     let udp_offset = ip_offset + ihl;
     if raw.len() < udp_offset + 8 {
@@ -200,11 +206,11 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
 
 #[cfg(target_os = "linux")]
 async fn run_linux(tx: mpsc::Sender<Event>, host: String) {
-    use std::collections::HashMap;
     use chrono::{DateTime, Duration, Utc};
-    use tracing::warn;
     use innerwarden_core::entities::EntityRef;
     use innerwarden_core::event::Severity;
+    use std::collections::HashMap;
+    use tracing::warn;
 
     const COOLDOWN_SECS: i64 = 10;
     const MAX_TRACKED: usize = 5000;
@@ -254,7 +260,10 @@ async fn run_linux(tx: mpsc::Sender<Event>, host: String) {
         }
 
         // Skip common internal queries
-        if domain.ends_with(".local") || domain.ends_with(".internal") || domain.ends_with(".localhost") {
+        if domain.ends_with(".local")
+            || domain.ends_with(".internal")
+            || domain.ends_with(".localhost")
+        {
             continue;
         }
 
@@ -280,7 +289,13 @@ async fn run_linux(tx: mpsc::Sender<Event>, host: String) {
             source: "dns_capture".to_string(),
             kind: "dns.query".to_string(),
             severity: Severity::Info,
-            summary: format!("DNS {} query for {} from {} (server: {})", qtype_name(qtype), domain, src_ip, dst_ip),
+            summary: format!(
+                "DNS {} query for {} from {} (server: {})",
+                qtype_name(qtype),
+                domain,
+                src_ip,
+                dst_ip
+            ),
             details: serde_json::json!({
                 "domain": domain,
                 "qtype": qtype,
@@ -291,9 +306,7 @@ async fn run_linux(tx: mpsc::Sender<Event>, host: String) {
                 "tx_id": tx_id,
             }),
             tags: vec!["dns".to_string(), "network".to_string()],
-            entities: vec![
-                EntityRef::ip(&src_ip),
-            ],
+            entities: vec![EntityRef::ip(&src_ip)],
         };
 
         let _ = tx.send(event).await;
@@ -335,7 +348,9 @@ mod tests {
         // Minimal DNS query for "example.com" type A
         let mut pkt = Vec::new();
         // Header: ID=0x1234, flags=0x0100 (standard query), QDCOUNT=1
-        pkt.extend_from_slice(&[0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        pkt.extend_from_slice(&[
+            0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
         // Question: \x07example\x03com\x00 type=A(1) class=IN(1)
         pkt.extend_from_slice(b"\x07example\x03com\x00");
         pkt.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
@@ -349,9 +364,11 @@ mod tests {
     #[test]
     fn parse_dns_query_response_rejected() {
         // DNS response (QR bit set)
-        let pkt = [0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                    0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00,
-                    0x00, 0x01, 0x00, 0x01];
+        let pkt = [
+            0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
+            b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00,
+            0x01,
+        ];
         assert!(parse_dns_query(&pkt).is_none());
     }
 

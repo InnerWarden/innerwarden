@@ -975,7 +975,11 @@ fn builtin_rules() -> Vec<CorrelationRule> {
             stages: vec![
                 RuleStage {
                     layer: Some(Layer::Network),
-                    kind_patterns: vec!["port_scan".into(), "web_scan".into(), "user_agent_scanner".into()],
+                    kind_patterns: vec![
+                        "port_scan".into(),
+                        "web_scan".into(),
+                        "user_agent_scanner".into(),
+                    ],
                     entity_must_match: false,
                 },
                 RuleStage {
@@ -985,7 +989,11 @@ fn builtin_rules() -> Vec<CorrelationRule> {
                 },
                 RuleStage {
                     layer: Some(Layer::Network),
-                    kind_patterns: vec!["data_exfiltration".into(), "outbound_anomaly".into(), "dns_tunneling".into()],
+                    kind_patterns: vec![
+                        "data_exfiltration".into(),
+                        "outbound_anomaly".into(),
+                        "dns_tunneling".into(),
+                    ],
                     entity_must_match: true,
                 },
             ],
@@ -1053,7 +1061,11 @@ fn builtin_rules() -> Vec<CorrelationRule> {
                 },
                 RuleStage {
                     layer: Some(Layer::Userspace),
-                    kind_patterns: vec!["web_scan".into(), "web_shell".into(), "user_agent_scanner".into()],
+                    kind_patterns: vec![
+                        "web_scan".into(),
+                        "web_shell".into(),
+                        "user_agent_scanner".into(),
+                    ],
                     entity_must_match: true,
                 },
             ],
@@ -1209,8 +1221,11 @@ mod tests {
         engine.observe(make_event(Layer::Network, "data_exfiltration", ip));
 
         let chains = engine.drain_completed();
-        assert!(chains.iter().any(|c| c.rule_id == "CL-002"),
-            "expected CL-002 in {:?}", chains.iter().map(|c| &c.rule_id).collect::<Vec<_>>());
+        assert!(
+            chains.iter().any(|c| c.rule_id == "CL-002"),
+            "expected CL-002 in {:?}",
+            chains.iter().map(|c| &c.rule_id).collect::<Vec<_>>()
+        );
     }
 
     #[test]

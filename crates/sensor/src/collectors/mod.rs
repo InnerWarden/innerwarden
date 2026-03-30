@@ -1,10 +1,12 @@
 pub mod auth_log;
 pub mod cloudtrail;
+pub mod dns_capture;
 pub mod docker;
 pub mod ebpf_syscall;
 pub mod exec_audit;
 pub mod fanotify_watch;
 pub mod firmware_integrity;
+pub mod http_capture;
 pub mod integrity;
 pub mod journald;
 pub mod kernel_integrity;
@@ -17,6 +19,4 @@ pub mod suricata_eve;
 pub mod syslog_firewall;
 #[cfg(feature = "ebpf")]
 pub mod tls_fingerprint;
-pub mod dns_capture;
-pub mod http_capture;
 pub mod wazuh_alerts;

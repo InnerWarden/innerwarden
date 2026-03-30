@@ -6686,8 +6686,12 @@ fn is_virtual_machine() -> bool {
     }
     if let Ok(dmi) = std::fs::read_to_string("/sys/class/dmi/id/product_name") {
         let lower = dmi.to_lowercase();
-        if lower.contains("virtual") || lower.contains("kvm") || lower.contains("qemu")
-            || lower.contains("vmware") || lower.contains("xen") || lower.contains("oracle")
+        if lower.contains("virtual")
+            || lower.contains("kvm")
+            || lower.contains("qemu")
+            || lower.contains("vmware")
+            || lower.contains("xen")
+            || lower.contains("oracle")
             || lower.contains("hyper-v")
         {
             return true;
@@ -6763,7 +6767,11 @@ async fn process_firmware_tick(
         }
 
         // --- Suppression: check if user suppressed this incident type ---
-        if state.suppressed_incident_ids.iter().any(|pat| incident_id.contains(pat)) {
+        if state
+            .suppressed_incident_ids
+            .iter()
+            .any(|pat| incident_id.contains(pat))
+        {
             tracing::debug!(incident_id, "firmware: incident suppressed by user");
             return;
         }

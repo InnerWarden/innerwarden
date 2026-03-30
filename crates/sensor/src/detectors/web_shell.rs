@@ -89,17 +89,31 @@ impl WebShellDetector {
 
     /// Detect web shell uploads via HTTP POST (multipart file upload to web paths).
     fn check_upload(&mut self, event: &Event) -> Option<Incident> {
-        let method = event.details.get("method").and_then(|v| v.as_str()).unwrap_or("");
+        let method = event
+            .details
+            .get("method")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if method != "POST" && method != "PUT" {
             return None;
         }
 
-        let path = event.details.get("path").and_then(|v| v.as_str()).unwrap_or("");
-        let content_type = event.details.get("content_type").and_then(|v| v.as_str()).unwrap_or("");
+        let path = event
+            .details
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let content_type = event
+            .details
+            .get("content_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
         // Detect multipart uploads targeting script paths
         let is_upload = content_type.contains("multipart") || content_type.contains("octet-stream");
-        let targets_script = SUSPICIOUS_EXTENSIONS.iter().any(|ext| path.to_lowercase().contains(ext));
+        let targets_script = SUSPICIOUS_EXTENSIONS
+            .iter()
+            .any(|ext| path.to_lowercase().contains(ext));
 
         // Detect polyglot: double extensions like image.jpg.php
         let is_polyglot = SUSPICIOUS_EXTENSIONS.iter().any(|ext| {
@@ -107,10 +121,14 @@ impl WebShellDetector {
             if lower.ends_with(ext) {
                 // Check for double extension: something.jpg.php, something.png.asp
                 let without_ext = &lower[..lower.len() - ext.len()];
-                without_ext.ends_with(".jpg") || without_ext.ends_with(".jpeg")
-                    || without_ext.ends_with(".png") || without_ext.ends_with(".gif")
-                    || without_ext.ends_with(".ico") || without_ext.ends_with(".svg")
-                    || without_ext.ends_with(".txt") || without_ext.ends_with(".pdf")
+                without_ext.ends_with(".jpg")
+                    || without_ext.ends_with(".jpeg")
+                    || without_ext.ends_with(".png")
+                    || without_ext.ends_with(".gif")
+                    || without_ext.ends_with(".ico")
+                    || without_ext.ends_with(".svg")
+                    || without_ext.ends_with(".txt")
+                    || without_ext.ends_with(".pdf")
             } else {
                 false
             }
@@ -120,8 +138,16 @@ impl WebShellDetector {
             return None;
         }
 
-        let src_ip = event.details.get("src_ip").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let pattern = if is_polyglot { "polyglot_upload" } else { "http_upload" };
+        let src_ip = event
+            .details
+            .get("src_ip")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let pattern = if is_polyglot {
+            "polyglot_upload"
+        } else {
+            "http_upload"
+        };
 
         self.emit_incident(EmitParams {
             ts: event.ts,
@@ -132,8 +158,14 @@ impl WebShellDetector {
             target: path,
             summary: &format!(
                 "Suspicious {} to {} from {} (content-type: {})",
-                if is_polyglot { "polyglot file upload" } else { "file upload" },
-                path, src_ip, content_type
+                if is_polyglot {
+                    "polyglot file upload"
+                } else {
+                    "file upload"
+                },
+                path,
+                src_ip,
+                content_type
             ),
         })
     }

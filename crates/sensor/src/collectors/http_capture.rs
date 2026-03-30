@@ -182,11 +182,11 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
 
 #[cfg(target_os = "linux")]
 async fn run_linux(tx: mpsc::Sender<Event>, host: String) {
-    use std::collections::HashMap;
     use chrono::{DateTime, Duration, Utc};
-    use tracing::warn;
     use innerwarden_core::entities::EntityRef;
     use innerwarden_core::event::Severity;
+    use std::collections::HashMap;
+    use tracing::warn;
 
     const COOLDOWN_SECS: i64 = 5;
     const MAX_TRACKED: usize = 5000;
@@ -309,7 +309,11 @@ async fn run_linux(tx: mpsc::Sender<Event>, host: String) {
 
 #[cfg(any(target_os = "linux", test))]
 fn truncate_str(s: &str, max: usize) -> &str {
-    if s.len() > max { &s[..max] } else { s }
+    if s.len() > max {
+        &s[..max]
+    } else {
+        s
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -369,12 +373,21 @@ mod tests {
 
     #[test]
     fn suspicious_path_detection() {
-        let suspicious = vec!["/.env", "/../../../etc/shadow", "/wp-login.php", "/phpmyadmin", "/shell.php"];
+        let suspicious = vec![
+            "/.env",
+            "/../../../etc/shadow",
+            "/wp-login.php",
+            "/phpmyadmin",
+            "/shell.php",
+        ];
         for path in suspicious {
             let lower = path.to_lowercase();
             assert!(
-                lower.contains("..") || lower.contains("/etc/") || lower.contains(".env")
-                    || lower.contains("wp-login") || lower.contains("phpmyadmin")
+                lower.contains("..")
+                    || lower.contains("/etc/")
+                    || lower.contains(".env")
+                    || lower.contains("wp-login")
+                    || lower.contains("phpmyadmin")
                     || lower.contains("shell"),
                 "should be suspicious: {path}"
             );

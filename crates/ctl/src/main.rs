@@ -9067,8 +9067,12 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
             // ── Suricata ───────────────────────────────────
             if suricata_enabled {
                 println!("  Suricata (optional)");
-                println!("    \x1b[2mNote: InnerWarden captures DNS, HTTP, and TLS natively.\x1b[0m");
-                println!("    \x1b[2mSuricata is optional — useful for deep packet inspection\x1b[0m");
+                println!(
+                    "    \x1b[2mNote: InnerWarden captures DNS, HTTP, and TLS natively.\x1b[0m"
+                );
+                println!(
+                    "    \x1b[2mSuricata is optional — useful for deep packet inspection\x1b[0m"
+                );
                 println!("    \x1b[2mand CVE signatures in compliance-driven environments.\x1b[0m");
                 let mut suri = Vec::new();
 
@@ -9560,7 +9564,14 @@ fn cmd_suppress_remove(cli: &Cli, pattern: &str) -> Result<()> {
         return Ok(());
     }
 
-    std::fs::write(&path, if new_content.is_empty() { String::new() } else { format!("{new_content}\n") })?;
+    std::fs::write(
+        &path,
+        if new_content.is_empty() {
+            String::new()
+        } else {
+            format!("{new_content}\n")
+        },
+    )?;
     println!("Removed suppression: {pattern}");
     println!("Matching incidents will alert again after agent restart.");
 
@@ -9600,7 +9611,10 @@ fn cmd_suppress_list(cli: &Cli) -> Result<()> {
         println!("  {p}");
     }
     println!();
-    println!("{} pattern(s) active. Matching incidents are silently logged.", patterns.len());
+    println!(
+        "{} pattern(s) active. Matching incidents are silently logged.",
+        patterns.len()
+    );
     Ok(())
 }
 
@@ -10663,13 +10677,20 @@ fn cmd_agent(cli: &Cli, command: Option<&AgentCommand>) -> Result<()> {
             match ureq::post(url).send_json(&payload) {
                 Ok(resp) => {
                     let body: serde_json::Value = resp.into_body().read_json().unwrap_or_default();
-                    let agent_id = body.get("agent_id").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let agent_id = body
+                        .get("agent_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
                     println!("  \x1b[32m✓\x1b[0m {name} (pid {pid}) connected as {agent_id}");
                 }
                 Err(e) => {
                     // Fallback: write to persistence file for agent to pick up on restart
                     let path = cli.data_dir.join("agent-connections.jsonl");
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                    {
                         use std::io::Write;
                         let entry = serde_json::json!({
                             "ts": chrono::Utc::now().to_rfc3339(),

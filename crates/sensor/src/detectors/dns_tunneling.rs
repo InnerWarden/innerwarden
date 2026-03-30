@@ -239,9 +239,15 @@ impl DnsTunnelingDetector {
             if entropy > self.entropy_threshold {
                 self.alerted.insert(alert_key, now);
                 return Some(self.build_incident(
-                    src_ip, &base_domain, now, "high_entropy",
+                    src_ip,
+                    &base_domain,
+                    now,
+                    "high_entropy",
                     Severity::High,
-                    format!("DNS tunneling: high-entropy queries to {} (entropy={:.2})", base_domain, entropy),
+                    format!(
+                        "DNS tunneling: high-entropy queries to {} (entropy={:.2})",
+                        base_domain, entropy
+                    ),
                 ));
             }
         }
@@ -251,9 +257,15 @@ impl DnsTunnelingDetector {
             self.alerted.insert(alert_key, now);
             let window_secs = self.window.num_seconds();
             return Some(self.build_incident(
-                src_ip, &base_domain, now, "high_volume",
+                src_ip,
+                &base_domain,
+                now,
+                "high_volume",
                 Severity::High,
-                format!("DNS tunneling: {} unique subdomains of {} in {}s window", sub_count, base_domain, window_secs),
+                format!(
+                    "DNS tunneling: {} unique subdomains of {} in {}s window",
+                    sub_count, base_domain, window_secs
+                ),
             ));
         }
 
@@ -262,9 +274,16 @@ impl DnsTunnelingDetector {
             self.alerted.insert(alert_key, now);
             let truncated = &domain[..80.min(domain.len())];
             return Some(self.build_incident(
-                src_ip, &base_domain, now, "long_name",
+                src_ip,
+                &base_domain,
+                now,
+                "long_name",
                 Severity::Medium,
-                format!("DNS exfiltration: unusually long domain name ({} chars): {}", domain.len(), truncated),
+                format!(
+                    "DNS exfiltration: unusually long domain name ({} chars): {}",
+                    domain.len(),
+                    truncated
+                ),
             ));
         }
 
