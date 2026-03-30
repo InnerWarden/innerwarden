@@ -3490,7 +3490,7 @@ async fn api_collectors(State(state): State<DashboardState>) -> Json<serde_json:
             "detected": file_exists(suricata),
             "active": recent(file_age_secs(suricata)),
             "events_today": count_source("suricata_eve"),
-            "desc": "Suricata network IDS alerts (alert, dns, http, tls, anomaly)"
+            "desc": "Suricata network IDS (optional). InnerWarden captures DNS, HTTP, and TLS natively. Suricata adds deep packet inspection and CVE signatures for compliance-driven environments."
         },
         {
             "id": "wazuh_alerts",

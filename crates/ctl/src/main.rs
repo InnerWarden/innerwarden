@@ -9066,7 +9066,10 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
 
             // ── Suricata ───────────────────────────────────
             if suricata_enabled {
-                println!("  Suricata");
+                println!("  Suricata (optional)");
+                println!("    \x1b[2mNote: InnerWarden captures DNS, HTTP, and TLS natively.\x1b[0m");
+                println!("    \x1b[2mSuricata is optional — useful for deep packet inspection\x1b[0m");
+                println!("    \x1b[2mand CVE signatures in compliance-driven environments.\x1b[0m");
                 let mut suri = Vec::new();
 
                 let suri_binary = std::path::Path::new("/usr/bin/suricata").exists();

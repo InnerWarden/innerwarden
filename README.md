@@ -152,9 +152,9 @@ https://github.com/user-attachments/assets/6ea1e124-52c2-48fe-8600-4b2f3d670116
 
 ## What it does
 
-1. **Watches**: 20 collectors across all layers — eBPF syscall tracing (38 kernel hooks), firmware integrity (ESP, UEFI, ACPI, TPM), memory forensics (/proc/maps RWX detection), JA3/JA4 TLS fingerprinting, filesystem real-time monitoring, cgroup resource abuse, kernel integrity (syscall table + eBPF inventory), plus auth.log, journald, Docker, nginx, Suricata, osquery, CloudTrail
+1. **Watches**: 20+ collectors across all layers — eBPF syscall tracing (38 kernel hooks), firmware integrity (ESP, UEFI, ACPI, TPM), memory forensics (/proc/maps RWX detection), native network capture (DNS queries, HTTP requests, JA3/JA4 TLS fingerprinting — no Suricata needed), filesystem real-time monitoring, cgroup resource abuse, kernel integrity (syscall table + eBPF inventory), plus auth.log, journald, Docker, nginx, osquery, CloudTrail
 2. **Detects**: 48 stateful detectors + 8 YARA malware rules + 8 Sigma log rules identify brute-force, credential stuffing, port scans, C2 callbacks, privilege escalation, container escapes, reverse shells (eBPF syscall sequence — impossible to evade), ransomware (entropy analysis), rootkits, DNS tunneling, data exfiltration (sensitive file read → outbound connect by PID), and more
-3. **Correlates**: 23 cross-layer rules connect Firmware × Kernel × Userspace × Network × Honeypot events. Detects multi-stage attacks no single detector can see: firmware tampering → rootkit install, recon → brute force → data exfil, honeypot engagement → real attack on same IP
+3. **Correlates**: 27 cross-layer rules connect Firmware × Kernel × Userspace × Network × Honeypot events. Detects multi-stage attacks no single detector can see: firmware tampering → rootkit install, recon → brute force → data exfil, honeypot engagement → real attack on same IP
 4. **Learns**: baseline anomaly detection trains for 7 days then alerts on deviations — event rate drops (silence = compromise), new process lineages (nginx→sh), unusual login times, unknown network destinations. No rules needed.
 5. **Blocks at the kernel**: LSM enforcement stops reverse shells and /tmp execution before they run. XDP drops attack traffic at wire speed. 8 kill chain patterns detected and blocked without signatures. Blocks propagate to mesh peers.
 6. **Responds automatically**: 6 built-in playbooks (ransomware, reverse shell, data exfil, malware, firmware-to-rootkit chain, recon-to-exfil chain) execute ordered response sequences — kill process, block IP, capture forensics, pcap, notify, escalate
@@ -368,7 +368,7 @@ Enable what you need.
 | `fail2ban-integration` | Sync active fail2ban bans | Block enforcement |
 | `crowdsec-integration` | CrowdSec community intel | Block enforcement (experimental) |
 | `falco-integration` | Kernel/container anomalies | Incident passthrough |
-| `suricata-integration` | Network IDS alerts | Incident passthrough |
+| `suricata-integration` | Network IDS alerts (optional) | Incident passthrough |
 | `osquery-integration` | Host state queries | Enriched events |
 | `wazuh-integration` | Wazuh HIDS alerts | Incident passthrough |
 
