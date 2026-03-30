@@ -183,12 +183,7 @@ fn parse_packet(raw: &[u8]) -> Option<(String, u16, String, u16, &[u8])> {
 // Collector
 // ---------------------------------------------------------------------------
 
-/// Cooldown per (src_ip, domain) to prevent flooding events.
-#[cfg(target_os = "linux")]
-const COOLDOWN_SECS: i64 = 10;
-/// Max domains tracked for cooldown.
-#[cfg(target_os = "linux")]
-const MAX_TRACKED: usize = 5000;
+// COOLDOWN_SECS and MAX_TRACKED defined inside run_linux()
 
 pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     #[cfg(not(target_os = "linux"))]
@@ -206,10 +201,14 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
 #[cfg(target_os = "linux")]
 async fn run_linux(tx: mpsc::Sender<Event>, host: String) {
     use std::collections::HashMap;
-    use chrono::{Duration, Utc};
+    use chrono::{DateTime, Duration, Utc};
     use tracing::warn;
     use innerwarden_core::entities::EntityRef;
     use innerwarden_core::event::Severity;
+
+    const COOLDOWN_SECS: i64 = 10;
+    const MAX_TRACKED: usize = 5000;
+
     // Create AF_PACKET raw socket (requires CAP_NET_RAW)
     let fd = unsafe {
         libc::socket(

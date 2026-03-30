@@ -167,11 +167,6 @@ fn parse_tcp_packet(raw: &[u8]) -> Option<(String, u16, String, u16, &[u8])> {
 // Collector
 // ---------------------------------------------------------------------------
 
-#[cfg(target_os = "linux")]
-const COOLDOWN_SECS: i64 = 5;
-#[cfg(target_os = "linux")]
-const MAX_TRACKED: usize = 5000;
-
 pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     #[cfg(not(target_os = "linux"))]
     {
@@ -188,8 +183,13 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
 #[cfg(target_os = "linux")]
 async fn run_linux(tx: mpsc::Sender<Event>, host: String) {
     use std::collections::HashMap;
-    use chrono::{Duration, Utc};
+    use chrono::{DateTime, Duration, Utc};
     use tracing::warn;
+    use innerwarden_core::entities::EntityRef;
+    use innerwarden_core::event::Severity;
+
+    const COOLDOWN_SECS: i64 = 5;
+    const MAX_TRACKED: usize = 5000;
     use innerwarden_core::entities::EntityRef;
     use innerwarden_core::event::Severity;
     let fd = unsafe {
