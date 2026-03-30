@@ -22,22 +22,8 @@ use innerwarden_core::event::{Event, Severity};
 // DNS parsing
 // ---------------------------------------------------------------------------
 
-/// Parsed DNS query.
-#[derive(Debug, Clone)]
-struct DnsQuery {
-    /// Transaction ID
-    id: u16,
-    /// Queried domain name (e.g., "evil-c2.example.com")
-    domain: String,
-    /// Query type (1=A, 28=AAAA, 5=CNAME, 15=MX, 16=TXT, etc.)
-    qtype: u16,
-    /// Source IP
-    src_ip: String,
-    /// Source port
-    src_port: u16,
-    /// Destination IP (DNS server)
-    dst_ip: String,
-}
+// DNS query fields are extracted inline during packet parsing
+// rather than constructing a struct, to avoid allocation overhead.
 
 /// Query type names for display.
 fn qtype_name(qtype: u16) -> &'static str {
@@ -237,7 +223,6 @@ async fn run_linux(tx: mpsc::Sender<Event>, host: String) {
 
     let mut buf = [0u8; 65536];
     let mut cooldown: HashMap<String, DateTime<Utc>> = HashMap::new();
-    let mut total_queries = 0u64;
 
     loop {
         let n = unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
@@ -284,8 +269,6 @@ async fn run_linux(tx: mpsc::Sender<Event>, host: String) {
             let cutoff = now - Duration::seconds(COOLDOWN_SECS);
             cooldown.retain(|_, v| *v > cutoff);
         }
-
-        total_queries += 1;
 
         let event = Event {
             ts: now,
