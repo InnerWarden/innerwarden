@@ -975,6 +975,15 @@ async fn main() -> Result<()> {
         });
     }
 
+    // DNS query capture (AF_PACKET raw socket, captures UDP:53)
+    {
+        let tx_dns = tx.clone();
+        let host_id = cfg.agent.host_id.clone();
+        tokio::spawn(async move {
+            collectors::dns_capture::run(tx_dns, host_id).await;
+        });
+    }
+
     // Drop the original tx - each collector holds its own clone.
     // When all collector tasks finish, all senders drop and rx.recv() returns None.
     drop(tx);

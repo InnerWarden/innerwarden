@@ -96,6 +96,13 @@ impl DnsTunnelingDetector {
             return None;
         }
 
+        // ── DNS capture path: raw socket DNS queries ────────────────────
+        if event.kind == "dns.query" && event.source == "dns_capture" {
+            let domain = event.details.get("domain")?.as_str()?;
+            let src_ip = event.details.get("src_ip")?.as_str()?;
+            return self.process_dns_query(event, domain, src_ip);
+        }
+
         // ── Suricata path: DNS query events ──────────────────────────────
         let is_dns = event.kind == "suricata.dns.query"
             || (event.source == "suricata" && event.kind.contains("dns"));
@@ -195,6 +202,70 @@ impl DnsTunnelingDetector {
         }
         if self.alerted.len() > 500 {
             self.alerted.retain(|_, ts| *ts > cutoff);
+        }
+
+        None
+    }
+
+    /// Process dns.query events from dns_capture collector.
+    /// Same analysis as Suricata path: entropy, volume, length.
+    fn process_dns_query(&mut self, event: &Event, domain: &str, src_ip: &str) -> Option<Incident> {
+        let now = event.ts;
+        let cutoff = now - self.window;
+
+        let (base_domain, subdomain) = parse_domain(domain)?;
+        let key = (src_ip.to_string(), base_domain.clone());
+        let alert_key = format!("dns_cap:{}:{}", src_ip, base_domain);
+
+        if let Some(&last) = self.alerted.get(&alert_key) {
+            if now - last < Duration::seconds(300) {
+                return None;
+            }
+        }
+
+        let ts_ring = self.timestamps.entry(key.clone()).or_default();
+        while ts_ring.front().is_some_and(|t| *t < cutoff) {
+            ts_ring.pop_front();
+        }
+        ts_ring.push_back(now);
+
+        let subs = self.query_history.entry(key.clone()).or_default();
+        subs.insert(subdomain.clone());
+        let sub_count = subs.len();
+
+        // Entropy check
+        if !subdomain.is_empty() {
+            let entropy = shannon_entropy(&subdomain);
+            if entropy > self.entropy_threshold {
+                self.alerted.insert(alert_key, now);
+                return Some(self.build_incident(
+                    src_ip, &base_domain, now, "high_entropy",
+                    Severity::High,
+                    format!("DNS tunneling: high-entropy queries to {} (entropy={:.2})", base_domain, entropy),
+                ));
+            }
+        }
+
+        // Unique subdomain volume
+        if sub_count >= self.volume_threshold {
+            self.alerted.insert(alert_key, now);
+            let window_secs = self.window.num_seconds();
+            return Some(self.build_incident(
+                src_ip, &base_domain, now, "high_volume",
+                Severity::High,
+                format!("DNS tunneling: {} unique subdomains of {} in {}s window", sub_count, base_domain, window_secs),
+            ));
+        }
+
+        // Long domain name
+        if domain.len() >= self.length_threshold {
+            self.alerted.insert(alert_key, now);
+            let truncated = &domain[..80.min(domain.len())];
+            return Some(self.build_incident(
+                src_ip, &base_domain, now, "long_name",
+                Severity::Medium,
+                format!("DNS exfiltration: unusually long domain name ({} chars): {}", domain.len(), truncated),
+            ));
         }
 
         None
