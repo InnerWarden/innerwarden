@@ -31,6 +31,7 @@ mod reader;
 #[cfg(feature = "redis-reader")]
 mod redis_reader;
 mod report;
+mod scoring;
 mod skills;
 mod slack;
 mod state_store;
@@ -334,6 +335,8 @@ struct AgentState {
     playbook_engine: playbook::PlaybookEngine,
     /// Selective packet capture on incidents.
     pcap_capture: pcap_capture::PcapCapture,
+    /// Neural scoring model — detects novel attack patterns that rules miss.
+    scoring_engine: scoring::ScoringEngine,
     /// Firmware incident cooldown: timestamp of last firmware trust_degraded incident.
     /// Prevents duplicate alerts when trust score is persistently low (e.g., VMs).
     last_firmware_incident_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -1689,6 +1692,7 @@ async fn main() -> Result<()> {
         baseline: baseline::BaselineStore::load(&cli.data_dir),
         playbook_engine: playbook::PlaybookEngine::new(&cli.data_dir),
         pcap_capture: pcap_capture::PcapCapture::new(&cli.data_dir),
+        scoring_engine: scoring::ScoringEngine::new(0.7),
         last_firmware_incident_at: None,
         suppressed_incident_ids: load_suppressed_ids(&cli.data_dir),
         threat_feed: None, // initialized below if configured
@@ -7143,6 +7147,7 @@ mod tests {
             baseline: baseline::BaselineStore::new(),
             playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
             pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            scoring_engine: scoring::ScoringEngine::new(0.7),
             last_firmware_incident_at: None,
             suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,
@@ -7283,6 +7288,7 @@ mod tests {
             baseline: baseline::BaselineStore::new(),
             playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
             pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            scoring_engine: scoring::ScoringEngine::new(0.7),
             last_firmware_incident_at: None,
             suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,
@@ -7398,6 +7404,7 @@ mod tests {
             baseline: baseline::BaselineStore::new(),
             playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
             pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            scoring_engine: scoring::ScoringEngine::new(0.7),
             last_firmware_incident_at: None,
             suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,
@@ -7525,6 +7532,7 @@ mod tests {
             baseline: baseline::BaselineStore::new(),
             playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
             pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            scoring_engine: scoring::ScoringEngine::new(0.7),
             last_firmware_incident_at: None,
             suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,
@@ -7629,6 +7637,7 @@ mod tests {
             baseline: baseline::BaselineStore::new(),
             playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
             pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            scoring_engine: scoring::ScoringEngine::new(0.7),
             last_firmware_incident_at: None,
             suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,
@@ -7745,6 +7754,7 @@ mod tests {
             baseline: baseline::BaselineStore::new(),
             playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
             pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            scoring_engine: scoring::ScoringEngine::new(0.7),
             last_firmware_incident_at: None,
             suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,

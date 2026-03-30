@@ -109,11 +109,21 @@ impl WebShellDetector {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        // Detect multipart uploads targeting script paths
-        let is_upload = content_type.contains("multipart") || content_type.contains("octet-stream");
-        let targets_script = SUSPICIOUS_EXTENSIONS
-            .iter()
-            .any(|ext| path.to_lowercase().contains(ext));
+        // Skip internal/Docker IPs — legitimate app traffic
+        let src_ip = event
+            .details
+            .get("src_ip")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if super::is_internal_ip(src_ip) {
+            return None;
+        }
+
+        // Only alert on actual file uploads (multipart/octet-stream), not regular POSTs
+        let is_upload = (content_type.contains("multipart") || content_type.contains("octet-stream"))
+            && SUSPICIOUS_EXTENSIONS
+                .iter()
+                .any(|ext| path.to_lowercase().contains(ext));
 
         // Detect polyglot: double extensions like image.jpg.php
         let is_polyglot = SUSPICIOUS_EXTENSIONS.iter().any(|ext| {
@@ -134,7 +144,7 @@ impl WebShellDetector {
             }
         });
 
-        if !is_upload && !targets_script && !is_polyglot {
+        if !is_upload && !is_polyglot {
             return None;
         }
 
