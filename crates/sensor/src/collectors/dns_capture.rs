@@ -9,14 +9,10 @@
 //! Requires: Linux, CAP_NET_RAW capability.
 //! Falls back gracefully on non-Linux or when unprivileged.
 
-use std::collections::HashMap;
-
-use chrono::{DateTime, Duration, Utc};
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::info;
 
-use innerwarden_core::entities::EntityRef;
-use innerwarden_core::event::{Event, Severity};
+use innerwarden_core::event::Event;
 
 // ---------------------------------------------------------------------------
 // DNS parsing
@@ -26,6 +22,7 @@ use innerwarden_core::event::{Event, Severity};
 // rather than constructing a struct, to avoid allocation overhead.
 
 /// Query type names for display.
+#[cfg(any(target_os = "linux", test))]
 fn qtype_name(qtype: u16) -> &'static str {
     match qtype {
         1 => "A",
@@ -44,6 +41,7 @@ fn qtype_name(qtype: u16) -> &'static str {
 
 /// Parse a DNS domain name from a packet buffer.
 /// DNS names are encoded as length-prefixed labels: \x03www\x06google\x03com\x00
+#[cfg(any(target_os = "linux", test))]
 fn parse_dns_name(data: &[u8], mut offset: usize) -> Option<(String, usize)> {
     let mut labels = Vec::new();
     let mut total_len = 0;
@@ -93,6 +91,7 @@ fn parse_dns_name(data: &[u8], mut offset: usize) -> Option<(String, usize)> {
 }
 
 /// Parse a DNS query from a UDP payload.
+#[cfg(any(target_os = "linux", test))]
 fn parse_dns_query(udp_payload: &[u8]) -> Option<(u16, String, u16)> {
     // DNS header is 12 bytes minimum
     if udp_payload.len() < 12 {
@@ -131,6 +130,7 @@ fn parse_dns_query(udp_payload: &[u8]) -> Option<(u16, String, u16)> {
 // ---------------------------------------------------------------------------
 
 /// Parse Ethernet + IP + UDP headers, return (src_ip, src_port, dst_ip, dst_port, udp_payload).
+#[cfg(target_os = "linux")]
 fn parse_packet(raw: &[u8]) -> Option<(String, u16, String, u16, &[u8])> {
     // Ethernet header: 14 bytes
     if raw.len() < 14 {
@@ -184,15 +184,17 @@ fn parse_packet(raw: &[u8]) -> Option<(String, u16, String, u16, &[u8])> {
 // ---------------------------------------------------------------------------
 
 /// Cooldown per (src_ip, domain) to prevent flooding events.
+#[cfg(target_os = "linux")]
 const COOLDOWN_SECS: i64 = 10;
 /// Max domains tracked for cooldown.
+#[cfg(target_os = "linux")]
 const MAX_TRACKED: usize = 5000;
 
 pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     #[cfg(not(target_os = "linux"))]
     {
+        let _ = (tx, host);
         info!("dns_capture: not on Linux, skipping");
-        return;
     }
 
     #[cfg(target_os = "linux")]
@@ -203,8 +205,11 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
 
 #[cfg(target_os = "linux")]
 async fn run_linux(tx: mpsc::Sender<Event>, host: String) {
-    use std::os::fd::FromRawFd;
-
+    use std::collections::HashMap;
+    use chrono::{Duration, Utc};
+    use tracing::warn;
+    use innerwarden_core::entities::EntityRef;
+    use innerwarden_core::event::Severity;
     // Create AF_PACKET raw socket (requires CAP_NET_RAW)
     let fd = unsafe {
         libc::socket(

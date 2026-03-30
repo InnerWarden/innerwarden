@@ -10,20 +10,17 @@
 //!
 //! Requires: Linux, CAP_NET_RAW capability.
 
-use std::collections::HashMap;
-
-use chrono::{DateTime, Duration, Utc};
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::info;
 
-use innerwarden_core::entities::EntityRef;
-use innerwarden_core::event::{Event, Severity};
+use innerwarden_core::event::Event;
 
 // ---------------------------------------------------------------------------
 // HTTP parsing
 // ---------------------------------------------------------------------------
 
 /// Parsed HTTP request line + headers.
+#[cfg(any(target_os = "linux", test))]
 #[derive(Debug, Clone)]
 struct HttpRequest {
     method: String,
@@ -36,10 +33,12 @@ struct HttpRequest {
 }
 
 /// Ports to monitor for HTTP traffic.
+#[cfg(any(target_os = "linux", test))]
 const HTTP_PORTS: &[u16] = &[80, 8080, 8443, 8787, 3000, 5000, 9090];
 
 /// Parse HTTP request from TCP payload.
 /// Returns None if not a valid HTTP request.
+#[cfg(any(target_os = "linux", test))]
 fn parse_http_request(payload: &[u8]) -> Option<HttpRequest> {
     // HTTP requests start with METHOD SP PATH SP VERSION CRLF
     let text = std::str::from_utf8(payload).ok()?;
@@ -104,6 +103,7 @@ fn parse_http_request(payload: &[u8]) -> Option<HttpRequest> {
 // ---------------------------------------------------------------------------
 
 /// Parse packet, return (src_ip, src_port, dst_ip, dst_port, tcp_payload) for HTTP.
+#[cfg(any(target_os = "linux", test))]
 fn parse_tcp_packet(raw: &[u8]) -> Option<(String, u16, String, u16, &[u8])> {
     if raw.len() < 14 {
         return None;
@@ -167,14 +167,16 @@ fn parse_tcp_packet(raw: &[u8]) -> Option<(String, u16, String, u16, &[u8])> {
 // Collector
 // ---------------------------------------------------------------------------
 
+#[cfg(target_os = "linux")]
 const COOLDOWN_SECS: i64 = 5;
+#[cfg(target_os = "linux")]
 const MAX_TRACKED: usize = 5000;
 
 pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     #[cfg(not(target_os = "linux"))]
     {
+        let _ = (tx, host);
         info!("http_capture: not on Linux, skipping");
-        return;
     }
 
     #[cfg(target_os = "linux")]
@@ -185,6 +187,11 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
 
 #[cfg(target_os = "linux")]
 async fn run_linux(tx: mpsc::Sender<Event>, host: String) {
+    use std::collections::HashMap;
+    use chrono::{Duration, Utc};
+    use tracing::warn;
+    use innerwarden_core::entities::EntityRef;
+    use innerwarden_core::event::Severity;
     let fd = unsafe {
         libc::socket(
             libc::AF_PACKET,
@@ -301,6 +308,7 @@ async fn run_linux(tx: mpsc::Sender<Event>, host: String) {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn truncate_str(s: &str, max: usize) -> &str {
     if s.len() > max { &s[..max] } else { s }
 }
