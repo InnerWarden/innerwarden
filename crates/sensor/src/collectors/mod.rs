@@ -18,4 +18,5 @@ pub mod syslog_firewall;
 #[cfg(feature = "ebpf")]
 pub mod tls_fingerprint;
 pub mod dns_capture;
+pub mod http_capture;
 pub mod wazuh_alerts;

@@ -984,6 +984,15 @@ async fn main() -> Result<()> {
         });
     }
 
+    // HTTP request capture (AF_PACKET raw socket, captures TCP:80/8080/8787/etc.)
+    {
+        let tx_http = tx.clone();
+        let host_id = cfg.agent.host_id.clone();
+        tokio::spawn(async move {
+            collectors::http_capture::run(tx_http, host_id).await;
+        });
+    }
+
     // Drop the original tx - each collector holds its own clone.
     // When all collector tasks finish, all senders drop and rx.recv() returns None.
     drop(tx);
