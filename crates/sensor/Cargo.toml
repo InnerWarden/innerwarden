@@ -30,11 +30,11 @@ redis = { version = "0.27", features = ["tokio-comp", "aio"], optional = true }
 # eBPF support (Linux only, optional - graceful fallback when not available)
 aya = { version = "0.13", optional = true }
 aya-log = { version = "0.2", optional = true }
-libc = { version = "0.2", optional = true }
+libc = "0.2"
 
 [features]
 default = []
-ebpf = ["aya", "aya-log", "libc"]
+ebpf = ["aya", "aya-log"]
 ebpf-embedded = ["ebpf"]
 redis-sink = ["redis"]
 
