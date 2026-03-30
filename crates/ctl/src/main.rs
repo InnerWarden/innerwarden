@@ -556,6 +556,22 @@ enum Command {
         #[command(subcommand)]
         command: Option<AgentCommand>,
     },
+
+    /// Suppress or unsuppress incident types from alerting.
+    ///
+    /// Suppressed patterns are matched against incident IDs.
+    /// Matching incidents are silently logged but generate no alerts,
+    /// decisions, or notifications.
+    ///
+    /// Examples:
+    ///   innerwarden suppress add firmware:trust_degraded
+    ///   innerwarden suppress add "ssh_bruteforce:192.168.1.0"
+    ///   innerwarden suppress remove firmware:trust_degraded
+    ///   innerwarden suppress list
+    Suppress {
+        #[command(subcommand)]
+        command: SuppressCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -802,6 +818,25 @@ enum AllowlistCommand {
     },
 
     /// Show all currently trusted IPs, CIDRs, and users.
+    List,
+}
+
+#[derive(Subcommand)]
+enum SuppressCommand {
+    /// Suppress an incident pattern from alerting.
+    Add {
+        /// Pattern to match against incident IDs (substring match).
+        /// Examples: "firmware:trust_degraded", "ssh_bruteforce:10.0.0"
+        pattern: String,
+    },
+
+    /// Remove a suppression pattern (re-enable alerting).
+    Remove {
+        /// Pattern to remove
+        pattern: String,
+    },
+
+    /// Show all active suppression patterns.
     List,
 }
 
@@ -1403,6 +1438,11 @@ fn main() -> Result<()> {
             }
             AllowlistCommand::List => cmd_allowlist_list(&cli),
         },
+        Command::Suppress { ref command } => match command {
+            SuppressCommand::Add { ref pattern } => cmd_suppress_add(&cli, pattern),
+            SuppressCommand::Remove { ref pattern } => cmd_suppress_remove(&cli, pattern),
+            SuppressCommand::List => cmd_suppress_list(&cli),
+        },
         Command::PipelineTest { wait } => cmd_pipeline_test(&cli, wait, &cli.data_dir.clone()),
         Command::Backup { ref output } => cmd_backup(&cli, output.as_deref()),
         Command::Metrics => cmd_metrics(&cli, &cli.data_dir.clone()),
@@ -1413,7 +1453,7 @@ fn main() -> Result<()> {
             } => cmd_gdpr_export(&cli.data_dir, entity, output.as_deref()),
             GdprCommand::Erase { ref entity, yes } => cmd_gdpr_erase(&cli.data_dir, entity, *yes),
         },
-        Command::Agent { ref command } => cmd_agent(command.as_ref()),
+        Command::Agent { ref command } => cmd_agent(&cli, command.as_ref()),
     }
 }
 
@@ -9026,7 +9066,14 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
 
             // ── Suricata ───────────────────────────────────
             if suricata_enabled {
-                println!("  Suricata");
+                println!("  Suricata (optional)");
+                println!(
+                    "    \x1b[2mNote: InnerWarden captures DNS, HTTP, and TLS natively.\x1b[0m"
+                );
+                println!(
+                    "    \x1b[2mSuricata is optional — useful for deep packet inspection\x1b[0m"
+                );
+                println!("    \x1b[2mand CVE signatures in compliance-driven environments.\x1b[0m");
                 let mut suri = Vec::new();
 
                 let suri_binary = std::path::Path::new("/usr/bin/suricata").exists();
@@ -9450,6 +9497,124 @@ fn cmd_allowlist_list(cli: &Cli) -> Result<()> {
             println!("  {user}");
         }
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden suppress
+// ---------------------------------------------------------------------------
+
+fn suppressed_file(cli: &Cli) -> std::path::PathBuf {
+    cli.data_dir.join("suppressed-incidents.txt")
+}
+
+fn cmd_suppress_add(cli: &Cli, pattern: &str) -> Result<()> {
+    let path = suppressed_file(cli);
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+
+    // Check if already exists
+    if existing.lines().any(|l| l.trim() == pattern) {
+        println!("Pattern already suppressed: {pattern}");
+        return Ok(());
+    }
+
+    // Append
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    writeln!(f, "{pattern}")?;
+
+    println!("Suppressed: {pattern}");
+    println!("Matching incidents will be silently logged but not alerted.");
+    println!();
+    println!("  The agent will pick this up on next restart, or you can restart now:");
+    println!("  sudo systemctl restart innerwarden-agent");
+
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "suppress_add".to_string(),
+        target: pattern.to_string(),
+        parameters: serde_json::json!({}),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+    Ok(())
+}
+
+fn cmd_suppress_remove(cli: &Cli, pattern: &str) -> Result<()> {
+    let path = suppressed_file(cli);
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+
+    let new_content: String = content
+        .lines()
+        .filter(|l| l.trim() != pattern)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if content == new_content {
+        println!("Pattern not found: {pattern}");
+        return Ok(());
+    }
+
+    std::fs::write(
+        &path,
+        if new_content.is_empty() {
+            String::new()
+        } else {
+            format!("{new_content}\n")
+        },
+    )?;
+    println!("Removed suppression: {pattern}");
+    println!("Matching incidents will alert again after agent restart.");
+
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "suppress_remove".to_string(),
+        target: pattern.to_string(),
+        parameters: serde_json::json!({}),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+    Ok(())
+}
+
+fn cmd_suppress_list(cli: &Cli) -> Result<()> {
+    let path = suppressed_file(cli);
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let patterns: Vec<&str> = content
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+
+    if patterns.is_empty() {
+        println!("No suppressed patterns.");
+        println!("Add with: innerwarden suppress add <pattern>");
+        return Ok(());
+    }
+
+    println!("Suppressed incident patterns:");
+    for p in &patterns {
+        println!("  {p}");
+    }
+    println!();
+    println!(
+        "{} pattern(s) active. Matching incidents are silently logged.",
+        patterns.len()
+    );
     Ok(())
 }
 
@@ -10210,7 +10375,26 @@ fn cmd_gdpr_erase(data_dir: &Path, entity: &str, yes: bool) -> Result<()> {
 // Agent Guard commands
 // ---------------------------------------------------------------------------
 
-fn cmd_agent(command: Option<&AgentCommand>) -> Result<()> {
+/// Resolve the dashboard URL from agent config or default.
+fn resolve_dashboard_url(cli: &Cli) -> String {
+    // Try to read from agent.toml [dashboard] bind
+    if let Ok(content) = std::fs::read_to_string(&cli.agent_config) {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("dashboard_bind") || trimmed.starts_with("bind") {
+                if let Some(val) = trimmed.split('=').nth(1) {
+                    let addr = val.trim().trim_matches('"');
+                    if !addr.is_empty() {
+                        return format!("http://{addr}");
+                    }
+                }
+            }
+        }
+    }
+    "http://127.0.0.1:8787".to_string()
+}
+
+fn cmd_agent(cli: &Cli, command: Option<&AgentCommand>) -> Result<()> {
     use innerwarden_agent_guard::signatures::{Kind, SignatureIndex, KNOWN};
 
     match command {
@@ -10474,27 +10658,76 @@ fn cmd_agent(command: Option<&AgentCommand>) -> Result<()> {
                 .unwrap_or_else(|_| "unknown".to_string());
 
             let name = if let Some(sig) = index.identify(&comm) {
-                sig.name
+                sig.name.to_string()
             } else {
-                &comm
+                comm.clone()
             };
 
             println!("  Connecting {name} (pid {pid})...");
-            // TODO: call agent API to register
-            println!("  \x1b[32m✓\x1b[0m {name} (pid {pid}) connected — agent-guard active");
+
+            // Call agent-guard API to register
+            let dashboard_url = resolve_dashboard_url(cli);
+            let payload = serde_json::json!({
+                "name": name,
+                "pid": pid,
+                "label": label.as_deref().unwrap_or(""),
+            });
+
+            let url = format!("{dashboard_url}/api/agent-guard/connect");
+            match ureq::post(url).send_json(&payload) {
+                Ok(resp) => {
+                    let body: serde_json::Value = resp.into_body().read_json().unwrap_or_default();
+                    let agent_id = body
+                        .get("agent_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    println!("  \x1b[32m✓\x1b[0m {name} (pid {pid}) connected as {agent_id}");
+                }
+                Err(e) => {
+                    // Fallback: write to persistence file for agent to pick up on restart
+                    let path = cli.data_dir.join("agent-connections.jsonl");
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                    {
+                        use std::io::Write;
+                        let entry = serde_json::json!({
+                            "ts": chrono::Utc::now().to_rfc3339(),
+                            "action": "connect",
+                            "name": name,
+                            "pid": pid,
+                            "label": label,
+                        });
+                        let _ = writeln!(f, "{}", entry);
+                    }
+                    println!("  \x1b[33m!\x1b[0m Dashboard not reachable ({e:#}), saved for next agent restart");
+                }
+            }
+
             if let Some(lbl) = label {
                 println!("  Label: {lbl}");
             }
             println!();
-            println!("  \x1b[2m💡 View status: innerwarden agent status\x1b[0m");
+            println!("  \x1b[2mView status: innerwarden agent status\x1b[0m");
             println!();
             Ok(())
         }
 
         Some(AgentCommand::Disconnect { id }) => {
             println!();
-            // TODO: call agent API to disconnect
-            println!("  \x1b[32m✓\x1b[0m Agent {id} disconnected");
+            let dashboard_url = resolve_dashboard_url(cli);
+            let payload = serde_json::json!({ "agent_id": id });
+            let url = format!("{dashboard_url}/api/agent-guard/disconnect");
+
+            match ureq::post(url).send_json(&payload) {
+                Ok(_) => {
+                    println!("  \x1b[32m✓\x1b[0m Agent {id} disconnected");
+                }
+                Err(e) => {
+                    println!("  \x1b[33m!\x1b[0m Dashboard not reachable ({e:#})");
+                }
+            }
             println!();
             Ok(())
         }
