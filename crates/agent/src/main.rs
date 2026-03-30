@@ -334,6 +334,11 @@ struct AgentState {
     playbook_engine: playbook::PlaybookEngine,
     /// Selective packet capture on incidents.
     pcap_capture: pcap_capture::PcapCapture,
+    /// Firmware incident cooldown: timestamp of last firmware trust_degraded incident.
+    /// Prevents duplicate alerts when trust score is persistently low (e.g., VMs).
+    last_firmware_incident_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Suppressed incident patterns (user-configurable via CLI/dashboard).
+    suppressed_incident_ids: std::collections::HashSet<String>,
     /// Threat feed client for external intelligence (None when disabled).
     threat_feed: Option<threat_feeds::ThreatFeedClient>,
     /// Redis stream reader for events (None when redis_url is not configured).
@@ -1684,6 +1689,8 @@ async fn main() -> Result<()> {
         baseline: baseline::BaselineStore::load(&cli.data_dir),
         playbook_engine: playbook::PlaybookEngine::new(&cli.data_dir),
         pcap_capture: pcap_capture::PcapCapture::new(&cli.data_dir),
+        last_firmware_incident_at: None,
+        suppressed_incident_ids: load_suppressed_ids(&cli.data_dir),
         threat_feed: None, // initialized below if configured
         #[cfg(feature = "redis-reader")]
         redis_reader: None,
@@ -6657,6 +6664,43 @@ fn check_advisory_match(
 // Firmware security monitoring (innerwarden-smm integration)
 // ---------------------------------------------------------------------------
 
+/// Load suppressed incident IDs from file (one pattern per line).
+/// Users can add patterns via `innerwarden suppress <pattern>`.
+fn load_suppressed_ids(data_dir: &std::path::Path) -> std::collections::HashSet<String> {
+    let path = data_dir.join("suppressed-incidents.txt");
+    match std::fs::read_to_string(&path) {
+        Ok(content) => content
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect(),
+        Err(_) => std::collections::HashSet::new(),
+    }
+}
+
+/// Detect if running inside a virtual machine.
+fn is_virtual_machine() -> bool {
+    // Check common VM indicators
+    if std::path::Path::new("/sys/hypervisor/type").exists() {
+        return true;
+    }
+    if let Ok(dmi) = std::fs::read_to_string("/sys/class/dmi/id/product_name") {
+        let lower = dmi.to_lowercase();
+        if lower.contains("virtual") || lower.contains("kvm") || lower.contains("qemu")
+            || lower.contains("vmware") || lower.contains("xen") || lower.contains("oracle")
+            || lower.contains("hyper-v")
+        {
+            return true;
+        }
+    }
+    if let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") {
+        if cpuinfo.contains("hypervisor") {
+            return true;
+        }
+    }
+    false
+}
+
 /// Periodic firmware audit. Runs innerwarden-smm's full_audit(), compares
 /// against baseline, and emits incidents when trust degrades or threats correlate.
 async fn process_firmware_tick(
@@ -6701,6 +6745,51 @@ async fn process_firmware_tick(
 
     // Check trust score degradation.
     if report.trust_score < cfg.firmware.trust_score_threshold {
+        let incident_id = format!(
+            "firmware:trust_degraded:{}",
+            (report.trust_score * 100.0) as u32
+        );
+
+        // --- Cooldown: don't emit same firmware incident more than once per 24h ---
+        if let Some(last) = state.last_firmware_incident_at {
+            let hours_since = (chrono::Utc::now() - last).num_hours();
+            if hours_since < 24 {
+                tracing::debug!(
+                    hours_since,
+                    "firmware: trust_degraded cooldown active, skipping"
+                );
+                return;
+            }
+        }
+
+        // --- Suppression: check if user suppressed this incident type ---
+        if state.suppressed_incident_ids.iter().any(|pat| incident_id.contains(pat)) {
+            tracing::debug!(incident_id, "firmware: incident suppressed by user");
+            return;
+        }
+
+        // --- VM detection: reduce severity on VMs where firmware is inaccessible ---
+        let on_vm = is_virtual_machine();
+        let severity = if on_vm {
+            // On VMs, firmware checks are unreliable — downgrade to Info
+            tracing::debug!("firmware: running on VM, downgrading severity to Info");
+            innerwarden_core::event::Severity::Info
+        } else if report.trust_score < 0.3 {
+            innerwarden_core::event::Severity::Critical
+        } else if report.trust_score < 0.6 {
+            innerwarden_core::event::Severity::High
+        } else {
+            innerwarden_core::event::Severity::Medium
+        };
+
+        // On VMs with Info severity, skip generating an incident entirely
+        if on_vm && severity == innerwarden_core::event::Severity::Info {
+            tracing::debug!(
+                trust_score = format!("{:.0}%", report.trust_score * 100.0),
+                "firmware: VM detected, skipping trust_degraded incident"
+            );
+            return;
+        }
         let critical_checks: Vec<String> = report
             .checks
             .iter()
@@ -6708,20 +6797,14 @@ async fn process_firmware_tick(
             .map(|c| format!("[{}] {}", c.id, c.name))
             .collect();
 
+        // Update cooldown timestamp
+        state.last_firmware_incident_at = Some(chrono::Utc::now());
+
         incidents.push(Incident {
             ts: chrono::Utc::now(),
             host: host.clone(),
-            incident_id: format!(
-                "firmware:trust_degraded:{}",
-                (report.trust_score * 100.0) as u32
-            ),
-            severity: if report.trust_score < 0.3 {
-                innerwarden_core::event::Severity::Critical
-            } else if report.trust_score < 0.6 {
-                innerwarden_core::event::Severity::High
-            } else {
-                innerwarden_core::event::Severity::Medium
-            },
+            incident_id: incident_id.clone(),
+            severity,
             title: format!(
                 "Firmware trust score degraded to {:.0}%",
                 report.trust_score * 100.0
@@ -7052,6 +7135,8 @@ mod tests {
             baseline: baseline::BaselineStore::new(),
             playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
             pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            last_firmware_incident_at: None,
+            suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
@@ -7190,6 +7275,8 @@ mod tests {
             baseline: baseline::BaselineStore::new(),
             playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
             pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            last_firmware_incident_at: None,
+            suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
@@ -7303,6 +7390,8 @@ mod tests {
             baseline: baseline::BaselineStore::new(),
             playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
             pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            last_firmware_incident_at: None,
+            suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
@@ -7428,6 +7517,8 @@ mod tests {
             baseline: baseline::BaselineStore::new(),
             playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
             pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            last_firmware_incident_at: None,
+            suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
@@ -7530,6 +7621,8 @@ mod tests {
             baseline: baseline::BaselineStore::new(),
             playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
             pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            last_firmware_incident_at: None,
+            suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
@@ -7644,6 +7737,8 @@ mod tests {
             baseline: baseline::BaselineStore::new(),
             playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
             pcap_capture: pcap_capture::PcapCapture::new(dir.path()),
+            last_firmware_incident_at: None,
+            suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
