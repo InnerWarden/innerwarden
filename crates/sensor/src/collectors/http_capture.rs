@@ -190,8 +190,7 @@ async fn run_linux(tx: mpsc::Sender<Event>, host: String) {
 
     const COOLDOWN_SECS: i64 = 5;
     const MAX_TRACKED: usize = 5000;
-    use innerwarden_core::entities::EntityRef;
-    use innerwarden_core::event::Severity;
+
     let fd = unsafe {
         libc::socket(
             libc::AF_PACKET,
