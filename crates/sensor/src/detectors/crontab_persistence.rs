@@ -96,6 +96,12 @@ impl CrontabPersistenceDetector {
     fn is_crontab_command(command: &str) -> bool {
         let lower = command.to_lowercase();
 
+        // Any crontab execution (binary path or bare command)
+        // eBPF execve may capture just the binary without args when piped via stdin
+        if lower.ends_with("/crontab") || lower == "crontab" {
+            return true;
+        }
+
         // crontab -e or crontab - (pipe)
         if lower.contains("crontab -e") || lower.contains("crontab -") {
             return true;
