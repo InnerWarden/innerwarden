@@ -7,6 +7,7 @@
 //! The model weights are embedded at compile time (16KB binary).
 //! Inference takes microseconds — no external API, no internet, no cost.
 
+use std::collections::HashMap;
 use innerwarden_core::event::Event;
 use tracing::{debug, info};
 
@@ -122,8 +123,8 @@ pub struct ScoringEngine {
     detection_count: u32,
     /// Score threshold for alerting
     threshold: f32,
-    /// Cooldown: last alert timestamp
-    last_alert_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Cooldown per source IP: prevents spam from same attacker
+    cooldowns: HashMap<String, chrono::DateTime<chrono::Utc>>,
     /// Cooldown duration in seconds
     cooldown_secs: i64,
 }
@@ -144,8 +145,8 @@ impl ScoringEngine {
             recent_ips: std::collections::VecDeque::with_capacity(20),
             detection_count: 0,
             threshold,
-            last_alert_at: None,
-            cooldown_secs: 300, // 5 minutes between alerts
+            cooldowns: HashMap::new(),
+            cooldown_secs: 300, // 5 minutes per IP
         }
     }
 
@@ -184,15 +185,23 @@ impl ScoringEngine {
 
         debug!(score = format!("{:.3}", score), events = self.recent_kinds.len(), "scoring: model inference");
 
-        // Cooldown: don't alert more than once per cooldown_secs
-        if let Some(last) = self.last_alert_at {
-            if (chrono::Utc::now() - last).num_seconds() < self.cooldown_secs {
+        // Cooldown per source IP
+        let source_ip = self.recent_ips.back().cloned().unwrap_or_default();
+        let now = chrono::Utc::now();
+        if let Some(&last) = self.cooldowns.get(&source_ip) {
+            if (now - last).num_seconds() < self.cooldown_secs {
                 return None;
             }
         }
 
+        // Prune stale cooldowns (keep map bounded)
+        if self.cooldowns.len() > 1000 {
+            let cutoff = now - chrono::Duration::seconds(self.cooldown_secs);
+            self.cooldowns.retain(|_, t| *t > cutoff);
+        }
+
         if score > self.threshold {
-            self.last_alert_at = Some(chrono::Utc::now());
+            self.cooldowns.insert(source_ip, now);
             let explanation = format!(
                 "Neural model scored {:.0}% attack probability from {} recent events (kinds: {})",
                 score * 100.0,
