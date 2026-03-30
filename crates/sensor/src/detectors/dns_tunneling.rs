@@ -13,6 +13,31 @@ const STANDARD_RESOLVERS: &[&str] = &[
     "9.9.9.9",    // Quad9
 ];
 
+/// Cloud/infrastructure domains that should NOT trigger DNS tunneling alerts.
+/// These generate high volume legitimate queries from servers.
+const DNS_ALLOWED_DOMAINS: &[&str] = &[
+    "oraclecloud.com",
+    "oracle.com",
+    "amazonaws.com",
+    "azure.com",
+    "azurefd.net",
+    "microsoft.com",
+    "googleapis.com",
+    "gcr.io",
+    "cloudflare.com",
+    "akamai.com",
+    "ubuntu.com",
+    "debian.org",
+    "docker.io",
+    "docker.com",
+    "github.com",
+    "github.io",
+    "githubusercontent.com",
+    "snapcraft.io",
+    "canonical.com",
+    "ntp.org",
+];
+
 /// Processes that legitimately query many DNS servers and should be excluded
 /// from eBPF DNS tunneling detection (beaconing, burst, nonstandard checks).
 const DNS_ALLOWED_COMMS: &[&str] = &[
@@ -210,6 +235,12 @@ impl DnsTunnelingDetector {
     /// Process dns.query events from dns_capture collector.
     /// Same analysis as Suricata path: entropy, volume, length.
     fn process_dns_query(&mut self, event: &Event, domain: &str, src_ip: &str) -> Option<Incident> {
+        // Skip cloud/infrastructure domains
+        let lower_domain = domain.to_lowercase();
+        if DNS_ALLOWED_DOMAINS.iter().any(|d| lower_domain.ends_with(d)) {
+            return None;
+        }
+
         let now = event.ts;
         let cutoff = now - self.window;
 
