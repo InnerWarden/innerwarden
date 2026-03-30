@@ -24,14 +24,19 @@ impl PortScanDetector {
         }
     }
 
-    /// Detect potential port scan from firewall-blocked connections.
+    /// Detect potential port scan from firewall-blocked connections,
+    /// or service enumeration from rapid connections to multiple ports.
     ///
     /// Expected event contract:
-    /// - kind: `network.connection_blocked`
+    /// - kind: `network.connection_blocked` or `network.outbound_connect` (inbound)
     /// - details.src_ip: string
     /// - details.dst_port: integer
     pub fn process(&mut self, event: &Event) -> Option<Incident> {
-        if event.kind != "network.connection_blocked" {
+        // Accept both blocked and inbound connection events
+        if event.kind != "network.connection_blocked"
+            && event.kind != "network.inbound_connect"
+            && event.kind != "network.accept"
+        {
             return None;
         }
 
