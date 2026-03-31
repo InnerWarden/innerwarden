@@ -7409,7 +7409,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
   <div class="report-view sensor-hud" id="viewSensors" style="display:flex;">
     <div id="topAction" style="display:none;margin-bottom:14px;padding:16px 20px;border-radius:14px;border:1px solid rgba(244,63,94,0.3);background:rgba(244,63,94,0.06);"></div>
     <div class="hud-stats" id="sensorCards"></div>
-    <div style="display:flex; flex-wrap:wrap; gap:6px;" id="sensorSources"></div>
+    <div style="display:flex; flex-wrap:wrap; gap:6px; flex-direction:column;" id="sensorSources"></div>
     <div class="hud-panel">
       <h3 class="hud-panel-title">Event Timeline</h3>
       <div style="position:relative;height:240px;"><canvas id="sensorChart"></canvas></div>
