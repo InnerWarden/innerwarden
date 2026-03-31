@@ -105,15 +105,40 @@ impl HostDriftDetector {
             return None; // Container events handled by container_drift detector
         }
 
-        let filename = event
+        // Prefer "filename" (eBPF events carry the binary path).
+        // Fallback: extract the binary path from "argv[0]" or the first
+        // whitespace-delimited token of "command".  Using the raw command
+        // string would match argument text (e.g. "/tmp/script.sh" passed
+        // as a bash -c argument), producing floods of false positives.
+        let filename: String = event
             .details
             .get("filename")
             .and_then(|v| v.as_str())
-            .or_else(|| event.details.get("command").and_then(|v| v.as_str()))
-            .unwrap_or("");
+            .map(|s| s.to_string())
+            .or_else(|| {
+                // Try argv[0] first (exec_audit gives full argv array)
+                event
+                    .details
+                    .get("argv")
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+            .or_else(|| {
+                // Last resort: first token of "command" (the binary path)
+                event
+                    .details
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .and_then(|cmd| cmd.split_whitespace().next())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default();
         if filename.is_empty() {
             return None;
         }
+        let filename = filename.as_str();
 
         let comm = event
             .details
