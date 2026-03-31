@@ -44,6 +44,8 @@ const SCORE_REVERSE_SHELL: u32 = 50;
 const SCORE_PERSISTENCE: u32 = 20;
 /// Obfuscated command (base64 decode | sh, eval, etc.)
 const SCORE_OBFUSCATED: u32 = 30;
+/// Defense evasion (timestomp, log tampering, LD_PRELOAD, ptrace)
+const SCORE_DEFENSE_EVASION: u32 = 40;
 /// Sequence bonus: download → chmod +x → execute within the correlation window
 const SCORE_SEQUENCE_BONUS: u32 = 25;
 
@@ -110,6 +112,41 @@ const PERSISTENCE_INDICATORS: &[&str] = &[
     "update-rc.d",
     "chkconfig",
     ".config/autostart",
+];
+
+/// Defense evasion indicators: timestomp, log tampering, anti-forensics.
+const EVASION_INDICATORS: &[&str] = &[
+    // Timestomp: changing file timestamps to hide activity
+    "touch -t ",
+    "touch -r ",
+    "touch -d ",
+    // Log tampering: clearing/truncating log files
+    "truncate -s 0 /var/log",
+    "> /var/log/",
+    "echo '' > /var/log",
+    "echo \"\" > /var/log",
+    "cat /dev/null > /var/log",
+    "rm -f /var/log/auth",
+    "rm -f /var/log/syslog",
+    "rm -f /var/log/secure",
+    "shred /var/log",
+    // History clearing
+    "history -c",
+    "> ~/.bash_history",
+    "echo '' > ~/.bash_history",
+    "unset HISTFILE",
+    "export HISTSIZE=0",
+    // LD_PRELOAD injection
+    "LD_PRELOAD=",
+    "/etc/ld.so.preload",
+    // Process injection via ptrace
+    "ptrace",
+    "PTRACE_ATTACH",
+    "PTRACE_POKETEXT",
+    // Anti-forensics
+    "shred -zu",
+    "secure-delete",
+    "srm ",
 ];
 
 const OBFUSCATION_INDICATORS: &[&str] = &[
@@ -189,6 +226,7 @@ pub enum SignalKind {
     ReverseShell,
     Persistence,
     Obfuscated,
+    DefenseEvasion,
     SequenceBonus,
 }
 
@@ -202,6 +240,7 @@ impl SignalKind {
             SignalKind::ReverseShell => SCORE_REVERSE_SHELL,
             SignalKind::Persistence => SCORE_PERSISTENCE,
             SignalKind::Obfuscated => SCORE_OBFUSCATED,
+            SignalKind::DefenseEvasion => SCORE_DEFENSE_EVASION,
             SignalKind::SequenceBonus => SCORE_SEQUENCE_BONUS,
         }
     }
@@ -215,6 +254,7 @@ impl SignalKind {
             SignalKind::ReverseShell => "reverse_shell",
             SignalKind::Persistence => "persistence_attempt",
             SignalKind::Obfuscated => "obfuscated_command",
+            SignalKind::DefenseEvasion => "defense_evasion",
             SignalKind::SequenceBonus => "download_chmod_execute_sequence",
         }
     }
@@ -447,6 +487,16 @@ fn check_command_node(node: tree_sitter::Node, source: &[u8], signals: &mut Vec<
             signals.push(RiskSignal {
                 kind: SignalKind::Obfuscated,
                 detail: format!("obfuscation indicator: `{indicator}`"),
+            });
+            break;
+        }
+    }
+
+    for indicator in EVASION_INDICATORS {
+        if full_text.contains(indicator) {
+            signals.push(RiskSignal {
+                kind: SignalKind::DefenseEvasion,
+                detail: format!("defense evasion indicator: `{indicator}`"),
             });
             break;
         }
