@@ -1143,10 +1143,7 @@ fn builtin_rules() -> Vec<CorrelationRule> {
             stages: vec![
                 RuleStage {
                     layer: Some(Layer::Userspace),
-                    kind_patterns: vec![
-                        "log_tampering".into(),
-                        "sensitive_write".into(),
-                    ],
+                    kind_patterns: vec!["log_tampering".into(), "sensitive_write".into()],
                     entity_must_match: false,
                 },
                 RuleStage {

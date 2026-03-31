@@ -15,31 +15,78 @@ use innerwarden_core::{entities::EntityRef, event::Event, event::Severity, incid
 
 /// Commands that count as discovery activity.
 const DISCOVERY_COMMANDS: &[&str] = &[
-    "ps aux", "ps -ef", "ps -", "/bin/ps", "/usr/bin/ps",
-    "id", "/usr/bin/id",
-    "whoami", "/usr/bin/whoami",
-    "uname", "/usr/bin/uname",
-    "hostname", "/usr/bin/hostname",
-    "ip addr", "ip route", "ip neigh", "ip link",
+    "ps aux",
+    "ps -ef",
+    "ps -",
+    "/bin/ps",
+    "/usr/bin/ps",
+    "id",
+    "/usr/bin/id",
+    "whoami",
+    "/usr/bin/whoami",
+    "uname",
+    "/usr/bin/uname",
+    "hostname",
+    "/usr/bin/hostname",
+    "ip addr",
+    "ip route",
+    "ip neigh",
+    "ip link",
     "ifconfig",
-    "ss -", "ss\n", "/usr/bin/ss",
+    "ss -",
+    "ss\n",
+    "/usr/bin/ss",
     "netstat",
-    "cat /etc/passwd", "cat /etc/shadow", "cat /etc/group",
-    "cat /etc/resolv", "cat /etc/hostname", "cat /etc/os-release",
-    "cat /proc/net", "cat /proc/cpuinfo", "cat /proc/meminfo", "cat /proc/version",
-    "getent passwd", "getent group",
-    "find /etc", "find /home", "find /var", "find /opt", "find /root",
-    "ls /root", "ls /home", "ls -la /root", "ls -la /home",
-    "df -", "free -", "lscpu", "lsmod", "mount",
-    "arp -", "cat /proc/1/cgroup",
-    "groups", "last ", "w\n", "who\n",
+    "cat /etc/passwd",
+    "cat /etc/shadow",
+    "cat /etc/group",
+    "cat /etc/resolv",
+    "cat /etc/hostname",
+    "cat /etc/os-release",
+    "cat /proc/net",
+    "cat /proc/cpuinfo",
+    "cat /proc/meminfo",
+    "cat /proc/version",
+    "getent passwd",
+    "getent group",
+    "find /etc",
+    "find /home",
+    "find /var",
+    "find /opt",
+    "find /root",
+    "ls /root",
+    "ls /home",
+    "ls -la /root",
+    "ls -la /home",
+    "df -",
+    "free -",
+    "lscpu",
+    "lsmod",
+    "mount",
+    "arp -",
+    "cat /proc/1/cgroup",
+    "groups",
+    "last ",
+    "w\n",
+    "who\n",
 ];
 
 /// Processes that legitimately run many discovery commands.
 const ALLOWED_PROCESSES: &[&str] = &[
-    "innerwarden", "osqueryd", "telegraf", "prometheus", "node_exporter",
-    "zabbix", "nagios", "collectd", "datadog", "newrelic",
-    "ansible", "puppet", "chef", "salt",
+    "innerwarden",
+    "osqueryd",
+    "telegraf",
+    "prometheus",
+    "node_exporter",
+    "zabbix",
+    "nagios",
+    "collectd",
+    "datadog",
+    "newrelic",
+    "ansible",
+    "puppet",
+    "chef",
+    "salt",
 ];
 
 pub struct DiscoveryBurstDetector {
@@ -72,10 +119,26 @@ impl DiscoveryBurstDetector {
             return None;
         }
 
-        let command = event.details.get("command").and_then(|v| v.as_str()).unwrap_or("");
-        let comm = event.details.get("comm").and_then(|v| v.as_str()).unwrap_or("");
-        let uid = event.details.get("uid").and_then(|v| v.as_u64()).unwrap_or(0);
-        let pid = event.details.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
+        let command = event
+            .details
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let comm = event
+            .details
+            .get("comm")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let uid = event
+            .details
+            .get("uid")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let pid = event
+            .details
+            .get("pid")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
 
         // Skip allowed processes
         if ALLOWED_PROCESSES.iter().any(|p| comm.contains(p)) {
@@ -122,7 +185,8 @@ impl DiscoveryBurstDetector {
         }
         if self.windows.len() > 500 {
             let wc = now - self.window;
-            self.windows.retain(|_, w| w.back().is_some_and(|t| *t > wc));
+            self.windows
+                .retain(|_, w| w.back().is_some_and(|t| *t > wc));
         }
 
         Some(Incident {
@@ -147,7 +211,13 @@ impl DiscoveryBurstDetector {
             summary: format!(
                 "User uid={} ran {} discovery commands in {} seconds (threshold: {}). \
                  Last command: {} (pid={}, comm={})",
-                uid, count, self.window.num_seconds(), self.threshold, command, pid, comm
+                uid,
+                count,
+                self.window.num_seconds(),
+                self.threshold,
+                command,
+                pid,
+                comm
             ),
             evidence: serde_json::json!([{
                 "kind": "discovery_burst",
@@ -163,10 +233,7 @@ impl DiscoveryBurstDetector {
                 "Check if this is a legitimate admin session or automated recon".to_string(),
                 "Correlate with SSH login source IP for this session".to_string(),
             ],
-            tags: vec![
-                "discovery".to_string(),
-                "reconnaissance".to_string(),
-            ],
+            tags: vec!["discovery".to_string(), "reconnaissance".to_string()],
             entities: vec![],
         })
     }

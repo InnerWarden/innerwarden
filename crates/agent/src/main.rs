@@ -5664,10 +5664,7 @@ async fn process_narrative_tick(
                     "Review recent events for attack patterns".to_string(),
                     "Check if any detector also flagged this activity".to_string(),
                 ],
-                tags: vec![
-                    "neural_model".to_string(),
-                    "anomaly".to_string(),
-                ],
+                tags: vec!["neural_model".to_string(), "anomaly".to_string()],
                 entities: ev.entities.clone(),
             };
             // Write to incidents file

@@ -606,7 +606,11 @@ async fn main() -> Result<()> {
             detectors::sensitive_write::SensitiveWriteDetector::new(&cfg.agent.host_id, 300)
         }),
         discovery_burst: Some({
-            info!(threshold = 5, window_seconds = 60, "discovery_burst detector enabled");
+            info!(
+                threshold = 5,
+                window_seconds = 60,
+                "discovery_burst detector enabled"
+            );
             detectors::discovery_burst::DiscoveryBurstDetector::new(&cfg.agent.host_id, 5, 60)
         }),
         io_uring_anomaly: Some({

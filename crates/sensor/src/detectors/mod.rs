@@ -85,8 +85,8 @@ pub mod systemd_persistence;
 pub mod user_creation;
 pub mod web_shell;
 
-pub mod sensitive_write;
 pub mod discovery_burst;
+pub mod sensitive_write;
 
 // v0.6.0 detectors
 pub mod cgroup_abuse;
