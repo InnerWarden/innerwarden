@@ -112,6 +112,7 @@ struct DetectorSet {
     credential_harvest: Option<CredentialHarvestDetector>,
     packet_flood: Option<PacketFloodDetector>,
     sensitive_write: Option<detectors::sensitive_write::SensitiveWriteDetector>,
+    discovery_burst: Option<detectors::discovery_burst::DiscoveryBurstDetector>,
     io_uring_anomaly: Option<detectors::io_uring_anomaly::IoUringAnomalyDetector>,
     container_drift: Option<detectors::container_drift::ContainerDriftDetector>,
     host_drift: Option<detectors::host_drift::HostDriftDetector>,
@@ -603,6 +604,10 @@ async fn main() -> Result<()> {
         sensitive_write: Some({
             info!("sensitive_write detector enabled (sensitive path protection)");
             detectors::sensitive_write::SensitiveWriteDetector::new(&cfg.agent.host_id, 300)
+        }),
+        discovery_burst: Some({
+            info!(threshold = 5, window_seconds = 60, "discovery_burst detector enabled");
+            detectors::discovery_burst::DiscoveryBurstDetector::new(&cfg.agent.host_id, 5, 60)
         }),
         io_uring_anomaly: Some({
             info!("io_uring_anomaly detector enabled (io_uring evasion detection)");
@@ -1431,6 +1436,12 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.sensitive_write {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident, syslog);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.discovery_burst {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident, syslog);
         }

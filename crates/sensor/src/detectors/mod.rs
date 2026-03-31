@@ -86,6 +86,7 @@ pub mod user_creation;
 pub mod web_shell;
 
 pub mod sensitive_write;
+pub mod discovery_burst;
 
 // v0.6.0 detectors
 pub mod cgroup_abuse;
