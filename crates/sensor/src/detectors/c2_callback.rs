@@ -111,6 +111,16 @@ impl C2CallbackDetector {
             .unwrap_or("unknown")
             .to_string();
         let pid = event.details["pid"].as_u64().unwrap_or(0) as u32;
+        let uid = event
+            .details
+            .get("uid")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(u64::MAX);
+
+        // Skip InnerWarden's own outbound connections (GeoIP, AbuseIPDB, CrowdSec lookups)
+        if uid == 998 || comm == "tokio-rt-worker" || comm.starts_with("innerwarden") {
+            return None;
+        }
 
         if super::is_internal_ip(&dst_ip) {
             return None;
