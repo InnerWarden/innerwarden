@@ -31,6 +31,7 @@ mod reader;
 #[cfg(feature = "redis-reader")]
 mod redis_reader;
 mod report;
+mod neural_lifecycle;
 mod scoring;
 mod skills;
 mod slack;
