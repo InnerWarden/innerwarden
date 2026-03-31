@@ -1,3 +1,4 @@
+pub mod allowlists;
 pub mod c2_callback;
 pub mod container_escape;
 pub mod credential_stuffing;
