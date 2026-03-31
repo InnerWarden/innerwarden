@@ -7380,7 +7380,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     .hud-source {
       border:1px solid rgba(255,255,255,0.08); border-radius:1rem; padding:7px 12px;
       background: linear-gradient(180deg, rgba(11,18,35,0.88), rgba(5,9,21,0.78));
-      display:flex; align-items:center; gap:10px;
+      display:flex; align-items:center; gap:8px; flex:1 1 auto;
       transition: border-color 0.35s ease, box-shadow 0.35s ease, transform 0.35s cubic-bezier(0.22,1,0.36,1);
       backdrop-filter:blur(8px);
     }
@@ -7964,7 +7964,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
         let shtml = '<div style="font-size:0.72rem;font-weight:700;color:var(--ok);letter-spacing:0.05em;margin-bottom:6px">' +
           'DATA COLLECTION &mdash; ' + totalActive + '/' + totalAll + ' active</div>';
-        shtml += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px">';
+        shtml += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
         for (const s of active) {
           const c = sensorColor(s.name);
           shtml += '<div class="hud-source">' +
@@ -7976,7 +7976,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
         if (idle.length > 0) {
           shtml += '<div style="font-size:0.65rem;color:var(--muted);margin-top:8px;cursor:pointer" onclick="var el=document.getElementById(\'idleSources\');el.style.display=el.style.display===\'none\'?\'grid\':\'none\'">' +
             idle.length + ' available but idle &#9662;</div>' +
-            '<div id="idleSources" style="display:none;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px;margin-top:4px;opacity:0.5">';
+            '<div id="idleSources" style="display:none;flex-wrap:wrap;gap:6px;margin-top:4px;opacity:0.5">';
           for (const s of idle) {
             shtml += '<div class="hud-source">' +
               '<div class="hud-source-dot" style="background:var(--muted);"></div>' +
