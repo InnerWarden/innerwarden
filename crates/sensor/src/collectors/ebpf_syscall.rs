@@ -1347,7 +1347,8 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     // These use #[kprobe(function = "...")] in the eBPF code, so Aya creates
     // separate sections: kprobe/vfs_utimes and kprobe/do_truncate.
     // They need to be loaded and attached by the section name.
-    if let Some(prog) = bpf.program_mut("innerwarden_utimensat") {
+    // With #[kprobe(function = "vfs_utimes")], Aya registers as "vfs_utimes"
+    if let Some(prog) = bpf.program_mut("vfs_utimes").or_else(|| bpf.program_mut("innerwarden_utimensat")) {
         use aya::programs::KProbe;
         if let Ok(kp) = TryInto::<&mut KProbe>::try_into(prog) {
             if kp.load().is_ok() {
@@ -1361,7 +1362,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
         // Try alternate name: Aya may use section name "kprobe_vfs_utimes" or function name
         info!("eBPF: innerwarden_utimensat not found by name, trying auto-attach...");
     }
-    if let Some(prog) = bpf.program_mut("innerwarden_truncate") {
+    if let Some(prog) = bpf.program_mut("do_truncate").or_else(|| bpf.program_mut("innerwarden_truncate")) {
         use aya::programs::KProbe;
         if let Ok(kp) = TryInto::<&mut KProbe>::try_into(prog) {
             if kp.load().is_ok() {
