@@ -87,6 +87,19 @@ const ALLOWED_PROCESSES: &[&str] = &[
     "puppet",
     "chef",
     "salt",
+    // CI/CD and admin tools
+    "cargo",
+    "rustc",
+    "git",
+    "journalctl",
+    "systemctl",
+    "landscape-sysi",
+    "update-motd",
+    "50-landscape-sy",
+    "91-release-upgr",
+    // Package managers trigger discovery commands during updates
+    "apt-check",
+    "unattended-upgr",
 ];
 
 pub struct DiscoveryBurstDetector {
@@ -109,7 +122,7 @@ impl DiscoveryBurstDetector {
             threshold,
             window: Duration::seconds(window_seconds as i64),
             alerted: HashMap::new(),
-            cooldown: Duration::seconds(300),
+            cooldown: Duration::seconds(1800), // 30 min — one alert per burst is enough
             host: host.into(),
         }
     }
