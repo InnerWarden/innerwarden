@@ -2504,7 +2504,19 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                     let cgroup_id = read_u64!(data, 24..32);
                     let comm = bytes_to_string(&data[32..96]);
 
-                    if comm.starts_with("innerwarden") {
+                    // Filter benign system processes (uid=0 check prevents attacker
+                    // using prctl PR_SET_NAME to evade; non-root timestomp always alerts)
+                    if comm.starts_with("innerwarden")
+                        || (uid == 0
+                            && matches!(
+                                comm.as_str(),
+                                "systemd-journal"
+                                    | "logrotate"
+                                    | "rsyslogd"
+                                    | "systemd"
+                                    | "systemd-tmpfile"
+                            ))
+                    {
                         continue;
                     }
 
@@ -2539,7 +2551,19 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                     let cgroup_id = read_u64!(data, 24..32);
                     let comm = bytes_to_string(&data[32..96]);
 
-                    if comm.starts_with("innerwarden") {
+                    // Filter benign system log management (uid=0 check prevents
+                    // attacker evasion via prctl; non-root truncate always alerts)
+                    if comm.starts_with("innerwarden")
+                        || (uid == 0
+                            && matches!(
+                                comm.as_str(),
+                                "systemd-journal"
+                                    | "logrotate"
+                                    | "rsyslogd"
+                                    | "systemd"
+                                    | "systemd-tmpfile"
+                            ))
+                    {
                         continue;
                     }
 
@@ -2548,7 +2572,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         host: host.clone(),
                         source: "ebpf".to_string(),
                         kind: "file.truncate".to_string(),
-                        severity: Severity::Critical,
+                        severity: Severity::High,
                         summary: format!(
                             "File truncated by {} (pid={}, uid={})",
                             comm, pid, uid
