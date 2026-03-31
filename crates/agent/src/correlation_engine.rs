@@ -1073,6 +1073,93 @@ fn builtin_rules() -> Vec<CorrelationRule> {
             min_confidence: 0.85,
             severity: Severity::High,
         },
+        // -----------------------------------------------------------------
+        // Red team gap rules (Phase 3 atomic testing insights)
+        // -----------------------------------------------------------------
+        // CL-028: Discovery burst → credential access (red team gap #1)
+        // 6 discovery techniques pass undetected, but combined with
+        // credential access = attack in progress
+        CorrelationRule {
+            id: "CL-028".into(),
+            name: "Red Team: Discovery Burst to Credential Access".into(),
+            stages: vec![
+                RuleStage {
+                    layer: Some(Layer::Userspace),
+                    kind_patterns: vec![
+                        "process_discovery".into(),
+                        "network_discovery".into(),
+                        "file_discovery".into(),
+                    ],
+                    entity_must_match: false,
+                },
+                RuleStage {
+                    layer: Some(Layer::Userspace),
+                    kind_patterns: vec![
+                        "credential_harvest".into(),
+                        "data_exfiltration".into(),
+                        "sensitive_write".into(),
+                    ],
+                    entity_must_match: false,
+                },
+            ],
+            window_secs: 300,
+            min_confidence: 0.80,
+            severity: Severity::High,
+        },
+        // CL-029: Persistence chain (red team gap #2)
+        // ShellRc + crontab + systemd persistence attempts
+        CorrelationRule {
+            id: "CL-029".into(),
+            name: "Red Team: Multi-Persistence Attempt".into(),
+            stages: vec![
+                RuleStage {
+                    layer: Some(Layer::Userspace),
+                    kind_patterns: vec![
+                        "crontab_persistence".into(),
+                        "systemd_persistence".into(),
+                        "sensitive_write".into(),
+                    ],
+                    entity_must_match: false,
+                },
+                RuleStage {
+                    layer: Some(Layer::Userspace),
+                    kind_patterns: vec![
+                        "ssh_key_injection".into(),
+                        "sensitive_write".into(),
+                        "crontab_persistence".into(),
+                    ],
+                    entity_must_match: false,
+                },
+            ],
+            window_secs: 600,
+            min_confidence: 0.85,
+            severity: Severity::Critical,
+        },
+        // CL-030: Defense evasion + exfiltration (red team gap #3)
+        // Log tampering or timestomp followed by data exfil
+        CorrelationRule {
+            id: "CL-030".into(),
+            name: "Red Team: Evasion to Exfiltration".into(),
+            stages: vec![
+                RuleStage {
+                    layer: Some(Layer::Userspace),
+                    kind_patterns: vec!["log_tampering".into(), "sensitive_write".into()],
+                    entity_must_match: false,
+                },
+                RuleStage {
+                    layer: Some(Layer::Network),
+                    kind_patterns: vec![
+                        "data_exfiltration".into(),
+                        "outbound_anomaly".into(),
+                        "dns_tunneling".into(),
+                    ],
+                    entity_must_match: false,
+                },
+            ],
+            window_secs: 600,
+            min_confidence: 0.85,
+            severity: Severity::Critical,
+        },
     ]
 }
 
@@ -1189,7 +1276,7 @@ mod tests {
     #[test]
     fn engine_starts_empty() {
         let engine = CorrelationEngine::new();
-        assert_eq!(engine.rule_count(), 27);
+        assert_eq!(engine.rule_count(), 30);
         assert_eq!(engine.pending_count(), 0);
     }
 

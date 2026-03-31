@@ -120,7 +120,8 @@ impl WebShellDetector {
         }
 
         // Only alert on actual file uploads (multipart/octet-stream), not regular POSTs
-        let is_upload = (content_type.contains("multipart") || content_type.contains("octet-stream"))
+        let is_upload = (content_type.contains("multipart")
+            || content_type.contains("octet-stream"))
             && SUSPICIOUS_EXTENSIONS
                 .iter()
                 .any(|ext| path.to_lowercase().contains(ext));

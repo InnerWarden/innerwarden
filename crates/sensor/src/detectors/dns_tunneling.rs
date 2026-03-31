@@ -237,7 +237,10 @@ impl DnsTunnelingDetector {
     fn process_dns_query(&mut self, event: &Event, domain: &str, src_ip: &str) -> Option<Incident> {
         // Skip cloud/infrastructure domains
         let lower_domain = domain.to_lowercase();
-        if DNS_ALLOWED_DOMAINS.iter().any(|d| lower_domain.ends_with(d)) {
+        if DNS_ALLOWED_DOMAINS
+            .iter()
+            .any(|d| lower_domain.ends_with(d))
+        {
             return None;
         }
 

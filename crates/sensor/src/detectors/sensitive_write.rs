@@ -40,6 +40,16 @@ const PERSISTENCE_PATHS: &[&str] = &[
     "/etc/environment",
 ];
 
+/// User-level persistence paths (matched by suffix, not prefix).
+/// These catch writes to .bashrc, .profile, .bash_profile in ANY user's home.
+const USER_PERSISTENCE_SUFFIXES: &[&str] = &[
+    "/.bashrc",
+    "/.bash_profile",
+    "/.profile",
+    "/.zshrc",
+    "/.bash_logout",
+];
+
 const PAM_PATHS: &[&str] = &["/etc/pam.d/"];
 
 /// Processes that legitimately write to sensitive paths.
@@ -225,6 +235,11 @@ fn classify_path(filename: &str) -> Option<(&'static str, Severity)> {
     }
     for p in PERSISTENCE_PATHS {
         if filename.contains(p) {
+            return Some(("persistence", Severity::High));
+        }
+    }
+    for suffix in USER_PERSISTENCE_SUFFIXES {
+        if filename.ends_with(suffix) {
             return Some(("persistence", Severity::High));
         }
     }

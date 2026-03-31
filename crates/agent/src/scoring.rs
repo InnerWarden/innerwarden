@@ -7,8 +7,8 @@
 //! The model weights are embedded at compile time (16KB binary).
 //! Inference takes microseconds — no external API, no internet, no cost.
 
-use std::collections::HashMap;
 use innerwarden_core::event::Event;
+use std::collections::HashMap;
 use tracing::{debug, info};
 
 // ---------------------------------------------------------------------------
@@ -43,10 +43,22 @@ impl ScoringNet {
         let mut layers = Vec::new();
 
         for _ in 0..num_layers {
-            if offset + 8 > data.len() { return None; }
+            if offset + 8 > data.len() {
+                return None;
+            }
 
-            let rows = u32::from_le_bytes([data[offset], data[offset+1], data[offset+2], data[offset+3]]) as usize;
-            let cols = u32::from_le_bytes([data[offset+4], data[offset+5], data[offset+6], data[offset+7]]) as usize;
+            let rows = u32::from_le_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]) as usize;
+            let cols = u32::from_le_bytes([
+                data[offset + 4],
+                data[offset + 5],
+                data[offset + 6],
+                data[offset + 7],
+            ]) as usize;
             offset += 8;
 
             // Read weights (rows x cols f32)
@@ -54,8 +66,15 @@ impl ScoringNet {
             for _ in 0..rows {
                 let mut row = Vec::with_capacity(cols);
                 for _ in 0..cols {
-                    if offset + 4 > data.len() { return None; }
-                    let val = f32::from_le_bytes([data[offset], data[offset+1], data[offset+2], data[offset+3]]);
+                    if offset + 4 > data.len() {
+                        return None;
+                    }
+                    let val = f32::from_le_bytes([
+                        data[offset],
+                        data[offset + 1],
+                        data[offset + 2],
+                        data[offset + 3],
+                    ]);
                     row.push(val);
                     offset += 4;
                 }
@@ -65,8 +84,15 @@ impl ScoringNet {
             // Read biases (rows f32)
             let mut biases = Vec::with_capacity(rows);
             for _ in 0..rows {
-                if offset + 4 > data.len() { return None; }
-                let val = f32::from_le_bytes([data[offset], data[offset+1], data[offset+2], data[offset+3]]);
+                if offset + 4 > data.len() {
+                    return None;
+                }
+                let val = f32::from_le_bytes([
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                ]);
                 biases.push(val);
                 offset += 4;
             }
@@ -100,7 +126,7 @@ impl ScoringNet {
             x = next;
         }
 
-        x.first().copied().unwrap_or(0.0).max(0.0).min(1.0)
+        x.first().copied().unwrap_or(0.0).clamp(0.0, 1.0)
     }
 }
 
@@ -167,7 +193,12 @@ impl ScoringEngine {
             self.recent_severities.pop_front();
         }
 
-        if let Some(ip) = event.details.get("ip").or(event.details.get("src_ip")).and_then(|v| v.as_str()) {
+        if let Some(ip) = event
+            .details
+            .get("ip")
+            .or(event.details.get("src_ip"))
+            .and_then(|v| v.as_str())
+        {
             self.recent_ips.push_back(ip.to_string());
             if self.recent_ips.len() > 20 {
                 self.recent_ips.pop_front();
@@ -183,7 +214,11 @@ impl ScoringEngine {
         let features = self.extract_features();
         let score = net.predict(&features);
 
-        debug!(score = format!("{:.3}", score), events = self.recent_kinds.len(), "scoring: model inference");
+        debug!(
+            score = format!("{:.3}", score),
+            events = self.recent_kinds.len(),
+            "scoring: model inference"
+        );
 
         // Cooldown per source IP
         let source_ip = self.recent_ips.back().cloned().unwrap_or_default();
@@ -202,7 +237,8 @@ impl ScoringEngine {
 
         if score > self.threshold {
             self.cooldowns.insert(source_ip, now);
-            let explanation = format!(
+            let explanation =
+                format!(
                 "Neural model scored {:.0}% attack probability from {} recent events (kinds: {})",
                 score * 100.0,
                 self.recent_kinds.len(),
@@ -231,22 +267,35 @@ impl ScoringEngine {
         f[0] = (n / 20.0).min(1.0);
 
         // Feature 1: fraction of High/Critical events
-        let high_count = self.recent_severities.iter()
+        let high_count = self
+            .recent_severities
+            .iter()
             .filter(|s| s.contains("High") || s.contains("Critical"))
             .count();
         f[1] = high_count as f32 / n.max(1.0);
 
         // Feature 2: fraction of Medium events
-        let med_count = self.recent_severities.iter()
+        let med_count = self
+            .recent_severities
+            .iter()
             .filter(|s| s.contains("Medium"))
             .count();
         f[2] = med_count as f32 / n.max(1.0);
 
         // Feature 3-14: event kind distribution (mapped to categories)
         let categories = [
-            ("ssh", 3), ("network", 4), ("file", 5), ("shell", 6),
-            ("process", 7), ("sudo", 8), ("dns", 9), ("http", 10),
-            ("exec", 11), ("cron", 12), ("memory", 13), ("firmware", 14),
+            ("ssh", 3),
+            ("network", 4),
+            ("file", 5),
+            ("shell", 6),
+            ("process", 7),
+            ("sudo", 8),
+            ("dns", 9),
+            ("http", 10),
+            ("exec", 11),
+            ("cron", 12),
+            ("memory", 13),
+            ("firmware", 14),
         ];
         for kind in &self.recent_kinds {
             let lower = kind.to_lowercase();
@@ -258,19 +307,43 @@ impl ScoringEngine {
         }
 
         // Feature 15: has login_failed
-        f[15] = if self.recent_kinds.iter().any(|k| k.contains("login_failed")) { 1.0 } else { 0.0 };
+        f[15] = if self.recent_kinds.iter().any(|k| k.contains("login_failed")) {
+            1.0
+        } else {
+            0.0
+        };
 
         // Feature 16: has outbound_connect
-        f[16] = if self.recent_kinds.iter().any(|k| k.contains("outbound_connect")) { 1.0 } else { 0.0 };
+        f[16] = if self
+            .recent_kinds
+            .iter()
+            .any(|k| k.contains("outbound_connect"))
+        {
+            1.0
+        } else {
+            0.0
+        };
 
         // Feature 17: has file.read_access
-        f[17] = if self.recent_kinds.iter().any(|k| k.contains("read_access")) { 1.0 } else { 0.0 };
+        f[17] = if self.recent_kinds.iter().any(|k| k.contains("read_access")) {
+            1.0
+        } else {
+            0.0
+        };
 
         // Feature 18: has command_exec
-        f[18] = if self.recent_kinds.iter().any(|k| k.contains("command_exec")) { 1.0 } else { 0.0 };
+        f[18] = if self.recent_kinds.iter().any(|k| k.contains("command_exec")) {
+            1.0
+        } else {
+            0.0
+        };
 
         // Feature 19: has fd_redirect (dup — possible reverse shell)
-        f[19] = if self.recent_kinds.iter().any(|k| k.contains("fd_redirect")) { 1.0 } else { 0.0 };
+        f[19] = if self.recent_kinds.iter().any(|k| k.contains("fd_redirect")) {
+            1.0
+        } else {
+            0.0
+        };
 
         // Feature 20: unique event kinds (diversity)
         let unique: std::collections::HashSet<_> = self.recent_kinds.iter().collect();
@@ -283,7 +356,9 @@ impl ScoringEngine {
         // Feature 22-31: last 10 event kinds encoded
         for (i, kind) in self.recent_kinds.iter().rev().take(10).enumerate() {
             // Simple hash to 0..1
-            let hash: u32 = kind.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+            let hash: u32 = kind
+                .bytes()
+                .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
             f[22 + i] = (hash % 1000) as f32 / 1000.0;
         }
 
