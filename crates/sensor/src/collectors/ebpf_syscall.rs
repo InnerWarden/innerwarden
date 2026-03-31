@@ -359,11 +359,8 @@ fn privesc_to_event(
         return None;
     }
 
-    // Filter innerwarden's own service user. Tokio renames threads arbitrarily
-    // and kernel truncates comm to 16 chars, producing unpredictable substrings
-    // ("en-agent", "rden-dna", "illchain"). Matching by uid is reliable.
-    // innerwarden service typically runs as uid 998.
-    if old_uid == 998 || comm_base.contains("warden") || comm_base.contains("tokio-rt") {
+    // Filter innerwarden's own service user and known privilege escalation processes.
+    if crate::detectors::allowlists::is_innerwarden_process(old_uid as u64, comm_base) {
         return None;
     }
 
@@ -2511,18 +2508,13 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                     let cgroup_id = read_u64!(data, 24..32);
                     let comm = bytes_to_string(&data[32..96]);
 
-                    // Filter benign system processes (uid=0 check prevents attacker
-                    // using prctl PR_SET_NAME to evade; non-root timestomp always alerts)
-                    if comm.starts_with("innerwarden")
+                    // Filter benign system processes (centralized allowlist)
+                    if crate::detectors::allowlists::is_innerwarden_process(uid as u64, &comm)
+                        || comm == "tokio-rt-worker"
                         || (uid == 0
-                            && matches!(
-                                comm.as_str(),
-                                "systemd-journal"
-                                    | "logrotate"
-                                    | "rsyslogd"
-                                    | "systemd"
-                                    | "systemd-tmpfile"
-                                    | "sshd"
+                            && crate::detectors::allowlists::comm_in_allowlist(
+                                &comm,
+                                crate::detectors::allowlists::TRUNCATE_ALLOWED,
                             ))
                     {
                         continue;

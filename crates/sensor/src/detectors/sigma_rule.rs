@@ -118,7 +118,9 @@ impl SigmaRuleDetector {
             .get("uid")
             .and_then(|v| v.as_u64())
             .unwrap_or(u64::MAX);
-        if uid == 998 || comm.starts_with("innerwarden") || comm == "tokio-rt-worker" {
+        if super::allowlists::is_innerwarden_process(uid, comm)
+            || super::allowlists::comm_in_allowlist(comm, super::allowlists::SENSITIVE_FILE_READERS)
+        {
             return None;
         }
 

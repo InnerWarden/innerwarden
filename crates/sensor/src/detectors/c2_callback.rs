@@ -117,8 +117,10 @@ impl C2CallbackDetector {
             .and_then(|v| v.as_u64())
             .unwrap_or(u64::MAX);
 
-        // Skip InnerWarden's own outbound connections (GeoIP, AbuseIPDB, CrowdSec lookups)
-        if uid == 998 || comm == "tokio-rt-worker" || comm.starts_with("innerwarden") {
+        // Skip InnerWarden and trusted system processes with legitimate outbound connections
+        if super::allowlists::is_innerwarden_process(uid, &comm)
+            || super::allowlists::comm_in_allowlist(&comm, super::allowlists::C2_OUTBOUND_ALLOWED)
+        {
             return None;
         }
 

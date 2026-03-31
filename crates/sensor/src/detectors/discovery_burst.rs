@@ -71,46 +71,8 @@ const DISCOVERY_COMMANDS: &[&str] = &[
     "who\n",
 ];
 
-/// Processes that legitimately run many discovery commands.
-const ALLOWED_PROCESSES: &[&str] = &[
-    "innerwarden",
-    "osqueryd",
-    "telegraf",
-    "prometheus",
-    "node_exporter",
-    "zabbix",
-    "nagios",
-    "collectd",
-    "datadog",
-    "newrelic",
-    "ansible",
-    "puppet",
-    "chef",
-    "salt",
-    // CI/CD and admin tools
-    "cargo",
-    "rustc",
-    "git",
-    "journalctl",
-    "systemctl",
-    "landscape-sysi",
-    "update-motd",
-    "50-landscape-sy",
-    "91-release-upgr",
-    // Package managers trigger discovery commands during updates
-    "apt-check",
-    "unattended-upgr",
-    // eBPF/kernel tools used by innerwarden's own collectors
-    "bpftool",
-    "bpf_inspect",
-    // Ubuntu MOTD scripts (run uname, id, etc. on every SSH login)
-    "00-header",
-    "10-help-text",
-    "50-motd-news",
-    "60-unminimize",
-    "release-upgrade",
-    "run-parts",
-];
+/// Use centralized allowlist from allowlists.rs
+use super::allowlists;
 
 pub struct DiscoveryBurstDetector {
     /// Per-user sliding window of discovery command timestamps.
@@ -163,8 +125,10 @@ impl DiscoveryBurstDetector {
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
 
-        // Skip allowed processes
-        if ALLOWED_PROCESSES.iter().any(|p| comm.contains(p)) {
+        // Skip allowed processes (centralized allowlist)
+        if allowlists::is_innerwarden_process(uid, comm)
+            || allowlists::comm_in_allowlist(comm, allowlists::DISCOVERY_ALLOWED)
+        {
             return None;
         }
 
