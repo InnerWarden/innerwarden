@@ -119,6 +119,7 @@ struct DetectorSet {
     data_exfil_ebpf: Option<detectors::data_exfil_ebpf::DataExfilEbpfDetector>,
     yara_scan: Option<detectors::yara_scan::YaraScanDetector>,
     sigma_rule: Option<detectors::sigma_rule::SigmaRuleDetector>,
+    mitre_hunt: Option<detectors::mitre_hunt::MitreHuntDetector>,
 }
 
 #[derive(Default)]
@@ -638,6 +639,10 @@ async fn main() -> Result<()> {
             let rules_dir = std::path::Path::new("rules/sigma");
             info!("Sigma rule engine enabled");
             detectors::sigma_rule::SigmaRuleDetector::new(&cfg.agent.host_id, rules_dir, 300)
+        }),
+        mitre_hunt: Some({
+            info!("mitre_hunt detector enabled (10 MITRE ATT&CK techniques)");
+            detectors::mitre_hunt::MitreHuntDetector::new(&cfg.agent.host_id, 300)
         }),
     };
 
@@ -1482,6 +1487,12 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.sigma_rule {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident, syslog);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.mitre_hunt {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident, syslog);
         }
