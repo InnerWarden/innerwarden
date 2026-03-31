@@ -2999,11 +2999,11 @@ async fn api_compliance(State(state): State<DashboardState>) -> Json<serde_json:
         { "id": "A.9.1",  "name": "Access control", "met": cfg.sudo_protection_enabled, "reason": if cfg.sudo_protection_enabled { "Sudo protection detects privilege abuse" } else { "Enable sudo-protection for access control monitoring" } },
         { "id": "A.10.1", "name": "Cryptography", "met": chain_length > 0, "reason": if chain_length > 0 { "Decision audit trail uses SHA-256 hash chain" } else { "No decisions recorded yet" } },
         { "id": "A.12.1", "name": "Operations security", "met": cfg.enabled, "reason": if cfg.enabled { "Automated response enabled" } else { "Enable responder for operational security controls" } },
-        { "id": "A.12.4", "name": "Logging and monitoring", "met": true, "reason": "Continuous monitoring with 39+ detectors and audit trail" },
+        { "id": "A.12.4", "name": "Logging and monitoring", "met": true, "reason": "Continuous monitoring with 48 detectors, 20 response playbooks, and Falco-inspired allowlists" },
         { "id": "A.12.6", "name": "Technical vulnerability management", "met": cfg.execution_guard_enabled, "reason": if cfg.execution_guard_enabled { "Execution guard blocks exploit payloads" } else { "Enable execution-guard for exploit prevention" } },
         { "id": "A.13.1", "name": "Network security management", "met": cfg.enabled && !cfg.dry_run, "reason": if cfg.enabled && !cfg.dry_run { "Automated IP blocking active" } else { "Enable guard mode for network-level response" } },
         { "id": "A.13.2", "name": "Information transfer", "met": true, "reason": "Container drift detection (overlayfs upper-layer check) + io_uring monitoring prevent unauthorized data transfer via syscall bypass and dropped executables" },
-        { "id": "A.16.1", "name": "Incident management", "met": true, "reason": "Automated incident detection, correlation, and response pipeline" },
+        { "id": "A.16.1", "name": "Incident management", "met": true, "reason": "20 automated playbooks: detect → correlate → respond → notify → audit" },
         { "id": "A.18.1", "name": "Compliance", "met": cfg.retention_decisions_days >= 90, "reason": format!("Audit trail retained {}d (requirement: 90d)", cfg.retention_decisions_days) },
         { "id": "A.18.2", "name": "Information security reviews", "met": true, "reason": "Daily automated security reports with telemetry" },
     ]);

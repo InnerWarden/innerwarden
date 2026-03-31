@@ -11,7 +11,7 @@
 ![eBPF Hooks](https://img.shields.io/badge/eBPF%20hooks-40-blueviolet)
 ![Detectors](https://img.shields.io/badge/detectors-48-blue)
 ![Correlation Rules](https://img.shields.io/badge/correlation%20rules-30-purple)
-![Tests](https://img.shields.io/badge/tests-1798-brightgreen)
+![Tests](https://img.shields.io/badge/tests-1804-brightgreen)
 ![MITRE Coverage](https://img.shields.io/badge/MITRE%20ATT%26CK-42%2F42-red)
 ![Memory](https://img.shields.io/badge/memory-~150MB%20(full%20stack)-green)
 ![AI Optional](https://img.shields.io/badge/AI-optional-lightgrey)
@@ -152,7 +152,7 @@ https://github.com/user-attachments/assets/6ea1e124-52c2-48fe-8600-4b2f3d670116
 │              │ kill_process    │     └──────────────┘             │
 │              │ suspend_sudo   │     ┌──────────────┐             │
 │              │ honeypot        │────►│ Cloudflare   │             │
-│              │ playbooks (6)   │     │ AbuseIPDB    │             │
+│              │ playbooks (20)  │     │ AbuseIPDB    │             │
 │              └────────┬────────┘     └──────────────┘             │
 │                       │                                           │
 │          ┌────────────┼────────────┬──────────────┐               │
@@ -179,7 +179,7 @@ https://github.com/user-attachments/assets/6ea1e124-52c2-48fe-8600-4b2f3d670116
 3. **Correlates**: 30 cross-layer rules connect Firmware × Kernel × Userspace × Network × Honeypot events. Detects multi-stage attacks no single detector can see: firmware tampering → rootkit install, recon → brute force → data exfil, honeypot engagement → real attack on same IP. Kill chain tracker follows 7 attack stages per entity (IP, user, container).
 4. **Learns**: baseline anomaly detection trains for 7 days then alerts on deviations — event rate drops (silence = compromise), new process lineages (nginx→sh), unusual login times, unknown network destinations. No rules needed.
 5. **Blocks at the kernel**: LSM enforcement stops reverse shells and /tmp execution before they run. XDP drops attack traffic at wire speed. 8 kill chain patterns detected and blocked without signatures. Blocks propagate to mesh peers.
-6. **Responds automatically**: 6 built-in playbooks (ransomware, reverse shell, data exfil, malware, firmware-to-rootkit chain, recon-to-exfil chain) execute ordered response sequences — kill process, block IP, capture forensics, pcap, notify, escalate
+6. **Responds automatically**: 20 built-in playbooks covering every detector — ransomware, reverse shell, data exfil, malware, privilege escalation, kernel module load, process injection, persistence (SSH key, crontab, systemd), container escape, crypto miner, DNS tunneling, lateral movement, web shell, discovery burst, and more. Response sequences: kill process, block IP, suspend sudo, quarantine file, isolate network, capture forensics, pcap, notify, escalate
 7. **Fingerprints attackers**: behavioral DNA (SHA-256 of detectors + tools + targets + timing patterns), campaign detection via IOC clustering, recurrence tracking, risk scoring 0-100, monthly threat reports with MITRE heatmap
 
 Everything is local, audited, and reversible.
@@ -299,7 +299,7 @@ innerwarden mesh add-peer https://peer-server:8790
 
 Container-aware via cgroup ID. Zero performance overhead.
 
-**Agent**: reads incidents from JSONL or Redis Streams. Fast loop (2s): algorithm gate → enrichment (AbuseIPDB, GeoIP, CrowdSec, threat feeds) → VirusTotal hash check on YARA matches → AI triage → playbook evaluation → skill execution → pcap capture on High/Critical → audit trail. Slow loop (30s): cross-layer correlation (23 rules) → baseline learning → attacker intelligence consolidation (DNA + campaigns) → monthly report generation → narrative summary.
+**Agent**: reads incidents from JSONL or Redis Streams. Fast loop (2s): algorithm gate → enrichment (AbuseIPDB, GeoIP, CrowdSec, threat feeds) → VirusTotal hash check on YARA matches → AI triage → playbook evaluation → skill execution → pcap capture on High/Critical → audit trail. Slow loop (30s): cross-layer correlation (30 rules) → baseline learning → attacker intelligence consolidation (DNA + campaigns) → monthly report generation → narrative summary.
 
 Two Rust daemons. No external dependencies. ~150 MB RAM with all features active (sensor 32MB + agent 89MB + DNA 11MB + shield 9MB + killchain 7MB). Dashboard with 10 views: Sensors HUD, Threats investigation, Report, Health, Honeypot, Compliance (ISO 27001), Intelligence (Profiles, Campaigns, Chains, Baseline, Playbooks), Monthly Report. Live SSE feed, MITRE ATT&CK mapping, 20 integration cards. Sleeps after 15 min of inactivity.
 
