@@ -270,6 +270,9 @@ pub const SENSITIVE_FILE_READERS: &[&str] = &[
     "polkitd",
     "systemd",
     "systemd-logind",
+    "cron",
+    "crond",
+    "atd",
     // Password management
     "passwd",
     "chage",
@@ -446,6 +449,9 @@ pub const C2_OUTBOUND_ALLOWED: &[&str] = &[
     "postgres",
     "mongod",
     "redis-server",
+    // Node.js / runtime workers
+    "libuv-worker",
+    "node",
     // Container runtime
     "dockerd",
     "containerd",
