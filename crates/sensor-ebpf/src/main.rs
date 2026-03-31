@@ -3083,46 +3083,43 @@ pub fn innerwarden_tot_procdir_ret(_ctx: RetProbeContext) -> u32 {
 pub fn innerwarden_utimensat(ctx: ProbeContext) -> u32 {
     match try_utimensat(&ctx) {
         Ok(()) => 0,
-        Err(_) => 1,
+        Err(_) => 0,
     }
 }
 
-fn try_utimensat(ctx: &ProbeContext) -> Result<(), i64> {
-    // Read ctx arg to validate kprobe context with verifier
-    let _: u64 = unsafe { ctx.arg(0).unwrap_or(0) };
+#[inline(always)]
+fn try_utimensat(_ctx: &ProbeContext) -> Result<(), i64> {
     let pid_tgid = bpf_get_current_pid_tgid();
     let pid = pid_tgid as u32;
-    let uid = bpf_get_current_uid_gid() as u32;
-    let ts = unsafe { bpf_ktime_get_ns() };
-    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
 
     if pid == 0 {
         return Ok(());
     }
 
-    // Use PrivEscEvent as a lightweight event (same layout: kind, pid, uid, cgroup, comm)
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    // After reserve: NO early returns (`?`) — Aya RingBufEntry has no Drop,
+    // so an unreleased reference causes verifier rejection.
     let mut entry = match EVENTS.reserve::<PrivEscEvent>(0) {
         Some(e) => e,
         None => return Ok(()),
     };
 
-    let event = entry.as_mut_ptr();
-    unsafe {
-        (*event).kind = SyscallKind::Utimensat as u32;
-        (*event).pid = pid;
-        (*event).tgid = (pid_tgid >> 32) as u32;
-        (*event).old_uid = uid;
-        (*event).new_uid = 0;
-        (*event).cgroup_id = cgroup_id;
-        (*event).ts_ns = ts;
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Utimensat as u32;
+    event.pid = pid;
+    event.tgid = (pid_tgid >> 32) as u32;
+    event.old_uid = uid;
+    event.new_uid = 0;
+    event.cgroup_id = cgroup_id;
+    event.ts_ns = ts;
+    event.comm = [0u8; MAX_COMM_LEN];
 
-        let comm16 = bpf_get_current_comm().map_err(|e| e)?;
-        (*event).comm = [0u8; MAX_COMM_LEN];
-        let mut i = 0;
-        while i < 16 {
-            (*event).comm[i] = comm16[i];
-            i += 1;
-        }
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
     }
 
     entry.submit(0);
@@ -3135,45 +3132,43 @@ fn try_utimensat(ctx: &ProbeContext) -> Result<(), i64> {
 pub fn innerwarden_truncate(ctx: ProbeContext) -> u32 {
     match try_truncate(&ctx) {
         Ok(()) => 0,
-        Err(_) => 1,
+        Err(_) => 0,
     }
 }
 
-fn try_truncate(ctx: &ProbeContext) -> Result<(), i64> {
-    let _: u64 = unsafe { ctx.arg(0).unwrap_or(0) };
+#[inline(always)]
+fn try_truncate(_ctx: &ProbeContext) -> Result<(), i64> {
     let pid_tgid = bpf_get_current_pid_tgid();
     let pid = pid_tgid as u32;
-    let uid = bpf_get_current_uid_gid() as u32;
-    let ts = unsafe { bpf_ktime_get_ns() };
-    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
 
     if pid == 0 {
         return Ok(());
     }
 
-    // Use PrivEscEvent as lightweight carrier
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    // After reserve: NO early returns (`?`) — Aya RingBufEntry has no Drop,
+    // so an unreleased reference causes verifier rejection.
     let mut entry = match EVENTS.reserve::<PrivEscEvent>(0) {
         Some(e) => e,
         None => return Ok(()),
     };
 
-    let event = entry.as_mut_ptr();
-    unsafe {
-        (*event).kind = SyscallKind::Truncate as u32;
-        (*event).pid = pid;
-        (*event).tgid = (pid_tgid >> 32) as u32;
-        (*event).old_uid = uid;
-        (*event).new_uid = 0;
-        (*event).cgroup_id = cgroup_id;
-        (*event).ts_ns = ts;
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Truncate as u32;
+    event.pid = pid;
+    event.tgid = (pid_tgid >> 32) as u32;
+    event.old_uid = uid;
+    event.new_uid = 0;
+    event.cgroup_id = cgroup_id;
+    event.ts_ns = ts;
+    event.comm = [0u8; MAX_COMM_LEN];
 
-        let comm16 = bpf_get_current_comm().map_err(|e| e)?;
-        (*event).comm = [0u8; MAX_COMM_LEN];
-        let mut i = 0;
-        while i < 16 {
-            (*event).comm[i] = comm16[i];
-            i += 1;
-        }
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
     }
 
     entry.submit(0);

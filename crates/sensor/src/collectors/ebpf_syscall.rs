@@ -1344,9 +1344,8 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     // This is attached via attach_lsm() which handles LSM hooks.
 
     // Phase 3: Red team gap hooks — timestomp + truncate detection
-    // These use #[kprobe(function = "...")] in the eBPF code, so Aya creates
-    // separate sections: kprobe/vfs_utimes and kprobe/do_truncate.
-    // They need to be loaded and attached by the section name.
+    // Bare #[kprobe] in eBPF code; attached to kernel functions here.
+    // Uses PrivEscEvent as lightweight carrier (same ring buffer layout).
     // Timestomp detection: kprobe on vfs_utimes
     if let Some(prog) = bpf.program_mut("innerwarden_utimensat") {
         use aya::programs::KProbe;
