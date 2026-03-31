@@ -520,6 +520,485 @@ fn builtin_playbooks() -> Vec<Playbook> {
             ],
             run_in_dry_run: true, // Always run forensics even in dry-run
         },
+        // ── Defense evasion ────────────────────────────────────
+        Playbook {
+            id: "pb-timestomp".into(),
+            name: "Timestomp Response".into(),
+            trigger: PlaybookTrigger {
+                detector: "execution_guard".into(),
+                min_severity: "high".into(),
+                chain_rule: String::new(),
+            },
+            steps: vec![
+                PlaybookStep {
+                    action: "capture_forensics".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "kill_process".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "notify".into(),
+                    params: [("channels".into(), "telegram,slack".into())]
+                        .into_iter()
+                        .collect(),
+                },
+            ],
+            run_in_dry_run: false,
+        },
+        Playbook {
+            id: "pb-log-tampering".into(),
+            name: "Log Tampering Response".into(),
+            trigger: PlaybookTrigger {
+                detector: "log_tampering".into(),
+                min_severity: "high".into(),
+                chain_rule: String::new(),
+            },
+            steps: vec![
+                PlaybookStep {
+                    action: "capture_forensics".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "kill_process".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "block_ip".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "notify".into(),
+                    params: [("channels".into(), "telegram,slack".into())]
+                        .into_iter()
+                        .collect(),
+                },
+            ],
+            run_in_dry_run: false,
+        },
+        // ── Privilege escalation ───────────────────────────────
+        Playbook {
+            id: "pb-privesc".into(),
+            name: "Privilege Escalation Response".into(),
+            trigger: PlaybookTrigger {
+                detector: "privesc".into(),
+                min_severity: "high".into(),
+                chain_rule: String::new(),
+            },
+            steps: vec![
+                PlaybookStep {
+                    action: "capture_forensics".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "kill_process".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "suspend_user_sudo".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "notify".into(),
+                    params: [("channels".into(), "telegram,slack".into())]
+                        .into_iter()
+                        .collect(),
+                },
+                PlaybookStep {
+                    action: "escalate".into(),
+                    params: [("to".into(), "critical".into())].into_iter().collect(),
+                },
+            ],
+            run_in_dry_run: false,
+        },
+        // ── Kernel threats ─────────────────────────────────────
+        Playbook {
+            id: "pb-kernel-module".into(),
+            name: "Kernel Module Load Response".into(),
+            trigger: PlaybookTrigger {
+                detector: "kernel_module_load".into(),
+                min_severity: "high".into(),
+                chain_rule: String::new(),
+            },
+            steps: vec![
+                PlaybookStep {
+                    action: "capture_forensics".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "isolate_network".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "notify".into(),
+                    params: [("channels".into(), "telegram,slack,webhook".into())]
+                        .into_iter()
+                        .collect(),
+                },
+                PlaybookStep {
+                    action: "escalate".into(),
+                    params: [
+                        ("to".into(), "critical".into()),
+                        (
+                            "note".into(),
+                            "unauthorized kernel module — possible rootkit".into(),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                },
+            ],
+            run_in_dry_run: true,
+        },
+        // ── Process injection ──────────────────────────────────
+        Playbook {
+            id: "pb-process-injection".into(),
+            name: "Process Injection Response".into(),
+            trigger: PlaybookTrigger {
+                detector: "process_injection".into(),
+                min_severity: "high".into(),
+                chain_rule: String::new(),
+            },
+            steps: vec![
+                PlaybookStep {
+                    action: "capture_forensics".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "kill_process".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "block_ip".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "notify".into(),
+                    params: [("channels".into(), "telegram,slack".into())]
+                        .into_iter()
+                        .collect(),
+                },
+            ],
+            run_in_dry_run: false,
+        },
+        // ── Persistence ────────────────────────────────────────
+        Playbook {
+            id: "pb-ssh-key-injection".into(),
+            name: "SSH Key Injection Response".into(),
+            trigger: PlaybookTrigger {
+                detector: "ssh_key_injection".into(),
+                min_severity: "high".into(),
+                chain_rule: String::new(),
+            },
+            steps: vec![
+                PlaybookStep {
+                    action: "capture_forensics".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "block_ip".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "notify".into(),
+                    params: [("channels".into(), "telegram,slack".into())]
+                        .into_iter()
+                        .collect(),
+                },
+                PlaybookStep {
+                    action: "escalate".into(),
+                    params: [
+                        ("to".into(), "high".into()),
+                        (
+                            "note".into(),
+                            "review authorized_keys — attacker key may persist".into(),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                },
+            ],
+            run_in_dry_run: false,
+        },
+        Playbook {
+            id: "pb-crontab-persistence".into(),
+            name: "Crontab Persistence Response".into(),
+            trigger: PlaybookTrigger {
+                detector: "crontab_persistence".into(),
+                min_severity: "high".into(),
+                chain_rule: String::new(),
+            },
+            steps: vec![
+                PlaybookStep {
+                    action: "capture_forensics".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "kill_process".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "block_ip".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "notify".into(),
+                    params: [("channels".into(), "telegram,slack".into())]
+                        .into_iter()
+                        .collect(),
+                },
+                PlaybookStep {
+                    action: "escalate".into(),
+                    params: [
+                        ("to".into(), "high".into()),
+                        (
+                            "note".into(),
+                            "review crontab — malicious entry may persist".into(),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                },
+            ],
+            run_in_dry_run: false,
+        },
+        Playbook {
+            id: "pb-systemd-persistence".into(),
+            name: "Systemd Persistence Response".into(),
+            trigger: PlaybookTrigger {
+                detector: "systemd_persistence".into(),
+                min_severity: "high".into(),
+                chain_rule: String::new(),
+            },
+            steps: vec![
+                PlaybookStep {
+                    action: "capture_forensics".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "kill_process".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "block_ip".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "notify".into(),
+                    params: [("channels".into(), "telegram,slack".into())]
+                        .into_iter()
+                        .collect(),
+                },
+                PlaybookStep {
+                    action: "escalate".into(),
+                    params: [
+                        ("to".into(), "high".into()),
+                        (
+                            "note".into(),
+                            "review systemd units — malicious service may persist".into(),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                },
+            ],
+            run_in_dry_run: false,
+        },
+        // ── Container ──────────────────────────────────────────
+        Playbook {
+            id: "pb-container-escape".into(),
+            name: "Container Escape Response".into(),
+            trigger: PlaybookTrigger {
+                detector: "container_escape".into(),
+                min_severity: "high".into(),
+                chain_rule: String::new(),
+            },
+            steps: vec![
+                PlaybookStep {
+                    action: "capture_forensics".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "block_container".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "isolate_network".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "notify".into(),
+                    params: [("channels".into(), "telegram,slack,webhook".into())]
+                        .into_iter()
+                        .collect(),
+                },
+                PlaybookStep {
+                    action: "escalate".into(),
+                    params: [("to".into(), "critical".into())].into_iter().collect(),
+                },
+            ],
+            run_in_dry_run: false,
+        },
+        // ── Crypto / resource abuse ────────────────────────────
+        Playbook {
+            id: "pb-crypto-miner".into(),
+            name: "Crypto Miner Response".into(),
+            trigger: PlaybookTrigger {
+                detector: "crypto_miner".into(),
+                min_severity: "high".into(),
+                chain_rule: String::new(),
+            },
+            steps: vec![
+                PlaybookStep {
+                    action: "kill_process".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "block_ip".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "capture_forensics".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "notify".into(),
+                    params: [("channels".into(), "telegram,slack".into())]
+                        .into_iter()
+                        .collect(),
+                },
+            ],
+            run_in_dry_run: false,
+        },
+        // ── Network threats ────────────────────────────────────
+        Playbook {
+            id: "pb-dns-tunneling".into(),
+            name: "DNS Tunneling Response".into(),
+            trigger: PlaybookTrigger {
+                detector: "dns_tunneling".into(),
+                min_severity: "high".into(),
+                chain_rule: String::new(),
+            },
+            steps: vec![
+                PlaybookStep {
+                    action: "block_ip".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "kill_process".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "capture_forensics".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "notify".into(),
+                    params: [("channels".into(), "telegram,slack".into())]
+                        .into_iter()
+                        .collect(),
+                },
+            ],
+            run_in_dry_run: false,
+        },
+        Playbook {
+            id: "pb-lateral-movement".into(),
+            name: "Lateral Movement Response".into(),
+            trigger: PlaybookTrigger {
+                detector: "lateral_movement".into(),
+                min_severity: "high".into(),
+                chain_rule: String::new(),
+            },
+            steps: vec![
+                PlaybookStep {
+                    action: "block_ip".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "capture_forensics".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "isolate_network".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "notify".into(),
+                    params: [("channels".into(), "telegram,slack,webhook".into())]
+                        .into_iter()
+                        .collect(),
+                },
+                PlaybookStep {
+                    action: "escalate".into(),
+                    params: [
+                        ("to".into(), "critical".into()),
+                        ("note".into(), "attacker moving between hosts".into()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                },
+            ],
+            run_in_dry_run: false,
+        },
+        // ── Web threats ────────────────────────────────────────
+        Playbook {
+            id: "pb-web-shell".into(),
+            name: "Web Shell Response".into(),
+            trigger: PlaybookTrigger {
+                detector: "web_shell".into(),
+                min_severity: "high".into(),
+                chain_rule: String::new(),
+            },
+            steps: vec![
+                PlaybookStep {
+                    action: "kill_process".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "quarantine_file".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "block_ip".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "capture_forensics".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "notify".into(),
+                    params: [("channels".into(), "telegram,slack,webhook".into())]
+                        .into_iter()
+                        .collect(),
+                },
+            ],
+            run_in_dry_run: false,
+        },
+        // ── Discovery / recon ──────────────────────────────────
+        Playbook {
+            id: "pb-discovery-burst".into(),
+            name: "Discovery Burst Response".into(),
+            trigger: PlaybookTrigger {
+                detector: "discovery_burst".into(),
+                min_severity: "medium".into(),
+                chain_rule: String::new(),
+            },
+            steps: vec![
+                PlaybookStep {
+                    action: "capture_forensics".into(),
+                    params: HashMap::new(),
+                },
+                PlaybookStep {
+                    action: "notify".into(),
+                    params: [("channels".into(), "telegram".into())]
+                        .into_iter()
+                        .collect(),
+                },
+            ],
+            run_in_dry_run: true, // forensics + notify even in dry-run (recon = early warning)
+        },
     ]
 }
 
