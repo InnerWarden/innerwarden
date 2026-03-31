@@ -2515,6 +2515,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                                     | "rsyslogd"
                                     | "systemd"
                                     | "systemd-tmpfile"
+                                    | "sshd"
                             ))
                     {
                         continue;
@@ -2562,6 +2563,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                                     | "rsyslogd"
                                     | "systemd"
                                     | "systemd-tmpfile"
+                                    | "sshd"
                             ))
                     {
                         continue;
