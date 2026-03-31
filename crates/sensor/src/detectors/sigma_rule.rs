@@ -105,6 +105,23 @@ impl SigmaRuleDetector {
             return None;
         }
 
+        // Skip events from InnerWarden's own processes (uid 998 or innerwarden comm).
+        // Without this, the agent's integrity checks trigger Sigma rules (e.g., SIGMA-004
+        // fires when the sensor reads /etc/shadow for hash verification).
+        let comm = event
+            .details
+            .get("comm")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let uid = event
+            .details
+            .get("uid")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(u64::MAX);
+        if uid == 998 || comm.starts_with("innerwarden") || comm == "tokio-rt-worker" {
+            return None;
+        }
+
         let now = event.ts;
 
         for rule in &self.rules {
