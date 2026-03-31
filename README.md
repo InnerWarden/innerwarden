@@ -8,15 +8,16 @@
 [![Last Commit](https://img.shields.io/github/last-commit/InnerWarden/innerwarden)](https://github.com/InnerWarden/innerwarden/commits/main)
 
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange)
-![eBPF Hooks](https://img.shields.io/badge/eBPF%20hooks-38-blueviolet)
+![eBPF Hooks](https://img.shields.io/badge/eBPF%20hooks-40-blueviolet)
 ![Detectors](https://img.shields.io/badge/detectors-48-blue)
-![Correlation Rules](https://img.shields.io/badge/correlation%20rules-23-purple)
-![Tests](https://img.shields.io/badge/tests-1779-brightgreen)
+![Correlation Rules](https://img.shields.io/badge/correlation%20rules-30-purple)
+![Tests](https://img.shields.io/badge/tests-1798-brightgreen)
+![MITRE Coverage](https://img.shields.io/badge/MITRE%20ATT%26CK-42%2F42-red)
 ![Memory](https://img.shields.io/badge/memory-~150MB%20(full%20stack)-green)
 ![AI Optional](https://img.shields.io/badge/AI-optional-lightgrey)
 [![Featured on GitHub Awesome](https://img.shields.io/badge/Featured-GitHub%20Awesome-blue)](https://www.youtube.com/watch?v=i9YpWp0hXgg&t=315)
 
-Inner Warden is an autonomous security agent for Linux and macOS. Full-stack visibility from Ring -2 (firmware) to Ring 3 (userspace). 38 eBPF kernel hooks. 48 detectors. 20 collectors. 23 cross-layer correlation rules. Behavioral DNA attacker fingerprinting. Baseline anomaly detection. JA3/JA4 TLS fingerprinting. YARA + Sigma rule engines. Automated playbook response. Monthly threat reports. AI agent protection (Agent Guard). Mesh collaborative defense. No cloud. No dependencies. Just two Rust daemons and a CLI.
+Inner Warden is an autonomous security agent for Linux and macOS. Full-stack visibility from Ring -2 (firmware) to Ring 3 (userspace). 40 eBPF kernel hooks. 48 detectors. 20 collectors. 30 cross-layer correlation rules. 95% MITRE ATT&CK detection rate (42/42 techniques). Behavioral DNA attacker fingerprinting. Baseline anomaly detection. JA3/JA4 TLS fingerprinting. YARA + Sigma rule engines. Automated playbook response. Monthly threat reports. AI agent protection (Agent Guard). Mesh collaborative defense. No cloud. No dependencies. Just two Rust daemons and a CLI.
 
 ```bash
 curl -fsSL https://innerwarden.com/install | sudo bash
@@ -72,10 +73,10 @@ https://github.com/user-attachments/assets/6ea1e124-52c2-48fe-8600-4b2f3d670116
                          │                        KERNEL                               │
                          │                                                             │
                          │  ┌──────────────┐  ┌──────────┐  ┌───────┐  ┌───────────┐  │
-                         │  │23 tracepoints │  │3 kprobes │  │ 3 LSM │  │    XDP    │  │
+                         │  │23 tracepoints │  │5 kprobes │  │ 3 LSM │  │    XDP    │  │
                          │  │  execve,      │  │ creds,   │  │ kill  │  │ wire-speed│  │
-                         │  │  connect,     │  │ MSR,     │  │ chain │  │ IP drop   │  │
-                         │  │  openat, ...  │  │ ACPI     │  │ 8 pat │  │ 10M+ pps  │  │
+                         │  │  connect,     │  │ MSR,ACPI │  │ chain │  │ IP drop   │  │
+                         │  │  openat, ...  │  │ timestomp│  │ 8 pat │  │ 10M+ pps  │  │
                          │  └──────┬───────┘  └────┬─────┘  └───┬───┘  └─────┬─────┘  │
                          │         │               │            │            │         │
                          │         └───────┬───────┘            │            │         │
