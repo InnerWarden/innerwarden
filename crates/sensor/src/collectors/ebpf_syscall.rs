@@ -353,9 +353,17 @@ fn privesc_to_event(
 
     // Filter legitimate escalation processes.
     // Use starts_with to handle kernel comm truncation (16 char limit).
+    // Also filter innerwarden's own threads: tokio renames them and kernel
+    // truncates, producing substrings like "en-agent", "rden-dna", "illchain".
     if LEGITIMATE_ESCALATION
         .iter()
         .any(|p| comm_base.starts_with(p))
+        || comm_base.contains("innerwarden")
+        || comm_base.contains("warden")
+        || comm_base.contains("killchain")
+        || comm_base.contains("illchain")
+        || comm_base.contains("shield")
+        || comm_base.contains("tokio-rt")
     {
         return None;
     }
