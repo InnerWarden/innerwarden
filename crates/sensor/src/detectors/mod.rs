@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 pub mod allowlists;
 pub mod c2_callback;
 pub mod container_escape;
