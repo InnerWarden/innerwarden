@@ -2507,6 +2507,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                     // Filter benign system processes (uid=0 check prevents attacker
                     // using prctl PR_SET_NAME to evade; non-root timestomp always alerts)
                     if comm.starts_with("innerwarden")
+                        || comm == "tokio-rt-worker"
                         || (uid == 0
                             && matches!(
                                 comm.as_str(),
@@ -2519,7 +2520,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                                     | "irqbalance"
                                     | "ufw"
                                     | "fail2ban-serve"
-                                    | "tokio-rt-worker"
+                                    | "50-landscape-sy"
                             ))
                     {
                         continue;
@@ -2559,6 +2560,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                     // Filter benign system log management (uid=0 check prevents
                     // attacker evasion via prctl; non-root truncate always alerts)
                     if comm.starts_with("innerwarden")
+                        || comm == "tokio-rt-worker"
                         || (uid == 0
                             && matches!(
                                 comm.as_str(),
@@ -2571,7 +2573,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                                     | "irqbalance"
                                     | "ufw"
                                     | "fail2ban-serve"
-                                    | "tokio-rt-worker"
+                                    | "50-landscape-sy"
                             ))
                     {
                         continue;
