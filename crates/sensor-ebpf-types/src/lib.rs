@@ -120,6 +120,12 @@ pub enum SyscallKind {
     BpfLoad = 31,
     /// Kernel function timing probe (kprobe/kretprobe delta for Trace of the Times)
     TimingProbe = 32,
+
+    // ── Phase 3: Red team gap hooks ───────────────────────────────────
+    /// File timestamp modification (vfs_utimes kprobe) — detect timestomp (T1070.006)
+    Utimensat = 33,
+    /// File truncation (do_truncate kprobe) — detect log tampering (T1070.003)
+    Truncate = 34,
 }
 
 /// Identifies which kernel function a timing probe measured.
@@ -670,6 +676,39 @@ pub struct TimingProbeEvent {
     pub delta_ns: u64,
     pub cgroup_id: u64,
     pub comm: [u8; MAX_COMM_LEN],
+    pub ts_ns: u64,
+}
+
+// ── Phase 3: Red team gap events ─────────────────────────────────────
+
+/// File timestamp modification (timestomp detection).
+/// Emitted by kprobe on vfs_utimes / utimensat.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct UtimensatEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub _pad: u32,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub filename: [u8; MAX_FILENAME_LEN],
+    pub ts_ns: u64,
+}
+
+/// File truncation (log tampering detection).
+/// Emitted by kprobe on do_truncate / sys_truncate.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct TruncateEvent {
+    pub kind: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub _pad: u32,
+    pub new_size: u64,
+    pub cgroup_id: u64,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub filename: [u8; MAX_FILENAME_LEN],
     pub ts_ns: u64,
 }
 
