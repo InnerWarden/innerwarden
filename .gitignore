@@ -15,3 +15,10 @@ docs/assets/screenshots/IMG_*
 trial-report-*.json
 trial-report-*.md
 crates/sensor-ebpf/target/
+
+# Build and temp artifacts
+*.log
+*.bak
+*.pyc
+__pycache__/
+node_modules/

@@ -5626,62 +5626,65 @@ async fn process_narrative_tick(
         }
     }
 
-    // Feed events into neural scoring model
-    for ev in &events_entries {
-        if let Some((score, explanation)) = state.scoring_engine.observe(ev) {
-            info!(
-                score = format!("{:.2}", score),
-                "neural scoring: anomaly detected"
-            );
-            // Write as incident
-            let incident = innerwarden_core::incident::Incident {
-                ts: ev.ts,
-                host: ev.host.clone(),
-                incident_id: format!(
-                    "neural_anomaly:{}:{}",
-                    score as u32,
-                    ev.ts.format("%Y-%m-%dT%H:%MZ")
-                ),
-                severity: if score > 0.9 {
-                    innerwarden_core::event::Severity::Critical
-                } else if score > 0.8 {
-                    innerwarden_core::event::Severity::High
-                } else {
-                    innerwarden_core::event::Severity::Medium
-                },
-                title: format!(
-                    "Neural model anomaly: {:.0}% attack probability",
-                    score * 100.0
-                ),
-                summary: explanation,
-                evidence: serde_json::json!({
-                    "score": score,
-                    "model": "innerwarden-gym-v1",
-                    "model_size_bytes": 16932,
-                    "trigger_event": ev.kind,
-                }),
-                recommended_checks: vec![
-                    "Review recent events for attack patterns".to_string(),
-                    "Check if any detector also flagged this activity".to_string(),
-                ],
-                tags: vec!["neural_model".to_string(), "anomaly".to_string()],
-                entities: ev.entities.clone(),
-            };
-            // Write to incidents file
-            let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&incidents_path)
-            {
-                use std::io::Write;
-                if let Ok(json) = serde_json::to_string(&incident) {
-                    let _ = writeln!(f, "{json}");
+    // Neural scoring DISABLED: V10 classifier generates false positives on
+    // production traffic (Cloudflare, WordPress, Docker). Will be replaced by
+    // per-host autoencoder anomaly detection in a future release.
+    // Rules + kill chain + 48 detectors provide 95% detection without ML.
+    if false {
+        for ev in &events_entries {
+            if let Some((score, explanation)) = state.scoring_engine.observe(ev) {
+                info!(
+                    score = format!("{:.2}", score),
+                    "neural scoring: anomaly detected"
+                );
+                let incident = innerwarden_core::incident::Incident {
+                    ts: ev.ts,
+                    host: ev.host.clone(),
+                    incident_id: format!(
+                        "neural_anomaly:{}:{}",
+                        score as u32,
+                        ev.ts.format("%Y-%m-%dT%H:%MZ")
+                    ),
+                    severity: if score > 0.9 {
+                        innerwarden_core::event::Severity::Critical
+                    } else if score > 0.8 {
+                        innerwarden_core::event::Severity::High
+                    } else {
+                        innerwarden_core::event::Severity::Medium
+                    },
+                    title: format!(
+                        "Neural model anomaly: {:.0}% attack probability",
+                        score * 100.0
+                    ),
+                    summary: explanation,
+                    evidence: serde_json::json!({
+                        "score": score,
+                        "model": "innerwarden-gym-v1",
+                        "model_size_bytes": 16932,
+                        "trigger_event": ev.kind,
+                    }),
+                    recommended_checks: vec![
+                        "Review recent events for attack patterns".to_string(),
+                        "Check if any detector also flagged this activity".to_string(),
+                    ],
+                    tags: vec!["neural_model".to_string(), "anomaly".to_string()],
+                    entities: ev.entities.clone(),
+                };
+                let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&incidents_path)
+                {
+                    use std::io::Write;
+                    if let Ok(json) = serde_json::to_string(&incident) {
+                        let _ = writeln!(f, "{json}");
+                    }
                 }
+                state.scoring_engine.reset();
             }
-            state.scoring_engine.reset();
         }
-    }
+    } // neural scoring disabled
 
     // Also ingest any new incidents incrementally
     let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
