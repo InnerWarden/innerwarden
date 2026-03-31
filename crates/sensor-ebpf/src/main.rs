@@ -3079,7 +3079,7 @@ pub fn innerwarden_tot_procdir_ret(_ctx: RetProbeContext) -> u32 {
 
 /// Kprobe on vfs_utimes — detects timestomp (touch -t, touch -r).
 /// vfs_utimes is called by utimensat/futimesat/utimes syscalls.
-#[kprobe]
+#[kprobe(function = "vfs_utimes")]
 pub fn innerwarden_utimensat(ctx: ProbeContext) -> u32 {
     match try_utimensat(&ctx) {
         Ok(()) => 0,
@@ -3132,7 +3132,7 @@ fn try_utimensat(ctx: &ProbeContext) -> Result<(), i64> {
 
 /// Kprobe on do_truncate — detects log file truncation.
 /// do_truncate is called by truncate/ftruncate syscalls.
-#[kprobe]
+#[kprobe(function = "do_truncate")]
 pub fn innerwarden_truncate(ctx: ProbeContext) -> u32 {
     match try_truncate(&ctx) {
         Ok(()) => 0,

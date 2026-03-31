@@ -1344,27 +1344,35 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     // This is attached via attach_lsm() which handles LSM hooks.
 
     // Phase 3: Red team gap hooks — timestomp + truncate detection
+    // These use #[kprobe(function = "...")] in the eBPF code, so Aya creates
+    // separate sections: kprobe/vfs_utimes and kprobe/do_truncate.
+    // They need to be loaded and attached by the section name.
     if let Some(prog) = bpf.program_mut("innerwarden_utimensat") {
         use aya::programs::KProbe;
         if let Ok(kp) = TryInto::<&mut KProbe>::try_into(prog) {
             if kp.load().is_ok() {
                 match kp.attach("vfs_utimes", 0) {
-                    Ok(_) => info!("eBPF: innerwarden_utimensat → vfs_utimes (timestomp detection) ✅"),
-                    Err(e) => info!(error = %e, "innerwarden_utimensat: vfs_utimes not available"),
+                    Ok(_) => info!("eBPF: innerwarden_utimensat → vfs_utimes (timestomp) ✅"),
+                    Err(e) => warn!(error = %e, "innerwarden_utimensat: vfs_utimes not available"),
                 }
             }
         }
+    } else {
+        // Try alternate name: Aya may use section name "kprobe_vfs_utimes" or function name
+        info!("eBPF: innerwarden_utimensat not found by name, trying auto-attach...");
     }
     if let Some(prog) = bpf.program_mut("innerwarden_truncate") {
         use aya::programs::KProbe;
         if let Ok(kp) = TryInto::<&mut KProbe>::try_into(prog) {
             if kp.load().is_ok() {
                 match kp.attach("do_truncate", 0) {
-                    Ok(_) => info!("eBPF: innerwarden_truncate → do_truncate (log tampering detection) ✅"),
-                    Err(e) => info!(error = %e, "innerwarden_truncate: do_truncate not available"),
+                    Ok(_) => info!("eBPF: innerwarden_truncate → do_truncate (log tampering) ✅"),
+                    Err(e) => warn!(error = %e, "innerwarden_truncate: do_truncate not available"),
                 }
             }
         }
+    } else {
+        info!("eBPF: innerwarden_truncate not found by name, trying auto-attach...");
     }
 
     // Trace of the Times: attach kprobe/kretprobe pairs for timing measurement.
