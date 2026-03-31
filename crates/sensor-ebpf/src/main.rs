@@ -44,7 +44,7 @@ use innerwarden_ebpf_types::{
     IopermEvent, IoplEvent, KillEvent, ListenEvent, MemfdCreateEvent, ModuleLoadEvent, MountEvent,
     MprotectEvent, MsrWriteEvent, PrctlEvent, PrivEscEvent, ProcessExitEvent, PtraceEvent,
     RenameEvent, SetUidEvent, SocketBindEvent, SyscallKind, TimingProbeEvent, TimingTarget,
-    UnlinkEvent, MAX_COMM_LEN, MAX_FILENAME_LEN,
+    TruncateEvent, UnlinkEvent, UtimensatEvent, MAX_COMM_LEN, MAX_FILENAME_LEN,
 };
 
 // ---------------------------------------------------------------------------
@@ -3071,6 +3071,108 @@ pub fn innerwarden_tot_procdir_entry(_ctx: ProbeContext) -> u32 {
 pub fn innerwarden_tot_procdir_ret(_ctx: RetProbeContext) -> u32 {
     let _ = timing_return(TimingTarget::ProcPidReaddir);
     0
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: Red team gap hooks — timestomp + truncate
+// ---------------------------------------------------------------------------
+
+/// Kprobe on vfs_utimes — detects timestomp (touch -t, touch -r).
+/// vfs_utimes is called by utimensat/futimesat/utimes syscalls.
+#[kprobe]
+pub fn innerwarden_utimensat(ctx: ProbeContext) -> u32 {
+    match try_utimensat(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+#[inline(always)]
+fn try_utimensat(_ctx: &ProbeContext) -> Result<(), i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let pid = pid_tgid as u32;
+
+    if pid == 0 {
+        return Ok(());
+    }
+
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    // After reserve: NO early returns (`?`) — Aya RingBufEntry has no Drop,
+    // so an unreleased reference causes verifier rejection.
+    let mut entry = match EVENTS.reserve::<PrivEscEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Utimensat as u32;
+    event.pid = pid;
+    event.tgid = (pid_tgid >> 32) as u32;
+    event.old_uid = uid;
+    event.new_uid = 0;
+    event.cgroup_id = cgroup_id;
+    event.ts_ns = ts;
+    event.comm = [0u8; MAX_COMM_LEN];
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
+}
+
+/// Kprobe on do_truncate — detects log file truncation.
+/// do_truncate is called by truncate/ftruncate syscalls.
+#[kprobe]
+pub fn innerwarden_truncate(ctx: ProbeContext) -> u32 {
+    match try_truncate(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+#[inline(always)]
+fn try_truncate(_ctx: &ProbeContext) -> Result<(), i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let pid = pid_tgid as u32;
+
+    if pid == 0 {
+        return Ok(());
+    }
+
+    let uid = bpf_get_current_uid_gid() as u32;
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    // After reserve: NO early returns (`?`) — Aya RingBufEntry has no Drop,
+    // so an unreleased reference causes verifier rejection.
+    let mut entry = match EVENTS.reserve::<PrivEscEvent>(0) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let event = unsafe { &mut *entry.as_mut_ptr() };
+    event.kind = SyscallKind::Truncate as u32;
+    event.pid = pid;
+    event.tgid = (pid_tgid >> 32) as u32;
+    event.old_uid = uid;
+    event.new_uid = 0;
+    event.cgroup_id = cgroup_id;
+    event.ts_ns = ts;
+    event.comm = [0u8; MAX_COMM_LEN];
+
+    if let Ok(comm) = bpf_get_current_comm() {
+        event.comm[..comm.len().min(MAX_COMM_LEN)]
+            .copy_from_slice(&comm[..comm.len().min(MAX_COMM_LEN)]);
+    }
+
+    entry.submit(0);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -40,6 +40,18 @@ const PERSISTENCE_PATHS: &[&str] = &[
     "/etc/environment",
 ];
 
+const LOG_PATHS: &[&str] = &[
+    "/var/log/auth.log",
+    "/var/log/secure",
+    "/var/log/syslog",
+    "/var/log/kern.log",
+    "/var/log/wtmp",
+    "/var/log/btmp",
+    "/var/log/lastlog",
+    "/var/log/messages",
+    ".bash_history",
+];
+
 /// User-level persistence paths (matched by suffix, not prefix).
 /// These catch writes to .bashrc, .profile, .bash_profile in ANY user's home.
 const USER_PERSISTENCE_SUFFIXES: &[&str] = &[
@@ -246,6 +258,11 @@ fn classify_path(filename: &str) -> Option<(&'static str, Severity)> {
     for p in CRON_PATHS {
         if filename.contains(p) {
             return Some(("cron", Severity::High));
+        }
+    }
+    for p in LOG_PATHS {
+        if filename.contains(p) {
+            return Some(("log_tampering", Severity::Critical));
         }
     }
     None

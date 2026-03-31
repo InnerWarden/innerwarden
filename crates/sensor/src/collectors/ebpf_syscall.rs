@@ -1343,6 +1343,44 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     // BPF program loading (LSM hook — requires lsm=bpf)
     // This is attached via attach_lsm() which handles LSM hooks.
 
+    // Phase 3: Red team gap hooks — timestomp + truncate detection
+    // Bare #[kprobe] in eBPF code; attached to kernel functions here.
+    // Uses PrivEscEvent as lightweight carrier (same ring buffer layout).
+    // Timestomp detection: kprobe on vfs_utimes
+    if let Some(prog) = bpf.program_mut("innerwarden_utimensat") {
+        use aya::programs::KProbe;
+        if let Ok(kp) = TryInto::<&mut KProbe>::try_into(prog) {
+            match kp.load() {
+                Ok(()) => match kp.attach("vfs_utimes", 0) {
+                    Ok(_) => info!("eBPF: innerwarden_utimensat → vfs_utimes (timestomp) ✅"),
+                    Err(e) => warn!(error = %e, "innerwarden_utimensat: attach failed"),
+                },
+                Err(e) => warn!(error = %e, "innerwarden_utimensat: load failed"),
+            }
+        } else {
+            warn!("innerwarden_utimensat: not a KProbe program type");
+        }
+    } else {
+        warn!("innerwarden_utimensat: program not found in bytecode");
+    }
+    // Log tampering detection: kprobe on do_truncate
+    if let Some(prog) = bpf.program_mut("innerwarden_truncate") {
+        use aya::programs::KProbe;
+        if let Ok(kp) = TryInto::<&mut KProbe>::try_into(prog) {
+            match kp.load() {
+                Ok(()) => match kp.attach("do_truncate", 0) {
+                    Ok(_) => info!("eBPF: innerwarden_truncate → do_truncate (log tampering) ✅"),
+                    Err(e) => warn!(error = %e, "innerwarden_truncate: attach failed"),
+                },
+                Err(e) => warn!(error = %e, "innerwarden_truncate: load failed"),
+            }
+        } else {
+            warn!("innerwarden_truncate: not a KProbe program type");
+        }
+    } else {
+        warn!("innerwarden_truncate: program not found in bytecode");
+    }
+
     // Trace of the Times: attach kprobe/kretprobe pairs for timing measurement.
     {
         let timing_targets = [
@@ -2454,6 +2492,103 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                             "ebpf".to_string(),
                             "firmware".to_string(),
                             "bpf_load".to_string(),
+                        ],
+                        entities: vec![],
+                    })
+                }
+                // Utimensat: timestomp (reuses PrivEscEvent layout)
+                // kind(4) pid(4) tgid(4) old_uid(4) new_uid(4) _pad(4) cgroup_id(8) comm(64) ts_ns(8) = 104 bytes
+                33 if data.len() >= 104 => {
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 12..16);
+                    let cgroup_id = read_u64!(data, 24..32);
+                    let comm = bytes_to_string(&data[32..96]);
+
+                    // Filter benign system processes (uid=0 check prevents attacker
+                    // using prctl PR_SET_NAME to evade; non-root timestomp always alerts)
+                    if comm.starts_with("innerwarden")
+                        || (uid == 0
+                            && matches!(
+                                comm.as_str(),
+                                "systemd-journal"
+                                    | "logrotate"
+                                    | "rsyslogd"
+                                    | "systemd"
+                                    | "systemd-tmpfile"
+                                    | "sshd"
+                            ))
+                    {
+                        continue;
+                    }
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.clone(),
+                        source: "ebpf".to_string(),
+                        kind: "file.timestomp".to_string(),
+                        severity: Severity::High,
+                        summary: format!(
+                            "File timestamp modification by {} (pid={}, uid={})",
+                            comm, pid, uid
+                        ),
+                        details: serde_json::json!({
+                            "comm": comm,
+                            "pid": pid,
+                            "uid": uid,
+                            "cgroup_id": cgroup_id,
+                        }),
+                        tags: vec![
+                            "ebpf".to_string(),
+                            "defense_evasion".to_string(),
+                            "timestomp".to_string(),
+                        ],
+                        entities: vec![],
+                    })
+                }
+                // Truncate: log tampering (reuses PrivEscEvent layout)
+                34 if data.len() >= 104 => {
+                    let pid = read_u32!(data, 4..8);
+                    let uid = read_u32!(data, 12..16);
+                    let cgroup_id = read_u64!(data, 24..32);
+                    let comm = bytes_to_string(&data[32..96]);
+
+                    // Filter benign system log management (uid=0 check prevents
+                    // attacker evasion via prctl; non-root truncate always alerts)
+                    if comm.starts_with("innerwarden")
+                        || (uid == 0
+                            && matches!(
+                                comm.as_str(),
+                                "systemd-journal"
+                                    | "logrotate"
+                                    | "rsyslogd"
+                                    | "systemd"
+                                    | "systemd-tmpfile"
+                                    | "sshd"
+                            ))
+                    {
+                        continue;
+                    }
+
+                    Some(Event {
+                        ts: chrono::Utc::now(),
+                        host: host.clone(),
+                        source: "ebpf".to_string(),
+                        kind: "file.truncate".to_string(),
+                        severity: Severity::High,
+                        summary: format!(
+                            "File truncated by {} (pid={}, uid={})",
+                            comm, pid, uid
+                        ),
+                        details: serde_json::json!({
+                            "comm": comm,
+                            "pid": pid,
+                            "uid": uid,
+                            "cgroup_id": cgroup_id,
+                        }),
+                        tags: vec![
+                            "ebpf".to_string(),
+                            "defense_evasion".to_string(),
+                            "log_tampering".to_string(),
                         ],
                         entities: vec![],
                     })
