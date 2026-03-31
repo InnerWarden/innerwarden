@@ -103,6 +103,13 @@ const ALLOWED_PROCESSES: &[&str] = &[
     // eBPF/kernel tools used by innerwarden's own collectors
     "bpftool",
     "bpf_inspect",
+    // Ubuntu MOTD scripts (run uname, id, etc. on every SSH login)
+    "00-header",
+    "10-help-text",
+    "50-motd-news",
+    "60-unminimize",
+    "release-upgrade",
+    "run-parts",
 ];
 
 pub struct DiscoveryBurstDetector {
