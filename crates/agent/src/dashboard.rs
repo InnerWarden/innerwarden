@@ -7386,7 +7386,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
     .hud-source:hover { border-color:rgba(120,229,255,0.18); box-shadow:0 4px 20px rgba(2,8,24,0.3); transform:translateY(-1px); }
     .hud-source-dot { width:8px; height:8px; border-radius:50%; animation:dot-breathe 3s ease-in-out infinite; }
-    .hud-source-name { font-size:0.68rem; font-family:'JetBrains Mono',monospace; color:#8b9db8; flex:1; text-transform:uppercase; letter-spacing:0.22em; }
+    .hud-source-name { font-size:0.68rem; font-family:'JetBrains Mono',monospace; color:#8b9db8; flex:1; text-transform:uppercase; letter-spacing:0.12em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .hud-source-count { font-size:0.9rem; font-weight:700; font-family:'JetBrains Mono',monospace; color:#edf6ff; }
     .hud-panel {
       position:relative; overflow:hidden; padding:20px; border-radius:1.35rem;
@@ -7409,7 +7409,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
   <div class="report-view sensor-hud" id="viewSensors" style="display:flex;">
     <div id="topAction" style="display:none;margin-bottom:14px;padding:16px 20px;border-radius:14px;border:1px solid rgba(244,63,94,0.3);background:rgba(244,63,94,0.06);"></div>
     <div class="hud-stats" id="sensorCards"></div>
-    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:6px;" id="sensorSources"></div>
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap:6px;" id="sensorSources"></div>
     <div class="hud-panel">
       <h3 class="hud-panel-title">Event Timeline</h3>
       <div style="position:relative;height:240px;"><canvas id="sensorChart"></canvas></div>
@@ -8787,14 +8787,14 @@ const INDEX_HTML: &str = r##"<!doctype html>
         syslog_firewall:'🧱', firmware_integrity:'🔧', cloudtrail:'☁️', macos_log:'🍎', falco_log:'🦅'
       };
       const colStyle =
-        '.col-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:4px}' +
+        '.col-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:4px}' +
         '.col-row{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 14px;display:flex;align-items:center;gap:10px}' +
         '.col-row.col-active{border-color:rgba(58,194,126,0.35)}' +
         '.col-row.col-detected{border-color:rgba(255,184,77,0.25)}' +
         '.col-row.col-missing{opacity:0.5}' +
         '.col-ico{font-size:1.2rem;flex-shrink:0}' +
         '.col-body{flex:1;min-width:0}' +
-        '.col-name{font-size:0.8rem;font-weight:700;color:var(--text)}' +
+        '.col-name{font-size:0.78rem;font-weight:700;color:var(--text);display:flex;flex-wrap:wrap;align-items:center;gap:4px}' +
         '.col-meta{font-size:0.62rem;color:var(--muted);margin-top:2px}' +
         '.col-evt{display:inline-block;font-size:0.58rem;font-weight:700;padding:1px 6px;border-radius:20px;margin-left:6px;vertical-align:middle;background:rgba(120,229,255,0.12);color:var(--accent)}' +
         '.col-status-active{font-size:0.58rem;font-weight:700;padding:1px 6px;border-radius:20px;background:rgba(58,194,126,0.2);color:var(--ok)}' +
@@ -8802,6 +8802,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
         '.col-status-missing{font-size:0.58rem;font-weight:700;padding:1px 6px;border-radius:20px;background:rgba(100,100,100,0.15);color:var(--muted)}' +
         '.col-kind-native{display:inline-block;font-size:0.5rem;font-weight:700;padding:1px 4px;border-radius:3px;margin-left:4px;vertical-align:middle;background:rgba(120,229,255,0.1);color:var(--accent)}' +
         '.col-kind-ext{display:inline-block;font-size:0.5rem;font-weight:700;padding:1px 4px;border-radius:3px;margin-left:4px;vertical-align:middle;background:rgba(255,184,77,0.1);color:var(--warn)}' +
+        '@media(max-width:900px){.col-grid{grid-template-columns:repeat(2,1fr)}}' +
         '@media(max-width:640px){.col-grid{grid-template-columns:1fr}}';
 
       html += '<div class="report-section"><div class="report-section-title">Sensor Collectors</div>' +
