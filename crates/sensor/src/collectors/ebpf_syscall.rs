@@ -2495,7 +2495,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                     }
 
                     Some(Event {
-                        ts: Utc::now(),
+                        ts: chrono::Utc::now(),
                         host: host.clone(),
                         source: "ebpf".to_string(),
                         kind: "file.timestomp".to_string(),
@@ -2532,7 +2532,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                     }
 
                     Some(Event {
-                        ts: Utc::now(),
+                        ts: chrono::Utc::now(),
                         host: host.clone(),
                         source: "ebpf".to_string(),
                         kind: "file.truncate".to_string(),
