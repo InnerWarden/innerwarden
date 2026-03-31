@@ -7378,7 +7378,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     .hud-val.safe { background:linear-gradient(120deg, #ecfdf5 0%, #4ade80 50%, #86efac 100%); background-size:180% 180%; -webkit-background-clip:text; background-clip:text; color:transparent; }
     .hud-label { font-size:0.6rem; color:#8b9db8; text-transform:uppercase; letter-spacing:0.3em; margin-top:6px; font-family:'Space Grotesk',sans-serif; font-weight:600; }
     .hud-source {
-      border:1px solid rgba(255,255,255,0.08); border-radius:1rem; padding:10px 14px;
+      border:1px solid rgba(255,255,255,0.08); border-radius:1rem; padding:7px 12px;
       background: linear-gradient(180deg, rgba(11,18,35,0.88), rgba(5,9,21,0.78));
       display:flex; align-items:center; gap:10px;
       transition: border-color 0.35s ease, box-shadow 0.35s ease, transform 0.35s cubic-bezier(0.22,1,0.36,1);
@@ -7409,7 +7409,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
   <div class="report-view sensor-hud" id="viewSensors" style="display:flex;">
     <div id="topAction" style="display:none;margin-bottom:14px;padding:16px 20px;border-radius:14px;border:1px solid rgba(244,63,94,0.3);background:rgba(244,63,94,0.06);"></div>
     <div class="hud-stats" id="sensorCards"></div>
-    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap:6px;" id="sensorSources"></div>
+    <div style="display:flex; flex-wrap:wrap; gap:6px;" id="sensorSources"></div>
     <div class="hud-panel">
       <h3 class="hud-panel-title">Event Timeline</h3>
       <div style="position:relative;height:240px;"><canvas id="sensorChart"></canvas></div>
