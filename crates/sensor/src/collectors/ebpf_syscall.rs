@@ -2575,10 +2575,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         source: "ebpf".to_string(),
                         kind: "file.truncate".to_string(),
                         severity: Severity::High,
-                        summary: format!(
-                            "File truncated by {} (pid={}, uid={})",
-                            comm, pid, uid
-                        ),
+                        summary: format!("File truncated by {} (pid={}, uid={})", comm, pid, uid),
                         details: serde_json::json!({
                             "comm": comm,
                             "pid": pid,

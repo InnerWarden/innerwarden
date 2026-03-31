@@ -152,7 +152,14 @@ fn window_features(kinds: &[Option<usize>]) -> Vec<f32> {
     // 43: has sensitive file read (based on kind index 0 = file.read_access presence)
     // In agent, we only have kind indices — full summary check needs Event objects.
     // Approximation: file.read_access after ssh.login_success = credential harvesting signal
-    f[43] = if kinds.windows(2).any(|w| w[0] == Some(13) && w[1] == Some(0)) { 1.0 } else { 0.0 };
+    f[43] = if kinds
+        .windows(2)
+        .any(|w| w[0] == Some(13) && w[1] == Some(0))
+    {
+        1.0
+    } else {
+        0.0
+    };
 
     // 44: kill chain stage progression (how many distinct stages appear in order)
     {
@@ -160,13 +167,13 @@ fn window_features(kinds: &[Option<usize>]) -> Vec<f32> {
         let mut last_stage = 0u32;
         for &idx in kinds {
             let stage = match idx {
-                Some(14) => 1, // ssh_failed = recon
-                Some(13) => 2, // ssh_success = access
-                Some(1)  => 3, // shell_exec = execution
-                Some(10) => 4, // file_write = persistence
-                Some(8) | Some(19) => 5, // sudo/privesc = escalation
+                Some(14) => 1,            // ssh_failed = recon
+                Some(13) => 2,            // ssh_success = access
+                Some(1) => 3,             // shell_exec = execution
+                Some(10) => 4,            // file_write = persistence
+                Some(8) | Some(19) => 5,  // sudo/privesc = escalation
                 Some(16) | Some(17) => 6, // timestomp/truncate = evasion
-                Some(7)  => 7, // outbound = exfiltration
+                Some(7) => 7,             // outbound = exfiltration
                 _ => 0,
             };
             if stage > 0 && stage > last_stage {
@@ -182,7 +189,11 @@ fn window_features(kinds: &[Option<usize>]) -> Vec<f32> {
     f[45] = shell_ratio.min(1.0);
 
     // 46: network listener present
-    f[46] = if kinds.iter().any(|&k| k == Some(23) || k == Some(9)) { 1.0 } else { 0.0 };
+    f[46] = if kinds.iter().any(|&k| k == Some(23) || k == Some(9)) {
+        1.0
+    } else {
+        0.0
+    };
 
     // 47: window size normalized
     f[47] = (n / 50.0).min(1.0);
@@ -240,8 +251,7 @@ impl AutoencoderNet {
             return None;
         }
         // Skip header: magic(4) + version(4) + baseline_mse(4) + baseline_std(4) + samples(8)
-        let net_len =
-            u32::from_le_bytes([data[24], data[25], data[26], data[27]]) as usize;
+        let net_len = u32::from_le_bytes([data[24], data[25], data[26], data[27]]) as usize;
         let net_json = &data[28..28 + net_len];
 
         // Parse the JSON-serialized network
@@ -330,10 +340,8 @@ impl AutoencoderNet {
             let mut prev_deltas = vec![0.0f32; act_input.len()];
             for j in 0..self.layers[layer_idx].weights.len() {
                 for k in 0..self.layers[layer_idx].weights[j].len() {
-                    prev_deltas[k] +=
-                        self.layers[layer_idx].weights[j][k] * deltas[j];
-                    self.layers[layer_idx].weights[j][k] -=
-                        self.lr * deltas[j] * act_input[k];
+                    prev_deltas[k] += self.layers[layer_idx].weights[j][k] * deltas[j];
+                    self.layers[layer_idx].weights[j][k] -= self.lr * deltas[j] * act_input[k];
                 }
                 self.layers[layer_idx].biases[j] -= self.lr * deltas[j];
             }
@@ -414,43 +422,43 @@ impl AnomalyEngine {
     /// Create a new anomaly engine, attempting to load a saved model.
     pub fn new(config: AnomalyConfig) -> Self {
         let model_path = config.data_dir.join("anomaly-model.bin");
-        let (net, baseline_mse, baseline_std, maturity, cycles) =
-            if let Ok(data) = std::fs::read(&model_path) {
-                let net = AutoencoderNet::load(&data);
-                let mse = if data.len() >= 12 {
-                    f32::from_le_bytes([data[8], data[9], data[10], data[11]])
-                } else {
-                    0.0
-                };
-                let std = if data.len() >= 16 {
-                    f32::from_le_bytes([data[12], data[13], data[14], data[15]])
-                } else {
-                    1.0
-                };
-                let samples = if data.len() >= 24 {
-                    u64::from_le_bytes([
-                        data[16], data[17], data[18], data[19], data[20], data[21],
-                        data[22], data[23],
-                    ])
-                } else {
-                    0
-                };
-                // Estimate maturity from samples seen
-                let mat = (samples as f32 / 500_000.0).min(1.0);
-                let cyc = (samples / 100_000) as u32;
-                if net.is_some() {
-                    info!(
-                        "anomaly: loaded model ({} bytes, baseline MSE {:.6}, maturity {:.2})",
-                        data.len(),
-                        mse,
-                        mat
-                    );
-                }
-                (net, mse, std, mat, cyc)
+        let (net, baseline_mse, baseline_std, maturity, cycles) = if let Ok(data) =
+            std::fs::read(&model_path)
+        {
+            let net = AutoencoderNet::load(&data);
+            let mse = if data.len() >= 12 {
+                f32::from_le_bytes([data[8], data[9], data[10], data[11]])
             } else {
-                info!("anomaly: no saved model found, starting fresh (observation mode)");
-                (None, 0.0, 1.0, 0.0, 0)
+                0.0
             };
+            let std = if data.len() >= 16 {
+                f32::from_le_bytes([data[12], data[13], data[14], data[15]])
+            } else {
+                1.0
+            };
+            let samples = if data.len() >= 24 {
+                u64::from_le_bytes([
+                    data[16], data[17], data[18], data[19], data[20], data[21], data[22], data[23],
+                ])
+            } else {
+                0
+            };
+            // Estimate maturity from samples seen
+            let mat = (samples as f32 / 500_000.0).min(1.0);
+            let cyc = (samples / 100_000) as u32;
+            if net.is_some() {
+                info!(
+                    "anomaly: loaded model ({} bytes, baseline MSE {:.6}, maturity {:.2})",
+                    data.len(),
+                    mse,
+                    mat
+                );
+            }
+            (net, mse, std, mat, cyc)
+        } else {
+            info!("anomaly: no saved model found, starting fresh (observation mode)");
+            (None, 0.0, 1.0, 0.0, 0)
+        };
 
         Self {
             net,
@@ -557,7 +565,12 @@ impl AnomalyEngine {
                 .output()
             {
                 let out = String::from_utf8_lossy(&output.stdout);
-                if out.contains("100%") || out.contains("99%") || out.contains("98%") || out.contains("97%") || out.contains("96%") {
+                if out.contains("100%")
+                    || out.contains("99%")
+                    || out.contains("98%")
+                    || out.contains("97%")
+                    || out.contains("96%")
+                {
                     warn!("anomaly: disk nearly full, skipping training");
                     return Err("disk full".to_string());
                 }
@@ -565,8 +578,8 @@ impl AnomalyEngine {
         }
 
         // Collect events from JSONL files (last N days)
-        let cutoff = chrono::Utc::now()
-            - chrono::Duration::days(self.config.training_retention_days as i64);
+        let cutoff =
+            chrono::Utc::now() - chrono::Duration::days(self.config.training_retention_days as i64);
         let mut all_kinds: Vec<Vec<Option<usize>>> = Vec::new();
 
         let events_dir = &self.config.data_dir;
@@ -600,10 +613,7 @@ impl AnomalyEngine {
                     Err(_) => continue,
                 };
 
-                let kind = ev
-                    .get("kind")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let kind = ev.get("kind").and_then(|v| v.as_str()).unwrap_or("");
                 let idx = kind_index(kind);
 
                 event_window.push(idx);
@@ -657,15 +667,25 @@ impl AnomalyEngine {
                     .map(|f| net.reconstruction_error(f))
                     .sum::<f32>()
                     / features.len() as f32;
-                info!("anomaly: epoch {}/{} MSE {:.6}", epoch, self.config.training_epochs, avg_mse);
+                info!(
+                    "anomaly: epoch {}/{} MSE {:.6}",
+                    epoch, self.config.training_epochs, avg_mse
+                );
             }
         }
 
         // Compute baseline
-        let errors: Vec<f32> = features.iter().map(|f| net.reconstruction_error(f)).collect();
+        let errors: Vec<f32> = features
+            .iter()
+            .map(|f| net.reconstruction_error(f))
+            .collect();
         let n = errors.len() as f32;
         let baseline_mse = errors.iter().sum::<f32>() / n;
-        let variance = errors.iter().map(|e| (e - baseline_mse).powi(2)).sum::<f32>() / n;
+        let variance = errors
+            .iter()
+            .map(|e| (e - baseline_mse).powi(2))
+            .sum::<f32>()
+            / n;
         let baseline_std = variance.sqrt();
 
         self.baseline_mse = baseline_mse;
@@ -704,13 +724,9 @@ impl AnomalyEngine {
             data.extend_from_slice(&total_samples.to_le_bytes());
 
             // Serialize weights as JSON
-            let weights: Vec<Vec<Vec<f32>>> = net
-                .layers
-                .iter()
-                .map(|l| l.weights.clone())
-                .collect();
-            let biases: Vec<Vec<f32>> =
-                net.layers.iter().map(|l| l.biases.clone()).collect();
+            let weights: Vec<Vec<Vec<f32>>> =
+                net.layers.iter().map(|l| l.weights.clone()).collect();
+            let biases: Vec<Vec<f32>> = net.layers.iter().map(|l| l.biases.clone()).collect();
             let net_json = serde_json::json!({
                 "weights": weights,
                 "biases": biases,
@@ -769,7 +785,10 @@ mod tests {
         // ssh_failed → ssh_success should activate bigram feature 24
         let kinds = vec![Some(14), Some(13)];
         let f = window_features(&kinds);
-        assert!(f[24] > 0.0, "bigram ssh_failed→ssh_success should be nonzero");
+        assert!(
+            f[24] > 0.0,
+            "bigram ssh_failed→ssh_success should be nonzero"
+        );
     }
 
     #[test]
@@ -789,7 +808,11 @@ mod tests {
         ];
         let f = window_features(&kinds);
         // Should detect at least 4 sequential stages
-        assert!(f[44] >= 4.0 / 7.0, "kill chain progression should be detected: got {}", f[44]);
+        assert!(
+            f[44] >= 4.0 / 7.0,
+            "kill chain progression should be detected: got {}",
+            f[44]
+        );
     }
 
     #[test]
@@ -806,7 +829,8 @@ mod tests {
         assert!(
             err_after < err_before,
             "Error should decrease after training: {} → {}",
-            err_before, err_after
+            err_before,
+            err_after
         );
     }
 

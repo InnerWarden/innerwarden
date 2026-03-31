@@ -25,13 +25,13 @@ mod ioc;
 mod mesh;
 mod mitre;
 mod narrative;
+mod neural_lifecycle;
 mod pcap_capture;
 mod playbook;
 mod reader;
 #[cfg(feature = "redis-reader")]
 mod redis_reader;
 mod report;
-mod neural_lifecycle;
 mod scoring;
 mod skills;
 mod slack;
