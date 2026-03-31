@@ -11,7 +11,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use chrono::{DateTime, Duration, Utc};
-use innerwarden_core::{entities::EntityRef, event::Event, event::Severity, incident::Incident};
+use innerwarden_core::{event::Event, event::Severity, incident::Incident};
 
 /// Commands that count as discovery activity.
 const DISCOVERY_COMMANDS: &[&str] = &[
