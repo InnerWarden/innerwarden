@@ -100,6 +100,9 @@ const ALLOWED_PROCESSES: &[&str] = &[
     // Package managers trigger discovery commands during updates
     "apt-check",
     "unattended-upgr",
+    // eBPF/kernel tools used by innerwarden's own collectors
+    "bpftool",
+    "bpf_inspect",
 ];
 
 pub struct DiscoveryBurstDetector {
