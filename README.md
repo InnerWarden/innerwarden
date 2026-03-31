@@ -68,94 +68,115 @@ https://github.com/user-attachments/assets/6ea1e124-52c2-48fe-8600-4b2f3d670116
 ## Architecture
 
 ```
-                         ┌─────────────────────────────────────────────────────────────┐
-                         ┌─────────────────────────────────────────────────────────────┐
-                         │                        KERNEL                               │
-                         │                                                             │
-                         │  ┌──────────────┐  ┌──────────┐  ┌───────┐  ┌───────────┐  │
-                         │  │23 tracepoints │  │5 kprobes │  │ 3 LSM │  │    XDP    │  │
-                         │  │  execve,      │  │ creds,   │  │ kill  │  │ wire-speed│  │
-                         │  │  connect,     │  │ MSR,ACPI │  │ chain │  │ IP drop   │  │
-                         │  │  openat, ...  │  │ timestomp│  │ 8 pat │  │ 10M+ pps  │  │
-                         │  └──────┬───────┘  └────┬─────┘  └───┬───┘  └─────┬─────┘  │
-                         │         │               │            │            │         │
-                         │         └───────┬───────┘            │            │         │
-                         │                 ▼                    │            │         │
-                         │          ┌─────────────┐             │            │         │
-                         │          │ Ring Buffer  │             │            │         │
-                         │          │  (1MB epoll) │             │            │         │
-                         │          └──────┬──────┘             │            │         │
-                         └─────────────────┼────────────────────┼────────────┼─────────┘
-                                           │                    │            │
-                                           ▼                    │            │
-┌──────────────────────────────────────────────────────────┐    │            │
-│                        SENSOR                             │    │            │
-│                                                           │    │            │
-│  ┌─────────┐ ┌─────────┐ ┌────────┐ ┌─────────────────┐ │    │            │
-│  │auth.log │ │journald │ │ Docker │ │  eBPF collector  │◄┘    │            │
-│  └────┬────┘ └────┬────┘ └───┬────┘ └────────┬────────┘ │    │            │
-│       └───────────┴──────────┴───────────────┘           │    │            │
-│                          │                                │    │            │
-│                    ┌─────▼──────┐                         │    │            │
-│                    │48 detectors│                         │    │            │
-│                    │ stateful   │                         │    │            │
-│                    └─────┬──────┘                         │    │            │
-│                          │                                │    │            │
-│              ┌───────────▼───────────┐                    │    │            │
-│              │  events + incidents   │                    │    │            │
-│              │      (JSONL)          │                    │    │            │
-│              └───────────┬───────────┘                    │    │            │
-└──────────────────────────┼────────────────────────────────┘    │            │
-                           │                                     │            │
-┌──────────────────────────┼─────────────────────────────────────┼────────────┼──┐
-│                   AGENT  │                                     │            │  │
-│                          ▼                                     │            │  │
-│                ┌──────────────────┐                             │            │  │
-│                │  Algorithm Gate  │   skip low-sev, private IP  │            │  │
-│                └────────┬─────────┘                             │            │  │
-│                         ▼                                      │            │  │
-│              ┌────────────────────┐                             │            │  │
-│              │ Enrich: AbuseIPDB, │                             │            │  │
-│              │ GeoIP, CrowdSec   │                             │            │  │
-│              └────────┬──────────┘                             │            │  │
-│                       ▼                                        │            │  │
-│              ┌─────────────────┐                               │            │  │
-│              │ AI Triage (opt) │  12 providers, 0.0-1.0 score  │            │  │
-│              └────────┬────────┘                               │            │  │
-│                       ▼                                        │            │  │
-│              ┌─────────────────┐     ┌──────────────┐          │            │  │
-│              │ Skill Executor  │────►│ LSM enforce  │◄─────────┘            │  │
-│              │ 12 skills +     │     │ XDP block    │◄──────────────────────┘  │
-│              │                 │     └──────────────┘                         │
-│              │ block_ip (5)    │     ┌──────────────┐   ┌──────────────┐      │
-│              │ kill_chain_resp │────►│ Cloudflare   │   │ Mesh Network │      │
-│              │ suspend_sudo   │     │ AbuseIPDB    │   │ broadcast to │      │
-│              │ kill_process    │     └──────────────┘   │ peer nodes   │      │
-│              │ honeypot        │                        └──────────────┘      │
-│              └────────┬────────┘                                              │
-│                       │                                                       │
-│          ┌────────────┼────────────┐                                          │
-│          ▼            ▼            ▼                                          │
-│   ┌──────────┐ ┌──────────┐ ┌──────────┐                                     │
-│   │ Telegram │ │  Slack   │ │ Webhook  │                                     │
-│   │   bot    │ │          │ │ (any)    │                                     │
-│   └──────────┘ └──────────┘ └──────────┘                                     │
-│                                                                               │
-│   ┌─────────────────────────────────────────────────────┐                     │
-│   │ Dashboard: HUD, threats, investigation, map,        │                     │
-│   │ MITRE ATT&CK, live SSE feed, audit trail,          │                     │
-│   │ ISO 27001 compliance, hash chain verification       │                     │
-│   └─────────────────────────────────────────────────────┘                     │
-└───────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                      FIRMWARE / BIOS (Ring -2)                      │
+│  MSR write guard (LSTAR/SMRR) | ACPI method monitoring | ESP hash  │
+│  SPI controller probing | eBPF weaponization detection (VoidLink)  │
+└─────────────────────────────────────────────┬───────────────────────┘
+                                              │
+┌─────────────────────────────────────────────┼───────────────────────┐
+│                      HYPERVISOR (Ring -1)    │                       │
+│  VM introspection | KVM monitoring | VM exit analysis               │
+└─────────────────────────────────────────────┼───────────────────────┘
+                                              │
+┌─────────────────────────────────────────────┼───────────────────────┐
+│                           KERNEL (Ring 0)   │                       │
+│                                                                     │
+│  ┌──────────────┐  ┌───────────┐  ┌─────────┐  ┌───────────────┐  │
+│  │23 tracepoints │  │ 5 kprobes │  │  3 LSM  │  │      XDP      │  │
+│  │ execve,       │  │ creds,    │  │ exec    │  │  wire-speed   │  │
+│  │ connect,      │  │ MSR, ACPI │  │ file    │  │  IP blocking  │  │
+│  │ openat,       │  │ timestomp │  │ bpf     │  │  10M+ pps     │  │
+│  │ mount, clone, │  │ truncate  │  │ + kill  │  │  allowlist +  │  │
+│  │ ptrace, ...   │  │           │  │ chain   │  │  blocklist    │  │
+│  └──────┬───────┘  └─────┬─────┘  └───┬─────┘  └──────┬────────┘  │
+│         └────────┬───────┘            │               │            │
+│                  ▼                    │               │            │
+│           ┌─────────────┐             │               │            │
+│           │ Ring Buffer  │             │               │            │
+│           │  (1MB epoll) │             │               │            │
+│           └──────┬──────┘             │               │            │
+└──────────────────┼────────────────────┼───────────────┼────────────┘
+                   │                    │               │
+                   ▼                    │               │
+┌──────────────────────────────────────────────────────────────────┐
+│                         SENSOR                                    │
+│                                                                   │
+│  ┌─────────┐ ┌─────────┐ ┌────────┐ ┌────────────────────────┐  │
+│  │auth.log │ │journald │ │ Docker │ │    eBPF collector       │◄─┘
+│  │nginx    │ │syslog   │ │ cgroup │ │    (40 hooks)           │
+│  └────┬────┘ └────┬────┘ └───┬────┘ └───────────┬────────────┘  │
+│       │           │          │                   │               │
+│  ┌────┴────┐ ┌────┴─────┐ ┌─┴──────────────┐    │               │
+│  │DNS/HTTP │ │TLS/JA3   │ │kernel_integrity│    │               │
+│  │capture  │ │JA4       │ │proc_maps       │    │               │
+│  │(native) │ │(native)  │ │fanotify        │    │               │
+│  └────┬────┘ └────┬─────┘ └───────┬────────┘    │               │
+│       └───────────┴───────────────┴──────────────┘               │
+│                          │                                        │
+│                    ┌─────▼──────┐                                 │
+│                    │48 detectors│ + 8 YARA + 8 Sigma              │
+│                    │ stateful   │                                 │
+│                    └─────┬──────┘                                 │
+│                          │                                        │
+│              ┌───────────▼───────────┐                            │
+│              │  events + incidents   │                            │
+│              │      (JSONL)          │                            │
+│              └───────────┬───────────┘                            │
+└──────────────────────────┼────────────────────────────────────────┘
+                           │
+┌──────────────────────────┼────────────────────────────────────────┐
+│                   AGENT  │                                        │
+│                          ▼                                        │
+│     ┌──────────────────────────────────────────────┐              │
+│     │  30 Cross-Layer Correlation Rules            │              │
+│     │  + Kill Chain Tracker (7 stages per entity)  │              │
+│     └────────────────────┬─────────────────────────┘              │
+│                          ▼                                        │
+│                ┌──────────────────┐                                │
+│                │  Algorithm Gate  │  skip low-sev, private IP      │
+│                └────────┬─────────┘                                │
+│                         ▼                                         │
+│              ┌────────────────────┐                                │
+│              │ Enrich: AbuseIPDB, │                                │
+│              │ GeoIP, CrowdSec   │                                │
+│              └────────┬──────────┘                                │
+│                       ▼                                           │
+│              ┌─────────────────┐                                  │
+│              │ AI Triage (opt) │  OpenAI / Anthropic / Ollama     │
+│              └────────┬────────┘                                  │
+│                       ▼                                           │
+│              ┌─────────────────┐     ┌──────────────┐             │
+│              │ Skill Executor  │────►│ LSM enforce  │             │
+│              │ block_ip (5)    │     │ XDP block    │             │
+│              │ kill_process    │     └──────────────┘             │
+│              │ suspend_sudo   │     ┌──────────────┐             │
+│              │ honeypot        │────►│ Cloudflare   │             │
+│              │ playbooks (6)   │     │ AbuseIPDB    │             │
+│              └────────┬────────┘     └──────────────┘             │
+│                       │                                           │
+│          ┌────────────┼────────────┬──────────────┐               │
+│          ▼            ▼            ▼              ▼               │
+│   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐        │
+│   │ Telegram │ │  Slack   │ │ Webhook  │ │ Mesh Network │        │
+│   │   bot    │ │          │ │ (any)    │ │ peer defense │        │
+│   └──────────┘ └──────────┘ └──────────┘ └──────────────┘        │
+│                                                                   │
+│   ┌───────────────────────────────────────────────────────────┐   │
+│   │ Dashboard: HUD, threats, investigation, attacker intel,   │   │
+│   │ MITRE ATT&CK map, monthly reports, baseline learning,    │   │
+│   │ ISO 27001 compliance, hash chain, live SSE, audit trail   │   │
+│   └───────────────────────────────────────────────────────────┘   │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## What it does
 
-1. **Watches**: 20+ collectors across all layers — eBPF syscall tracing (38 kernel hooks), firmware integrity (ESP, UEFI, ACPI, TPM), memory forensics (/proc/maps RWX detection), native network capture (DNS queries, HTTP requests, JA3/JA4 TLS fingerprinting — no Suricata needed), filesystem real-time monitoring, cgroup resource abuse, kernel integrity (syscall table + eBPF inventory), plus auth.log, journald, Docker, nginx, osquery, CloudTrail
-2. **Detects**: 48 stateful detectors + 8 YARA malware rules + 8 Sigma log rules identify brute-force, credential stuffing, port scans, C2 callbacks, privilege escalation, container escapes, reverse shells (eBPF syscall sequence — impossible to evade), ransomware (entropy analysis), rootkits, DNS tunneling, data exfiltration (sensitive file read → outbound connect by PID), and more
-3. **Correlates**: 27 cross-layer rules connect Firmware × Kernel × Userspace × Network × Honeypot events. Detects multi-stage attacks no single detector can see: firmware tampering → rootkit install, recon → brute force → data exfil, honeypot engagement → real attack on same IP
+1. **Watches**: 20+ collectors across all layers — eBPF syscall tracing (40 kernel hooks including timestomp and log truncation), firmware integrity (ESP, UEFI, ACPI, MSR, SPI), memory forensics (/proc/maps RWX detection), native network capture (DNS queries, HTTP requests, JA3/JA4 TLS fingerprinting — no Suricata needed), filesystem real-time monitoring, cgroup resource abuse, kernel integrity (syscall table + eBPF inventory), plus auth.log, journald, Docker, nginx, osquery, CloudTrail
+2. **Detects**: 48 stateful detectors + 8 YARA malware rules + 8 Sigma log rules identify brute-force, credential stuffing, port scans, C2 callbacks, privilege escalation, container escapes, reverse shells (eBPF syscall sequence — impossible to evade), ransomware (entropy analysis), rootkits, DNS tunneling, data exfiltration (sensitive file read → outbound connect by PID), timestomping, log tampering, discovery bursts, and more. **95% detection rate against 42 MITRE ATT&CK techniques.**
+3. **Correlates**: 30 cross-layer rules connect Firmware × Kernel × Userspace × Network × Honeypot events. Detects multi-stage attacks no single detector can see: firmware tampering → rootkit install, recon → brute force → data exfil, honeypot engagement → real attack on same IP. Kill chain tracker follows 7 attack stages per entity (IP, user, container).
 4. **Learns**: baseline anomaly detection trains for 7 days then alerts on deviations — event rate drops (silence = compromise), new process lineages (nginx→sh), unusual login times, unknown network destinations. No rules needed.
 5. **Blocks at the kernel**: LSM enforcement stops reverse shells and /tmp execution before they run. XDP drops attack traffic at wire speed. 8 kill chain patterns detected and blocked without signatures. Blocks propagate to mesh peers.
 6. **Responds automatically**: 6 built-in playbooks (ransomware, reverse shell, data exfil, malware, firmware-to-rootkit chain, recon-to-exfil chain) execute ordered response sequences — kill process, block IP, capture forensics, pcap, notify, escalate
