@@ -2516,6 +2516,10 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                                     | "systemd"
                                     | "systemd-tmpfile"
                                     | "sshd"
+                                    | "irqbalance"
+                                    | "ufw"
+                                    | "fail2ban-serve"
+                                    | "tokio-rt-worker"
                             ))
                     {
                         continue;
@@ -2564,6 +2568,10 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                                     | "systemd"
                                     | "systemd-tmpfile"
                                     | "sshd"
+                                    | "irqbalance"
+                                    | "ufw"
+                                    | "fail2ban-serve"
+                                    | "tokio-rt-worker"
                             ))
                     {
                         continue;
