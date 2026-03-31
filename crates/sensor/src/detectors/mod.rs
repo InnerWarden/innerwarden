@@ -97,5 +97,6 @@ pub mod data_exfil_ebpf;
 pub mod host_drift;
 pub mod io_uring_anomaly;
 pub mod packet_flood;
+pub mod mitre_hunt;
 pub mod sigma_rule;
 pub mod yara_scan;
