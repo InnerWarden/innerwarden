@@ -1347,35 +1347,39 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
     // These use #[kprobe(function = "...")] in the eBPF code, so Aya creates
     // separate sections: kprobe/vfs_utimes and kprobe/do_truncate.
     // They need to be loaded and attached by the section name.
-    // With #[kprobe(function = "vfs_utimes")], Aya may register as either name
-    let utimensat_name = if bpf.program("vfs_utimes").is_some() { "vfs_utimes" } else { "innerwarden_utimensat" };
-    if let Some(prog) = bpf.program_mut(utimensat_name) {
+    // Timestomp detection: kprobe on vfs_utimes
+    if let Some(prog) = bpf.program_mut("innerwarden_utimensat") {
         use aya::programs::KProbe;
         if let Ok(kp) = TryInto::<&mut KProbe>::try_into(prog) {
-            if kp.load().is_ok() {
-                match kp.attach("vfs_utimes", 0) {
+            match kp.load() {
+                Ok(()) => match kp.attach("vfs_utimes", 0) {
                     Ok(_) => info!("eBPF: innerwarden_utimensat → vfs_utimes (timestomp) ✅"),
-                    Err(e) => warn!(error = %e, "innerwarden_utimensat: vfs_utimes not available"),
-                }
+                    Err(e) => warn!(error = %e, "innerwarden_utimensat: attach failed"),
+                },
+                Err(e) => warn!(error = %e, "innerwarden_utimensat: load failed"),
             }
+        } else {
+            warn!("innerwarden_utimensat: not a KProbe program type");
         }
     } else {
-        // Try alternate name: Aya may use section name "kprobe_vfs_utimes" or function name
-        info!("eBPF: innerwarden_utimensat not found by name, trying auto-attach...");
+        warn!("innerwarden_utimensat: program not found in bytecode");
     }
-    let truncate_name = if bpf.program("do_truncate").is_some() { "do_truncate" } else { "innerwarden_truncate" };
-    if let Some(prog) = bpf.program_mut(truncate_name) {
+    // Log tampering detection: kprobe on do_truncate
+    if let Some(prog) = bpf.program_mut("innerwarden_truncate") {
         use aya::programs::KProbe;
         if let Ok(kp) = TryInto::<&mut KProbe>::try_into(prog) {
-            if kp.load().is_ok() {
-                match kp.attach("do_truncate", 0) {
+            match kp.load() {
+                Ok(()) => match kp.attach("do_truncate", 0) {
                     Ok(_) => info!("eBPF: innerwarden_truncate → do_truncate (log tampering) ✅"),
-                    Err(e) => warn!(error = %e, "innerwarden_truncate: do_truncate not available"),
-                }
+                    Err(e) => warn!(error = %e, "innerwarden_truncate: attach failed"),
+                },
+                Err(e) => warn!(error = %e, "innerwarden_truncate: load failed"),
             }
+        } else {
+            warn!("innerwarden_truncate: not a KProbe program type");
         }
     } else {
-        info!("eBPF: innerwarden_truncate not found by name, trying auto-attach...");
+        warn!("innerwarden_truncate: program not found in bytecode");
     }
 
     // Trace of the Times: attach kprobe/kretprobe pairs for timing measurement.
@@ -2493,13 +2497,13 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         entities: vec![],
                     })
                 }
-                // UtimensatEvent: timestomp detection (vfs_utimes kprobe)
-                // kind(4) pid(4) uid(4) _pad(4) cgroup_id(8) comm(64) filename(256) ts_ns(8)
-                33 if data.len() >= 80 => {
+                // Utimensat: timestomp (reuses PrivEscEvent layout)
+                // kind(4) pid(4) tgid(4) old_uid(4) new_uid(4) _pad(4) cgroup_id(8) comm(64) ts_ns(8) = 104 bytes
+                33 if data.len() >= 104 => {
                     let pid = read_u32!(data, 4..8);
-                    let uid = read_u32!(data, 8..12);
-                    let cgroup_id = read_u64!(data, 16..24);
-                    let comm = bytes_to_string(&data[24..88]);
+                    let uid = read_u32!(data, 12..16);
+                    let cgroup_id = read_u64!(data, 24..32);
+                    let comm = bytes_to_string(&data[32..96]);
 
                     if comm.starts_with("innerwarden") {
                         continue;
@@ -2529,12 +2533,10 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         entities: vec![],
                     })
                 }
-                // TruncateEvent: log tampering detection (do_truncate kprobe)
-                // kind(4) pid(4) uid(4) _pad(4) new_size(8) cgroup_id(8) comm(64) filename(256) ts_ns(8)
-                34 if data.len() >= 88 => {
+                // Truncate: log tampering (reuses PrivEscEvent layout)
+                34 if data.len() >= 104 => {
                     let pid = read_u32!(data, 4..8);
-                    let uid = read_u32!(data, 8..12);
-                    let new_size = read_u64!(data, 16..24);
+                    let uid = read_u32!(data, 12..16);
                     let cgroup_id = read_u64!(data, 24..32);
                     let comm = bytes_to_string(&data[32..96]);
 
@@ -2549,14 +2551,13 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
                         kind: "file.truncate".to_string(),
                         severity: Severity::Critical,
                         summary: format!(
-                            "File truncated to {} bytes by {} (pid={}, uid={})",
-                            new_size, comm, pid, uid
+                            "File truncated by {} (pid={}, uid={})",
+                            comm, pid, uid
                         ),
                         details: serde_json::json!({
                             "comm": comm,
                             "pid": pid,
                             "uid": uid,
-                            "new_size": new_size,
                             "cgroup_id": cgroup_id,
                         }),
                         tags: vec![

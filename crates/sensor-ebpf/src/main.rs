@@ -3079,7 +3079,7 @@ pub fn innerwarden_tot_procdir_ret(_ctx: RetProbeContext) -> u32 {
 
 /// Kprobe on vfs_utimes — detects timestomp (touch -t, touch -r).
 /// vfs_utimes is called by utimensat/futimesat/utimes syscalls.
-#[kprobe(function = "vfs_utimes")]
+#[kprobe]
 pub fn innerwarden_utimensat(ctx: ProbeContext) -> u32 {
     match try_utimensat(&ctx) {
         Ok(()) => 0,
@@ -3088,18 +3088,20 @@ pub fn innerwarden_utimensat(ctx: ProbeContext) -> u32 {
 }
 
 fn try_utimensat(ctx: &ProbeContext) -> Result<(), i64> {
+    // Read ctx arg to validate kprobe context with verifier
+    let _: u64 = unsafe { ctx.arg(0).unwrap_or(0) };
     let pid_tgid = bpf_get_current_pid_tgid();
     let pid = pid_tgid as u32;
     let uid = bpf_get_current_uid_gid() as u32;
     let ts = unsafe { bpf_ktime_get_ns() };
     let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
 
-    // Skip kernel threads (pid 0) and innerwarden itself
     if pid == 0 {
         return Ok(());
     }
 
-    let mut entry = match EVENTS.reserve::<UtimensatEvent>(0) {
+    // Use PrivEscEvent as a lightweight event (same layout: kind, pid, uid, cgroup, comm)
+    let mut entry = match EVENTS.reserve::<PrivEscEvent>(0) {
         Some(e) => e,
         None => return Ok(()),
     };
@@ -3108,22 +3110,19 @@ fn try_utimensat(ctx: &ProbeContext) -> Result<(), i64> {
     unsafe {
         (*event).kind = SyscallKind::Utimensat as u32;
         (*event).pid = pid;
-        (*event).uid = uid;
+        (*event).tgid = (pid_tgid >> 32) as u32;
+        (*event).old_uid = uid;
+        (*event).new_uid = 0;
         (*event).cgroup_id = cgroup_id;
         (*event).ts_ns = ts;
 
-        // Read comm
-        let comm = bpf_get_current_comm().map_err(|e| e)?;
+        let comm16 = bpf_get_current_comm().map_err(|e| e)?;
         (*event).comm = [0u8; MAX_COMM_LEN];
-        let len = comm.len().min(MAX_COMM_LEN);
-        for i in 0..len {
-            (*event).comm[i] = comm[i];
+        let mut i = 0;
+        while i < 16 {
+            (*event).comm[i] = comm16[i];
+            i += 1;
         }
-
-        // Try to read filename from first argument (struct path *)
-        // For vfs_utimes: arg0 = struct path *, arg1 = struct timespec64 *
-        // We can't easily dereference struct path in eBPF, so store comm as context
-        (*event).filename = [0u8; MAX_FILENAME_LEN];
     }
 
     entry.submit(0);
@@ -3132,7 +3131,7 @@ fn try_utimensat(ctx: &ProbeContext) -> Result<(), i64> {
 
 /// Kprobe on do_truncate — detects log file truncation.
 /// do_truncate is called by truncate/ftruncate syscalls.
-#[kprobe(function = "do_truncate")]
+#[kprobe]
 pub fn innerwarden_truncate(ctx: ProbeContext) -> u32 {
     match try_truncate(&ctx) {
         Ok(()) => 0,
@@ -3141,6 +3140,7 @@ pub fn innerwarden_truncate(ctx: ProbeContext) -> u32 {
 }
 
 fn try_truncate(ctx: &ProbeContext) -> Result<(), i64> {
+    let _: u64 = unsafe { ctx.arg(0).unwrap_or(0) };
     let pid_tgid = bpf_get_current_pid_tgid();
     let pid = pid_tgid as u32;
     let uid = bpf_get_current_uid_gid() as u32;
@@ -3151,15 +3151,8 @@ fn try_truncate(ctx: &ProbeContext) -> Result<(), i64> {
         return Ok(());
     }
 
-    // do_truncate arg1 = new length. If truncating to 0, likely log wipe.
-    let new_size: u64 = unsafe { ctx.arg(1).unwrap_or(u64::MAX) };
-
-    // Only alert on truncate to small size (likely clearing file)
-    if new_size > 1024 {
-        return Ok(());
-    }
-
-    let mut entry = match EVENTS.reserve::<TruncateEvent>(0) {
+    // Use PrivEscEvent as lightweight carrier
+    let mut entry = match EVENTS.reserve::<PrivEscEvent>(0) {
         Some(e) => e,
         None => return Ok(()),
     };
@@ -3168,19 +3161,19 @@ fn try_truncate(ctx: &ProbeContext) -> Result<(), i64> {
     unsafe {
         (*event).kind = SyscallKind::Truncate as u32;
         (*event).pid = pid;
-        (*event).uid = uid;
-        (*event).new_size = new_size;
+        (*event).tgid = (pid_tgid >> 32) as u32;
+        (*event).old_uid = uid;
+        (*event).new_uid = 0;
         (*event).cgroup_id = cgroup_id;
         (*event).ts_ns = ts;
 
-        let comm = bpf_get_current_comm().map_err(|e| e)?;
+        let comm16 = bpf_get_current_comm().map_err(|e| e)?;
         (*event).comm = [0u8; MAX_COMM_LEN];
-        let len = comm.len().min(MAX_COMM_LEN);
-        for i in 0..len {
-            (*event).comm[i] = comm[i];
+        let mut i = 0;
+        while i < 16 {
+            (*event).comm[i] = comm16[i];
+            i += 1;
         }
-
-        (*event).filename = [0u8; MAX_FILENAME_LEN];
     }
 
     entry.submit(0);
