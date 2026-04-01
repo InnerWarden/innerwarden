@@ -87,14 +87,14 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           tag: canary
+          commit: ${{ github.sha }}
           name: "Canary (develop)"
           body: |
             Automated canary build from `develop` branch.
+            Commit: ${{ github.sha }}
             **Not for production** — use the latest stable release instead.
-
-            Install: `curl -sSL .../install.sh | sudo bash -s -- --canary`
           prerelease: true
           allowUpdates: true
-          removeArtifacts: true
+          replacesArtifacts: true
           artifacts: "dist/*"
           token: ${{ secrets.GITHUB_TOKEN }}
