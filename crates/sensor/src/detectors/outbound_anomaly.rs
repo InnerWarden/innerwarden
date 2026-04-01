@@ -162,21 +162,25 @@ impl OutboundAnomalyDetector {
             return None;
         }
 
-        // Skip verified infrastructure processes (reverse proxies, monitors).
-        // Verifies binary path to prevent evasion by name spoofing.
-        const OUTBOUND_ALLOWED: &[&str] = &[
-            "nginx",
-            "haproxy",
-            "envoy",
-            "caddy",
-            "traefik",
-            "gomon",
-            "prometheus",
-            "telegraf",
-            "node_export",
-        ];
+        // Skip InnerWarden's own processes (mesh, CrowdSec, API calls).
         let comm_base = comm.split('/').next_back().unwrap_or(comm);
-        if super::is_verified_infra_process(comm_base, pid, OUTBOUND_ALLOWED) {
+        let uid = event
+            .details
+            .get("uid")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(u64::MAX);
+        if super::allowlists::is_innerwarden_process(uid, comm_base) {
+            return None;
+        }
+
+        // Skip verified infrastructure processes (centralized allowlist).
+        // Includes reverse proxies, monitors, package managers, cloud agents.
+        // Verifies binary path via /proc/PID/exe to prevent evasion by name spoofing.
+        if super::is_verified_infra_process(
+            comm_base,
+            pid,
+            super::allowlists::C2_OUTBOUND_ALLOWED,
+        ) {
             return None;
         }
 

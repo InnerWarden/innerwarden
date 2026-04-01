@@ -65,6 +65,22 @@ impl DataExfilEbpfDetector {
         let pid = event.details.get("pid").and_then(|v| v.as_u64())? as u32;
         let now = event.ts;
 
+        // Skip InnerWarden's own processes — the sensor legitimately reads
+        // /etc/ssh/sshd_config and makes outbound API calls (AbuseIPDB, GeoIP).
+        let ev_uid = event
+            .details
+            .get("uid")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(u64::MAX);
+        let ev_comm = event
+            .details
+            .get("comm")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if super::allowlists::is_innerwarden_process(ev_uid, ev_comm) {
+            return None;
+        }
+
         // Phase 1: Track sensitive file reads
         if event.kind == "file.read_access" || event.kind == "file.write_access" {
             let filename = event
@@ -238,6 +254,46 @@ mod tests {
             tags: vec!["ebpf".into()],
             entities: vec![EntityRef::ip(dst_ip)],
         }
+    }
+
+    #[test]
+    fn skips_innerwarden_process() {
+        let mut det = DataExfilEbpfDetector::new("test", 60, 300);
+        let now = Utc::now();
+
+        // InnerWarden uid=998 reading sensitive files is legitimate
+        let iw_read = Event {
+            ts: now,
+            host: "test".into(),
+            source: "ebpf".into(),
+            kind: "file.read_access".into(),
+            severity: Severity::Medium,
+            summary: "read /etc/ssh/sshd_config".into(),
+            details: serde_json::json!({
+                "pid": 9999, "uid": 998, "comm": "tokio-rt-worker",
+                "filename": "/etc/ssh/sshd_config",
+            }),
+            tags: vec![],
+            entities: vec![],
+        };
+        assert!(det.process(&iw_read).is_none());
+
+        // Even if followed by outbound connect, should not trigger
+        let iw_connect = Event {
+            ts: now + Duration::seconds(2),
+            host: "test".into(),
+            source: "ebpf".into(),
+            kind: "network.outbound_connect".into(),
+            severity: Severity::Info,
+            summary: "connect 5.6.7.8:443".into(),
+            details: serde_json::json!({
+                "pid": 9999, "uid": 998, "comm": "tokio-rt-worker",
+                "dst_ip": "5.6.7.8", "dst_port": 443,
+            }),
+            tags: vec![],
+            entities: vec![],
+        };
+        assert!(det.process(&iw_connect).is_none());
     }
 
     #[test]

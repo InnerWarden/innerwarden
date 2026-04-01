@@ -19,6 +19,8 @@ pub const INNERWARDEN_UID: u64 = 998;
 /// Returns true if the event is from InnerWarden's own processes.
 /// Checks uid, comm prefix, and tokio runtime threads.
 pub fn is_innerwarden_process(uid: u64, comm: &str) -> bool {
+    // Strip kernel task parentheses: (innerwarden) -> innerwarden
+    let comm = comm.trim_matches(|c: char| c == '(' || c == ')');
     uid == INNERWARDEN_UID
         || comm.starts_with("innerwarden")
         || comm == "tokio-rt-worker"
@@ -371,11 +373,13 @@ pub const PRIVESC_ALLOWED: &[&str] = &[
     "dpkg",
     "apt",
     "apt-get",
+    "apt-check",
     "snap",
     "snapd",
     "unattended-upg",
     "update-notifier",
     // System tools with SUID
+    "at",
     "find",
     "mandb",
     "man",
@@ -467,6 +471,8 @@ pub const C2_OUTBOUND_ALLOWED: &[&str] = &[
 /// Handles kernel comm truncation (16 char limit).
 pub fn comm_in_allowlist(comm: &str, allowlist: &[&str]) -> bool {
     let comm_base = comm.split('/').next_back().unwrap_or(comm);
+    // Strip kernel task parentheses: (install) -> install
+    let comm_base = comm_base.trim_matches(|c: char| c == '(' || c == ')');
     allowlist.iter().any(|p| comm_base.starts_with(p))
 }
 
@@ -490,6 +496,20 @@ mod tests {
         assert!(comm_in_allowlist("dpkg-preconfigu", PACKAGE_MANAGERS));
         assert!(comm_in_allowlist("00-header", DISCOVERY_ALLOWED));
         assert!(!comm_in_allowlist("evil-script", SYSTEM_DAEMONS));
+    }
+
+    #[test]
+    fn parenthesized_comm_matching() {
+        // Kernel task format: (install) instead of install
+        assert!(comm_in_allowlist("(install)", PRIVESC_ALLOWED));
+        assert!(comm_in_allowlist("(find)", PRIVESC_ALLOWED));
+        assert!(comm_in_allowlist("(mandb)", PRIVESC_ALLOWED));
+        assert!(comm_in_allowlist("(fwupdmgr)", PRIVESC_ALLOWED));
+        assert!(!comm_in_allowlist("(evil-exploit)", PRIVESC_ALLOWED));
+        // is_innerwarden_process with parentheses
+        assert!(is_innerwarden_process(0, "(innerwarden-sensor)"));
+        assert!(is_innerwarden_process(0, "(tokio-rt-worker)"));
+        assert!(!is_innerwarden_process(0, "(bash)"));
     }
 
     #[test]

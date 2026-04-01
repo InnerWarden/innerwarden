@@ -39,6 +39,15 @@ impl PrivescDetector {
             .as_str()
             .map(|s| s.to_string());
 
+        // Skip known legitimate privilege escalation processes (Falco-inspired).
+        // Handles kernel task parentheses: (install) -> install via comm_in_allowlist.
+        // Exploits from python, bash, etc. still fire Critical.
+        if super::allowlists::is_innerwarden_process(old_uid as u64, &comm)
+            || super::allowlists::comm_in_allowlist(&comm, super::allowlists::PRIVESC_ALLOWED)
+        {
+            return None;
+        }
+
         let now = event.ts;
 
         // Suppress re-alerts for same pid within window
@@ -198,6 +207,34 @@ mod tests {
             .is_some());
         assert!(det
             .process(&privesc_event("exploit", 200, 1000, None, now))
+            .is_some());
+    }
+
+    #[test]
+    fn skips_allowed_processes() {
+        let mut det = PrivescDetector::new("test", 300);
+        let now = Utc::now();
+
+        // Known SUID binaries should NOT trigger
+        assert!(det
+            .process(&privesc_event("install", 1234, 6, None, now))
+            .is_none());
+        assert!(det
+            .process(&privesc_event("find", 1235, 6, None, now))
+            .is_none());
+        assert!(det
+            .process(&privesc_event("mandb", 1236, 6, None, now))
+            .is_none());
+        assert!(det
+            .process(&privesc_event("fwupdmgr", 1237, 112, None, now))
+            .is_none());
+        // Parenthesized kernel comm format
+        assert!(det
+            .process(&privesc_event("(install)", 1238, 6, None, now))
+            .is_none());
+        // Unknown process SHOULD still trigger
+        assert!(det
+            .process(&privesc_event("evil_exploit", 1239, 1000, None, now))
             .is_some());
     }
 
