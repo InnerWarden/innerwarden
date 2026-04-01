@@ -30,6 +30,7 @@ const PERSISTENCE_PATHS: &[&str] = &[
     "/etc/systemd/system/",
     "/etc/init.d/",
     "/etc/rc.local",
+    "/etc/rc.d/",
     "/etc/ld.so.preload",
     "/etc/ld.so.conf",
     "/etc/ld.so.conf.d/",
@@ -38,6 +39,9 @@ const PERSISTENCE_PATHS: &[&str] = &[
     "/etc/bashrc",
     "/etc/bash.bashrc",
     "/etc/environment",
+    // Python startup hooks — attacker persistence via import hijacking
+    "usercustomize.py",
+    "sitecustomize.py",
 ];
 
 const LOG_PATHS: &[&str] = &[
@@ -101,6 +105,7 @@ const ALLOWED_PROCESSES: &[&str] = &[
     "adduser",
     "deluser",
     "pam_tally2",
+    "pam-auth-update",
     "faillock",
     "nscd",
     "sss_cache",

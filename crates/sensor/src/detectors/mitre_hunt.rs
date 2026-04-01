@@ -314,6 +314,20 @@ impl MitreHuntDetector {
             return Some(inc);
         }
 
+        // T1485 — Destructive DD (High)
+        if let Some(inc) =
+            self.check_destructive_dd(&argv0_base, &argv_joined, pid, uid, user, now, event)
+        {
+            return Some(inc);
+        }
+
+        // T1552.004 — Private Key Search (Medium)
+        if let Some(inc) =
+            self.check_private_key_search(&argv0_base, &argv_joined, pid, uid, user, now, event)
+        {
+            return Some(inc);
+        }
+
         None
     }
 
@@ -815,8 +829,13 @@ impl MitreHuntDetector {
         now: DateTime<Utc>,
         event: &Event,
     ) -> Option<Incident> {
-        // mv, cp, mkdir creating hidden files/directories
-        if argv0_base != "mv" && argv0_base != "cp" && argv0_base != "mkdir" {
+        // mv, cp, mkdir, touch creating hidden files/directories
+        if argv0_base != "mv"
+            && argv0_base != "cp"
+            && argv0_base != "mkdir"
+            && argv0_base != "touch"
+            && argv0_base != "tee"
+        {
             return None;
         }
 
@@ -905,6 +924,148 @@ impl MitreHuntDetector {
             ],
             &["network_sniffing", "credential_access"],
             vec![EntityRef::path(format!("/proc/{pid}"))],
+            user,
+            now,
+            event,
+        )
+    }
+
+    // ── T1485: Destructive DD ────────────────────────────────────────────
+
+    #[allow(clippy::too_many_arguments)]
+    fn check_destructive_dd(
+        &mut self,
+        argv0_base: &str,
+        argv_joined: &str,
+        pid: u32,
+        uid: u32,
+        user: &str,
+        now: DateTime<Utc>,
+        event: &Event,
+    ) -> Option<Incident> {
+        if argv0_base != "dd" {
+            return None;
+        }
+
+        // Check for destructive targets
+        let dangerous_targets = [
+            "/dev/sd",
+            "/dev/vd",
+            "/dev/nvme",
+            "/dev/mapper/",
+            "/dev/dm-",
+            "/boot/",
+            "/dev/null",
+        ];
+        let has_dangerous_of = dangerous_targets
+            .iter()
+            .any(|t| argv_joined.contains(&format!("of={t}")));
+
+        // Also catch dd writing zeros/random to any file
+        let has_destructive_input = argv_joined.contains("if=/dev/zero")
+            || argv_joined.contains("if=/dev/urandom")
+            || argv_joined.contains("if=/dev/random");
+
+        if !has_dangerous_of && !has_destructive_input {
+            return None;
+        }
+
+        self.emit(
+            "destructive_dd",
+            Severity::Critical,
+            format!("Destructive dd command: {argv0_base} (pid={pid}, user={user})"),
+            format!(
+                "Process 'dd' (pid={pid}, uid={uid}) executed with destructive parameters. \
+                 Command: {}. This could wipe data or destroy disk contents.",
+                &argv_joined[..argv_joined.len().min(120)]
+            ),
+            serde_json::json!([{
+                "kind": "destructive_dd",
+                "command": argv_joined,
+                "pid": pid,
+                "uid": uid,
+            }]),
+            vec![
+                format!(
+                    "CRITICAL: Verify dd command was authorized: {}",
+                    &argv_joined[..argv_joined.len().min(80)]
+                ),
+                "Check if data was destroyed: fsck, mount, ls".to_string(),
+                format!("Kill if unauthorized: kill -9 {pid}"),
+            ],
+            &["destructive", "impact", "disk_wipe"],
+            vec![],
+            user,
+            now,
+            event,
+        )
+    }
+
+    // ── T1552.004: Private Key Search ─────────────────────────────────────
+
+    #[allow(clippy::too_many_arguments)]
+    fn check_private_key_search(
+        &mut self,
+        argv0_base: &str,
+        argv_joined: &str,
+        pid: u32,
+        uid: u32,
+        user: &str,
+        now: DateTime<Utc>,
+        event: &Event,
+    ) -> Option<Incident> {
+        if argv0_base != "find" && argv0_base != "grep" && argv0_base != "locate" {
+            return None;
+        }
+
+        let key_patterns = [
+            "id_rsa",
+            "id_ed25519",
+            "id_ecdsa",
+            "id_dsa",
+            ".pem",
+            ".key",
+            ".p12",
+            ".pfx",
+            "PRIVATE KEY",
+            "private_key",
+            "privatekey",
+        ];
+
+        let is_key_search = key_patterns.iter().any(|p| argv_joined.contains(p));
+        if !is_key_search {
+            return None;
+        }
+
+        // Skip legitimate tools
+        if argv0_base == "find"
+            && (argv_joined.contains("ssh-keygen") || argv_joined.contains("certbot"))
+        {
+            return None;
+        }
+
+        self.emit(
+            "private_key_search",
+            Severity::Medium,
+            format!("Private key search: {argv0_base} (pid={pid}, user={user})"),
+            format!(
+                "Process '{argv0_base}' (pid={pid}, uid={uid}) searching for private keys. \
+                 Command: {}. Attackers search for SSH/TLS keys to enable lateral movement.",
+                &argv_joined[..argv_joined.len().min(120)]
+            ),
+            serde_json::json!([{
+                "kind": "private_key_search",
+                "command": argv_joined,
+                "pid": pid,
+                "uid": uid,
+            }]),
+            vec![
+                "Verify if this key search was authorized".to_string(),
+                "Check if any keys were exfiltrated: review outbound connections".to_string(),
+                format!("Review user activity: ausearch -ua {uid}"),
+            ],
+            &["credential_access", "private_key"],
+            vec![],
             user,
             now,
             event,
