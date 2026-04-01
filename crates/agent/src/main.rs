@@ -25,6 +25,12 @@ mod ioc;
 mod mesh;
 mod mitre;
 mod narrative;
+#[allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    clippy::needless_range_loop
+)]
 mod neural_lifecycle;
 mod pcap_capture;
 mod playbook;
