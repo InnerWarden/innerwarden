@@ -28,14 +28,44 @@ IW_USER="innerwarden"
 
 # Parse flags
 WITH_INTEGRATIONS=0
+CANARY=0
 for arg in "$@"; do
   case "$arg" in
     --with-integrations) WITH_INTEGRATIONS=1 ;;
+    --canary) CANARY=1 ;;
   esac
 done
 
-# Detect OS
+# Detect OS + arch
 OS_TYPE="$(uname -s)"   # Linux | Darwin
+ARCH="$(uname -m)"      # x86_64 | aarch64 | arm64
+KERNEL="$(uname -r)"
+
+# ── Nice UX banner ──────────────────────────────────────────────────────
+echo ""
+echo "  🛡️  InnerWarden Installer"
+echo "  Self-defending security agent for Linux and macOS."
+echo ""
+if [[ "$CANARY" -eq 1 ]]; then
+  echo "✓ Channel: canary (develop branch — latest features)"
+else
+  echo "✓ Channel: stable"
+fi
+echo "✓ Detected: ${OS_TYPE,,} ${ARCH}, kernel ${KERNEL}"
+echo ""
+
+# ── Sudo handling ────────────────────────────────────────────────────────
+# If not root, re-exec with sudo (ask once, covers the entire install)
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "Install plan"
+  echo "  OS: ${OS_TYPE}"
+  echo "  Architecture: ${ARCH}"
+  echo "  Components: sensor + agent + CLI"
+  echo ""
+  echo "  Root access needed — your password may be requested once."
+  echo ""
+  exec sudo bash "$0" "$@"
+fi
 
 BIN_DIR="/usr/local/bin"
 
@@ -67,7 +97,11 @@ AGENT_UNIT="/etc/systemd/system/innerwarden-agent.service"
 AUDIT_RULE_FILE="/etc/audit/rules.d/innerwarden-shell-audit.rules"
 
 log() {
-  printf '[innerwarden-install] %s\n' "$*"
+  printf '· %s\n' "$*"
+}
+
+step() {
+  printf '\n[%s] %s\n' "$1" "$2"
 }
 
 fail() {
@@ -295,11 +329,14 @@ else
   ARCH="$(detect_arch)"
   PLATFORM="$(detect_platform)"
 
-  # Resolve version: env override or latest from GitHub API
-  if [[ -n "${INNERWARDEN_VERSION:-}" ]]; then
+  # Resolve version: canary, env override, or latest stable
+  if [[ "${CANARY}" -eq 1 ]]; then
+    IW_VERSION="canary"
+    log "Using canary channel (develop branch)"
+  elif [[ -n "${INNERWARDEN_VERSION:-}" ]]; then
     IW_VERSION="${INNERWARDEN_VERSION}"
   else
-    log "fetching latest release version..."
+    log "Fetching latest stable release..."
     IW_VERSION="$(curl -fsSL \
       -H "Accept: application/vnd.github+json" \
       "${GITHUB_API}/releases/latest" \
@@ -308,7 +345,7 @@ else
     [[ -n "${IW_VERSION}" ]] || fail "could not determine latest release version from GitHub API"
   fi
 
-  log "installing InnerWarden ${IW_VERSION} for ${PLATFORM}/${ARCH}"
+  step "1/4" "Downloading InnerWarden ${IW_VERSION} (${PLATFORM}/${ARCH})"
 
   TMP_DIR="$(mktemp -d)"
   trap 'rm -rf "${TMP_DIR}"' EXIT
