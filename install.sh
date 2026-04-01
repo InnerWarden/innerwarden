@@ -1108,8 +1108,11 @@ if ! innerwarden welcome 2>/dev/null; then
   echo ""
 fi
 
-# Auto-run setup wizard with terminal input (curl pipe consumes stdin)
-exec innerwarden setup < /dev/tty
+# Can't auto-run setup from curl pipe (stdin is consumed).
+# Tell user to run it next.
+echo "  Next:"
+echo "    innerwarden setup"
+echo
 if [[ "$OS_TYPE" == "Darwin" ]]; then
 echo
 echo "  sudo tail -f ${LOG_DIR}/sensor.log"
