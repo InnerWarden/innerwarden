@@ -135,7 +135,11 @@ impl SensitiveWriteDetector {
 
     pub fn process(&mut self, event: &Event) -> Option<Incident> {
         match event.kind.as_str() {
-            "file.write_access" => self.check_write(event),
+            "file.write_access" | "file.truncate" => self.check_write(event),
+            // Some writes arrive as O_RDONLY open (program reads, modifies in memory,
+            // writes to temp file, renames). For critical paths like PAM, detect
+            // any non-system access as suspicious.
+            "file.read_access" => self.check_critical_read(event),
             _ => None,
         }
     }
@@ -218,6 +222,89 @@ impl SensitiveWriteDetector {
                 category.to_string(),
                 "persistence".to_string(),
             ],
+            entities: vec![EntityRef::path(filename)],
+        })
+    }
+
+    /// Detect reads to critical paths where ANY non-system access is suspicious.
+    /// Catches attacks that open files O_RDONLY, modify in memory, then write via
+    /// temp file + rename (which the openat hook misses as a write).
+    fn check_critical_read(&mut self, event: &Event) -> Option<Incident> {
+        let filename = event.details.get("filename").and_then(|v| v.as_str())?;
+        let comm = event
+            .details
+            .get("comm")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        if is_allowed(comm) {
+            return None;
+        }
+
+        // Only trigger for paths where a READ by non-system process is itself suspicious
+        let critical_read_paths: &[(&str, &str)] = &[
+            ("/etc/pam.d/", "pam_tampering"),
+            ("/etc/init.d/", "sysv_persistence"),
+        ];
+
+        let (path_match, category) = critical_read_paths
+            .iter()
+            .find(|(p, _)| filename.contains(p))?;
+        let _ = path_match;
+
+        let pid = event
+            .details
+            .get("pid")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let uid = event
+            .details
+            .get("uid")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        // Only alert for non-root, non-system reads (root PAM reads are normal for login)
+        if uid == 0 {
+            return None;
+        }
+
+        let key = format!("sensitive_read:{category}:{comm}:{filename}");
+        if let Some(&last) = self.alerted.get(&key) {
+            if event.ts - last < self.cooldown {
+                return None;
+            }
+        }
+        self.alerted.insert(key, event.ts);
+
+        Some(Incident {
+            ts: event.ts,
+            host: self.host.clone(),
+            incident_id: format!(
+                "sensitive_write:{category}:{comm}:{}",
+                event.ts.format("%Y-%m-%dT%H:%MZ")
+            ),
+            severity: Severity::High,
+            title: format!(
+                "Suspicious access to {category} path: {comm} → {}",
+                truncate_path(filename, 60)
+            ),
+            summary: format!(
+                "Non-system process '{comm}' (pid={pid}, uid={uid}) accessed '{filename}'. \
+                 This path is security-critical and should only be accessed by system tools."
+            ),
+            evidence: serde_json::json!([{
+                "kind": "sensitive_access",
+                "category": category,
+                "filename": filename,
+                "comm": comm,
+                "pid": pid,
+                "uid": uid,
+            }]),
+            recommended_checks: vec![
+                format!("Verify if '{comm}' should access {filename}"),
+                format!("Check for modifications: stat {filename}"),
+            ],
+            tags: vec!["sensitive_write".to_string(), category.to_string()],
             entities: vec![EntityRef::path(filename)],
         })
     }
