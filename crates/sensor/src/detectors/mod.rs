@@ -7,9 +7,27 @@ pub mod crypto_miner;
 pub mod distributed_ssh;
 pub mod suspicious_login;
 
+/// IPs that should be treated as external even though they're technically private.
+/// Set once at startup from the dynamic allowlist's [test_external_ips] section.
+static TEST_EXTERNAL_IPS: std::sync::OnceLock<std::collections::HashSet<String>> =
+    std::sync::OnceLock::new();
+
+/// Initialize test external IPs from the dynamic allowlist.
+/// Call once at startup after loading the allowlist.
+pub fn init_test_external_ips(ips: std::collections::HashSet<String>) {
+    let _ = TEST_EXTERNAL_IPS.set(ips);
+}
+
 /// Returns true if the IP is private, loopback, link-local, or documentation range.
-/// These should never be treated as external attackers.
+/// Respects [test_external_ips] overrides from the dynamic allowlist.
 pub fn is_internal_ip(ip: &str) -> bool {
+    // Check test_external override first
+    if let Some(test_ips) = TEST_EXTERNAL_IPS.get() {
+        if test_ips.contains(ip) {
+            return false; // Treat as external for testing
+        }
+    }
+
     let Ok(addr) = ip.parse::<std::net::IpAddr>() else {
         return false;
     };
