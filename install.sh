@@ -52,11 +52,16 @@ fi
 # we validate sudo once and prefix privileged commands with $SUDO.
 # This keeps the terminal attached so innerwarden setup can prompt the user.
 if [[ "$(id -u)" -ne 0 ]]; then
-  echo ""
-  echo "  Root access needed."
-  echo ""
-  sudo -v || { echo "  sudo failed."; exit 1; }
-  SUDO="sudo"
+  # Check if user has passwordless sudo (common on cloud VMs)
+  if sudo -n true 2>/dev/null; then
+    SUDO="sudo"
+  else
+    echo ""
+    echo "  Root access needed."
+    echo ""
+    sudo -v || { echo "  sudo failed."; exit 1; }
+    SUDO="sudo"
+  fi
 else
   SUDO=""
 fi
