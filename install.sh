@@ -48,18 +48,17 @@ if [[ -f /etc/os-release ]]; then
 fi
 
 # ── Sudo handling ────────────────────────────────────────────────────────
+# Instead of re-execing the entire script with sudo (which kills stdin/tty),
+# we validate sudo once and prefix privileged commands with $SUDO.
+# This keeps the terminal attached so innerwarden setup can prompt the user.
 if [[ "$(id -u)" -ne 0 ]]; then
   echo ""
-  echo "  🛡️  InnerWarden — Root access needed."
+  echo "  Root access needed."
   echo ""
-  SELF_TMP="$(mktemp /tmp/innerwarden-install.XXXXXX)"
-  if [[ "${CANARY}" -eq 1 ]]; then
-    curl -fsSL "https://raw.githubusercontent.com/InnerWarden/innerwarden/develop/install.sh" > "$SELF_TMP"
-  else
-    curl -fsSL "https://github.com/InnerWarden/innerwarden/releases/latest/download/install.sh" > "$SELF_TMP"
-  fi
-  chmod +x "$SELF_TMP"
-  exec sudo bash "$SELF_TMP" "$@"
+  sudo -v || { echo "  sudo failed."; exit 1; }
+  SUDO="sudo"
+else
+  SUDO=""
 fi
 
 BIN_DIR="/usr/local/bin"
@@ -1108,11 +1107,8 @@ if ! innerwarden welcome 2>/dev/null; then
   echo ""
 fi
 
-# Can't auto-run setup from curl pipe (stdin is consumed).
-# Tell user to run it next.
-echo "  Next:"
-echo "    innerwarden setup"
-echo
+# Auto-run setup — stdin is the terminal since we didn't re-exec with sudo
+$SUDO innerwarden setup
 if [[ "$OS_TYPE" == "Darwin" ]]; then
 echo
 echo "  sudo tail -f ${LOG_DIR}/sensor.log"
