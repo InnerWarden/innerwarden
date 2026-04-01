@@ -286,8 +286,14 @@ download_asset() {
   local asset="${binary}-${platform}-${arch}"
   local base_url="https://github.com/${GITHUB_REPO}/releases/download/${version}"
 
-  log "downloading ${asset}..."
-  curl -fsSL --output "${dest}" "${base_url}/${asset}"
+  log "Downloading ${asset}..."
+  if ! curl -fsSL --output "${dest}" "${base_url}/${asset}"; then
+    fail "Download failed: ${asset}. The release may not exist yet.\nTry: curl -fsSL https://innerwarden.com/install | bash   (stable version)"
+  fi
+  # Verify file is not empty
+  if [[ ! -s "${dest}" ]]; then
+    fail "Downloaded file is empty: ${asset}. The release may be corrupted."
+  fi
 
   if curl -fsSL "${base_url}/${asset}.sha256" | awk '{print $1}' > /tmp/iw-expected-sha256 2>/dev/null; then
     local expected actual
@@ -341,9 +347,17 @@ else
 
   # Resolve version: canary, env override, or latest stable
   if [[ "${CANARY}" -eq 1 ]]; then
-    IW_VERSION="canary"
-    log "Using canary channel (develop branch)"
-  elif [[ -n "${INNERWARDEN_VERSION:-}" ]]; then
+    # Check if canary release actually exists
+    if curl -fsSL -o /dev/null "https://github.com/${GITHUB_REPO}/releases/download/canary/innerwarden-sensor-linux-x86_64" 2>/dev/null; then
+      IW_VERSION="canary"
+      log "Using canary channel (develop branch)"
+    else
+      echo "  ⚠ Canary build not ready yet. Installing latest stable instead."
+      echo ""
+      CANARY=0
+    fi
+  fi
+  if [[ "${CANARY}" -eq 0 ]] && [[ -n "${INNERWARDEN_VERSION:-}" ]]; then
     IW_VERSION="${INNERWARDEN_VERSION}"
   else
     log "Fetching latest stable release..."
@@ -1082,59 +1096,13 @@ else
   fi
 fi
 
-log "installation complete."
 echo
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo " Inner Warden installed - services running in safe trial mode"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  ✓ InnerWarden installed (${IW_VERSION})"
+echo "  ✓ Services running in safe mode"
 echo
-echo "  responder.enabled = false  (no actions taken)"
-echo "  dry_run           = true   (logs what it would do)"
-echo "  confidence_threshold = 1.01 (AI runs, but never auto-executes)"
+echo "  Next step:"
+echo "    innerwarden setup"
 echo
-echo "── AI provider ─────────────────────────────────────────────────"
-if [[ "${AI_ENABLED}" == "true" ]]; then
-echo "  ✓ Configured: ${AI_PROVIDER} / ${AI_MODEL}"
-else
-echo "  ✗ Not configured - AI analysis is disabled."
-echo
-echo "  To enable, edit ${AGENT_ENV} and uncomment one of:"
-echo
-echo "    OPENAI_API_KEY=sk-...          (OpenAI - fastest to set up)"
-echo "    ANTHROPIC_API_KEY=sk-ant-...   (Anthropic - also set provider in agent.toml)"
-echo
-echo "  Or use Ollama (local, no key needed):"
-echo "    curl -fsSL https://ollama.ai/install.sh | sh"
-echo "    ollama pull llama3.2"
-echo "    # then set in ${AGENT_CONFIG}:"
-echo "    #   provider = \"ollama\""
-echo "    #   model    = \"llama3.2\""
-echo
-echo "  Run 'innerwarden doctor' after configuring - it validates your setup."
-fi
-echo
-echo "── Enable response skills ───────────────────────────────────────"
-echo "  innerwarden enable block-ip          # IP blocking (ufw by default)"
-echo "  innerwarden enable sudo-protection   # suspend sudo on abuse"
-echo
-echo "── Dashboard ───────────────────────────────────────────────────"
-if [[ "$OS_TYPE" == "Darwin" ]]; then
-echo "  http://localhost:8787"
-else
-echo "  Dashboard binds to localhost for security. Access via SSH tunnel:"
-echo "    ssh -L 8787:localhost:8787 user@your-server"
-echo "  Then open http://localhost:8787 in your browser."
-fi
-echo
-echo "── Getting started ─────────────────────────────────────────────"
-echo "  innerwarden setup    - interactive first-time wizard (AI + Telegram + modules)"
-echo
-echo "── Useful commands ─────────────────────────────────────────────"
-echo "  innerwarden status   - system overview"
-echo "  innerwarden doctor   - diagnose issues with fix hints"
-echo "  innerwarden scan     - detect what's on your server, recommend modules"
-echo "  innerwarden list     - show available capabilities"
-echo "  innerwarden upgrade  - update to the latest release"
 if [[ "$OS_TYPE" == "Darwin" ]]; then
 echo
 echo "  sudo tail -f ${LOG_DIR}/sensor.log"
