@@ -4597,14 +4597,14 @@ fn cmd_configure_telegram(
                 println!("  Waiting for your message...");
                 std::io::stdout().flush()?;
 
-                // Poll getUpdates every 2 seconds for up to 2 minutes
+                // Long-poll getUpdates (5s timeout per request, up to 2 minutes total)
                 let mut found = None;
-                for _ in 0..60 {
+                for _ in 0..24 {
                     if let Some(id) = discover_telegram_chat_id(&token) {
                         found = Some(id);
                         break;
                     }
-                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    // discover_telegram_chat_id already waits 5s via long poll
                     print!(".");
                     std::io::stdout().flush()?;
                 }
@@ -4729,14 +4729,32 @@ fn cmd_configure_telegram(
     Ok(())
 }
 
-/// Try to get the chat_id from recent bot updates (works after the user messages the bot).
+/// Try to get the chat_id by long-polling for new messages.
+/// First clears any pending updates, then waits for a fresh message.
 fn discover_telegram_chat_id(token: &str) -> Option<String> {
-    let url = format!("https://api.telegram.org/bot{token}/getUpdates?limit=1&timeout=0");
-    let resp = ureq::get(&url).call().ok()?;
+    // Step 1: Clear old updates by fetching with offset -1
+    let clear_url =
+        format!("https://api.telegram.org/bot{token}/getUpdates?offset=-1&limit=1&timeout=0");
+    let mut next_offset = 0i64;
+    if let Ok(resp) = ureq::get(&clear_url).call() {
+        if let Ok(json) = resp.into_body().read_json::<serde_json::Value>() {
+            if let Some(last) = json["result"].as_array().and_then(|a| a.last()) {
+                if let Some(uid) = last["update_id"].as_i64() {
+                    next_offset = uid + 1; // Skip past all old updates
+                }
+            }
+        }
+    }
+
+    // Step 2: Long-poll for a NEW message (timeout=5s per request)
+    let poll_url = format!(
+        "https://api.telegram.org/bot{token}/getUpdates?offset={next_offset}&limit=1&timeout=5"
+    );
+    let resp = ureq::get(&poll_url).call().ok()?;
     let json: serde_json::Value = resp.into_body().read_json().ok()?;
     json["result"]
         .as_array()?
-        .last()?
+        .first()?
         .get("message")?
         .get("chat")?
         .get("id")?
