@@ -1262,6 +1262,16 @@ fn process_event(
         if dst_port != u16::MAX && detectors.dynamic_allowlist.is_port_ignored(dst_port) {
             return;
         }
+        // DNS domain allowlist — skip dns_tunneling for allowed domains
+        let domain = ev
+            .details
+            .get("domain")
+            .or_else(|| ev.details.get("rrname"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !domain.is_empty() && detectors.dynamic_allowlist.is_dns_domain_allowed(domain) {
+            return;
+        }
     }
 
     // Incident passthrough: tools that already ran their own detection
