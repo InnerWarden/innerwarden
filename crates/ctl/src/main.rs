@@ -17,6 +17,7 @@ mod scan;
 mod sudoers;
 mod systemd;
 mod upgrade;
+mod welcome;
 
 use capability::{ActivationOptions, CapabilityRegistry};
 use innerwarden_core::audit::{append_admin_action, current_operator, AdminActionEntry};
@@ -144,6 +145,10 @@ enum Command {
     /// Examples:
     ///   innerwarden setup
     Setup,
+
+    /// Show welcome animation (called by installer).
+    #[clap(hide = true)]
+    Welcome,
 
     /// Check for a newer release and optionally upgrade all binaries.
     ///
@@ -1174,6 +1179,20 @@ fn main() -> Result<()> {
         Command::Harden { verbose } => harden::cmd_harden(verbose),
         Command::Doctor => cmd_doctor(&cli, &registry),
         Command::Setup => cmd_setup(&cli),
+        Command::Welcome => {
+            let ebpf = std::process::Command::new("bpftool")
+                .args(["prog", "list"])
+                .output()
+                .ok()
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .matches("innerwarden")
+                        .count() as u32
+                })
+                .unwrap_or(0);
+            welcome::run_welcome(ebpf);
+            Ok(())
+        }
         Command::Scan { ref modules_dir } => scan::cmd_scan(modules_dir),
         Command::Upgrade {
             check,

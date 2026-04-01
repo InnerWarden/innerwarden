@@ -47,19 +47,10 @@ if [[ -f /etc/os-release ]]; then
   DISTRO="$(. /etc/os-release && echo "$NAME $VERSION_ID" 2>/dev/null)"
 fi
 
-# ── Banner ───────────────────────────────────────────────────────────────
-echo ""
-echo "  ┌──────────────────────────────────┐"
-echo "  │  🛡️  InnerWarden                  │"
-echo "  │  Your server's immune system.    │"
-echo "  └──────────────────────────────────┘"
-echo ""
-echo "  ▸ ${OS_TYPE,,} ${ARCH} · kernel ${KERNEL}${DISTRO:+ · $DISTRO}"
-echo ""
-
 # ── Sudo handling ────────────────────────────────────────────────────────
 if [[ "$(id -u)" -ne 0 ]]; then
-  echo "  Root access needed."
+  echo ""
+  echo "  🛡️  InnerWarden — Root access needed."
   echo ""
   SELF_TMP="$(mktemp /tmp/innerwarden-install.XXXXXX)"
   if [[ "${CANARY}" -eq 1 ]]; then
@@ -143,6 +134,16 @@ prompt_yes_no() {
   normalized="$(normalize_bool "${answer}")"
   [[ "${normalized}" == "true" ]]
 }
+
+# ── Banner (only after sudo, so it shows once) ──────────────────────────
+echo ""
+echo "  ┌──────────────────────────────────┐"
+echo "  │  🛡️  InnerWarden                  │"
+echo "  │  Your server's immune system.    │"
+echo "  └──────────────────────────────────┘"
+echo ""
+echo "  ▸ ${OS_TYPE,,} ${ARCH} · kernel ${KERNEL}${DISTRO:+ · $DISTRO}"
+echo ""
 
 if [[ "$OS_TYPE" != "Linux" && "$OS_TYPE" != "Darwin" ]]; then
   fail "this installer supports Linux and macOS (Darwin) hosts only"
@@ -1097,31 +1098,18 @@ else
   fi
 fi
 
-echo "  ✓ Downloaded ${IW_VERSION}"
-echo "  ✓ Installed"
-
-# Check if services are running
-if command -v systemctl >/dev/null 2>&1; then
-  SENSOR_STATUS="$(systemctl is-active innerwarden-sensor 2>/dev/null || true)"
-  AGENT_STATUS="$(systemctl is-active innerwarden-agent 2>/dev/null || true)"
-  if [[ "$SENSOR_STATUS" == "active" ]]; then
-    EBPF_COUNT="$(bpftool prog list 2>/dev/null | grep -c innerwarden || echo 0)"
-    echo "  ⚡ Sensor     running${EBPF_COUNT:+ · ${EBPF_COUNT} eBPF hooks}"
-  else
-    echo "  ⚡ Sensor     starting..."
-  fi
-  if [[ "$AGENT_STATUS" == "active" ]]; then
-    echo "  ⚡ Agent      running"
-  else
-    echo "  ⚡ Agent      starting..."
-  fi
+# Show welcome animation, then auto-run setup
+# The welcome command handles the cool terminal animation
+# Falls back to simple output if binary doesn't support it
+if ! innerwarden welcome 2>/dev/null; then
+  echo "  ✓ Downloaded ${IW_VERSION}"
+  echo "  ✓ Installed"
+  echo "  ✓ Services running"
+  echo ""
 fi
-echo
-echo "  ─────────────────────────────────"
-echo
 
-# Auto-run setup wizard
-exec innerwarden setup
+# Auto-run setup wizard with terminal input (curl pipe consumes stdin)
+exec innerwarden setup < /dev/tty
 if [[ "$OS_TYPE" == "Darwin" ]]; then
 echo
 echo "  sudo tail -f ${LOG_DIR}/sensor.log"
