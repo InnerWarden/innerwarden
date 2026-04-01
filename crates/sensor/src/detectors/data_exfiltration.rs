@@ -252,6 +252,7 @@ impl DataExfiltrationDetector {
                 let build_tools = [
                     "collect2",
                     "ld",
+                    "cc",
                     "cc1",
                     "cc1plus",
                     "as",
@@ -260,6 +261,7 @@ impl DataExfiltrationDetector {
                     "rustc",
                     "gcc",
                     "g++",
+                    "clang",
                     "make",
                     "cmake",
                     "ninja",
