@@ -482,6 +482,226 @@ pub fn comm_in_allowlist(comm: &str, allowlist: &[&str]) -> bool {
     allowlist.iter().any(|p| comm_base.starts_with(p))
 }
 
+// ---------------------------------------------------------------------------
+// Dynamic allowlist — loaded from /etc/innerwarden/allowlist.toml at runtime.
+// No rebuild needed. Sensor re-reads on reload_if_changed().
+// ---------------------------------------------------------------------------
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+/// Runtime-configurable allowlist loaded from TOML file.
+/// Supplements the static const lists above — if a process/IP is in either
+/// the static OR dynamic list, it's considered allowed.
+pub struct DynamicAllowlist {
+    /// Processes to skip (starts_with matching, same as static lists)
+    pub processes: HashSet<String>,
+    /// IPs or CIDRs to treat as trusted
+    pub ips: HashSet<String>,
+    /// Destination ports to ignore in outbound anomaly
+    pub ignored_ports: HashSet<u16>,
+    /// Per-detector process suppressions: detector_name → set of comms
+    pub per_detector: std::collections::HashMap<String, HashSet<String>>,
+    /// Path to the TOML file
+    path: PathBuf,
+    /// Last modification time (for reload detection)
+    last_modified: Option<SystemTime>,
+}
+
+impl DynamicAllowlist {
+    /// Load from file. Returns empty allowlist if file doesn't exist (not an error).
+    pub fn load(path: &Path) -> Self {
+        let mut al = Self {
+            processes: HashSet::new(),
+            ips: HashSet::new(),
+            ignored_ports: HashSet::new(),
+            per_detector: std::collections::HashMap::new(),
+            path: path.to_path_buf(),
+            last_modified: None,
+        };
+        al.reload();
+        al
+    }
+
+    /// Reload from disk if the file has changed.
+    /// Returns true if the file was reloaded.
+    pub fn reload_if_changed(&mut self) -> bool {
+        let current_mtime = std::fs::metadata(&self.path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+
+        if current_mtime != self.last_modified {
+            self.reload();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn reload(&mut self) {
+        let content = match std::fs::read_to_string(&self.path) {
+            Ok(c) => c,
+            Err(_) => return, // File doesn't exist yet — that's fine
+        };
+
+        // Parse TOML manually (sensor doesn't depend on toml crate for this)
+        // Simple key = "value" format per section
+        self.processes.clear();
+        self.ips.clear();
+        self.ignored_ports.clear();
+        self.per_detector.clear();
+
+        let mut section = String::new();
+        let mut detector_section: Option<String> = None;
+
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            // Section header
+            if line.starts_with('[') && line.ends_with(']') {
+                section = line[1..line.len() - 1].to_string();
+                detector_section = if section.starts_with("detectors.") {
+                    Some(section.strip_prefix("detectors.").unwrap().to_string())
+                } else {
+                    None
+                };
+                continue;
+            }
+
+            // Key = "value" or key = value
+            if let Some((key, value)) = line.split_once('=') {
+                let key = key.trim().trim_matches('"');
+                let value = value.trim().trim_matches('"');
+
+                match section.as_str() {
+                    "processes" => {
+                        self.processes.insert(key.to_string());
+                    }
+                    "ips" => {
+                        self.ips.insert(key.to_string());
+                    }
+                    "ports" => {
+                        // Parse comma-separated port list: ignored = 0, 9, 67
+                        for part in value.split(',') {
+                            if let Ok(port) = part.trim().parse::<u16>() {
+                                self.ignored_ports.insert(port);
+                            }
+                        }
+                    }
+                    _ => {
+                        if let Some(ref det) = detector_section {
+                            let entries = self.per_detector.entry(det.clone()).or_default();
+                            entries.insert(key.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        self.last_modified = std::fs::metadata(&self.path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+
+        tracing::info!(
+            processes = self.processes.len(),
+            ips = self.ips.len(),
+            ports = self.ignored_ports.len(),
+            detectors = self.per_detector.len(),
+            path = %self.path.display(),
+            "Dynamic allowlist loaded"
+        );
+    }
+
+    /// Check if a process comm is dynamically allowlisted (global or per-detector).
+    pub fn is_process_allowed(&self, comm: &str, detector: Option<&str>) -> bool {
+        let comm_base = comm.split('/').next_back().unwrap_or(comm);
+        let comm_base = comm_base.trim_matches(|c: char| c == '(' || c == ')');
+
+        // Global process allowlist
+        if self
+            .processes
+            .iter()
+            .any(|p| comm_base.starts_with(p.as_str()))
+        {
+            return true;
+        }
+
+        // Per-detector allowlist
+        if let Some(det) = detector {
+            if let Some(entries) = self.per_detector.get(det) {
+                if entries.iter().any(|p| comm_base.starts_with(p.as_str())) {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    /// Check if an IP is dynamically allowlisted.
+    pub fn is_ip_allowed(&self, ip: &str) -> bool {
+        if self.ips.contains(ip) {
+            return true;
+        }
+        // CIDR check
+        self.ips.iter().any(|entry| {
+            if entry.contains('/') {
+                crate::detectors::allowlists::cidr_matches(ip, entry)
+            } else {
+                false
+            }
+        })
+    }
+
+    /// Check if a destination port should be ignored.
+    pub fn is_port_ignored(&self, port: u16) -> bool {
+        self.ignored_ports.contains(&port)
+    }
+}
+
+/// CIDR match helper (reusable).
+pub fn cidr_matches(ip_str: &str, cidr: &str) -> bool {
+    let Some((base_str, prefix_str)) = cidr.split_once('/') else {
+        return false;
+    };
+    let Ok(prefix_len) = prefix_str.parse::<u32>() else {
+        return false;
+    };
+    let Ok(ip) = ip_str.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    let Ok(base) = base_str.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    match (ip, base) {
+        (std::net::IpAddr::V4(ip4), std::net::IpAddr::V4(base4)) if prefix_len <= 32 => {
+            let shift = 32u32.saturating_sub(prefix_len);
+            let mask = if shift >= 32 { 0u32 } else { !0u32 << shift };
+            (u32::from(ip4) & mask) == (u32::from(base4) & mask)
+        }
+        (std::net::IpAddr::V6(ip6), std::net::IpAddr::V6(base6)) if prefix_len <= 128 => {
+            let shift = 128u32.saturating_sub(prefix_len);
+            let mask = if shift >= 128 { 0u128 } else { !0u128 << shift };
+            (u128::from(ip6) & mask) == (u128::from(base6) & mask)
+        }
+        _ => false,
+    }
+}
+
+/// Combined check: static const list OR dynamic allowlist.
+pub fn comm_in_any_allowlist(
+    comm: &str,
+    static_list: &[&str],
+    dynamic: &DynamicAllowlist,
+    detector: Option<&str>,
+) -> bool {
+    comm_in_allowlist(comm, static_list) || dynamic.is_process_allowed(comm, detector)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -532,5 +752,83 @@ mod tests {
         check("DISCOVERY_ALLOWED", DISCOVERY_ALLOWED);
         check("PRIVESC_ALLOWED", PRIVESC_ALLOWED);
         check("C2_OUTBOUND_ALLOWED", C2_OUTBOUND_ALLOWED);
+    }
+
+    #[test]
+    fn dynamic_allowlist_empty_file() {
+        let al = DynamicAllowlist::load(Path::new("/nonexistent/allowlist.toml"));
+        assert!(al.processes.is_empty());
+        assert!(al.ips.is_empty());
+        assert!(!al.is_process_allowed("evil", None));
+    }
+
+    #[test]
+    fn dynamic_allowlist_parse() {
+        let dir = std::env::temp_dir().join("iw_test_allowlist");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("allowlist.toml");
+        std::fs::write(
+            &path,
+            r#"
+# Dynamic allowlist for testing
+[processes]
+"gomon" = "Go monitor"
+"updater" = "System updater"
+
+[ips]
+"172.18.0.0/16" = "Docker network"
+"10.0.0.5" = "Build server"
+
+[ports]
+ignored = 0, 9, 67
+
+[detectors.outbound_anomaly]
+"my_custom_app" = "Internal tool"
+"#,
+        )
+        .unwrap();
+
+        let al = DynamicAllowlist::load(&path);
+        assert!(al.is_process_allowed("gomon", None));
+        assert!(al.is_process_allowed("updater", None));
+        assert!(!al.is_process_allowed("evil", None));
+        assert!(al.is_process_allowed("my_custom_app", Some("outbound_anomaly")));
+        assert!(!al.is_process_allowed("my_custom_app", Some("ssh_bruteforce")));
+        assert!(al.is_ip_allowed("172.18.0.6"));
+        assert!(al.is_ip_allowed("10.0.0.5"));
+        assert!(!al.is_ip_allowed("1.2.3.4"));
+        assert!(al.is_port_ignored(9));
+        assert!(!al.is_port_ignored(80));
+
+        // Cleanup
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
+    fn cidr_matches_works() {
+        assert!(cidr_matches("172.18.0.6", "172.18.0.0/16"));
+        assert!(!cidr_matches("172.19.0.6", "172.18.0.0/16"));
+        assert!(cidr_matches("10.0.0.1", "10.0.0.0/24"));
+        assert!(!cidr_matches("10.0.1.1", "10.0.0.0/24"));
+    }
+
+    #[test]
+    fn comm_in_any_works() {
+        let al = DynamicAllowlist::load(Path::new("/nonexistent"));
+        // Static only
+        assert!(comm_in_any_allowlist(
+            "systemd-journal",
+            SYSTEM_DAEMONS,
+            &al,
+            None
+        ));
+        // Neither
+        assert!(!comm_in_any_allowlist(
+            "evil-script",
+            SYSTEM_DAEMONS,
+            &al,
+            None
+        ));
     }
 }

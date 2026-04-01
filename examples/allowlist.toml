@@ -1,0 +1,51 @@
+# InnerWarden Dynamic Allowlist
+#
+# Place this file at /etc/innerwarden/allowlist.toml
+# The sensor reads it on startup and reloads automatically when changed.
+# No rebuild or restart needed.
+#
+# This file supplements the built-in allowlists — entries here are ADDED
+# to the default lists, not replacing them.
+
+# ─── Global process allowlist ─────────────────────────────────────────────
+# Processes listed here will not trigger alerts from ANY detector.
+# Uses starts_with matching (handles kernel comm truncation).
+# Format: "process_name" = "reason for allowlisting"
+
+[processes]
+# "gomon" = "Go monitoring daemon - health checks"
+# "updater" = "System auto-updater"
+# "my-deploy-tool" = "Internal deployment tool"
+
+# ─── IP / CIDR allowlist ─────────────────────────────────────────────────
+# IPs listed here are treated as trusted — won't trigger network detectors.
+# Supports exact IPs and CIDR notation.
+
+[ips]
+# "172.18.0.0/16" = "Docker internal network"
+# "10.0.0.5" = "Build server"
+
+# ─── Ignored destination ports ────────────────────────────────────────────
+# Outbound connections to these ports are ignored by outbound_anomaly.
+# Port 0 (DNS artifacts) is always ignored by default.
+
+[ports]
+# ignored = 9, 67
+
+# ─── Per-detector process suppressions ────────────────────────────────────
+# More granular: suppress a process only for a specific detector.
+# Useful when a process is legitimate for one detector but suspicious for another.
+#
+# Available detectors: ssh_bruteforce, credential_stuffing, port_scan,
+# outbound_anomaly, c2_callback, dns_tunneling, discovery_burst,
+# ransomware, privesc, execution_guard, process_tree, reverse_shell,
+# fileless, log_tampering, rootkit, crypto_miner, web_scan, etc.
+
+# [detectors.outbound_anomaly]
+# "my_custom_app" = "Internal monitoring tool with many outbound connections"
+
+# [detectors.discovery_burst]
+# "my_inventory_script" = "Asset inventory runs ps/id/uname every hour"
+
+# [detectors.ransomware]
+# "backup-agent" = "Backup tool writes many files rapidly"
