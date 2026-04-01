@@ -117,4 +117,6 @@ pub mod io_uring_anomaly;
 pub mod mitre_hunt;
 pub mod packet_flood;
 pub mod sigma_rule;
+#[allow(dead_code)]
+pub mod stego_detect;
 pub mod yara_scan;
