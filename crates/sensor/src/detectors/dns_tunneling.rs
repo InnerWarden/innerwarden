@@ -36,6 +36,8 @@ const DNS_ALLOWED_DOMAINS: &[&str] = &[
     "snapcraft.io",
     "canonical.com",
     "ntp.org",
+    "in-addr.arpa",
+    "ip6.arpa",
     "cloudfront.net",
     "akamaiedge.net",
     "fastly.net",
