@@ -42,11 +42,13 @@ const DNS_ALLOWED_DOMAINS: &[&str] = &[
 /// from eBPF DNS tunneling detection (beaconing, burst, nonstandard checks).
 const DNS_ALLOWED_COMMS: &[&str] = &[
     "crowdsec",     // CrowdSec queries many DNS servers for threat intel
+    "cscli",        // CrowdSec CLI — queries threat intel DNS servers
     "gomon",        // Go monitoring agent does health checks
     "systemd-reso", // systemd-resolved (truncated comm)
     "unbound",      // DNS resolver
     "named",        // BIND DNS
     "dnsmasq",      // DNS forwarder
+    "snapd",        // Snap daemon — resolves snap store and update servers
 ];
 
 /// Detects DNS tunneling patterns from Suricata DNS query logs AND eBPF connect events.

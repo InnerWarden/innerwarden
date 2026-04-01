@@ -280,64 +280,9 @@ fn file_open_to_event(
     }
 }
 
-/// Processes that legitimately escalate to root - filtered in userspace.
-const LEGITIMATE_ESCALATION: &[&str] = &[
-    "sudo",
-    "su",
-    "login",
-    "sshd",
-    "cron",
-    "crond",
-    "atd",
-    "polkitd",
-    "pkexec",
-    "systemd",
-    "dbus-daemon",
-    "gdm",
-    "lightdm",
-    "sddm",
-    "newgrp",
-    // Package managers and system tools that use SUID/setuid
-    "install",
-    "find",
-    "mandb",
-    "man",
-    "dpkg",
-    "apt",
-    "apt-get",
-    "apt-check",
-    "unattended-upg", // unattended-upgrades (truncated comm)
-    "update-notifier",
-    "snap",
-    "snapd",
-    "passwd",
-    "chsh",
-    "chfn",
-    "chage",
-    "gpasswd",
-    "usermod",
-    "useradd",
-    "groupadd",
-    "at",
-    "fusermount",
-    "mount",
-    "umount",
-    "ping",
-    "traceroute",
-    "ssh-agent",
-    "gpg-agent",
-    "gpg",
-    "ntpd",
-    "chronyd",
-    "logrotate",
-    "run-parts",
-    "anacron",
-    "innerwarden",    // our own agent/sensor using sudo for bpftool/ufw
-    "innerwarden-ag", // truncated comm (16 char limit)
-    "innerwarden-se",
-    "innerwarden-ct", // innerwarden-ctl
-    "fwupdmgr",       // firmware update manager
-];
+// Privilege escalation allowlist: uses centralized PRIVESC_ALLOWED from
+// allowlists.rs (Falco-inspired). Previously a local duplicate list lived here;
+// now unified so additions in one place cover both collector and detector.
 
 /// Convert a kernel privilege escalation event to an Inner Warden Event.
 fn privesc_to_event(
@@ -351,16 +296,14 @@ fn privesc_to_event(
 ) -> Option<Event> {
     let comm_base = comm.split('/').next_back().unwrap_or(comm);
 
-    // Filter legitimate escalation processes.
-    if LEGITIMATE_ESCALATION
-        .iter()
-        .any(|p| comm_base.starts_with(p))
+    // Filter legitimate escalation processes (centralized Falco-inspired allowlist).
+    // Handles kernel task parentheses via comm_in_allowlist: (install) -> install.
+    if crate::detectors::allowlists::is_innerwarden_process(old_uid as u64, comm_base)
+        || crate::detectors::allowlists::comm_in_allowlist(
+            comm_base,
+            crate::detectors::allowlists::PRIVESC_ALLOWED,
+        )
     {
-        return None;
-    }
-
-    // Filter innerwarden's own service user and known privilege escalation processes.
-    if crate::detectors::allowlists::is_innerwarden_process(old_uid as u64, comm_base) {
         return None;
     }
 
