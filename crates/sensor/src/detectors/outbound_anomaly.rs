@@ -176,11 +176,8 @@ impl OutboundAnomalyDetector {
         // Skip verified infrastructure processes (centralized allowlist).
         // Includes reverse proxies, monitors, package managers, cloud agents.
         // Verifies binary path via /proc/PID/exe to prevent evasion by name spoofing.
-        if super::is_verified_infra_process(
-            comm_base,
-            pid,
-            super::allowlists::C2_OUTBOUND_ALLOWED,
-        ) {
+        if super::is_verified_infra_process(comm_base, pid, super::allowlists::C2_OUTBOUND_ALLOWED)
+        {
             return None;
         }
 
