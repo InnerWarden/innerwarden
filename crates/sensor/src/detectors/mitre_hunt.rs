@@ -295,6 +295,7 @@ impl MitreHuntDetector {
 
     // ── T1036.005: Masquerading ────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     fn check_masquerading(
         &mut self,
         argv0: &str,
@@ -356,6 +357,7 @@ impl MitreHuntDetector {
 
     // ── T1529: System Shutdown/Reboot ──────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     fn check_shutdown(
         &mut self,
         argv0_base: &str,
@@ -410,6 +412,7 @@ impl MitreHuntDetector {
 
     // ── T1489: Service Stop ────────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     fn check_service_stop(
         &mut self,
         argv0_base: &str,
@@ -475,6 +478,7 @@ impl MitreHuntDetector {
 
     // ── T1222.002: File Permissions Modification ───────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     fn check_file_permission_mod(
         &mut self,
         argv0_base: &str,
@@ -537,6 +541,7 @@ impl MitreHuntDetector {
 
     // ── T1219: Remote Access Software ──────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     fn check_remote_access(
         &mut self,
         argv0_base: &str,
@@ -582,6 +587,7 @@ impl MitreHuntDetector {
 
     // ── T1560: Archive Collected Data ──────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     fn check_data_archive(
         &mut self,
         argv0_base: &str,
@@ -643,6 +649,7 @@ impl MitreHuntDetector {
 
     // ── T1090: Proxy/Tunneling ─────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     fn check_proxy_tunnel(
         &mut self,
         argv0_base: &str,
@@ -737,6 +744,7 @@ impl MitreHuntDetector {
 
     // ── T1053.002: At Jobs ─────────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     fn check_at_job(
         &mut self,
         argv0_base: &str,
@@ -780,6 +788,7 @@ impl MitreHuntDetector {
 
     // ── T1564.001: Hidden Files and Directories ────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     fn check_hidden_artifact(
         &mut self,
         argv0_base: &str,
@@ -844,6 +853,7 @@ impl MitreHuntDetector {
 
     // ── T1040: Network Sniffing ────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     fn check_network_sniffing(
         &mut self,
         argv0_base: &str,

@@ -147,6 +147,7 @@ pub fn map_detector(detector: &str) -> Option<MitreMapping> {
 /// Multi-technique detectors (sudo_abuse, sensitive_write, etc.) detect patterns
 /// that span several MITRE techniques. This function returns ALL of them for
 /// accurate coverage counting. `map_detector()` returns only the primary.
+#[allow(dead_code)]
 pub fn map_detector_all(detector: &str) -> Vec<MitreMapping> {
     let m = |tactic: &'static str, id: &'static str, name: &'static str| MitreMapping {
         tactic,
@@ -262,6 +263,7 @@ pub fn map_detector_all(detector: &str) -> Vec<MitreMapping> {
 /// Collect all unique MITRE technique IDs covered across every known detector.
 ///
 /// Used by threat reports and dashboard to report total coverage count.
+#[allow(dead_code)]
 pub fn all_technique_ids() -> Vec<&'static str> {
     use std::collections::BTreeSet;
 
