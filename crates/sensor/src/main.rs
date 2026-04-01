@@ -363,6 +363,9 @@ async fn main() -> Result<()> {
     let allowlist_path = std::path::Path::new("/etc/innerwarden/allowlist.toml");
     let dynamic_allowlist = detectors::allowlists::DynamicAllowlist::load(allowlist_path);
 
+    // Initialize test external IPs so is_internal_ip() respects overrides.
+    detectors::init_test_external_ips(dynamic_allowlist.test_external_ips.clone());
+
     let mut detectors = DetectorSet {
         dynamic_allowlist,
         allowlist_last_check: std::time::Instant::now(),

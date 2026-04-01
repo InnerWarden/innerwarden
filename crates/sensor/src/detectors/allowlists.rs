@@ -503,6 +503,9 @@ pub struct DynamicAllowlist {
     pub ignored_ports: HashSet<u16>,
     /// Per-detector process suppressions: detector_name → set of comms
     pub per_detector: std::collections::HashMap<String, HashSet<String>>,
+    /// IPs that are technically private but should be treated as external
+    /// for testing purposes (e.g., Mac on local network running attacks).
+    pub test_external_ips: HashSet<String>,
     /// Path to the TOML file
     path: PathBuf,
     /// Last modification time (for reload detection)
@@ -517,6 +520,7 @@ impl DynamicAllowlist {
             ips: HashSet::new(),
             ignored_ports: HashSet::new(),
             per_detector: std::collections::HashMap::new(),
+            test_external_ips: HashSet::new(),
             path: path.to_path_buf(),
             last_modified: None,
         };
@@ -551,6 +555,7 @@ impl DynamicAllowlist {
         self.ips.clear();
         self.ignored_ports.clear();
         self.per_detector.clear();
+        self.test_external_ips.clear();
 
         let mut section = String::new();
         let mut detector_section: Option<String> = None;
@@ -584,6 +589,9 @@ impl DynamicAllowlist {
                     "ips" => {
                         self.ips.insert(key.to_string());
                     }
+                    "test_external_ips" => {
+                        self.test_external_ips.insert(key.to_string());
+                    }
                     "ports" => {
                         // Parse comma-separated port list: ignored = 0, 9, 67
                         for part in value.split(',') {
@@ -610,6 +618,7 @@ impl DynamicAllowlist {
             processes = self.processes.len(),
             ips = self.ips.len(),
             ports = self.ignored_ports.len(),
+            test_external = self.test_external_ips.len(),
             detectors = self.per_detector.len(),
             path = %self.path.display(),
             "Dynamic allowlist loaded"
@@ -661,6 +670,12 @@ impl DynamicAllowlist {
     pub fn is_port_ignored(&self, port: u16) -> bool {
         self.ignored_ports.contains(&port)
     }
+
+    /// Check if an IP should be treated as external even though it's technically
+    /// private. Used for testing from local networks (e.g., Mac attacking VM).
+    pub fn is_test_external(&self, ip: &str) -> bool {
+        self.test_external_ips.contains(ip)
+    }
 }
 
 /// CIDR match helper (reusable).
@@ -690,6 +705,16 @@ pub fn cidr_matches(ip_str: &str, cidr: &str) -> bool {
         }
         _ => false,
     }
+}
+
+/// Check if an IP is internal, respecting test_external_ips overrides.
+/// Returns false (= treat as external) if the IP is in the test_external list,
+/// even if it's technically a private IP.
+pub fn is_internal_ip_with_overrides(ip: &str, dynamic: &DynamicAllowlist) -> bool {
+    if dynamic.is_test_external(ip) {
+        return false; // Treat as external for testing
+    }
+    super::is_internal_ip(ip)
 }
 
 /// Combined check: static const list OR dynamic allowlist.
