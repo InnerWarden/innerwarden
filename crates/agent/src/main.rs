@@ -10,6 +10,7 @@ mod ai;
 mod allowlist;
 mod attacker_intel;
 mod baseline;
+mod cloud_safelist;
 mod cloudflare;
 mod config;
 mod correlation;
@@ -1246,6 +1247,9 @@ async fn main() -> Result<()> {
 
     // Validate Telegram config early to fail fast on misconfiguration
     cfg.telegram.validate()?;
+
+    // Initialize cloud provider IP safelist (Google, AWS, Azure, Cloudflare, etc.)
+    cloud_safelist::init();
 
     // Advisory cache: shared between dashboard (writes advisory denials) and
     // the incident processing loop (checks for advisory violations).
@@ -3006,6 +3010,18 @@ async fn process_incidents(
                             incident_id = %incident.incident_id,
                             "AbuseIPDB auto-block tried to block protected IP {ip} - skipped"
                         );
+                    } else if cloud_safelist::is_cloud_provider_ip(&ip) {
+                        let provider =
+                            cloud_safelist::identify_provider(&ip).unwrap_or("Unknown Cloud");
+                        warn!(
+                            ip = %ip,
+                            provider,
+                            score = rep.confidence_score,
+                            incident_id = %incident.incident_id,
+                            "AbuseIPDB auto-block skipped: {ip} belongs to {provider}. \
+                             Sending to AI for evaluation instead."
+                        );
+                        // Don't block — let it fall through to the AI gate below
                     } else {
                         info!(
                             incident_id = %incident.incident_id,
