@@ -122,8 +122,36 @@ pub struct WeeklyBucket {
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Validate that a month string is exactly YYYY-MM format with no path traversal.
+/// Prevents CWE-22 when month is used in file paths.
+fn validate_month(month: &str) -> Option<&str> {
+    // Must be exactly 7 chars: YYYY-MM
+    if month.len() != 7 {
+        return None;
+    }
+    // Must not contain path separators or dots
+    if month.contains('/') || month.contains('\\') || month.contains("..") {
+        return None;
+    }
+    // Must parse as valid year-month
+    let parts: Vec<&str> = month.split('-').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let year: u32 = parts[0].parse().ok()?;
+    let mon: u32 = parts[1].parse().ok()?;
+    if !(2000..=2100).contains(&year) || !(1..=12).contains(&mon) {
+        return None;
+    }
+    Some(month)
+}
+
 /// Check if a monthly report already exists for the given month (YYYY-MM).
 pub fn report_exists(data_dir: &Path, month: &str) -> bool {
+    let month = match validate_month(month) {
+        Some(m) => m,
+        None => return false,
+    };
     data_dir
         .join(format!("monthly-report-{month}.json"))
         .exists()
@@ -187,6 +215,7 @@ pub fn generate_monthly(
     month: &str,
     profiles: &HashMap<String, AttackerProfile>,
 ) -> Result<MonthlyThreatReport> {
+    let month = validate_month(month).context("invalid month format (expected YYYY-MM)")?;
     let month_start =
         NaiveDate::parse_from_str(&format!("{month}-01"), "%Y-%m-%d").context("invalid month")?;
     let next_month = if month_start.month() == 12 {
