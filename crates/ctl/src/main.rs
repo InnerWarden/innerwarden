@@ -1113,6 +1113,48 @@ enum GdprCommand {
 // Entry point
 // ---------------------------------------------------------------------------
 
+/// Check if we have write access to the config directory.
+fn am_root() -> bool {
+    let config_dir = Path::new("/etc/innerwarden");
+    if config_dir.exists() {
+        // Try to check write permission
+        std::fs::metadata(config_dir)
+            .map(|m| {
+                use std::os::unix::fs::MetadataExt;
+                m.uid() == 0 && unsafe { libc_geteuid() } == 0
+            })
+            .unwrap_or(false)
+    } else {
+        // Config dir doesn't exist yet — need root to create it
+        unsafe { libc_geteuid() == 0 }
+    }
+}
+
+/// Safe wrapper for geteuid without libc dep.
+unsafe fn libc_geteuid() -> u32 {
+    // geteuid is always available on Linux/macOS
+    extern "C" {
+        fn geteuid() -> u32;
+    }
+    geteuid()
+}
+
+/// Re-execute the current command with sudo, with clear user messaging.
+fn reexec_with_sudo() -> Result<()> {
+    eprintln!("┌─────────────────────────────────────────────────────────┐");
+    eprintln!("│  InnerWarden needs root access to write configuration. │");
+    eprintln!("│  Your password may be requested by sudo.               │");
+    eprintln!("└─────────────────────────────────────────────────────────┘");
+    eprintln!();
+    let exe = std::env::current_exe()?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let status = std::process::Command::new("sudo")
+        .arg(exe)
+        .args(&args)
+        .status()?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
 fn main() -> Result<()> {
     let mut cli = Cli::parse();
     let registry = CapabilityRegistry::default_all();
@@ -3322,6 +3364,11 @@ fn write_env_key(env_path: &Path, key: &str, value: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_setup(cli: &Cli) -> Result<()> {
+    // Re-exec with sudo if not root — setup writes to /etc/innerwarden/
+    if !am_root() {
+        return reexec_with_sudo();
+    }
+
     let env_file = cli
         .agent_config
         .parent()
