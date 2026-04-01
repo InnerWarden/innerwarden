@@ -29,45 +29,39 @@ IW_USER="innerwarden"
 # Parse flags
 WITH_INTEGRATIONS=0
 CANARY=0
+VERBOSE=0
 for arg in "$@"; do
   case "$arg" in
     --with-integrations) WITH_INTEGRATIONS=1 ;;
     --canary) CANARY=1 ;;
+    --verbose) VERBOSE=1 ;;
   esac
 done
 
-# Detect OS + arch
+# Detect OS + arch + distro
 OS_TYPE="$(uname -s)"   # Linux | Darwin
 ARCH="$(uname -m)"      # x86_64 | aarch64 | arm64
 KERNEL="$(uname -r)"
-
-# ── Nice UX banner ──────────────────────────────────────────────────────
-echo ""
-echo "  🛡️  InnerWarden Installer"
-echo "  Self-defending security agent for Linux and macOS."
-echo ""
-if [[ "$CANARY" -eq 1 ]]; then
-  echo "✓ Channel: canary (develop branch — latest features)"
-else
-  echo "✓ Channel: stable"
+DISTRO=""
+if [[ -f /etc/os-release ]]; then
+  DISTRO="$(. /etc/os-release && echo "$NAME $VERSION_ID" 2>/dev/null)"
 fi
-echo "✓ Detected: ${OS_TYPE,,} ${ARCH}, kernel ${KERNEL}"
+
+# ── Banner ───────────────────────────────────────────────────────────────
+echo ""
+echo "  ┌──────────────────────────────────┐"
+echo "  │  🛡️  InnerWarden                  │"
+echo "  │  Your server's immune system.    │"
+echo "  └──────────────────────────────────┘"
+echo ""
+echo "  ▸ ${OS_TYPE,,} ${ARCH} · kernel ${KERNEL}${DISTRO:+ · $DISTRO}"
 echo ""
 
 # ── Sudo handling ────────────────────────────────────────────────────────
-# If not root, re-exec with sudo (ask once, covers the entire install)
 if [[ "$(id -u)" -ne 0 ]]; then
-  echo "Install plan"
-  echo "  OS: ${OS_TYPE}"
-  echo "  Architecture: ${ARCH}"
-  echo "  Components: sensor + agent + CLI"
+  echo "  Root access needed."
   echo ""
-  echo "  Root access needed — your password may be requested once."
-  echo ""
-  # When piped from curl, $0 is "bash" not a file path.
-  # Save script to tmp, re-exec with sudo.
   SELF_TMP="$(mktemp /tmp/innerwarden-install.XXXXXX)"
-  # Re-download the script since stdin is consumed
   if [[ "${CANARY}" -eq 1 ]]; then
     curl -fsSL "https://raw.githubusercontent.com/InnerWarden/innerwarden/develop/install.sh" > "$SELF_TMP"
   else
@@ -107,11 +101,14 @@ AGENT_UNIT="/etc/systemd/system/innerwarden-agent.service"
 AUDIT_RULE_FILE="/etc/audit/rules.d/innerwarden-shell-audit.rules"
 
 log() {
-  printf '· %s\n' "$*"
+  if [[ "${VERBOSE:-0}" -eq 1 ]]; then
+    printf '  · %s\n' "$*"
+  fi
 }
 
-step() {
-  printf '\n[%s] %s\n' "$1" "$2"
+vlog() {
+  # Always visible log
+  printf '  · %s\n' "$*"
 }
 
 fail() {
@@ -286,7 +283,9 @@ download_asset() {
   local asset="${binary}-${platform}-${arch}"
   local base_url="https://github.com/${GITHUB_REPO}/releases/download/${version}"
 
-  log "Downloading ${asset}..."
+  if [[ "${VERBOSE}" -eq 1 ]]; then
+    log "Downloading ${asset}..."
+  fi
   if ! curl -fsSL --output "${dest}" "${base_url}/${asset}"; then
     fail "Download failed: ${asset}. The release may not exist yet.\nTry: curl -fsSL https://innerwarden.com/install | bash   (stable version)"
   fi
@@ -369,7 +368,9 @@ else
     [[ -n "${IW_VERSION}" ]] || fail "could not determine latest release version from GitHub API"
   fi
 
-  step "1/4" "Downloading InnerWarden ${IW_VERSION} (${PLATFORM}/${ARCH})"
+  if [[ "${VERBOSE}" -eq 1 ]]; then
+    log "Version: ${IW_VERSION} (${PLATFORM}/${ARCH})"
+  fi
 
   TMP_DIR="$(mktemp -d)"
   trap 'rm -rf "${TMP_DIR}"' EXIT
@@ -1096,13 +1097,31 @@ else
   fi
 fi
 
+echo "  ✓ Downloaded ${IW_VERSION}"
+echo "  ✓ Installed"
+
+# Check if services are running
+if command -v systemctl >/dev/null 2>&1; then
+  SENSOR_STATUS="$(systemctl is-active innerwarden-sensor 2>/dev/null || true)"
+  AGENT_STATUS="$(systemctl is-active innerwarden-agent 2>/dev/null || true)"
+  if [[ "$SENSOR_STATUS" == "active" ]]; then
+    EBPF_COUNT="$(bpftool prog list 2>/dev/null | grep -c innerwarden || echo 0)"
+    echo "  ⚡ Sensor     running${EBPF_COUNT:+ · ${EBPF_COUNT} eBPF hooks}"
+  else
+    echo "  ⚡ Sensor     starting..."
+  fi
+  if [[ "$AGENT_STATUS" == "active" ]]; then
+    echo "  ⚡ Agent      running"
+  else
+    echo "  ⚡ Agent      starting..."
+  fi
+fi
 echo
-echo "  ✓ InnerWarden installed (${IW_VERSION})"
-echo "  ✓ Services running in safe mode"
+echo "  ─────────────────────────────────"
 echo
-echo "  Next step:"
-echo "    innerwarden setup"
-echo
+
+# Auto-run setup wizard
+exec innerwarden setup
 if [[ "$OS_TYPE" == "Darwin" ]]; then
 echo
 echo "  sudo tail -f ${LOG_DIR}/sensor.log"

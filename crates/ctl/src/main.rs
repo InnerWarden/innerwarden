@@ -3397,55 +3397,11 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
     let responder_ok = is_enabled("responder");
 
     // ── Welcome ───────────────────────────────────────────────────────────
-    println!("InnerWarden - first-time setup\n");
-    println!("Scanning your system to see what's installed...\n");
+    println!("  Let's set up your protection:\n");
 
+    // Run scan silently for module auto-enable later
     let probes = scan::run_probes();
     let recs = scan::score_modules(&probes);
-
-    // Print compact scan summary - essential modules only
-    let essential: Vec<&scan::ModuleRec> = recs
-        .iter()
-        .filter(|r| matches!(r.tier, scan::Tier::Essential))
-        .collect();
-    let recommended: Vec<&scan::ModuleRec> = recs
-        .iter()
-        .filter(|r| matches!(r.tier, scan::Tier::Recommended))
-        .collect();
-
-    if !essential.is_empty() {
-        println!("Detected on this host:");
-        for r in &essential {
-            println!(
-                "  ★ {}  - {}",
-                r.name,
-                r.why.split('.').next().unwrap_or("")
-            );
-        }
-        println!();
-    }
-    if !recommended.is_empty() {
-        println!("Also available:");
-        for r in &recommended {
-            println!(
-                "  · {}  - {}",
-                r.name,
-                r.why.split('.').next().unwrap_or("")
-            );
-        }
-        println!();
-    }
-    println!("Run 'innerwarden scan' after setup for the full module advisor.\n");
-    println!("{}", "─".repeat(56));
-
-    println!();
-    println!("Now configuring the essentials in 6 steps:");
-    println!("  1. AI provider    - brains for threat analysis");
-    println!("  2. Telegram       - real-time alerts on your phone");
-    println!("  3. Responder      - decide how to react to threats");
-    println!("  4. Modules        - enable essential protections");
-    println!("  5. Sensitivity    - how often you get notified");
-    println!("  6. Mesh network   - collaborative defense with other nodes\n");
     println!("You can skip any step and run it later with 'innerwarden configure'.\n");
     println!("{}", "─".repeat(56));
 
