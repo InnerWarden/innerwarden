@@ -162,6 +162,13 @@ impl OutboundAnomalyDetector {
             return None;
         }
 
+        // Skip port 0 connections — these are DNS resolution artifacts from the
+        // kernel (connect() for UDP DNS lookups reports dst_port=0 in eBPF),
+        // not actual outbound connections.
+        if dst_port == 0 {
+            return None;
+        }
+
         // Skip InnerWarden's own processes (mesh, CrowdSec, API calls).
         let comm_base = comm.split('/').next_back().unwrap_or(comm);
         let uid = event

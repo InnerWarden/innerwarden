@@ -60,12 +60,14 @@ const RANSOMWARE_EXTENSIONS: &[&str] = &[
 const SAFE_MASS_WRITERS: &[&str] = &[
     "cargo",
     "rustc",
+    "coordinator",
     "gcc",
     "g++",
     "cc1",
     "cc1plus",
     "clang",
     "ld",
+    "lld",
     "ar",
     "npm",
     "yarn",
@@ -367,7 +369,8 @@ impl RansomwareDetector {
         // Mass file write detection (skip known safe mass-writers like compilers)
         let count = tracker.len();
         let threshold = self.file_threshold;
-        let is_safe_writer = SAFE_MASS_WRITERS.contains(&comm);
+        let is_safe_writer =
+            SAFE_MASS_WRITERS.contains(&comm) || comm.starts_with("lto cgu.");
         if count >= threshold && !is_safe_writer {
             let window_secs = self.window.num_seconds();
             return self.emit(
