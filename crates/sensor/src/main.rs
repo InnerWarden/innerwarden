@@ -74,6 +74,13 @@ struct Cli {
 }
 
 struct DetectorSet {
+    /// Dynamic allowlist loaded from /etc/innerwarden/allowlist.toml.
+    /// Checked before all detectors — if a process/IP is allowlisted,
+    /// the event is still logged but no incident is generated.
+    dynamic_allowlist: detectors::allowlists::DynamicAllowlist,
+    /// Last time we checked the allowlist file for changes.
+    allowlist_last_check: std::time::Instant,
+
     ssh: Option<SshBruteforceDetector>,
     credential_stuffing: Option<CredentialStuffingDetector>,
     port_scan: Option<PortScanDetector>,
@@ -352,7 +359,13 @@ async fn main() -> Result<()> {
         );
         DistributedSshDetector::new(&cfg.agent.host_id, 8, 300)
     });
+    // Load dynamic allowlist from disk (supplements static const lists).
+    let allowlist_path = std::path::Path::new("/etc/innerwarden/allowlist.toml");
+    let dynamic_allowlist = detectors::allowlists::DynamicAllowlist::load(allowlist_path);
+
     let mut detectors = DetectorSet {
+        dynamic_allowlist,
+        allowlist_last_check: std::time::Instant::now(),
         ssh: ssh_detector,
         credential_stuffing: credential_stuffing_detector,
         port_scan: port_scan_detector,
@@ -1207,6 +1220,45 @@ fn process_event(
             entities: ev.entities.clone(),
         };
         write_incident(writer, stats, incident, syslog);
+    }
+
+    // Reload dynamic allowlist every 60s (checks file mtime, no-op if unchanged).
+    if detectors.allowlist_last_check.elapsed().as_secs() > 60 {
+        if detectors.dynamic_allowlist.reload_if_changed() {
+            info!("Dynamic allowlist reloaded");
+        }
+        detectors.allowlist_last_check = std::time::Instant::now();
+    }
+
+    // Dynamic allowlist pre-check: skip incident generation for allowlisted
+    // processes, IPs, and ports. Events are still logged — only detectors are skipped.
+    {
+        let comm = ev
+            .details
+            .get("comm")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let src_ip = ev
+            .details
+            .get("ip")
+            .or_else(|| ev.details.get("src_ip"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let dst_port = ev
+            .details
+            .get("dst_port")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(u64::MAX) as u16;
+
+        if !comm.is_empty() && detectors.dynamic_allowlist.is_process_allowed(comm, None) {
+            return;
+        }
+        if !src_ip.is_empty() && detectors.dynamic_allowlist.is_ip_allowed(src_ip) {
+            return;
+        }
+        if dst_port != u16::MAX && detectors.dynamic_allowlist.is_port_ignored(dst_port) {
+            return;
+        }
     }
 
     // Incident passthrough: tools that already ran their own detection
