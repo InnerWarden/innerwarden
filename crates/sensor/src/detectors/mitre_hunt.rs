@@ -218,6 +218,7 @@ impl MitreHuntDetector {
     pub fn process(&mut self, event: &Event) -> Option<Incident> {
         match event.kind.as_str() {
             "shell.command_exec" | "sudo.command" => self.analyze(event),
+            "process.prctl" => self.check_prctl_rename(event),
             _ => None,
         }
     }
@@ -926,6 +927,75 @@ impl MitreHuntDetector {
             vec![EntityRef::path(format!("/proc/{pid}"))],
             user,
             now,
+            event,
+        )
+    }
+
+    // ── T1036.004: Masquerade via prctl PR_SET_NAME ─────────────────────
+
+    fn check_prctl_rename(&mut self, event: &Event) -> Option<Incident> {
+        let op_name = event.details.get("op_name").and_then(|v| v.as_str())?;
+        if op_name != "PR_SET_NAME" {
+            return None;
+        }
+
+        let pid = event.details["pid"].as_u64().unwrap_or(0) as u32;
+        let uid = event.details["uid"].as_u64().unwrap_or(0) as u32;
+        let comm = event
+            .details
+            .get("comm")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        // Skip innerwarden's own processes and system daemons
+        if super::allowlists::is_innerwarden_process(uid as u64, comm)
+            || super::allowlists::comm_in_allowlist(comm, super::allowlists::SYSTEM_DAEMONS)
+        {
+            return None;
+        }
+
+        // Renaming to a known daemon name is suspicious
+        let daemon_names = [
+            "sshd",
+            "crond",
+            "cron",
+            "systemd",
+            "kworker",
+            "ksoftirqd",
+            "migration",
+            "watchdog",
+            "nginx",
+            "apache2",
+            "mysqld",
+            "postgres",
+        ];
+        let is_suspicious = daemon_names.iter().any(|d| comm.contains(d));
+        if !is_suspicious {
+            return None;
+        }
+
+        self.emit(
+            "prctl_rename",
+            Severity::High,
+            format!("Process name change via prctl: PID {pid} renamed to '{comm}'"),
+            format!(
+                "Process (pid={pid}, uid={uid}) used prctl(PR_SET_NAME) to rename itself to \
+                 '{comm}', a known system daemon name. This is a common masquerading technique."
+            ),
+            serde_json::json!([{
+                "kind": "prctl_rename",
+                "comm": comm,
+                "pid": pid,
+                "uid": uid,
+            }]),
+            vec![
+                format!("Check actual binary: readlink /proc/{pid}/exe"),
+                format!("Check parent: ps -o ppid= -p {pid}"),
+            ],
+            &["masquerading", "defense_evasion", "prctl"],
+            vec![],
+            "unknown",
+            event.ts,
             event,
         )
     }
