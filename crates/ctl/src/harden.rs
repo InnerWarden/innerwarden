@@ -456,6 +456,94 @@ fn check_permissions() -> CheckResult {
         }
     }
 
+    // /etc/gshadow permissions
+    if let Ok(meta) = fs::metadata("/etc/gshadow") {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode() & 0o777;
+        if mode <= 0o640 {
+            passed.push(format!("/etc/gshadow permissions: {:03o}", mode));
+        } else {
+            findings.push(Finding {
+                category: cat,
+                severity: Severity::High,
+                title: format!("/etc/gshadow too permissive: {:03o}", mode),
+                fix: "Run: sudo chmod 640 /etc/gshadow".into(),
+            });
+        }
+    }
+
+    // /etc/sudoers permissions
+    if let Ok(meta) = fs::metadata("/etc/sudoers") {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode() & 0o777;
+        if mode <= 0o440 {
+            passed.push(format!("/etc/sudoers permissions: {:03o}", mode));
+        } else {
+            findings.push(Finding {
+                category: cat,
+                severity: Severity::High,
+                title: format!("/etc/sudoers too permissive: {:03o}", mode),
+                fix: "Run: sudo chmod 440 /etc/sudoers".into(),
+            });
+        }
+    }
+
+    // SSH directory permissions
+    for home in ["/root", "/home"] {
+        if let Ok(entries) = fs::read_dir(home) {
+            for entry in entries.flatten() {
+                let ssh_dir = entry.path().join(".ssh");
+                if ssh_dir.is_dir() {
+                    if let Ok(meta) = fs::metadata(&ssh_dir) {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mode = meta.permissions().mode() & 0o777;
+                        if mode > 0o700 {
+                            findings.push(Finding {
+                                category: cat,
+                                severity: Severity::High,
+                                title: format!(
+                                    "{} too permissive: {:03o}",
+                                    ssh_dir.display(),
+                                    mode
+                                ),
+                                fix: format!("Run: sudo chmod 700 {}", ssh_dir.display()),
+                            });
+                        }
+                    }
+                    let ak = ssh_dir.join("authorized_keys");
+                    if let Ok(meta) = fs::metadata(&ak) {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mode = meta.permissions().mode() & 0o777;
+                        if mode > 0o600 {
+                            findings.push(Finding {
+                                category: cat,
+                                severity: Severity::High,
+                                title: format!("{} too permissive: {:03o}", ak.display(), mode),
+                                fix: format!("Run: sudo chmod 600 {}", ak.display()),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // /tmp sticky bit
+    if let Ok(meta) = fs::metadata("/tmp") {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode();
+        if mode & 0o1000 != 0 {
+            passed.push("/tmp has sticky bit set".into());
+        } else {
+            findings.push(Finding {
+                category: cat,
+                severity: Severity::Medium,
+                title: "/tmp missing sticky bit".into(),
+                fix: "Run: sudo chmod +t /tmp".into(),
+            });
+        }
+    }
+
     CheckResult {
         category: cat,
         passed,
