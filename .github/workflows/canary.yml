@@ -84,7 +84,7 @@ jobs:
           done
 
       - name: Update canary release
-        uses: ncipollo/release-action@2c591bcc8ecdcd2db72b97d6147f871fcd468fab # v1
+        uses: ncipollo/release-action@v1
         with:
           tag: canary
           name: "Canary (develop)"
