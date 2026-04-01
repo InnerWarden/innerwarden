@@ -90,10 +90,43 @@ const SNIFFING_TOOLS: &[&str] = &[
 
 /// T1036.005 — System binaries commonly impersonated by malware
 const SYSTEM_BINARIES: &[&str] = &[
-    "ls", "ps", "cat", "cp", "mv", "rm", "sh", "bash", "dash", "top", "grep", "find", "awk",
-    "sed", "curl", "wget", "ssh", "scp", "tar", "gzip", "mount", "kill", "netstat", "ss", "ip",
-    "iptables", "systemctl", "journalctl", "cron", "sshd", "sudo", "su", "login", "passwd",
-    "useradd", "chown", "chmod",
+    "ls",
+    "ps",
+    "cat",
+    "cp",
+    "mv",
+    "rm",
+    "sh",
+    "bash",
+    "dash",
+    "top",
+    "grep",
+    "find",
+    "awk",
+    "sed",
+    "curl",
+    "wget",
+    "ssh",
+    "scp",
+    "tar",
+    "gzip",
+    "mount",
+    "kill",
+    "netstat",
+    "ss",
+    "ip",
+    "iptables",
+    "systemctl",
+    "journalctl",
+    "cron",
+    "sshd",
+    "sudo",
+    "su",
+    "login",
+    "passwd",
+    "useradd",
+    "chown",
+    "chmod",
 ];
 
 /// T1036.005 — Legitimate system binary paths (if binary runs from here, not masquerading)
@@ -221,16 +254,13 @@ impl MitreHuntDetector {
         // Return the first match — a single command rarely maps to multiple.
 
         // T1036.005 — Masquerading (Critical)
-        if let Some(inc) =
-            self.check_masquerading(&argv0, &argv0_base, pid, uid, user, now, event)
+        if let Some(inc) = self.check_masquerading(&argv0, &argv0_base, pid, uid, user, now, event)
         {
             return Some(inc);
         }
 
         // T1529 — System Shutdown/Reboot (Critical)
-        if let Some(inc) =
-            self.check_shutdown(&argv0_base, &argv, pid, uid, user, now, event)
-        {
+        if let Some(inc) = self.check_shutdown(&argv0_base, &argv, pid, uid, user, now, event) {
             return Some(inc);
         }
 
@@ -249,9 +279,7 @@ impl MitreHuntDetector {
         }
 
         // T1219 — Remote Access Software (High)
-        if let Some(inc) =
-            self.check_remote_access(&argv0_base, pid, uid, user, now, event)
-        {
+        if let Some(inc) = self.check_remote_access(&argv0_base, pid, uid, user, now, event) {
             return Some(inc);
         }
 
@@ -270,9 +298,7 @@ impl MitreHuntDetector {
         }
 
         // T1053.002 — At Jobs (Medium)
-        if let Some(inc) =
-            self.check_at_job(&argv0_base, pid, uid, user, now, event)
-        {
+        if let Some(inc) = self.check_at_job(&argv0_base, pid, uid, user, now, event) {
             return Some(inc);
         }
 
@@ -284,9 +310,7 @@ impl MitreHuntDetector {
         }
 
         // T1040 — Network Sniffing (Medium)
-        if let Some(inc) =
-            self.check_network_sniffing(&argv0_base, pid, uid, user, now, event)
-        {
+        if let Some(inc) = self.check_network_sniffing(&argv0_base, pid, uid, user, now, event) {
             return Some(inc);
         }
 
@@ -343,7 +367,9 @@ impl MitreHuntDetector {
             }]),
             vec![
                 format!("Verify binary: file {argv0} && sha256sum {argv0}"),
-                format!("Compare with system binary: diff <(xxd /usr/bin/{argv0_base}) <(xxd {argv0})"),
+                format!(
+                    "Compare with system binary: diff <(xxd /usr/bin/{argv0_base}) <(xxd {argv0})"
+                ),
                 format!("Check process tree: ps -ef --forest | grep {pid}"),
                 format!("Kill suspicious process: kill -9 {pid}"),
             ],
@@ -383,9 +409,7 @@ impl MitreHuntDetector {
         self.emit(
             "system_shutdown",
             Severity::Critical,
-            format!(
-                "System shutdown/reboot initiated: {argv0_base} (pid={pid}, user={user})"
-            ),
+            format!("System shutdown/reboot initiated: {argv0_base} (pid={pid}, user={user})"),
             format!(
                 "Process '{argv0_base}' (pid={pid}, uid={uid}) initiated a system shutdown \
                  or reboot. If unexpected, this may indicate a destructive attack or \
@@ -512,9 +536,7 @@ impl MitreHuntDetector {
         self.emit(
             "file_permission_mod",
             Severity::High,
-            format!(
-                "Suspicious file permission change: {argv_joined} (pid={pid}, user={user})"
-            ),
+            format!("Suspicious file permission change: {argv_joined} (pid={pid}, user={user})"),
             format!(
                 "Process (pid={pid}, uid={uid}) modified file permissions with a dangerous \
                  pattern. SUID/SGID bits, immutable flags, or ownership changes to root can \
@@ -558,9 +580,7 @@ impl MitreHuntDetector {
         self.emit(
             "remote_access_tool",
             Severity::High,
-            format!(
-                "Remote access tool detected: {argv0_base} (pid={pid}, user={user})"
-            ),
+            format!("Remote access tool detected: {argv0_base} (pid={pid}, user={user})"),
             format!(
                 "Process '{argv0_base}' (pid={pid}, uid={uid}) is a remote access or \
                  tunneling tool that can bypass network controls. If not authorized, \
@@ -666,9 +686,7 @@ impl MitreHuntDetector {
             return self.emit(
                 "proxy_tunnel",
                 Severity::High,
-                format!(
-                    "Proxy/tunneling tool detected: {argv0_base} (pid={pid}, user={user})"
-                ),
+                format!("Proxy/tunneling tool detected: {argv0_base} (pid={pid}, user={user})"),
                 format!(
                     "Process '{argv0_base}' (pid={pid}, uid={uid}) is a proxy or tunneling \
                      tool that can exfiltrate data or provide covert access channels."
@@ -713,9 +731,7 @@ impl MitreHuntDetector {
             return self.emit(
                 "proxy_tunnel",
                 Severity::High,
-                format!(
-                    "SSH tunnel detected: {argv_joined} (pid={pid}, user={user})"
-                ),
+                format!("SSH tunnel detected: {argv_joined} (pid={pid}, user={user})"),
                 format!(
                     "SSH (pid={pid}, uid={uid}) was invoked with port forwarding flags \
                      (-D/-L/-R). This creates a network tunnel that can bypass firewall \
@@ -870,9 +886,7 @@ impl MitreHuntDetector {
         self.emit(
             "network_sniffing",
             Severity::Medium,
-            format!(
-                "Network sniffing tool detected: {argv0_base} (pid={pid}, user={user})"
-            ),
+            format!("Network sniffing tool detected: {argv0_base} (pid={pid}, user={user})"),
             format!(
                 "Process '{argv0_base}' (pid={pid}, uid={uid}) can capture network traffic \
                  including credentials, session tokens, and sensitive data transmitted \
@@ -967,16 +981,13 @@ fn extract_argv(event: &Event) -> Vec<String> {
 }
 
 fn basename(path: &str) -> String {
-    path.rsplit('/')
-        .next()
-        .unwrap_or(path)
-        .to_ascii_lowercase()
+    path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase()
 }
 
 /// Known command wrappers that prefix the actual command.
 const WRAPPERS: &[&str] = &[
-    "timeout", "nice", "nohup", "env", "strace", "ltrace", "time",
-    "ionice", "taskset", "chrt", "numactl", "setsid", "script",
+    "timeout", "nice", "nohup", "env", "strace", "ltrace", "time", "ionice", "taskset", "chrt",
+    "numactl", "setsid", "script",
 ];
 
 /// Skip wrapper commands and their flags to find the actual binary.
@@ -1013,10 +1024,7 @@ fn resolve_wrapper(argv: &[String]) -> (String, String) {
 /// that is not `.` or `..`.
 fn is_hidden_path(path: &str) -> bool {
     path.split('/').any(|component| {
-        component.starts_with('.')
-            && component != "."
-            && component != ".."
-            && component.len() > 1
+        component.starts_with('.') && component != "." && component != ".." && component.len() > 1
     })
 }
 
@@ -1091,7 +1099,10 @@ mod tests {
     fn masquerading_ignores_legitimate_path() {
         let mut d = det();
         let ev = make_event_with_path("/usr/bin/ls", &["/usr/bin/ls", "-la"]);
-        assert!(d.process(&ev).is_none(), "legitimate path should not trigger");
+        assert!(
+            d.process(&ev).is_none(),
+            "legitimate path should not trigger"
+        );
     }
 
     #[test]
@@ -1142,10 +1153,7 @@ mod tests {
     #[test]
     fn detects_security_service_stop() {
         let mut d = det();
-        let ev = make_event(
-            "systemctl",
-            &["systemctl", "stop", "fail2ban"],
-        );
+        let ev = make_event("systemctl", &["systemctl", "stop", "fail2ban"]);
         let inc = d.process(&ev);
         assert!(inc.is_some());
         let inc = inc.unwrap();
@@ -1156,20 +1164,14 @@ mod tests {
     #[test]
     fn detects_security_service_disable() {
         let mut d = det();
-        let ev = make_event(
-            "systemctl",
-            &["systemctl", "disable", "auditd"],
-        );
+        let ev = make_event("systemctl", &["systemctl", "disable", "auditd"]);
         assert!(d.process(&ev).is_some());
     }
 
     #[test]
     fn ignores_non_security_service_stop() {
         let mut d = det();
-        let ev = make_event(
-            "systemctl",
-            &["systemctl", "stop", "nginx"],
-        );
+        let ev = make_event("systemctl", &["systemctl", "stop", "nginx"]);
         assert!(
             d.process(&ev).is_none(),
             "stopping non-security service should not trigger"
@@ -1179,10 +1181,7 @@ mod tests {
     #[test]
     fn ignores_service_start() {
         let mut d = det();
-        let ev = make_event(
-            "systemctl",
-            &["systemctl", "start", "fail2ban"],
-        );
+        let ev = make_event("systemctl", &["systemctl", "start", "fail2ban"]);
         assert!(
             d.process(&ev).is_none(),
             "starting a service should not trigger"
@@ -1310,10 +1309,7 @@ mod tests {
     fn ignores_normal_ssh() {
         let mut d = det();
         let ev = make_event("ssh", &["ssh", "user@host"]);
-        assert!(
-            d.process(&ev).is_none(),
-            "normal ssh should not trigger"
-        );
+        assert!(d.process(&ev).is_none(), "normal ssh should not trigger");
     }
 
     // ── T1053.002: At Jobs ─────────────────────────────────────────────
@@ -1414,7 +1410,10 @@ mod tests {
         let mut d = det();
         let mut ev = make_event("shutdown", &["shutdown", "-h", "now"]);
         ev.kind = "sudo.command".to_string();
-        assert!(d.process(&ev).is_some(), "sudo.command events should be processed");
+        assert!(
+            d.process(&ev).is_some(),
+            "sudo.command events should be processed"
+        );
     }
 
     // ── Helper tests ───────────────────────────────────────────────────

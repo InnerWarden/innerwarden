@@ -162,16 +162,8 @@ pub fn map_detector_all(detector: &str) -> Vec<MitreMapping> {
                 "T1548",
                 "Abuse Elevation Control Mechanism",
             ),
-            m(
-                "Privilege Escalation",
-                "T1548.001",
-                "Setuid and Setgid",
-            ),
-            m(
-                "Defense Evasion",
-                "T1562.001",
-                "Disable or Modify Tools",
-            ),
+            m("Privilege Escalation", "T1548.001", "Setuid and Setgid"),
+            m("Defense Evasion", "T1562.001", "Disable or Modify Tools"),
             m(
                 "Defense Evasion",
                 "T1562.004",
@@ -186,34 +178,18 @@ pub fn map_detector_all(detector: &str) -> Vec<MitreMapping> {
                 "T1546.004",
                 "Unix Shell Configuration Modification",
             ),
-            m(
-                "Persistence",
-                "T1037.004",
-                "RC Scripts",
-            ),
+            m("Persistence", "T1037.004", "RC Scripts"),
             m(
                 "Credential Access",
                 "T1556",
                 "Modify Authentication Process",
             ),
-            m(
-                "Persistence",
-                "T1574.006",
-                "Dynamic Linker Hijacking",
-            ),
+            m("Persistence", "T1574.006", "Dynamic Linker Hijacking"),
         ],
 
         "execution_guard" => vec![
-            m(
-                "Execution",
-                "T1059",
-                "Command and Scripting Interpreter",
-            ),
-            m(
-                "Command and Control",
-                "T1105",
-                "Ingress Tool Transfer",
-            ),
+            m("Execution", "T1059", "Command and Scripting Interpreter"),
+            m("Command and Control", "T1105", "Ingress Tool Transfer"),
             m(
                 "Defense Evasion",
                 "T1140",
@@ -222,34 +198,14 @@ pub fn map_detector_all(detector: &str) -> Vec<MitreMapping> {
         ],
 
         "data_exfil_ebpf" => vec![
-            m(
-                "Exfiltration",
-                "T1041",
-                "Exfiltration Over C2 Channel",
-            ),
-            m(
-                "Credential Access",
-                "T1552.001",
-                "Credentials In Files",
-            ),
-            m(
-                "Credential Access",
-                "T1552.004",
-                "Private Keys",
-            ),
+            m("Exfiltration", "T1041", "Exfiltration Over C2 Channel"),
+            m("Credential Access", "T1552.001", "Credentials In Files"),
+            m("Credential Access", "T1552.004", "Private Keys"),
         ],
 
         "c2_callback" => vec![
-            m(
-                "Command and Control",
-                "T1071",
-                "Application Layer Protocol",
-            ),
-            m(
-                "Command and Control",
-                "T1571",
-                "Non-Standard Port",
-            ),
+            m("Command and Control", "T1071", "Application Layer Protocol"),
+            m("Command and Control", "T1571", "Non-Standard Port"),
         ],
 
         // Single-technique detectors: wrap the primary mapping
@@ -648,27 +604,45 @@ mod tests {
             ids.len()
         );
         // Verify key new additions are present
-        assert!(ids.contains(&"T1546.004"), "missing T1546.004 (Shell Config)");
+        assert!(
+            ids.contains(&"T1546.004"),
+            "missing T1546.004 (Shell Config)"
+        );
         assert!(ids.contains(&"T1037.004"), "missing T1037.004 (RC Scripts)");
         assert!(ids.contains(&"T1556"), "missing T1556 (Modify Auth)");
         assert!(ids.contains(&"T1574.006"), "missing T1574.006 (LD_PRELOAD)");
         assert!(ids.contains(&"T1548.001"), "missing T1548.001 (SUID)");
-        assert!(ids.contains(&"T1562.001"), "missing T1562.001 (Disable Tools)");
+        assert!(
+            ids.contains(&"T1562.001"),
+            "missing T1562.001 (Disable Tools)"
+        );
         assert!(ids.contains(&"T1562.004"), "missing T1562.004 (Disable FW)");
         assert!(ids.contains(&"T1485"), "missing T1485 (Data Destruction)");
         assert!(ids.contains(&"T1105"), "missing T1105 (Tool Transfer)");
         assert!(ids.contains(&"T1140"), "missing T1140 (Deobfuscation)");
-        assert!(ids.contains(&"T1552.001"), "missing T1552.001 (Creds in Files)");
-        assert!(ids.contains(&"T1552.004"), "missing T1552.004 (Private Keys)");
+        assert!(
+            ids.contains(&"T1552.001"),
+            "missing T1552.001 (Creds in Files)"
+        );
+        assert!(
+            ids.contains(&"T1552.004"),
+            "missing T1552.004 (Private Keys)"
+        );
         assert!(ids.contains(&"T1571"), "missing T1571 (Non-Standard Port)");
         assert!(ids.contains(&"T1053.002"), "missing T1053.002 (At)");
         assert!(ids.contains(&"T1222.002"), "missing T1222.002 (File Perms)");
-        assert!(ids.contains(&"T1564.001"), "missing T1564.001 (Hidden Files)");
+        assert!(
+            ids.contains(&"T1564.001"),
+            "missing T1564.001 (Hidden Files)"
+        );
         assert!(ids.contains(&"T1219"), "missing T1219 (Remote Access)");
         assert!(ids.contains(&"T1489"), "missing T1489 (Service Stop)");
         assert!(ids.contains(&"T1529"), "missing T1529 (Shutdown)");
         assert!(ids.contains(&"T1040"), "missing T1040 (Sniffing)");
-        assert!(ids.contains(&"T1036.005"), "missing T1036.005 (Masquerading)");
+        assert!(
+            ids.contains(&"T1036.005"),
+            "missing T1036.005 (Masquerading)"
+        );
         assert!(ids.contains(&"T1560"), "missing T1560 (Archive)");
         assert!(ids.contains(&"T1090"), "missing T1090 (Proxy)");
     }
