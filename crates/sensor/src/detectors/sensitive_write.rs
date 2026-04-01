@@ -241,6 +241,17 @@ impl SensitiveWriteDetector {
             return None;
         }
 
+        let uid = event
+            .details
+            .get("uid")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        // Skip InnerWarden's own processes (sensor reads PAM files during normal operation)
+        if super::allowlists::is_innerwarden_process(uid, comm) {
+            return None;
+        }
+
         // Only trigger for paths where a READ by non-system process is itself suspicious
         let critical_read_paths: &[(&str, &str)] = &[
             ("/etc/pam.d/", "pam_tampering"),
@@ -255,11 +266,6 @@ impl SensitiveWriteDetector {
         let pid = event
             .details
             .get("pid")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let uid = event
-            .details
-            .get("uid")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
 
