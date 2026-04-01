@@ -238,6 +238,10 @@ pub const DISCOVERY_ALLOWED: &[&str] = &[
     "bpf_inspect",
     "landscape-sysi",
     "update-motd",
+    // Cloud-init (Oracle Cloud, AWS, GCP, Azure — runs discovery on boot/reboot)
+    "cloud-init",
+    "cloud-init-gene",
+    "ds-identify",
     // Ubuntu MOTD scripts (run uname, id, etc. on every SSH login)
     "00-header",
     "10-help-text",

@@ -504,6 +504,10 @@ fn check_command_node(node: tree_sitter::Node, source: &[u8], signals: &mut Vec<
 
     for indicator in PERSISTENCE_INDICATORS {
         if full_text.contains(indicator) {
+            // Skip persistence signal for innerwarden's own services
+            if *indicator == "systemctl enable" && full_text.contains("innerwarden") {
+                continue;
+            }
             signals.push(RiskSignal {
                 kind: SignalKind::Persistence,
                 detail: format!("persistence indicator: `{indicator}`"),
@@ -565,6 +569,10 @@ fn analyze_argv(argv: &[String]) -> Vec<RiskSignal> {
 
     for indicator in PERSISTENCE_INDICATORS {
         if all_args.contains(indicator) {
+            // Skip persistence signal for innerwarden's own services
+            if *indicator == "systemctl enable" && all_args.contains("innerwarden") {
+                continue;
+            }
             signals.push(RiskSignal {
                 kind: SignalKind::Persistence,
                 detail: format!("persistence indicator: `{indicator}`"),
