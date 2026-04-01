@@ -162,10 +162,9 @@ impl OutboundAnomalyDetector {
             return None;
         }
 
-        // Skip port 0 connections — these are DNS resolution artifacts from the
-        // kernel (connect() for UDP DNS lookups reports dst_port=0 in eBPF),
-        // not actual outbound connections.
-        if dst_port == 0 {
+        // Skip port 0 (DNS resolution artifacts) and port 9 (discard protocol,
+        // used by health checks and wake-on-LAN).
+        if dst_port == 0 || dst_port == 9 {
             return None;
         }
 

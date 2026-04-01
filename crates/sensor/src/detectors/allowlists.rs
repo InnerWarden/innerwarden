@@ -437,6 +437,8 @@ pub const C2_OUTBOUND_ALLOWED: &[&str] = &[
     "newrelic-infra",
     "zabbix_agentd",
     "node_exporter",
+    "gomon",
+    "updater",
     // Security tools
     "osqueryd",
     "crowdsec",
