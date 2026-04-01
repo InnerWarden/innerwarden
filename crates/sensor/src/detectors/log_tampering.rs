@@ -77,7 +77,10 @@ impl LogTamperingDetector {
         if event.source != "ebpf" {
             return None;
         }
-        if event.kind != "file.write_access" && event.kind != "file.read_access" {
+        if event.kind != "file.write_access"
+            && event.kind != "file.read_access"
+            && event.kind != "file.truncate"
+        {
             return None;
         }
 
@@ -95,11 +98,12 @@ impl LogTamperingDetector {
             return None;
         }
 
-        let is_write = event
-            .details
-            .get("write")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let is_write = event.kind == "file.truncate"
+            || event
+                .details
+                .get("write")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
         let now = event.ts;
 

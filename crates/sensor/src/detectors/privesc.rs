@@ -24,13 +24,20 @@ impl PrivescDetector {
     }
 
     pub fn process(&mut self, event: &Event) -> Option<Incident> {
-        if event.kind != "privilege.escalation" {
+        if event.kind != "privilege.escalation" && event.kind != "privilege.setuid" {
             return None;
         }
 
         let pid = event.details["pid"].as_u64()? as u32;
-        let old_uid = event.details["old_uid"].as_u64().unwrap_or(0) as u32;
-        let new_uid = event.details["new_uid"].as_u64().unwrap_or(0) as u32;
+        // commit_creds kprobe uses old_uid/new_uid, setuid tracepoint uses uid/target_uid
+        let old_uid = event.details["old_uid"]
+            .as_u64()
+            .or_else(|| event.details["uid"].as_u64())
+            .unwrap_or(0) as u32;
+        let new_uid = event.details["new_uid"]
+            .as_u64()
+            .or_else(|| event.details["target_uid"].as_u64())
+            .unwrap_or(0) as u32;
         let comm = event.details["comm"]
             .as_str()
             .unwrap_or("unknown")
@@ -236,6 +243,35 @@ mod tests {
         assert!(det
             .process(&privesc_event("evil_exploit", 1239, 1000, None, now))
             .is_some());
+    }
+
+    #[test]
+    fn detects_setuid_event() {
+        let mut det = PrivescDetector::new("test", 300);
+        let now = Utc::now();
+
+        let event = Event {
+            ts: now,
+            host: "test".to_string(),
+            source: "ebpf".to_string(),
+            kind: "privilege.setuid".to_string(),
+            severity: Severity::High,
+            summary: "setuid(0)".to_string(),
+            details: serde_json::json!({
+                "pid": 5678,
+                "uid": 1000,
+                "target_uid": 0,
+                "comm": "exploit",
+                "cgroup_id": 0,
+            }),
+            tags: vec![],
+            entities: vec![],
+        };
+        let inc = det.process(&event);
+        assert!(inc.is_some(), "privilege.setuid should trigger privesc");
+        let inc = inc.unwrap();
+        assert_eq!(inc.severity, Severity::Critical);
+        assert!(inc.summary.contains("1000"));
     }
 
     #[test]
