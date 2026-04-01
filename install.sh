@@ -64,7 +64,17 @@ if [[ "$(id -u)" -ne 0 ]]; then
   echo ""
   echo "  Root access needed — your password may be requested once."
   echo ""
-  exec sudo bash "$0" "$@"
+  # When piped from curl, $0 is "bash" not a file path.
+  # Save script to tmp, re-exec with sudo.
+  SELF_TMP="$(mktemp /tmp/innerwarden-install.XXXXXX)"
+  # Re-download the script since stdin is consumed
+  if [[ "${CANARY}" -eq 1 ]]; then
+    curl -fsSL "https://raw.githubusercontent.com/InnerWarden/innerwarden/develop/install.sh" > "$SELF_TMP"
+  else
+    curl -fsSL "https://github.com/InnerWarden/innerwarden/releases/latest/download/install.sh" > "$SELF_TMP"
+  fi
+  chmod +x "$SELF_TMP"
+  exec sudo bash "$SELF_TMP" "$@"
 fi
 
 BIN_DIR="/usr/local/bin"
