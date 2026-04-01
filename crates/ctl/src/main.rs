@@ -4592,25 +4592,39 @@ fn cmd_configure_telegram(
                 }
             }
             None => {
-                println!("\nStep 2 - Find your chat ID\n");
-                println!("  Auto-detect (easiest):");
-                println!("    Open Telegram and send any message to your new bot.");
-                println!(
-                    "    Then re-run this command - your chat ID will be detected automatically."
-                );
                 println!();
-                println!("  Or get it manually:");
-                println!(
-                    "    Message @userinfobot on Telegram - it replies with your numeric user ID."
-                );
-                println!();
-                let c = prompt("Chat ID (numeric, e.g. 123456789)")?;
-                if c.is_empty() {
-                    anyhow::bail!(
-                        "chat ID cannot be empty.\nSend a message to your bot on Telegram first, then re-run this command."
-                    );
+                println!("  Now open Telegram and send any message to your bot.");
+                println!("  Waiting for your message...");
+                std::io::stdout().flush()?;
+
+                // Poll getUpdates every 2 seconds for up to 2 minutes
+                let mut found = None;
+                for _ in 0..60 {
+                    if let Some(id) = discover_telegram_chat_id(&token) {
+                        found = Some(id);
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    print!(".");
+                    std::io::stdout().flush()?;
                 }
-                c
+                println!();
+
+                match found {
+                    Some(id) => {
+                        println!("  ✓ Got it! Chat ID: {id}");
+                        id
+                    }
+                    None => {
+                        println!("  Timed out. Enter your chat ID manually:");
+                        println!("  (Message @userinfobot on Telegram to get it)");
+                        let c = prompt("Chat ID")?;
+                        if c.is_empty() {
+                            anyhow::bail!("chat ID cannot be empty");
+                        }
+                        c
+                    }
+                }
             }
         }
     };
