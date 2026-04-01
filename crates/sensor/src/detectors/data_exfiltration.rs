@@ -242,16 +242,45 @@ impl DataExfiltrationDetector {
             // Detect command-based exfiltration patterns
             "shell.command_exec" => {
                 let command = event.details["command"].as_str().unwrap_or("");
+                let comm = event.details["comm"]
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                // Skip build tools and package managers — their argv contains
+                // many system paths that false-positive as exfiltration patterns.
+                let build_tools = [
+                    "collect2",
+                    "ld",
+                    "cc1",
+                    "cc1plus",
+                    "as",
+                    "lto-wrapper",
+                    "cargo",
+                    "rustc",
+                    "gcc",
+                    "g++",
+                    "make",
+                    "cmake",
+                    "ninja",
+                    "dpkg",
+                    "apt",
+                    "apt-get",
+                    "npm",
+                    "pip",
+                    "go",
+                ];
+                let comm_base = comm.split('/').next_back().unwrap_or(&comm);
+                if build_tools.iter().any(|t| comm_base.starts_with(t)) {
+                    return None;
+                }
+
                 if command.is_empty() || !Self::is_exfil_command(command) {
                     return None;
                 }
 
                 let pid = event.details["pid"].as_u64().unwrap_or(0) as u32;
                 let uid = event.details["uid"].as_u64().unwrap_or(0) as u32;
-                let comm = event.details["comm"]
-                    .as_str()
-                    .unwrap_or("unknown")
-                    .to_string();
 
                 let alert_key = format!("exfil_cmd:{}:{}", comm, pid);
                 if self.is_in_cooldown(&alert_key, now) {
