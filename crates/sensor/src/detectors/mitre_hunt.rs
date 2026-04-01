@@ -329,6 +329,20 @@ impl MitreHuntDetector {
             return Some(inc);
         }
 
+        // T1560 — Suspicious Archive/Compression (Medium)
+        if let Some(inc) =
+            self.check_suspicious_archive(&argv0_base, &argv_joined, pid, uid, user, now, event)
+        {
+            return Some(inc);
+        }
+
+        // T1562.006 — Logging Configuration Changes (High)
+        if let Some(inc) =
+            self.check_logging_config_change(&argv0_base, &argv_joined, pid, uid, user, now, event)
+        {
+            return Some(inc);
+        }
+
         None
     }
 
@@ -1135,6 +1149,128 @@ impl MitreHuntDetector {
                 format!("Review user activity: ausearch -ua {uid}"),
             ],
             &["credential_access", "private_key"],
+            vec![],
+            user,
+            now,
+            event,
+        )
+    }
+
+    // ── T1560: Suspicious Archive/Compression ──────────────────────────────
+
+    #[allow(clippy::too_many_arguments)]
+    fn check_suspicious_archive(
+        &mut self,
+        argv0_base: &str,
+        argv_joined: &str,
+        pid: u32,
+        uid: u32,
+        user: &str,
+        now: DateTime<Utc>,
+        event: &Event,
+    ) -> Option<Incident> {
+        // Detect archiving sensitive directories (not just any tar/zip)
+        let archive_tools = ["tar", "zip", "7z", "rar", "gzip", "bzip2", "xz"];
+        if !archive_tools.contains(&argv0_base) && !argv_joined.contains("zipfile") {
+            return None;
+        }
+
+        let sensitive_targets = [
+            "/etc/",
+            "/root/",
+            "/home/",
+            "/var/lib/",
+            ".ssh/",
+            "shadow",
+            "passwd",
+            ".gnupg",
+        ];
+        let has_sensitive = sensitive_targets.iter().any(|t| argv_joined.contains(t));
+        if !has_sensitive {
+            return None;
+        }
+
+        self.emit(
+            "suspicious_archive",
+            Severity::Medium,
+            format!("Suspicious data archiving: {argv0_base} (pid={pid}, user={user})"),
+            format!(
+                "Process '{argv0_base}' (pid={pid}, uid={uid}) is archiving sensitive data. \
+                 Command: {}. This may indicate staging for exfiltration.",
+                &argv_joined[..argv_joined.len().min(120)]
+            ),
+            serde_json::json!([{
+                "kind": "suspicious_archive",
+                "command": argv_joined,
+                "pid": pid,
+                "uid": uid,
+            }]),
+            vec![
+                "Check if this archive operation was authorized".to_string(),
+                "Review outbound connections for exfiltration".to_string(),
+            ],
+            &["collection", "archive", "exfiltration_staging"],
+            vec![],
+            user,
+            now,
+            event,
+        )
+    }
+
+    // ── T1562.006: Logging Configuration Changes ─────────────────────────
+
+    #[allow(clippy::too_many_arguments)]
+    fn check_logging_config_change(
+        &mut self,
+        argv0_base: &str,
+        argv_joined: &str,
+        pid: u32,
+        uid: u32,
+        user: &str,
+        now: DateTime<Utc>,
+        event: &Event,
+    ) -> Option<Incident> {
+        // Detect modifications to logging configuration files
+        let config_editors = ["sed", "vi", "vim", "nano", "tee", "bash", "sh"];
+        if !config_editors.contains(&argv0_base) {
+            return None;
+        }
+
+        let logging_configs = [
+            "rsyslog.conf",
+            "syslog.conf",
+            "journald.conf",
+            "logrotate",
+            "auditd.conf",
+            "audit.rules",
+            "/etc/rsyslog.d/",
+            "/etc/logrotate.d/",
+        ];
+        let targets_logging = logging_configs.iter().any(|c| argv_joined.contains(c));
+        if !targets_logging {
+            return None;
+        }
+
+        self.emit(
+            "logging_config_change",
+            Severity::High,
+            format!("Logging configuration modified: {argv0_base} (pid={pid}, user={user})"),
+            format!(
+                "Process '{argv0_base}' (pid={pid}, uid={uid}) modified logging configuration. \
+                 Command: {}. Attackers disable or redirect logging to hide their tracks.",
+                &argv_joined[..argv_joined.len().min(120)]
+            ),
+            serde_json::json!([{
+                "kind": "logging_config_change",
+                "command": argv_joined,
+                "pid": pid,
+                "uid": uid,
+            }]),
+            vec![
+                "Check if logging is still functional: journalctl --since '5 min ago'".to_string(),
+                "Review the config change: diff against backup".to_string(),
+            ],
+            &["defense_evasion", "logging", "impair_defenses"],
             vec![],
             user,
             now,
