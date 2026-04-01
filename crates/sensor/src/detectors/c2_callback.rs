@@ -128,8 +128,9 @@ impl C2CallbackDetector {
             return None;
         }
 
-        // Skip cloud metadata service (169.254.169.254) and port 0 (DNS artifacts)
-        if dst_ip == "169.254.169.254" || dst_port == 0 {
+        // Skip cloud metadata service (169.254.169.254) and port 0 (DNS artifacts).
+        // Also skip byte-swapped variant 254.169.254.169 (eBPF endianness on some kernels).
+        if dst_ip == "169.254.169.254" || dst_ip == "254.169.254.169" || dst_port == 0 {
             return None;
         }
 

@@ -36,6 +36,11 @@ const DNS_ALLOWED_DOMAINS: &[&str] = &[
     "snapcraft.io",
     "canonical.com",
     "ntp.org",
+    "cloudfront.net",
+    "akamaiedge.net",
+    "fastly.net",
+    "cdnjs.com",
+    "unpkg.com",
 ];
 
 /// Processes that legitimately query many DNS servers and should be excluded

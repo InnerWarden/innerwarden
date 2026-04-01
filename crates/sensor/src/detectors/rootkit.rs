@@ -933,8 +933,10 @@ impl RootkitDetector {
             return None;
         }
 
-        // Extract the binary name from the full path
-        let binary_name = command.rsplit('/').next().unwrap_or(command);
+        // Extract the binary name from the full path.
+        // command may contain full argv (e.g., "/bin/bash -pu /home/..."), so take only argv[0].
+        let argv0 = command.split_whitespace().next().unwrap_or(command);
+        let binary_name = argv0.rsplit('/').next().unwrap_or(argv0);
 
         // comm is truncated to 15 chars in Linux, so only compare up to comm length
         // Also, some legitimate programs set comm differently (e.g., python scripts)
@@ -1184,10 +1186,10 @@ impl RootkitDetector {
 
 /// Known legitimate cases where comm != binary name.
 fn is_legitimate_comm_mismatch(comm: &str, binary_name: &str) -> bool {
-    // Script interpreters: binary is python3, comm is the script name
+    // Script interpreters: binary is python3/bash/etc, comm is the script name
     let interpreters = [
         "python", "python3", "python2", "perl", "ruby", "node", "java", "php", "bash", "sh", "zsh",
-        "dash", "fish",
+        "dash", "fish", "env", "nice", "nohup", "timeout", "strace",
     ];
     if interpreters.contains(&binary_name) || interpreters.contains(&comm) {
         return true;
@@ -1198,6 +1200,58 @@ fn is_legitimate_comm_mismatch(comm: &str, binary_name: &str) -> bool {
     }
     // busybox: single binary, many names
     if binary_name == "busybox" || comm == "busybox" {
+        return true;
+    }
+    // Package managers and tools that fork with different names
+    let package_tools = [
+        "brew",
+        "cargo",
+        "rustc",
+        "go",
+        "npm",
+        "yarn",
+        "pnpm",
+        "pip",
+        "pip3",
+        "gem",
+        "conda",
+        "uv",
+        "composer",
+        "maven",
+        "gradle",
+        "make",
+        "cmake",
+        "ninja",
+        "cc1",
+        "cc1plus",
+        "as",
+        "ld",
+        "collect2",
+        "lto-wrapper",
+        "dpkg",
+        "apt",
+        "snapd",
+        "dnf",
+        "yum",
+    ];
+    if package_tools.contains(&comm) || package_tools.contains(&binary_name) {
+        return true;
+    }
+    // Monitoring and infrastructure
+    let infra = [
+        "gomon",
+        "updater",
+        "oracle-cloud",
+        "cloud-init",
+        "landscape",
+        "unattended-upgr",
+        "snapd",
+        "containerd-shim",
+    ];
+    if infra
+        .iter()
+        .any(|i| comm.starts_with(i) || binary_name.starts_with(i))
+    {
         return true;
     }
     false
