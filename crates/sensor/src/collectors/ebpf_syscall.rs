@@ -114,6 +114,21 @@ fn resolve_container_id(pid: u32) -> Option<String> {
     None
 }
 
+/// Read full command-line arguments from /proc/PID/cmdline.
+/// Returns the argv as a vector of strings. Best-effort: returns
+/// just the filename if /proc read fails (process may have exited).
+fn read_proc_cmdline(pid: u32, filename: &str) -> Vec<String> {
+    let path = format!("/proc/{pid}/cmdline");
+    match std::fs::read(&path) {
+        Ok(data) if !data.is_empty() => data
+            .split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).to_string())
+            .collect(),
+        _ => vec![filename.to_string()],
+    }
+}
+
 /// Convert a kernel execve event to an Inner Warden Event.
 #[allow(clippy::too_many_arguments)]
 fn execve_to_event(
@@ -126,20 +141,23 @@ fn execve_to_event(
     filename: &str,
     host: &str,
 ) -> Event {
-    let argv_json: Vec<serde_json::Value> = if filename.is_empty() {
-        vec![serde_json::Value::String(comm.to_string())]
-    } else {
-        vec![serde_json::Value::String(filename.to_string())]
-    };
+    // Read full argv from /proc/PID/cmdline (eBPF only gives us filename/argv[0])
+    let full_argv = read_proc_cmdline(pid, filename);
+    let argc = full_argv.len();
+    let command = full_argv.join(" ");
+    let argv_json: Vec<serde_json::Value> = full_argv
+        .iter()
+        .map(|s| serde_json::Value::String(s.clone()))
+        .collect();
 
     let mut details = serde_json::json!({
         "pid": pid,
         "uid": uid,
         "ppid": ppid,
         "comm": comm,
-        "command": filename,
+        "command": command,
         "argv": argv_json,
-        "argc": 1,
+        "argc": argc,
         "cgroup_id": cgroup_id,
     });
     if let Some(cid) = container_id {
@@ -159,7 +177,11 @@ fn execve_to_event(
         source: "ebpf".to_string(),
         kind: "shell.command_exec".to_string(),
         severity: Severity::Info,
-        summary: format!("Shell command executed: {filename}"),
+        summary: if argc > 1 {
+            format!("Shell command executed: {command}")
+        } else {
+            format!("Shell command executed: {filename}")
+        },
         details,
         tags,
         entities,
