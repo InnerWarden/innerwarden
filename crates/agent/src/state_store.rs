@@ -13,7 +13,7 @@
 //!   - attacker_profiles:     IP → JSON (AttackerProfile)
 
 use anyhow::{Context, Result};
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use std::path::Path;
 use tracing::{info, warn};
 
@@ -402,7 +402,7 @@ impl StateStore {
         let Ok(table) = read_txn.open_table(ATTACKER_PROFILES) else {
             return 0;
         };
-        table.iter().map(|i| i.count()).unwrap_or(0)
+        table.iter().map(|iter| iter.count()).unwrap_or(0)
     }
 
     /// Remove entries beyond `max` by keeping those with the highest risk_score.

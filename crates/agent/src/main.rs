@@ -5197,7 +5197,6 @@ async fn process_telegram_approval(
                 };
                 let allowlist_path = Path::new("/etc/innerwarden/allowlist.toml");
                 let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
-                let operator = result.operator_name.replace('"', "'");
                 let reason = format!("Auto-FP allowlist via Telegram ({ts})");
 
                 match telegram::append_to_allowlist(allowlist_path, section, entity, &reason) {
@@ -5590,7 +5589,6 @@ async fn process_telegram_approval(
                 };
                 let allowlist_path = Path::new("/etc/innerwarden/allowlist.toml");
                 let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
-                let operator = result.operator_name.replace('"', "'");
                 let reason = format!("Allowed via Telegram ({ts})");
                 match telegram::append_to_allowlist(allowlist_path, "processes", &comm, &reason) {
                     Ok(()) => {
@@ -5713,7 +5711,6 @@ async fn process_telegram_approval(
                 }
                 let allowlist_path = Path::new("/etc/innerwarden/allowlist.toml");
                 let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
-                let operator = result.operator_name.replace('"', "'");
                 let reason = format!("Allowed via Telegram ({ts})");
                 match telegram::append_to_allowlist(allowlist_path, "ips", &ip, &reason) {
                     Ok(()) => {
