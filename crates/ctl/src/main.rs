@@ -3442,43 +3442,60 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
     let telegram_ok = has_env("TELEGRAM_BOT_TOKEN") && has_env("TELEGRAM_CHAT_ID");
     let responder_ok = is_enabled("responder");
 
-    // ── Welcome ───────────────────────────────────────────────────────────
-    println!("  Let's set up your protection:\n");
+    // ── Header ──────────────────────────────────────────────────────────
+    println!();
+    println!("  Setup  (3 steps, skip any with Enter)\n");
 
-    // Run scan silently for module auto-enable later
+    // Auto-enable essential modules silently
     let probes = scan::run_probes();
     let recs = scan::score_modules(&probes);
-    println!("You can skip any step and run it later with 'innerwarden configure'.\n");
-    println!("{}", "─".repeat(56));
+    for r in recs
+        .iter()
+        .filter(|r| matches!(r.tier, scan::Tier::Essential))
+    {
+        let parts: Vec<&str> = r.enable_hint.split_whitespace().collect();
+        if parts.len() >= 3 && parts[0] == "innerwarden" && parts[1] == "enable" {
+            let cap_id = parts[2];
+            let mut params = std::collections::HashMap::new();
+            let mut i = 3;
+            while i < parts.len() {
+                if parts[i] == "--param" && i + 1 < parts.len() {
+                    if let Some((k, v)) = parts[i + 1].split_once('=') {
+                        params.insert(k.to_string(), v.to_string());
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            let registry = capability::CapabilityRegistry::default_all();
+            let _ = cmd_enable(cli, &registry, cap_id, params, true);
+        }
+    }
+
+    // Set default sensitivity (High+Critical)
+    let _ = config_editor::write_str(&cli.agent_config, "telegram", "min_severity", "high");
+    let _ = config_editor::write_str(&cli.agent_config, "webhook", "min_severity", "high");
 
     // ── Step 1: AI ────────────────────────────────────────────────────────
-    println!();
     if ai_ok {
-        println!("Step 1/4 - AI provider   ✅ already configured\n");
+        println!("  [1/3] AI provider          ✅ configured");
     } else {
-        println!("Step 1/4 - AI provider\n");
-        println!("InnerWarden uses AI to evaluate threats and decide how to respond.");
-        println!("12 providers supported - pick what you have:\n");
-        println!("  1. Ollama    - fully local, free, no API key needed");
-        println!("  2. OpenAI    - gpt-4.1-nano, cheapest ($0.10/1M tokens)");
-        println!("  3. Anthropic - claude-haiku, fast and cheap");
-        println!(
-            "  4. Advanced  - interactive wizard (Groq, DeepSeek, Mistral, xAI, Gemini, etc.)"
-        );
-        println!("  s. Skip for now\n");
-        let choice = prompt("Choose provider [1/2/3/4/s]")?;
+        println!("  [1/3] AI provider\n");
+        println!("  1. Ollama      local, free, no key");
+        println!("  2. OpenAI      gpt-4.1-nano");
+        println!("  3. Anthropic   claude-haiku");
+        println!("  4. Other       12 providers\n");
+        let choice = prompt("  Choose [1-4]")?;
         println!();
-        match choice.trim().to_lowercase().as_str() {
-            "1" | "" => {
-                // Try local Ollama first, fall back to cloud install
+        match choice.trim() {
+            "1" => {
                 let local_models = fetch_models("http://localhost:11434", "", "ollama");
                 if !local_models.is_empty() {
-                    println!("Found {} local Ollama models:\n", local_models.len());
                     for (i, m) in local_models.iter().enumerate() {
                         println!("  {}. {}", i + 1, m);
                     }
-                    println!();
-                    let mc = prompt(&format!("Model [1-{}, default=1]", local_models.len()))?;
+                    let mc = prompt(&format!("  Model [1-{}]", local_models.len()))?;
                     let idx = mc
                         .trim()
                         .parse::<usize>()
@@ -3488,81 +3505,56 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
                     if let Err(e) =
                         cmd_configure_ai(cli, "ollama", None, Some(&local_models[idx]), None)
                     {
-                        println!("  Could not configure local Ollama: {e:#}");
+                        println!("  Could not configure Ollama: {e:#}");
                     }
                 } else {
-                    println!("Ollama not detected locally. Setting up Ollama cloud...\n");
                     if let Err(e) = cmd_ai_install(cli, "qwen3-coder:480b", None, true) {
-                        println!("  Could not configure Ollama automatically: {e:#}");
-                        println!("  Run later:  innerwarden ai install");
+                        println!("  Could not configure Ollama: {e:#}");
                     }
                 }
             }
-            "2" => {
-                println!("OpenAI - enter your API key (get one at platform.openai.com)");
-                match prompt("OPENAI_API_KEY") {
-                    Ok(k) if !k.is_empty() => {
-                        if let Err(e) = cmd_configure_ai(cli, "openai", Some(&k), None, None) {
-                            println!("  Could not configure OpenAI: {e:#}");
-                        }
+            "2" => match prompt("  API key") {
+                Ok(k) if !k.is_empty() => {
+                    if let Err(e) = cmd_configure_ai(cli, "openai", Some(&k), None, None) {
+                        println!("  Error: {e:#}");
                     }
-                    _ => println!(
-                        "  Skipped. Run later:  innerwarden configure ai openai --key <key>"
-                    ),
                 }
-            }
-            "3" => {
-                println!("Anthropic - enter your API key (get one at console.anthropic.com)");
-                match prompt("ANTHROPIC_API_KEY") {
-                    Ok(k) if !k.is_empty() => {
-                        if let Err(e) = cmd_configure_ai(cli, "anthropic", Some(&k), None, None) {
-                            println!("  Could not configure Anthropic: {e:#}");
-                        }
+                _ => println!("  Skipped"),
+            },
+            "3" => match prompt("  API key") {
+                Ok(k) if !k.is_empty() => {
+                    if let Err(e) = cmd_configure_ai(cli, "anthropic", Some(&k), None, None) {
+                        println!("  Error: {e:#}");
                     }
-                    _ => println!(
-                        "  Skipped. Run later:  innerwarden configure ai anthropic --key <key>"
-                    ),
                 }
-            }
+                _ => println!("  Skipped"),
+            },
             "4" => {
-                // Full interactive wizard with all 12 providers
-                if let Err(e) = cmd_configure_ai(cli, "", None, None, None) {
-                    println!("  Could not configure AI: {e:#}");
-                    println!("  Run later:  innerwarden configure ai");
-                }
+                let _ = cmd_configure_ai(cli, "", None, None, None);
             }
-            _ => println!("  Skipped. Run later:  innerwarden configure ai"),
+            _ => println!("  Skipped"),
         }
     }
-
-    println!("{}", "─".repeat(56));
 
     // ── Step 2: Telegram ──────────────────────────────────────────────────
     println!();
     if telegram_ok {
-        println!("Step 2/4 - Telegram alerts   ✅ already configured\n");
+        println!("  [2/3] Telegram alerts      ✅ configured");
     } else {
-        println!("Step 2/4 - Telegram alerts\n");
-        println!("Get instant alerts on your phone whenever a threat is detected.");
-        println!("You'll need a free Telegram account.\n");
-        print!("Set up Telegram now? [Y/n] ");
-        std::io::stdout().flush()?;
-        let mut ans = String::new();
-        std::io::stdin().read_line(&mut ans)?;
-        println!();
-        if ans.trim().to_lowercase() != "n" {
-            if let Err(e) = cmd_configure_telegram(cli, None, None, false) {
-                println!("  Skipped Telegram: {e:#}");
-                println!("  Run later:  innerwarden configure telegram");
+        println!("  [2/3] Telegram alerts\n");
+        println!("  Get threat alerts on your phone.");
+        println!("  Create a bot via @BotFather on Telegram.\n");
+        match prompt("  Bot token (Enter to skip)") {
+            Ok(t) if !t.is_empty() => {
+                if let Err(e) = cmd_configure_telegram(cli, Some(&t), None, false) {
+                    println!("  Error: {e:#}");
+                }
             }
-        } else {
-            println!("  Skipped. Run later:  innerwarden configure telegram");
+            _ => println!("  Skipped"),
         }
     }
 
-    println!("{}", "─".repeat(56));
-
-    // ── Step 3: Responder ─────────────────────────────────────────────────
+    // ── Step 3: Response mode ─────────────────────────────────────────────
     println!();
     if responder_ok {
         let dry = agent_doc
@@ -3571,154 +3563,43 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
             .and_then(|r| r.get("dry_run"))
             .and_then(|d| d.as_bool())
             .unwrap_or(true);
-        let mode = if dry {
-            "observe (dry-run)"
-        } else {
-            "live (executing actions)"
-        };
-        println!("Step 3/4 - Responder   ✅ already configured ({mode})\n");
+        let mode = if dry { "observe" } else { "auto-protect" };
+        println!("  [3/3] Response mode        ✅ {mode}");
     } else {
-        println!("Step 3/4 - Responder\n");
-        println!("The responder decides what to do when a threat is confirmed:");
-        println!("  observe - AI analyses threats, logs decisions, never blocks anything");
-        println!("  dry-run - AI decides and shows what it would do (safe for testing)");
-        println!("  live    - AI blocks attackers automatically (requires block skill)\n");
-        println!("Recommended for first setup: observe or dry-run.\n");
-        print!("Configure now? [Y/n] ");
-        std::io::stdout().flush()?;
-        let mut ans = String::new();
-        std::io::stdin().read_line(&mut ans)?;
-        println!();
-        if ans.trim().to_lowercase() != "n" {
-            if let Err(e) = cmd_configure_responder(cli, false, false, None) {
-                println!("  Skipped responder: {e:#}");
-                println!("  Run later:  innerwarden configure responder");
-            }
-        } else {
-            println!("  Skipped. Run later:  innerwarden configure responder");
-        }
-    }
-
-    println!("{}", "─".repeat(56));
-
-    // ── Step 4: Essential modules ─────────────────────────────────────────
-    println!();
-    {
-        let essential_unset: Vec<&scan::ModuleRec> = recs
-            .iter()
-            .filter(|r| matches!(r.tier, scan::Tier::Essential))
-            .collect();
-
-        if !essential_unset.is_empty() {
-            println!("Step 4/4 - Enable protection modules\n");
-            println!("Based on what's installed on this host, these modules are recommended:\n");
-            for (i, r) in essential_unset.iter().enumerate() {
-                println!(
-                    "  {}. {}  - {}",
-                    i + 1,
-                    r.name,
-                    r.why.split('.').next().unwrap_or("")
-                );
-                println!("     Enable with:  {}", r.enable_hint);
-            }
-            println!();
-            print!("Enable these now? [Y/n] ");
-            std::io::stdout().flush()?;
-            let mut ans = String::new();
-            std::io::stdin().read_line(&mut ans)?;
-            println!();
-            if ans.trim().to_lowercase() != "n" {
-                for r in &essential_unset {
-                    println!("  Enabling {} ...", r.name);
-                    // Parse the enable hint to extract capability id and params
-                    // hint is like "innerwarden enable block-ip" or "innerwarden enable block-ip --param backend=ufw"
-                    let parts: Vec<&str> = r.enable_hint.split_whitespace().collect();
-                    if parts.len() >= 3 && parts[0] == "innerwarden" && parts[1] == "enable" {
-                        let cap_id = parts[2];
-                        let mut params = std::collections::HashMap::new();
-                        let mut i = 3;
-                        while i < parts.len() {
-                            if parts[i] == "--param" && i + 1 < parts.len() {
-                                if let Some((k, v)) = parts[i + 1].split_once('=') {
-                                    params.insert(k.to_string(), v.to_string());
-                                }
-                                i += 2;
-                            } else {
-                                i += 1;
-                            }
-                        }
-                        let registry = capability::CapabilityRegistry::default_all();
-                        if let Err(e) = cmd_enable(cli, &registry, cap_id, params, true) {
-                            println!("  Could not enable {}: {e:#}", r.name);
-                        }
-                    }
+        println!("  [3/3] Response mode\n");
+        println!("  1. Watch & learn   observe only, never blocks");
+        println!("  2. Auto-protect    blocks threats automatically\n");
+        let choice = prompt("  Choose [1/2]")?;
+        match choice.trim() {
+            "2" => {
+                println!();
+                print!("  Auto-protect will block IPs and suspend users. Type 'yes' to confirm: ");
+                std::io::stdout().flush()?;
+                let mut ans = String::new();
+                std::io::stdin().read_line(&mut ans)?;
+                if ans.trim() == "yes" {
+                    let _ =
+                        config_editor::write_bool(&cli.agent_config, "responder", "enabled", true);
+                    let _ =
+                        config_editor::write_bool(&cli.agent_config, "responder", "dry_run", false);
+                    println!("  ✅ Auto-protect enabled");
+                } else {
+                    let _ =
+                        config_editor::write_bool(&cli.agent_config, "responder", "enabled", true);
+                    let _ =
+                        config_editor::write_bool(&cli.agent_config, "responder", "dry_run", true);
+                    println!("  ✅ Watch & learn (dry-run)");
                 }
-            } else {
-                println!("  Skipped. Enable later with the commands shown above.");
+            }
+            _ => {
+                let _ = config_editor::write_bool(&cli.agent_config, "responder", "enabled", true);
+                let _ = config_editor::write_bool(&cli.agent_config, "responder", "dry_run", true);
+                println!("  ✅ Watch & learn");
             }
         }
     }
-
-    println!("{}", "─".repeat(56));
-
-    // ── Step 5: Notification sensitivity ──────────────────────────────────
-    println!();
-    println!("Step 5/6 - Notification sensitivity\n");
-    println!("How often do you want to be notified?\n");
-    println!("  1. Quiet   - only Critical (server compromised, privesc)");
-    println!("  2. Normal  - High + Critical (recommended)");
-    println!("  3. Verbose - everything Medium+ (scans, mesh signals)\n");
-    let sens_choice = prompt("Choose [1/2/3]").unwrap_or_default();
-    match sens_choice.trim() {
-        "1" => {
-            let _ =
-                config_editor::write_str(&cli.agent_config, "telegram", "min_severity", "critical");
-            let _ =
-                config_editor::write_str(&cli.agent_config, "webhook", "min_severity", "critical");
-            println!("  ✅ Sensitivity: quiet");
-        }
-        "3" => {
-            let _ =
-                config_editor::write_str(&cli.agent_config, "telegram", "min_severity", "medium");
-            let _ =
-                config_editor::write_str(&cli.agent_config, "webhook", "min_severity", "medium");
-            println!("  ✅ Sensitivity: verbose");
-        }
-        _ => {
-            let _ = config_editor::write_str(&cli.agent_config, "telegram", "min_severity", "high");
-            let _ = config_editor::write_str(&cli.agent_config, "webhook", "min_severity", "high");
-            println!("  ✅ Sensitivity: normal (recommended)");
-        }
-    }
-
-    println!("{}", "─".repeat(56));
-
-    // ── Step 6: Mesh network ───────────────────────────────────────────
-    println!();
-    let mesh_ok = is_enabled("mesh");
-    if mesh_ok {
-        println!("Step 6/6 - Mesh network   ✅ already enabled\n");
-    } else {
-        println!("Step 6/6 - Mesh network\n");
-        println!("Connect your Inner Warden nodes together.");
-        println!("When one detects a threat, all others block it automatically.");
-        println!("Ed25519 signed, game-theory trust, staged with TTL.\n");
-        print!("Enable mesh network? [y/N] ");
-        std::io::stdout().flush()?;
-        let mut ans = String::new();
-        std::io::stdin().read_line(&mut ans)?;
-        println!();
-        if ans.trim().to_lowercase() == "y" {
-            let _ = cmd_mesh_enable(cli);
-        } else {
-            println!("  Skipped. Enable later:  innerwarden mesh enable");
-        }
-    }
-
-    println!("{}", "─".repeat(56));
 
     // ── Summary ───────────────────────────────────────────────────────────
-    // Re-read state after all changes
     let env_vars2 = load_env_file(&env_file);
     let agent_doc2: Option<toml_edit::DocumentMut> = std::fs::read_to_string(&cli.agent_config)
         .ok()
@@ -3736,55 +3617,27 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
             || std::env::var(key).is_ok_and(|v| !v.is_empty())
     };
 
-    println!();
-    println!("Setup complete!\n");
     let ai_done = is_enabled2("ai");
     let tg_done = has_env2("TELEGRAM_BOT_TOKEN") && has_env2("TELEGRAM_CHAT_ID");
     let resp_done = is_enabled2("responder");
-    println!(
-        "  AI provider   {}",
-        if ai_done {
-            "✅ configured"
-        } else {
-            "○  not set up"
-        }
-    );
-    println!(
-        "  Telegram      {}",
-        if tg_done {
-            "✅ configured"
-        } else {
-            "○  not set up"
-        }
-    );
-    println!(
-        "  Responder     {}",
-        if resp_done {
-            "✅ configured"
-        } else {
-            "○  not set up"
-        }
-    );
 
-    let mesh_done = is_enabled2("mesh");
-    println!("  Sensitivity   ✅ configured");
+    println!("\n  ────────────────────────────────────────");
     println!(
-        "  Mesh network  {}",
-        if mesh_done {
-            "✅ enabled"
-        } else {
-            "○  not enabled"
-        }
+        "  AI          {}",
+        if ai_done { "ready" } else { "not set" }
     );
-
+    println!(
+        "  Telegram    {}",
+        if tg_done { "ready" } else { "not set" }
+    );
+    println!(
+        "  Responder   {}",
+        if resp_done { "ready" } else { "not set" }
+    );
+    println!("  ────────────────────────────────────────");
     println!();
-    println!("Useful commands:");
-    println!("  innerwarden status                    - overview + last threat");
-    println!("  innerwarden incidents                 - recent threats");
-    println!("  innerwarden configure sensitivity     - quiet / normal / verbose");
-    println!("  innerwarden mesh enable               - join the defense network");
-    println!("  innerwarden mesh add-peer <url>       - connect a node");
-    println!("  innerwarden doctor                    - diagnose issues");
+    println!("  innerwarden status      check protection");
+    println!("  innerwarden configure   change any setting");
 
     Ok(())
 }

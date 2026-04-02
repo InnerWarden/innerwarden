@@ -288,6 +288,7 @@ pub fn all_technique_ids() -> Vec<&'static str> {
 /// Generate an ATT&CK Navigator layer JSON showing InnerWarden's coverage.
 ///
 /// The output can be loaded directly into https://mitre-attack.github.io/attack-navigator/
+#[allow(dead_code)]
 pub fn generate_navigator_layer() -> serde_json::Value {
     let all_detectors = &[
         "ssh_bruteforce",
