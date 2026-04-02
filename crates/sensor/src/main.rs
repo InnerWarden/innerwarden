@@ -3,7 +3,7 @@ mod config;
 mod detectors;
 mod sinks;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -75,11 +75,17 @@ struct Cli {
 
 struct DetectorSet {
     /// Dynamic allowlist loaded from /etc/innerwarden/allowlist.toml.
-    /// Checked before all detectors — if a process/IP is allowlisted,
+    /// Checked before all detectors -- if a process/IP is allowlisted,
     /// the event is still logged but no incident is generated.
     dynamic_allowlist: detectors::allowlists::DynamicAllowlist,
     /// Last time we checked the allowlist file for changes.
     allowlist_last_check: std::time::Instant,
+
+    /// IPs blocked by the agent. Loaded from blocked-ips.txt and
+    /// reloaded every 60s. Events from these IPs skip detection.
+    blocked_ips: HashSet<String>,
+    /// Last time we reloaded blocked-ips.txt.
+    blocked_ips_last_check: std::time::Instant,
 
     ssh: Option<SshBruteforceDetector>,
     credential_stuffing: Option<CredentialStuffingDetector>,
@@ -366,9 +372,20 @@ async fn main() -> Result<()> {
     // Initialize test external IPs so is_internal_ip() respects overrides.
     detectors::init_test_external_ips(dynamic_allowlist.test_external_ips.clone());
 
+    // Load blocked IPs from agent feedback file.
+    let blocked_ips = load_blocked_ips(data_dir);
+    if !blocked_ips.is_empty() {
+        info!(
+            count = blocked_ips.len(),
+            "loaded blocked IPs from agent feedback"
+        );
+    }
+
     let mut detectors = DetectorSet {
         dynamic_allowlist,
         allowlist_last_check: std::time::Instant::now(),
+        blocked_ips,
+        blocked_ips_last_check: std::time::Instant::now(),
         ssh: ssh_detector,
         credential_stuffing: credential_stuffing_detector,
         port_scan: port_scan_detector,
@@ -1045,6 +1062,11 @@ async fn main() -> Result<()> {
     // Main loop: drain events, run detectors, write output
     let mut stats = WriteStats::default();
 
+    // Cross-detector dedup cache: PID -> (last_incident_ts, severity_rank).
+    // Prevents multiple detectors from emitting incidents for the same PID
+    // within a 10-second window. Only the highest severity is kept.
+    let mut dedup_cache: HashMap<u32, (chrono::DateTime<chrono::Utc>, u8)> = HashMap::new();
+
     // Flush every 5 seconds regardless of event count
     let mut flush_ticker = time::interval(time::Duration::from_secs(5));
     flush_ticker.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -1104,6 +1126,7 @@ async fn main() -> Result<()> {
             &mut detectors,
             &mut stats,
             &mut syslog_writer,
+            &mut dedup_cache,
         );
 
         // Also flush every 50 events as a safety net
@@ -1165,6 +1188,33 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Load blocked IPs from the file written by the agent.
+/// Returns an empty set if the file does not exist.
+fn load_blocked_ips(data_dir: &Path) -> HashSet<String> {
+    let path = data_dir.join("blocked-ips.txt");
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => contents
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+        Err(_) => HashSet::new(),
+    }
+}
+
+/// Numeric rank for Severity so we can compare in the dedup cache.
+fn severity_rank(s: &innerwarden_core::event::Severity) -> u8 {
+    use innerwarden_core::event::Severity;
+    match s {
+        Severity::Debug => 0,
+        Severity::Info => 1,
+        Severity::Low => 2,
+        Severity::Medium => 3,
+        Severity::High => 4,
+        Severity::Critical => 5,
+    }
+}
+
 /// Sources that already performed their own detection.
 /// High/Critical events from these sources are promoted directly to incidents
 /// without going through an InnerWarden detector.
@@ -1178,6 +1228,7 @@ fn process_event(
     detectors: &mut DetectorSet,
     stats: &mut WriteStats,
     syslog: &mut Option<sinks::syslog_cef::SyslogCefWriter>,
+    dedup_cache: &mut HashMap<u32, (chrono::DateTime<chrono::Utc>, u8)>,
 ) {
     use innerwarden_core::event::Severity;
 
@@ -1230,7 +1281,7 @@ fn process_event(
             tags: ev.tags.clone(),
             entities: ev.entities.clone(),
         };
-        write_incident(writer, stats, incident, syslog);
+        write_incident(writer, stats, incident, syslog, dedup_cache);
     }
 
     // Reload dynamic allowlist every 60s (checks file mtime, no-op if unchanged).
@@ -1241,8 +1292,31 @@ fn process_event(
         detectors.allowlist_last_check = std::time::Instant::now();
     }
 
+    // Reload blocked IPs from agent feedback every 60s.
+    if detectors.blocked_ips_last_check.elapsed().as_secs() > 60 {
+        let refreshed = load_blocked_ips(writer.data_dir());
+        if refreshed.len() != detectors.blocked_ips.len() {
+            info!(count = refreshed.len(), "blocked IPs list refreshed");
+        }
+        detectors.blocked_ips = refreshed;
+        detectors.blocked_ips_last_check = std::time::Instant::now();
+    }
+
+    // Blocked IP pre-check: skip detection for IPs already blocked by the agent.
+    {
+        let src_ip = ev
+            .details
+            .get("ip")
+            .or_else(|| ev.details.get("src_ip"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !src_ip.is_empty() && detectors.blocked_ips.contains(src_ip) {
+            return;
+        }
+    }
+
     // Dynamic allowlist pre-check: skip incident generation for allowlisted
-    // processes, IPs, and ports. Events are still logged — only detectors are skipped.
+    // processes, IPs, and ports. Events are still logged -- only detectors are skipped.
     {
         let comm = ev
             .details
@@ -1288,7 +1362,7 @@ fn process_event(
         let is_actionable = matches!(ev.severity, Severity::High | Severity::Critical);
         if is_actionable {
             if let Some(incident) = passthrough_incident(&ev) {
-                write_incident(writer, stats, incident, syslog);
+                write_incident(writer, stats, incident, syslog, dedup_cache);
             }
         }
         // Passthrough sources don't need InnerWarden detectors - return early.
@@ -1297,265 +1371,265 @@ fn process_event(
 
     if let Some(ref mut det) = detectors.ssh {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.credential_stuffing {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.port_scan {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.sudo_abuse {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.search_abuse {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.web_scan {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.user_agent_scanner {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.execution_guard {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.suricata_alert {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.docker_anomaly {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.integrity_alert {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.log_tampering {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.osquery_anomaly {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.distributed_ssh {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.suspicious_login {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.c2_callback {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.process_tree {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.container_escape {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.privesc {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.fileless {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.dns_tunneling {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.lateral_movement {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.crypto_miner {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.outbound_anomaly {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.rootkit {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.reverse_shell {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.ssh_key_injection {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.web_shell {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.kernel_module_load {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.crontab_persistence {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.data_exfiltration {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.process_injection {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.user_creation {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.systemd_persistence {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.ransomware {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.credential_harvest {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.packet_flood {
         for incident in det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.sensitive_write {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.discovery_burst {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.io_uring_anomaly {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.container_drift {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.host_drift {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.data_exfil_ebpf {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.yara_scan {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
@@ -1563,13 +1637,13 @@ fn process_event(
         if let Some(incident) =
             det.process_with_suppressions(&ev, &detectors.dynamic_allowlist.suppress_sigma_rules)
         {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 
     if let Some(ref mut det) = detectors.mitre_hunt {
         if let Some(incident) = det.process(&ev) {
-            write_incident(writer, stats, incident, syslog);
+            write_incident(writer, stats, incident, syslog, dedup_cache);
         }
     }
 }
@@ -1622,7 +1696,31 @@ fn write_incident(
     stats: &mut WriteStats,
     incident: innerwarden_core::incident::Incident,
     syslog: &mut Option<sinks::syslog_cef::SyslogCefWriter>,
+    dedup_cache: &mut HashMap<u32, (chrono::DateTime<chrono::Utc>, u8)>,
 ) {
+    // Cross-detector dedup: if the same PID had an incident in the last 10s,
+    // only keep the highest severity. This prevents duplicate alerts when
+    // multiple detectors fire for the same activity.
+    let pid = incident
+        .evidence
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.get("pid"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    if pid > 0 {
+        let now = chrono::Utc::now();
+        let new_rank = severity_rank(&incident.severity);
+        if let Some((ts, prev_rank)) = dedup_cache.get(&pid) {
+            let elapsed = now.signed_duration_since(*ts);
+            if elapsed.num_seconds() < 10 && new_rank <= *prev_rank {
+                // Lower or equal severity within 10s window -- suppress
+                return;
+            }
+        }
+        dedup_cache.insert(pid, (now, new_rank));
+    }
+
     info!(
         incident_id = %incident.incident_id,
         severity = ?incident.severity,

@@ -80,6 +80,12 @@ impl JsonlWriter {
         Ok(())
     }
 
+    /// Returns the data directory path (used by the main loop for loading
+    /// feedback files like blocked-ips.txt).
+    pub fn data_dir(&self) -> &std::path::Path {
+        &self.data_dir
+    }
+
     pub fn flush(&mut self) -> Result<()> {
         if let Some(w) = &mut self.events_writer {
             w.writer.flush()?;
