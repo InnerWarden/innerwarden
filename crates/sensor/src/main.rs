@@ -652,9 +652,17 @@ async fn main() -> Result<()> {
             detectors::yara_scan::YaraScanDetector::new(&cfg.agent.host_id, rules_dir, 3600)
         }),
         sigma_rule: Some({
-            let rules_dir = std::path::Path::new("rules/sigma");
-            info!("Sigma rule engine enabled");
-            detectors::sigma_rule::SigmaRuleDetector::new(&cfg.agent.host_id, rules_dir, 300)
+            // Try multiple paths for Sigma rules: installed location, then relative
+            let rules_dir = [
+                std::path::PathBuf::from("/etc/innerwarden/rules/sigma"),
+                std::path::PathBuf::from("/usr/local/share/innerwarden/rules/sigma"),
+                std::path::PathBuf::from("rules/sigma"),
+            ]
+            .into_iter()
+            .find(|p| p.is_dir())
+            .unwrap_or_else(|| std::path::PathBuf::from("rules/sigma"));
+            info!(path = %rules_dir.display(), "Sigma rule engine enabled");
+            detectors::sigma_rule::SigmaRuleDetector::new(&cfg.agent.host_id, &rules_dir, 300)
         }),
         mitre_hunt: Some({
             info!("mitre_hunt detector enabled (10 MITRE ATT&CK techniques)");
