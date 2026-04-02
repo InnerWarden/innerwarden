@@ -13,7 +13,7 @@
 //! autoencoder flagged it, the autoencoder learns that pattern is normal.
 
 use innerwarden_core::event::Event;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
@@ -577,6 +577,15 @@ impl AnomalyEngine {
             }
         }
 
+        // Read FP reports from last 7 days to incorporate into training
+        let fp_detectors = read_fp_report_detectors(&self.config.data_dir, 7);
+        if !fp_detectors.is_empty() {
+            info!(
+                "autoencoder: incorporated {} FP report detectors into training",
+                fp_detectors.len()
+            );
+        }
+
         // Collect events from JSONL files (last N days)
         let cutoff =
             chrono::Utc::now() - chrono::Duration::days(self.config.training_retention_days as i64);
@@ -644,8 +653,31 @@ impl AnomalyEngine {
             return Err("insufficient data".to_string());
         }
 
-        // Extract features
-        let features: Vec<Vec<f32>> = all_kinds.iter().map(|w| window_features(w)).collect();
+        // Build a set of kind indices associated with FP detectors
+        let fp_kind_indices: HashSet<usize> = if !fp_detectors.is_empty() {
+            fp_detector_to_kind_indices(&fp_detectors)
+        } else {
+            HashSet::new()
+        };
+
+        // Extract features, reducing weight for windows matching FP detector patterns
+        let features: Vec<Vec<f32>> = all_kinds
+            .iter()
+            .map(|w| {
+                let mut f = window_features(w);
+                // If this window contains event kinds associated with known FP detectors,
+                // multiply features by 0.1 (teaching the autoencoder "this is normal")
+                if !fp_kind_indices.is_empty()
+                    && w.iter()
+                        .any(|k| k.is_some_and(|i| fp_kind_indices.contains(&i)))
+                {
+                    for val in f.iter_mut() {
+                        *val *= 0.1;
+                    }
+                }
+                f
+            })
+            .collect();
 
         // Create or reinitialize network
         let mut net = AutoencoderNet::new(&[NUM_FEATURES, 16, 8, 16, NUM_FEATURES], 0.001);
@@ -769,6 +801,192 @@ impl AnomalyEngine {
     }
 }
 
+// ---------------------------------------------------------------------------
+// FP report helpers
+// ---------------------------------------------------------------------------
+
+/// Read fp-reports-*.jsonl files from the last `days` days.
+/// Returns a HashSet of detector names that have confirmed FP reports.
+pub fn read_fp_report_detectors(data_dir: &Path, days: i64) -> HashSet<String> {
+    let mut detectors = HashSet::new();
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
+
+    let entries = match std::fs::read_dir(data_dir) {
+        Ok(e) => e,
+        Err(_) => return detectors,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if !name.starts_with("fp-reports-") || !name.ends_with(".jsonl") {
+            continue;
+        }
+        // Extract date from filename: fp-reports-YYYY-MM-DD.jsonl
+        let date_part = name
+            .strip_prefix("fp-reports-")
+            .and_then(|s| s.strip_suffix(".jsonl"))
+            .unwrap_or("");
+        if let Ok(file_date) = chrono::NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
+            let file_dt = file_date.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc();
+            if file_dt < cutoff {
+                continue;
+            }
+        }
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for line in content.lines() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(detector) = v.get("detector").and_then(|d| d.as_str()) {
+                    detectors.insert(detector.to_string());
+                }
+            }
+        }
+    }
+    detectors
+}
+
+/// Read fp-reports and return counts by (detector, entity) pair.
+/// Entity is the first IP or comm extracted from the incident_id field.
+pub fn read_fp_report_counts(data_dir: &Path, days: i64) -> Vec<(String, String, u32)> {
+    let mut counts: std::collections::HashMap<(String, String), u32> =
+        std::collections::HashMap::new();
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
+
+    let entries = match std::fs::read_dir(data_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if !name.starts_with("fp-reports-") || !name.ends_with(".jsonl") {
+            continue;
+        }
+        let date_part = name
+            .strip_prefix("fp-reports-")
+            .and_then(|s| s.strip_suffix(".jsonl"))
+            .unwrap_or("");
+        if let Ok(file_date) = chrono::NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
+            let file_dt = file_date.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc();
+            if file_dt < cutoff {
+                continue;
+            }
+        }
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for line in content.lines() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                let detector = v
+                    .get("detector")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let incident_id = v.get("incident_id").and_then(|d| d.as_str()).unwrap_or("");
+                // Extract entity: first IP or comm from incident_id
+                // Format: "detector:ip:timestamp" or "detector:comm:timestamp"
+                let entity = extract_entity_from_incident_id(incident_id);
+                if !detector.is_empty() && !entity.is_empty() {
+                    *counts.entry((detector, entity)).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    counts.into_iter().map(|((d, e), c)| (d, e, c)).collect()
+}
+
+/// Extract entity (IP or process name) from incident_id.
+/// Format is typically "detector:entity:timestamp" or "detector:score:timestamp".
+fn extract_entity_from_incident_id(incident_id: &str) -> String {
+    let parts: Vec<&str> = incident_id.splitn(3, ':').collect();
+    if parts.len() >= 2 {
+        let candidate = parts[1].trim();
+        // Check if it looks like an IP or a process name
+        if !candidate.is_empty()
+            && !candidate.chars().all(|c| c.is_ascii_digit())
+            && candidate != "unknown"
+        {
+            return candidate.to_string();
+        }
+    }
+    String::new()
+}
+
+/// Map FP detector names to related event kind indices.
+/// This is a heuristic mapping: detector names like "ssh_bruteforce" map to
+/// event kinds like "ssh.login_failed" (index 14) and "ssh.login_success" (index 13).
+fn fp_detector_to_kind_indices(detectors: &HashSet<String>) -> HashSet<usize> {
+    let mut indices = HashSet::new();
+    for det in detectors {
+        match det.as_str() {
+            "ssh_bruteforce" | "distributed_ssh" => {
+                indices.insert(13); // ssh.login_success
+                indices.insert(14); // ssh.login_failed
+            }
+            "credential_stuffing" | "suspicious_login" => {
+                indices.insert(13);
+                indices.insert(14);
+            }
+            "port_scan" | "web_scan" => {
+                indices.insert(7); // network.outbound_connect
+                indices.insert(9); // network.accept
+            }
+            "data_exfil" | "data_exfil_cmd" | "data_exfil_ebpf" | "data_exfiltration" => {
+                indices.insert(0); // file.read_access
+                indices.insert(7); // network.outbound_connect
+            }
+            "reverse_shell" | "c2_callback" => {
+                indices.insert(7); // network.outbound_connect
+                indices.insert(3); // process.fd_redirect
+            }
+            "privesc" | "sudo_abuse" => {
+                indices.insert(8); // sudo.command
+                indices.insert(19); // privilege.escalation
+            }
+            "process_injection" => {
+                indices.insert(15); // memory.rwx_memory
+                indices.insert(20); // process.memfd_create
+            }
+            "crypto_miner" | "cgroup_abuse" => {
+                indices.insert(12); // cgroup.memory_spike
+            }
+            "dns_tunneling" | "dns_tunneling_ebpf" => {
+                indices.insert(18); // dns.query
+            }
+            "fileless" => {
+                indices.insert(15); // memory.rwx_memory
+                indices.insert(20); // process.memfd_create
+            }
+            "kernel_module_load" => {
+                indices.insert(21); // kernel.new_module_post_boot
+            }
+            "log_tampering" => {
+                indices.insert(16); // file.timestomp
+                indices.insert(17); // file.truncate
+            }
+            "container_escape" | "docker_anomaly" => {
+                indices.insert(22); // filesystem.mount
+            }
+            "ransomware" => {
+                indices.insert(10); // file.write_access
+            }
+            _ => {
+                // For unknown detectors, use shell_exec as a general signal
+                indices.insert(1); // shell.command_exec
+            }
+        }
+    }
+    indices
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -855,5 +1073,109 @@ mod tests {
         engine.training_cycles = 30;
         engine.maturity = (1.0 - (-0.1 * 30.0f32).exp()).min(1.0);
         assert!(engine.maturity > 0.9);
+    }
+
+    #[test]
+    fn fp_detector_mapping_ssh() {
+        let mut detectors = HashSet::new();
+        detectors.insert("ssh_bruteforce".to_string());
+        let indices = fp_detector_to_kind_indices(&detectors);
+        assert!(indices.contains(&13)); // ssh.login_success
+        assert!(indices.contains(&14)); // ssh.login_failed
+        assert!(!indices.contains(&7)); // should not contain outbound
+    }
+
+    #[test]
+    fn fp_detector_mapping_unknown_falls_back() {
+        let mut detectors = HashSet::new();
+        detectors.insert("some_custom_detector".to_string());
+        let indices = fp_detector_to_kind_indices(&detectors);
+        assert!(indices.contains(&1)); // shell.command_exec fallback
+    }
+
+    #[test]
+    fn extract_entity_from_incident_id_works() {
+        assert_eq!(
+            extract_entity_from_incident_id("ssh_bruteforce:1.2.3.4:2026-01-01T00:00:00Z"),
+            "1.2.3.4"
+        );
+        assert_eq!(
+            extract_entity_from_incident_id("process_tree:sshd:2026-01-01T00:00:00Z"),
+            "sshd"
+        );
+        // Pure digits are excluded (could be a score)
+        assert_eq!(
+            extract_entity_from_incident_id("neural_anomaly:85:2026Z"),
+            ""
+        );
+    }
+
+    #[test]
+    fn fp_weight_reduction_applied() {
+        let mut fp = HashSet::new();
+        fp.insert("ssh_bruteforce".to_string());
+        let fp_indices = fp_detector_to_kind_indices(&fp);
+
+        // Window with SSH events (index 14 = ssh.login_failed)
+        let window = vec![Some(14), Some(14), Some(14), Some(13), Some(1)];
+        let normal = window_features(&window);
+        let mut reduced = window_features(&window);
+
+        // Check that the window matches FP criteria
+        let has_fp = window
+            .iter()
+            .any(|k| k.map_or(false, |i| fp_indices.contains(&i)));
+        assert!(has_fp);
+
+        // Apply reduction
+        for val in reduced.iter_mut() {
+            *val *= 0.1;
+        }
+
+        // All features should be 10% of original
+        for (n, r) in normal.iter().zip(reduced.iter()) {
+            assert!((r - n * 0.1).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn read_fp_report_detectors_from_temp_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let today = chrono::Utc::now().format("%Y-%m-%d");
+        let fp_path = dir.path().join(format!("fp-reports-{today}.jsonl"));
+        std::fs::write(
+            &fp_path,
+            r#"{"ts":"2026-01-01T00:00:00Z","incident_id":"ssh_bruteforce:1.2.3.4:ts","detector":"ssh_bruteforce","reporter":"alice","action":"reported_fp"}
+{"ts":"2026-01-01T00:00:00Z","incident_id":"port_scan:5.6.7.8:ts","detector":"port_scan","reporter":"alice","action":"reported_fp"}
+"#,
+        )
+        .unwrap();
+
+        let detectors = read_fp_report_detectors(dir.path(), 7);
+        assert!(detectors.contains("ssh_bruteforce"));
+        assert!(detectors.contains("port_scan"));
+        assert_eq!(detectors.len(), 2);
+    }
+
+    #[test]
+    fn read_fp_report_counts_from_temp_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let today = chrono::Utc::now().format("%Y-%m-%d");
+        let fp_path = dir.path().join(format!("fp-reports-{today}.jsonl"));
+        std::fs::write(
+            &fp_path,
+            r#"{"ts":"2026-01-01T00:00:00Z","incident_id":"ssh_bruteforce:1.2.3.4:ts","detector":"ssh_bruteforce","reporter":"alice","action":"reported_fp"}
+{"ts":"2026-01-01T00:00:00Z","incident_id":"ssh_bruteforce:1.2.3.4:ts2","detector":"ssh_bruteforce","reporter":"alice","action":"reported_fp"}
+{"ts":"2026-01-01T00:00:00Z","incident_id":"ssh_bruteforce:1.2.3.4:ts3","detector":"ssh_bruteforce","reporter":"alice","action":"reported_fp"}
+"#,
+        )
+        .unwrap();
+
+        let counts = read_fp_report_counts(dir.path(), 7);
+        let ssh_count = counts
+            .iter()
+            .find(|(d, e, _)| d == "ssh_bruteforce" && e == "1.2.3.4");
+        assert!(ssh_count.is_some());
+        assert_eq!(ssh_count.unwrap().2, 3);
     }
 }

@@ -683,6 +683,16 @@ enum ConfigureCommand {
         /// Level: quiet, normal, or verbose
         level: String,
     },
+
+    /// Configure two-factor authentication for sensitive actions.
+    ///
+    /// Protects allowlist changes, mode switches, and detector disable
+    /// with TOTP (Google Authenticator, Authy, 1Password).
+    ///
+    /// Examples:
+    ///   innerwarden configure 2fa
+    #[command(name = "2fa")]
+    TwoFa,
 }
 
 /// Notification channel setup sub-commands.
@@ -1379,6 +1389,7 @@ fn main() -> Result<()> {
 
                 Ok(())
             }
+            Some(ConfigureCommand::TwoFa) => cmd_configure_2fa(&cli),
         },
         Command::Notify { ref command } => match command {
             None => cmd_configure_menu(&cli),
@@ -5988,6 +5999,295 @@ fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
         anyhow::bail!("One or more channels failed - run 'innerwarden doctor' for details");
     }
     println!("All channels ok.");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden configure 2fa
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_2fa(cli: &Cli) -> Result<()> {
+    println!();
+    println!("  \u{1f510} Two-Factor Authentication Setup");
+    println!("  ================================");
+    println!();
+    println!("  Choose your second factor:");
+    println!("  1. TOTP (Google Authenticator, Authy, 1Password)");
+    println!("  2. None (disabled, default)");
+    println!();
+    print!("  Choose [1-2]: ");
+    use std::io::Write;
+    std::io::stdout().flush()?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let choice = input.trim();
+
+    match choice {
+        "1" => {
+            // Generate TOTP secret
+            use rand_core::{OsRng, RngCore};
+            let mut secret_bytes = [0u8; 20];
+            OsRng.fill_bytes(&mut secret_bytes);
+            let secret_b32 = base32_encode_simple(&secret_bytes);
+
+            let uri = format!(
+                "otpauth://totp/InnerWarden:admin?secret={}&issuer=InnerWarden&algorithm=SHA1&digits=6&period=30",
+                secret_b32
+            );
+
+            println!();
+            println!("  Scan this URI with your authenticator app:");
+            println!();
+            println!("  {}", uri);
+            println!();
+            print!("  Enter the 6-digit code to verify: ");
+            std::io::stdout().flush()?;
+
+            let mut code = String::new();
+            std::io::stdin().read_line(&mut code)?;
+            let code = code.trim();
+
+            // Verify the code
+            if verify_totp_code(&secret_bytes, code) {
+                // Save to agent.env
+                let env_file = cli
+                    .agent_config
+                    .parent()
+                    .map(|p| p.join("agent.env"))
+                    .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+                append_or_update_env(&env_file, "INNERWARDEN_TOTP_SECRET", &secret_b32)?;
+
+                // Update agent.toml
+                config_editor::write_str(
+                    &cli.agent_config,
+                    "security",
+                    "two_factor_method",
+                    "totp",
+                )?;
+
+                println!();
+                println!("  \u{2705} 2FA enabled with TOTP");
+                println!("  Secret saved to {}", env_file.display());
+                println!();
+                println!("  All sensitive actions (allowlist, mode changes) now require a code.");
+
+                // Restart agent to pick up the new config
+                if !cli.dry_run {
+                    let _ = systemd::restart_service("innerwarden-agent", false);
+                    println!("  Agent restarted.");
+                }
+
+                Ok(())
+            } else {
+                println!();
+                println!("  \u{274c} Wrong code. Please try again.");
+                println!("  Run: innerwarden configure 2fa");
+                Ok(())
+            }
+        }
+        "2" | "" => {
+            config_editor::write_str(&cli.agent_config, "security", "two_factor_method", "none")?;
+            println!();
+            println!("  \u{2705} 2FA disabled");
+            if !cli.dry_run {
+                let _ = systemd::restart_service("innerwarden-agent", false);
+                println!("  Agent restarted.");
+            }
+            Ok(())
+        }
+        _ => {
+            println!("  Unknown option. Run: innerwarden configure 2fa");
+            Ok(())
+        }
+    }
+}
+
+/// Simple base32 encoding (RFC 4648, no padding).
+fn base32_encode_simple(data: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let mut result = String::new();
+    let mut bits: u64 = 0;
+    let mut bit_count = 0;
+    for &byte in data {
+        bits = (bits << 8) | byte as u64;
+        bit_count += 8;
+        while bit_count >= 5 {
+            bit_count -= 5;
+            let idx = ((bits >> bit_count) & 0x1f) as usize;
+            result.push(ALPHABET[idx] as char);
+            bits &= (1 << bit_count) - 1;
+        }
+    }
+    if bit_count > 0 {
+        let idx = ((bits << (5 - bit_count)) & 0x1f) as usize;
+        result.push(ALPHABET[idx] as char);
+    }
+    result
+}
+
+/// Verify a TOTP code against a secret (for setup verification).
+fn verify_totp_code(secret: &[u8], code: &str) -> bool {
+    let code = code.trim();
+    if code.len() != 6 || !code.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let user_code: u32 = match code.parse() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let time_step = now / 30;
+
+    for offset in [0i64, -1, 1] {
+        let step = (time_step as i64 + offset) as u64;
+        if generate_totp_code(secret, step) == user_code {
+            return true;
+        }
+    }
+    false
+}
+
+/// Generate a TOTP code for a time step (standalone, for CTL).
+fn generate_totp_code(secret: &[u8], time_step: u64) -> u32 {
+    let msg = time_step.to_be_bytes();
+    let hash = hmac_sha1_simple(secret, &msg);
+    let offset = (hash[19] & 0x0f) as usize;
+    let code = ((hash[offset] as u32 & 0x7f) << 24)
+        | ((hash[offset + 1] as u32) << 16)
+        | ((hash[offset + 2] as u32) << 8)
+        | (hash[offset + 3] as u32);
+    code % 1_000_000
+}
+
+/// Minimal HMAC-SHA1 for TOTP (standalone, for CTL).
+fn hmac_sha1_simple(key: &[u8], message: &[u8]) -> [u8; 20] {
+    const BLOCK_SIZE: usize = 64;
+    let mut key_block = [0u8; BLOCK_SIZE];
+    if key.len() > BLOCK_SIZE {
+        key_block[..20].copy_from_slice(&sha1_simple(key));
+    } else {
+        key_block[..key.len()].copy_from_slice(key);
+    }
+
+    let mut ipad = [0x36u8; BLOCK_SIZE];
+    let mut opad = [0x5cu8; BLOCK_SIZE];
+    for i in 0..BLOCK_SIZE {
+        ipad[i] ^= key_block[i];
+        opad[i] ^= key_block[i];
+    }
+
+    let mut inner_data = Vec::with_capacity(BLOCK_SIZE + message.len());
+    inner_data.extend_from_slice(&ipad);
+    inner_data.extend_from_slice(message);
+    let inner_hash = sha1_simple(&inner_data);
+
+    let mut outer_data = Vec::with_capacity(BLOCK_SIZE + 20);
+    outer_data.extend_from_slice(&opad);
+    outer_data.extend_from_slice(&inner_hash);
+    sha1_simple(&outer_data)
+}
+
+/// Minimal SHA-1 for TOTP (standalone, for CTL).
+#[allow(clippy::needless_range_loop)]
+fn sha1_simple(data: &[u8]) -> [u8; 20] {
+    let mut h0: u32 = 0x67452301;
+    let mut h1: u32 = 0xEFCDAB89;
+    let mut h2: u32 = 0x98BADCFE;
+    let mut h3: u32 = 0x10325476;
+    let mut h4: u32 = 0xC3D2E1F0;
+    let bit_len = (data.len() as u64) * 8;
+    let mut padded = data.to_vec();
+    padded.push(0x80);
+    while padded.len() % 64 != 56 {
+        padded.push(0);
+    }
+    padded.extend_from_slice(&bit_len.to_be_bytes());
+    for chunk in padded.chunks(64) {
+        let mut w = [0u32; 80];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1],
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ]);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e) = (h0, h1, h2, h3, h4);
+        for i in 0..80 {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A827999u32),
+                20..=39 => (b ^ c ^ d, 0x6ED9EBA1u32),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDCu32),
+                _ => (b ^ c ^ d, 0xCA62C1D6u32),
+            };
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(w[i]);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+        h0 = h0.wrapping_add(a);
+        h1 = h1.wrapping_add(b);
+        h2 = h2.wrapping_add(c);
+        h3 = h3.wrapping_add(d);
+        h4 = h4.wrapping_add(e);
+    }
+    let mut result = [0u8; 20];
+    result[0..4].copy_from_slice(&h0.to_be_bytes());
+    result[4..8].copy_from_slice(&h1.to_be_bytes());
+    result[8..12].copy_from_slice(&h2.to_be_bytes());
+    result[12..16].copy_from_slice(&h3.to_be_bytes());
+    result[16..20].copy_from_slice(&h4.to_be_bytes());
+    result
+}
+
+/// Append or update an environment variable in an env file.
+fn append_or_update_env(env_file: &std::path::Path, key: &str, value: &str) -> Result<()> {
+    let content = std::fs::read_to_string(env_file).unwrap_or_default();
+    let mut found = false;
+    let mut lines: Vec<String> = content
+        .lines()
+        .map(|line| {
+            if line.starts_with(&format!("{key}=")) {
+                found = true;
+                format!("{key}=\"{value}\"")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+
+    if !found {
+        lines.push(format!("{key}=\"{value}\""));
+    }
+
+    if let Some(parent) = env_file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(env_file, lines.join("\n") + "\n")?;
+
+    // Set restrictive permissions
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(env_file, std::fs::Permissions::from_mode(0o600));
+    }
+
     Ok(())
 }
 

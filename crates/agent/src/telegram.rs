@@ -583,6 +583,7 @@ impl TelegramClient {
                         { "text": "🔊 Verbose", "callback_data": "sensitivity:verbose" }
                     ],
                     [
+                        { "text": "\u{1f5d1}\u{fe0f} Undo allowlist", "callback_data": "menu:undo"  },
                         { "text": "❓ All commands",  "callback_data": "menu:help"      }
                     ]
                 ]
@@ -1035,6 +1036,9 @@ impl TelegramClient {
                     ],
                     [
                         { "text": "⚖️ Decisions", "callback_data": "menu:decisions" },
+                        { "text": "\u{1f5d1}\u{fe0f} Undo", "callback_data": "menu:undo" }
+                    ],
+                    [
                         { "text": "❓ Help",       "callback_data": "menu:help"      }
                     ],
                     [ profile_btn ]
@@ -1079,6 +1083,7 @@ impl TelegramClient {
                 { "command": "guard",        "description": "Activate auto-defend mode" },
                 { "command": "watch",        "description": "Switch to passive monitor mode" },
                 { "command": "ask",          "description": "Ask me anything - I know my config" },
+                { "command": "undo",         "description": "Undo recent allowlist additions" },
                 { "command": "help",         "description": "Operator command playbook" }
             ]
         });
@@ -1286,6 +1291,64 @@ impl TelegramClient {
                                     if approval_tx.send(result).await.is_err() {
                                         return;
                                     }
+                                } else if let Some(rest) = data.strip_prefix("autofp:") {
+                                    // Auto-FP suggestion: "autofp:yes:proc:name" or "autofp:no:name"
+                                    let toast = if rest.starts_with("yes:") {
+                                        "\u{2705} Adding to allowlist..."
+                                    } else {
+                                        "\u{1f440} OK, will keep monitoring."
+                                    };
+                                    let _ = self.answer_callback_toast(&callback.id, toast).await;
+                                    let result = ApprovalResult {
+                                        incident_id: format!("__autofp__:{rest}"),
+                                        approved: true,
+                                        always: false,
+                                        operator_name: operator.clone(),
+                                        chosen_action: String::new(),
+                                    };
+                                    if approval_tx.send(result).await.is_err() {
+                                        return;
+                                    }
+                                } else if let Some(rest) = data.strip_prefix("undo:") {
+                                    // Undo allowlist: "undo:proc:key" or "undo:ip:key"
+                                    let _ = self
+                                        .answer_callback_toast(
+                                            &callback.id,
+                                            "\u{1f5d1}\u{fe0f} Removing from allowlist...",
+                                        )
+                                        .await;
+                                    let result = ApprovalResult {
+                                        incident_id: format!("__undo__:{rest}"),
+                                        approved: true,
+                                        always: false,
+                                        operator_name: operator.clone(),
+                                        chosen_action: String::new(),
+                                    };
+                                    if approval_tx.send(result).await.is_err() {
+                                        return;
+                                    }
+                                } else if data == "enable2fa" {
+                                    let _ = self
+                                        .answer_callback_toast(
+                                            &callback.id,
+                                            "\u{1f510} 2FA setup instructions sent.",
+                                        )
+                                        .await;
+                                    let result = ApprovalResult {
+                                        incident_id: "__enable2fa__".to_string(),
+                                        approved: true,
+                                        always: false,
+                                        operator_name: operator.clone(),
+                                        chosen_action: String::new(),
+                                    };
+                                    if approval_tx.send(result).await.is_err() {
+                                        return;
+                                    }
+                                } else if data == "dismiss2fa" {
+                                    let _ = self
+                                        .answer_callback_toast(&callback.id, "\u{1f44d} Dismissed.")
+                                        .await;
+                                    // No routing needed, just ack
                                 } else {
                                     // Answer the callback immediately to remove the spinner
                                     let _ = self.answer_callback(&callback.id).await;
@@ -1353,6 +1416,8 @@ impl TelegramClient {
                                     format!("__enable__:{cap}")
                                 } else if let Some(cap) = text.strip_prefix("/disable ") {
                                     format!("__disable__:{cap}")
+                                } else if text == "/undo" || text.starts_with("/undo ") {
+                                    "__undo__".to_string()
                                 } else if text == "/start" || text.starts_with("/start ") {
                                     // Telegram sends /start when user first opens the bot
                                     "__start__".to_string()
@@ -1790,6 +1855,7 @@ fn parse_callback(data: &str, operator: &str) -> Option<ApprovalResult> {
             "incidents" | "threats" => "__threats__",
             "decisions" => "__decisions__",
             "help" => "__help__",
+            "undo" => "__undo__",
             _ => "__unknown_cmd__",
         };
         return Some(ApprovalResult {
@@ -1857,6 +1923,16 @@ fn escape_html(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// Public wrapper for escape_html (used by main.rs auto-FP suggestions).
+pub fn escape_html_pub(s: &str) -> String {
+    escape_html(s)
+}
+
+/// Public wrapper for truncate_utf8_bytes (callback data must be <= 64 bytes).
+pub fn truncate_callback_pub(s: &str) -> String {
+    truncate_utf8_bytes(s, TELEGRAM_MAX_CALLBACK_BYTES)
 }
 
 /// Visual score bar for AbuseIPDB confidence (e.g. "████░░░░ 80/100").
@@ -2702,6 +2778,154 @@ pub fn append_to_allowlist(
     writeln!(file, "\"{}\" = \"{}\"", escaped_key, escaped_reason)?;
     file.flush()?;
     file.unlock()?;
+    Ok(())
+}
+
+/// Log an allowlist change (add or remove) to allowlist-history.jsonl.
+pub fn log_allowlist_change(
+    data_dir: &std::path::Path,
+    key: &str,
+    section: &str,
+    operator: &str,
+    action: &str,
+) {
+    let path = data_dir.join("allowlist-history.jsonl");
+    let entry = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "key": key,
+        "section": section,
+        "operator": operator,
+        "action": action,
+    });
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "{}", entry);
+    }
+}
+
+/// Read allowlist history and return last N "add" entries without matching "remove".
+pub fn read_undoable_allowlist_entries(
+    data_dir: &std::path::Path,
+    max_entries: usize,
+) -> Vec<(String, String, String, String)> {
+    // Returns Vec<(key, section, operator, ts)>
+    let path = data_dir.join("allowlist-history.jsonl");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut adds: Vec<(String, String, String, String)> = Vec::new();
+    let mut removed_keys: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
+
+    // Parse all entries
+    for line in content.lines() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            let key = v
+                .get("key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let section = v
+                .get("section")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let operator = v
+                .get("operator")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let ts = v
+                .get("ts")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let action = v
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            if action == "add" {
+                adds.push((key, section, operator, ts));
+            } else if action == "remove" {
+                removed_keys.insert((key, section));
+            }
+        }
+    }
+
+    // Filter out entries that have been removed, take last N
+    adds.into_iter()
+        .rev()
+        .filter(|(key, section, _, _)| !removed_keys.contains(&(key.clone(), section.clone())))
+        .take(max_entries)
+        .collect()
+}
+
+/// Remove a key from allowlist.toml atomically.
+/// Reads the file, removes lines containing the key in the appropriate section,
+/// writes to a temp file, and renames over the original.
+pub fn remove_from_allowlist(
+    allowlist_path: &std::path::Path,
+    section: &str,
+    key: &str,
+) -> anyhow::Result<()> {
+    use fs2::FileExt;
+
+    let content = std::fs::read_to_string(allowlist_path).unwrap_or_default();
+
+    let mut result_lines: Vec<String> = Vec::new();
+    let mut in_target_section = false;
+    let escaped_key = key.replace('\\', "\\\\").replace('"', "\\\"");
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        // Track section headers
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let sec = &trimmed[1..trimmed.len() - 1];
+            in_target_section = sec == section;
+            result_lines.push(line.to_string());
+            continue;
+        }
+
+        // If in the target section, skip lines containing the key
+        if in_target_section
+            && (trimmed.contains(&format!("\"{}\"", escaped_key))
+                || trimmed.contains(&format!("\"{}\"", key)))
+        {
+            continue;
+        }
+
+        result_lines.push(line.to_string());
+    }
+
+    // Remove trailing empty lines and consecutive empty section headers
+    let output = result_lines.join("\n");
+
+    // Write atomically: temp file + rename
+    let temp_path = allowlist_path.with_extension("toml.tmp");
+    {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&temp_path)?;
+        file.lock_exclusive()?;
+        use std::io::Write;
+        let mut writer = std::io::BufWriter::new(&file);
+        writer.write_all(output.as_bytes())?;
+        writer.write_all(b"\n")?;
+        writer.flush()?;
+        file.unlock()?;
+    }
+    std::fs::rename(&temp_path, allowlist_path)?;
+
     Ok(())
 }
 

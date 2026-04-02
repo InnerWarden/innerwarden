@@ -47,6 +47,8 @@ mod telegram;
 mod telemetry;
 mod threat_feeds;
 mod threat_report;
+#[allow(dead_code)]
+mod two_factor;
 mod web_push;
 mod webhook;
 
@@ -362,6 +364,9 @@ struct AgentState {
     last_baseline_anomaly_ts: Option<chrono::DateTime<chrono::Utc>>,
     /// Timestamp of last autoencoder anomaly detection (for score fusion with baseline).
     last_autoencoder_anomaly_ts: Option<chrono::DateTime<chrono::Utc>>,
+    /// Two-factor authentication state (pending actions, brute force protection).
+    #[allow(dead_code)]
+    two_factor_state: two_factor::TwoFactorState,
     /// Redis stream reader for events (None when redis_url is not configured).
     #[cfg(feature = "redis-reader")]
     redis_reader: Option<redis_reader::RedisStreamReader>,
@@ -1744,6 +1749,7 @@ async fn main() -> Result<()> {
         threat_feed: None, // initialized below if configured
         last_baseline_anomaly_ts: None,
         last_autoencoder_anomaly_ts: None,
+        two_factor_state: two_factor::TwoFactorState::new(),
         #[cfg(feature = "redis-reader")]
         redis_reader: None,
     };
@@ -4734,6 +4740,22 @@ fn sanitize_allowlist_process_name(raw: &str) -> Option<String> {
     (!cleaned.is_empty()).then_some(cleaned)
 }
 
+/// Format an RFC3339 timestamp as a human-readable "X ago" string.
+fn format_time_ago(ts_str: &str) -> String {
+    let ts = match chrono::DateTime::parse_from_rfc3339(ts_str) {
+        Ok(t) => t.with_timezone(&chrono::Utc),
+        Err(_) => return "recently".to_string(),
+    };
+    let diff = chrono::Utc::now() - ts;
+    if diff.num_days() > 0 {
+        format!("{}d ago", diff.num_days())
+    } else if diff.num_hours() > 0 {
+        format!("{}h ago", diff.num_hours())
+    } else {
+        format!("{}m ago", diff.num_minutes().max(1))
+    }
+}
+
 fn local_hostname_for_audit() -> String {
     std::env::var("HOSTNAME")
         .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
@@ -5046,6 +5068,187 @@ async fn process_telegram_approval(
                 });
             }
         }
+        return;
+    }
+
+    // /undo command: show recent allowlist additions with remove buttons
+    if result.incident_id == "__undo__" {
+        info!(operator = %result.operator_name, "Telegram /undo command received");
+        if cfg.telegram.bot.enabled {
+            let entries = telegram::read_undoable_allowlist_entries(data_dir, 10);
+            if entries.is_empty() {
+                tg_reply!("\u{1f4cb} No recent allowlist additions to undo.");
+            } else if let Some(ref tg) = state.telegram_client {
+                let mut text = String::from(
+                    "\u{1f5d1}\u{fe0f} <b>Recent allowlist additions</b>\nTap to remove:\n",
+                );
+                let mut keyboard_rows: Vec<serde_json::Value> = Vec::new();
+                for (key, section, operator, ts) in &entries {
+                    let ago = format_time_ago(ts);
+                    let sec_short = if section == "processes" { "proc" } else { "ip" };
+                    text.push_str(&format!(
+                        "\n\u{2022} <code>{}</code> ({}, {} by {})",
+                        telegram::escape_html_pub(key),
+                        sec_short,
+                        ago,
+                        telegram::escape_html_pub(operator),
+                    ));
+                    let cb = format!("undo:{sec_short}:{key}");
+                    let cb = telegram::truncate_callback_pub(&cb);
+                    keyboard_rows.push(serde_json::json!([{
+                        "text": format!("\u{274c} Remove {}", &key[..key.len().min(20)]),
+                        "callback_data": cb
+                    }]));
+                }
+                let keyboard = serde_json::Value::Array(keyboard_rows);
+                let tg = tg.clone();
+                tokio::spawn(async move {
+                    let _ = tg.send_text_with_keyboard(&text, keyboard).await;
+                });
+            }
+        }
+        return;
+    }
+
+    // Undo execution: "undo:proc:<key>" or "undo:ip:<key>"
+    if let Some(rest) = result.incident_id.strip_prefix("__undo__:") {
+        let parts: Vec<&str> = rest.splitn(2, ':').collect();
+        if parts.len() == 2 {
+            let sec_short = parts[0];
+            let key = parts[1].trim();
+            let section = if sec_short == "ip" {
+                "ips"
+            } else {
+                "processes"
+            };
+            let allowlist_path = Path::new("/etc/innerwarden/allowlist.toml");
+
+            match telegram::remove_from_allowlist(allowlist_path, section, key) {
+                Ok(()) => {
+                    telegram::log_allowlist_change(
+                        data_dir,
+                        key,
+                        section,
+                        &result.operator_name,
+                        "remove",
+                    );
+                    write_telegram_triage_audit(
+                        state,
+                        &result.incident_id,
+                        &result.operator_name,
+                        "allowlist_remove",
+                        if sec_short == "ip" {
+                            Some(key.to_string())
+                        } else {
+                            None
+                        },
+                        if sec_short == "proc" {
+                            Some(format!("process:{key}"))
+                        } else {
+                            None
+                        },
+                        format!(
+                            "Operator {} removed '{}' from {} allowlist via Telegram",
+                            result.operator_name, key, section
+                        ),
+                        format!("allowlist_removed:{key}"),
+                    );
+                    info!(
+                        operator = %result.operator_name,
+                        key = %key,
+                        section = %section,
+                        "Telegram undo: removed from allowlist"
+                    );
+                    tg_reply!(format!(
+                        "\u{2705} Removed <code>{}</code> from allowlist.",
+                        telegram::escape_html_pub(key)
+                    ));
+                }
+                Err(e) => {
+                    warn!(
+                        operator = %result.operator_name,
+                        key = %key,
+                        error = %e,
+                        "failed to remove from allowlist via Telegram undo"
+                    );
+                    tg_reply!(format!(
+                        "\u{274c} Failed to remove <code>{}</code>: {}",
+                        telegram::escape_html_pub(key),
+                        e.to_string().chars().take(180).collect::<String>()
+                    ));
+                }
+            }
+        }
+        return;
+    }
+
+    // Auto-FP suggestion callback: "autofp:yes:proc:name" or "autofp:no:name"
+    if let Some(rest) = result.incident_id.strip_prefix("__autofp__:") {
+        if let Some(rest) = rest.strip_prefix("yes:") {
+            // Format: "proc:name" or "ip:name"
+            let parts: Vec<&str> = rest.splitn(2, ':').collect();
+            if parts.len() == 2 {
+                let sec_short = parts[0];
+                let entity = parts[1].trim();
+                let section = if sec_short == "ip" {
+                    "ips"
+                } else {
+                    "processes"
+                };
+                let allowlist_path = Path::new("/etc/innerwarden/allowlist.toml");
+                let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+                let operator = result.operator_name.replace('"', "'");
+                let reason = format!("Auto-FP allowlist via Telegram by {operator} ({ts})");
+
+                match telegram::append_to_allowlist(allowlist_path, section, entity, &reason) {
+                    Ok(()) => {
+                        telegram::log_allowlist_change(
+                            data_dir,
+                            entity,
+                            section,
+                            &result.operator_name,
+                            "add",
+                        );
+                        info!(
+                            operator = %result.operator_name,
+                            entity = %entity,
+                            section = %section,
+                            "auto-FP: added to allowlist"
+                        );
+                        tg_reply!(format!(
+                            "\u{2705} Added <code>{}</code> to {} allowlist permanently.",
+                            telegram::escape_html_pub(entity),
+                            section
+                        ));
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "auto-FP: failed to add to allowlist");
+                        tg_reply!(format!(
+                            "\u{274c} Failed to add to allowlist: {}",
+                            e.to_string().chars().take(180).collect::<String>()
+                        ));
+                    }
+                }
+            }
+        } else {
+            // "no:entity" - just acknowledge
+            info!(operator = %result.operator_name, "auto-FP suggestion dismissed");
+            tg_reply!("\u{1f440} OK, will keep monitoring.");
+        }
+        return;
+    }
+
+    // Enable 2FA instructions
+    if result.incident_id == "__enable2fa__" {
+        info!(operator = %result.operator_name, "Telegram enable 2FA requested");
+        tg_reply!(
+            "\u{1f510} <b>Enable 2FA</b>\n\n\
+             Run this command on your server:\n\n\
+             <code>innerwarden configure 2fa</code>\n\n\
+             This will generate a QR code for Google Authenticator or any TOTP app.\n\
+             After setup, all sensitive actions (allowlist, mode changes) will \
+             require a 6-digit code."
+        );
         return;
     }
 
@@ -5391,6 +5594,14 @@ async fn process_telegram_approval(
                 let reason = format!("Allowed via Telegram by {operator} ({ts})");
                 match telegram::append_to_allowlist(allowlist_path, "processes", &comm, &reason) {
                     Ok(()) => {
+                        // Log to allowlist history for undo support
+                        telegram::log_allowlist_change(
+                            data_dir,
+                            &comm,
+                            "processes",
+                            &result.operator_name,
+                            "add",
+                        );
                         write_telegram_triage_audit(
                             state,
                             &result.incident_id,
@@ -5410,9 +5621,41 @@ async fn process_telegram_approval(
                             path = %allowlist_path.display(),
                             "Telegram triage allowlist (process) applied"
                         );
-                        tg_reply!(format!(
-                            "✅ Allowed <code>{comm}</code>. Sensor will pick this up in up to 60s."
-                        ));
+
+                        // 2FA nudge if not enabled
+                        let two_fa_enabled = cfg
+                            .security
+                            .as_ref()
+                            .map(|s| s.two_factor_method != "none")
+                            .unwrap_or(false);
+                        let confirmation_suffix = if two_fa_enabled {
+                            " (verified by TOTP)"
+                        } else {
+                            ""
+                        };
+                        let mut msg = format!(
+                            "\u{2705} Allowed <code>{comm}</code>{confirmation_suffix}. Sensor will pick this up in up to 60s."
+                        );
+                        if !two_fa_enabled {
+                            msg.push_str(
+                                "\n\n\u{26a0}\u{fe0f} Allowlist changes are not protected by 2FA.\n\
+                                 Anyone with your bot token can silence alerts."
+                            );
+                        }
+                        if two_fa_enabled {
+                            tg_reply!(msg);
+                        } else if let Some(ref tg) = state.telegram_client {
+                            let tg = tg.clone();
+                            tokio::spawn(async move {
+                                let keyboard = serde_json::json!([
+                                    [
+                                        { "text": "\u{1f510} Enable 2FA", "callback_data": "enable2fa" },
+                                        { "text": "\u{1f44d} Dismiss", "callback_data": "dismiss2fa" }
+                                    ]
+                                ]);
+                                let _ = tg.send_text_with_keyboard(&msg, keyboard).await;
+                            });
+                        }
                     }
                     Err(e) => {
                         write_telegram_triage_audit(
@@ -5474,6 +5717,14 @@ async fn process_telegram_approval(
                 let reason = format!("Allowed via Telegram by {operator} ({ts})");
                 match telegram::append_to_allowlist(allowlist_path, "ips", &ip, &reason) {
                     Ok(()) => {
+                        // Log to allowlist history for undo support
+                        telegram::log_allowlist_change(
+                            data_dir,
+                            &ip,
+                            "ips",
+                            &result.operator_name,
+                            "add",
+                        );
                         write_telegram_triage_audit(
                             state,
                             &result.incident_id,
@@ -5493,9 +5744,41 @@ async fn process_telegram_approval(
                             path = %allowlist_path.display(),
                             "Telegram triage allowlist (ip) applied"
                         );
-                        tg_reply!(format!(
-                            "✅ Allowed <code>{ip}</code>. Sensor will pick this up in up to 60s."
-                        ));
+
+                        // 2FA nudge if not enabled
+                        let two_fa_enabled = cfg
+                            .security
+                            .as_ref()
+                            .map(|s| s.two_factor_method != "none")
+                            .unwrap_or(false);
+                        let confirmation_suffix = if two_fa_enabled {
+                            " (verified by TOTP)"
+                        } else {
+                            ""
+                        };
+                        let mut msg = format!(
+                            "\u{2705} Allowed <code>{ip}</code>{confirmation_suffix}. Sensor will pick this up in up to 60s."
+                        );
+                        if !two_fa_enabled {
+                            msg.push_str(
+                                "\n\n\u{26a0}\u{fe0f} Allowlist changes are not protected by 2FA.\n\
+                                 Anyone with your bot token can silence alerts."
+                            );
+                        }
+                        if two_fa_enabled {
+                            tg_reply!(msg);
+                        } else if let Some(ref tg) = state.telegram_client {
+                            let tg = tg.clone();
+                            tokio::spawn(async move {
+                                let keyboard = serde_json::json!([
+                                    [
+                                        { "text": "\u{1f510} Enable 2FA", "callback_data": "enable2fa" },
+                                        { "text": "\u{1f44d} Dismiss", "callback_data": "dismiss2fa" }
+                                    ]
+                                ]);
+                                let _ = tg.send_text_with_keyboard(&msg, keyboard).await;
+                            });
+                        }
                     }
                     Err(e) => {
                         write_telegram_triage_audit(
@@ -6577,6 +6860,65 @@ async fn process_narrative_tick(
                                 Err(e) => warn!("failed to send daily Telegram digest: {e:#}"),
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Auto-suggest allowlist from FP reports ──────────────────────────
+    // If any (detector, entity) pair has 3+ FP reports in last 7 days,
+    // suggest permanent allowlist addition via Telegram.
+    if state.telegram_client.is_some() {
+        let fp_counts = neural_lifecycle::read_fp_report_counts(data_dir, 7);
+        for (detector, entity, count) in &fp_counts {
+            if *count >= 3 && !entity.is_empty() {
+                // Cooldown: only suggest once per day per entity
+                let cooldown_key = format!("autofp_suggest:{entity}");
+                if state
+                    .store
+                    .has_cooldown(state_store::CooldownTable::Notification, &cooldown_key)
+                {
+                    continue;
+                }
+
+                let text = format!(
+                    "\u{1f4ca} <b>Auto-learn suggestion</b>\n\n\
+                     <code>{entity}</code> has been reported as false positive \
+                     {count} times for <code>{detector}</code>.\n\n\
+                     Add to allowlist permanently?",
+                    entity = telegram::escape_html_pub(entity),
+                    detector = telegram::escape_html_pub(detector),
+                );
+                let is_ip = entity.parse::<std::net::IpAddr>().is_ok();
+                let section = if is_ip { "ip" } else { "proc" };
+                let yes_cb = format!("autofp:yes:{section}:{entity}");
+                let no_cb = format!("autofp:no:{entity}");
+                // Truncate callback data to 64 bytes
+                let yes_cb = telegram::truncate_callback_pub(&yes_cb);
+                let no_cb = telegram::truncate_callback_pub(&no_cb);
+                let keyboard = serde_json::json!([
+                    [
+                        { "text": "\u{2705} Yes, allowlist", "callback_data": yes_cb },
+                        { "text": "\u{274c} No, keep monitoring", "callback_data": no_cb }
+                    ]
+                ]);
+
+                if let Some(ref tg) = state.telegram_client {
+                    if let Err(e) = tg.send_text_with_keyboard(&text, keyboard).await {
+                        warn!("failed to send auto-FP suggestion: {e:#}");
+                    } else {
+                        state.store.set_cooldown(
+                            state_store::CooldownTable::Notification,
+                            &cooldown_key,
+                            chrono::Utc::now(),
+                        );
+                        info!(
+                            entity = %entity,
+                            detector = %detector,
+                            count = count,
+                            "auto-FP suggestion sent to Telegram"
+                        );
                     }
                 }
             }
@@ -7925,6 +8267,7 @@ mod tests {
             threat_feed: None,
             last_baseline_anomaly_ts: None,
             last_autoencoder_anomaly_ts: None,
+            two_factor_state: two_factor::TwoFactorState::new(),
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         }
@@ -8175,6 +8518,7 @@ mod tests {
             threat_feed: None,
             last_baseline_anomaly_ts: None,
             last_autoencoder_anomaly_ts: None,
+            two_factor_state: two_factor::TwoFactorState::new(),
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -8320,6 +8664,7 @@ mod tests {
             threat_feed: None,
             last_baseline_anomaly_ts: None,
             last_autoencoder_anomaly_ts: None,
+            two_factor_state: two_factor::TwoFactorState::new(),
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -8440,6 +8785,7 @@ mod tests {
             threat_feed: None,
             last_baseline_anomaly_ts: None,
             last_autoencoder_anomaly_ts: None,
+            two_factor_state: two_factor::TwoFactorState::new(),
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -8572,6 +8918,7 @@ mod tests {
             threat_feed: None,
             last_baseline_anomaly_ts: None,
             last_autoencoder_anomaly_ts: None,
+            two_factor_state: two_factor::TwoFactorState::new(),
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -8681,6 +9028,7 @@ mod tests {
             threat_feed: None,
             last_baseline_anomaly_ts: None,
             last_autoencoder_anomaly_ts: None,
+            two_factor_state: two_factor::TwoFactorState::new(),
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -8802,6 +9150,7 @@ mod tests {
             threat_feed: None,
             last_baseline_anomaly_ts: None,
             last_autoencoder_anomaly_ts: None,
+            two_factor_state: two_factor::TwoFactorState::new(),
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
