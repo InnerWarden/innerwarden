@@ -286,6 +286,8 @@ struct AgentState {
     approval_rx: Option<tokio::sync::mpsc::Receiver<telegram::ApprovalResult>>,
     /// Telegram batcher — groups repeated alerts to avoid spam.
     telegram_batcher: telegram::TelegramBatcher,
+    /// Neural autoencoder anomaly engine — learns "normal" and flags novel patterns.
+    anomaly_engine: neural_lifecycle::AnomalyEngine,
     /// In-memory trust rules: set of "detector:action" strings.
     /// Loaded from data_dir/trust-rules.json at startup; updated live when operator clicks "Always".
     trust_rules: std::collections::HashSet<String>,
@@ -345,7 +347,9 @@ struct AgentState {
     playbook_engine: playbook::PlaybookEngine,
     /// Selective packet capture on incidents.
     pcap_capture: pcap_capture::PcapCapture,
-    /// Neural scoring model — detects novel attack patterns that rules miss.
+    /// V10 neural scoring model — replaced by autoencoder (anomaly_engine).
+    /// Kept for API compatibility; will be removed in v0.9.
+    #[allow(dead_code)]
     scoring_engine: scoring::ScoringEngine,
     /// Firmware incident cooldown: timestamp of last firmware trust_degraded incident.
     /// Prevents duplicate alerts when trust score is persistently low (e.g., VMs).
@@ -1619,6 +1623,10 @@ async fn main() -> Result<()> {
         pending_confirmations: HashMap::new(),
         approval_rx: None, // set below in continuous mode
         telegram_batcher: telegram::TelegramBatcher::new(60),
+        anomaly_engine: neural_lifecycle::AnomalyEngine::new(neural_lifecycle::AnomalyConfig {
+            data_dir: cli.data_dir.clone(),
+            ..Default::default()
+        }),
         trust_rules: load_trust_rules(&cli.data_dir),
         crowdsec: if cfg.crowdsec.enabled {
             info!(url = %cfg.crowdsec.url, "CrowdSec integration enabled");
@@ -1952,6 +1960,32 @@ async fn main() -> Result<()> {
                                 let digest = summaries.join("\n");
                                 if let Err(e) = tg.send_raw_html(&digest).await {
                                     warn!("Telegram batch digest failed: {e:#}");
+                                }
+                            }
+                        }
+                    }
+
+                    // Autoencoder nightly training — at 3 AM UTC.
+                    {
+                        let hour = chrono::Utc::now().hour();
+                        if hour == 3 {
+                            let today_key = format!("anomaly_train:{}", chrono::Utc::now().format("%Y-%m-%d"));
+                            if !state.store.has_cooldown(state_store::CooldownTable::Decision, &today_key) {
+                                info!("autoencoder: triggering nightly training");
+                                match state.anomaly_engine.train_nightly() {
+                                    Ok(()) => {
+                                        info!(
+                                            maturity = format!("{:.2}", state.anomaly_engine.maturity),
+                                            cycles = state.anomaly_engine.training_cycles,
+                                            "autoencoder: training complete"
+                                        );
+                                        state.store.set_cooldown(
+                                            state_store::CooldownTable::Decision,
+                                            &today_key,
+                                            chrono::Utc::now(),
+                                        );
+                                    }
+                                    Err(e) => warn!("autoencoder training failed: {e}"),
                                 }
                             }
                         }
@@ -5682,69 +5716,73 @@ async fn process_narrative_tick(
         }
     }
 
-    // Neural scoring DISABLED: V10 classifier generates FPs on production traffic
-    // (Cloudflare, WordPress, Docker). Will be replaced by autoencoder anomaly
-    // detection once neural_lifecycle.rs is wired into the main loop.
-    // See: feat/neural-autoencoder branch, Phase 1 roadmap in gym/CLAUDE.md
-    if false {
-        #[allow(unused_variables)]
-        let events_entries_ref = &events_entries;
-        for ev in &events_entries {
-            if let Some((score, explanation)) = state.scoring_engine.observe(ev) {
-                info!(
-                    score = format!("{:.2}", score),
-                    "neural scoring: anomaly detected"
-                );
-                // Write as incident
-                let incident = innerwarden_core::incident::Incident {
-                    ts: ev.ts,
-                    host: ev.host.clone(),
-                    incident_id: format!(
-                        "neural_anomaly:{}:{}",
-                        score as u32,
-                        ev.ts.format("%Y-%m-%dT%H:%MZ")
-                    ),
-                    severity: if score > 0.9 {
-                        innerwarden_core::event::Severity::Critical
-                    } else if score > 0.8 {
-                        innerwarden_core::event::Severity::High
-                    } else {
-                        innerwarden_core::event::Severity::Medium
-                    },
-                    title: format!(
-                        "Neural model anomaly: {:.0}% attack probability",
-                        score * 100.0
-                    ),
-                    summary: explanation,
-                    evidence: serde_json::json!({
-                        "score": score,
-                        "model": "innerwarden-gym-v1",
-                        "model_size_bytes": 16932,
-                        "trigger_event": ev.kind,
-                    }),
-                    recommended_checks: vec![
-                        "Review recent events for attack patterns".to_string(),
-                        "Check if any detector also flagged this activity".to_string(),
-                    ],
-                    tags: vec!["neural_model".to_string(), "anomaly".to_string()],
-                    entities: ev.entities.clone(),
-                };
-                // Write to incidents file
-                let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&incidents_path)
-                {
-                    use std::io::Write;
-                    if let Ok(json) = serde_json::to_string(&incident) {
-                        let _ = writeln!(f, "{json}");
-                    }
+    // ── Autoencoder anomaly detection ────────────────────────────────────
+    // Feed every event to the autoencoder. It builds a sliding window and
+    // scores each window against the trained model. Until the model is
+    // trained (maturity > 0), observe() returns None — safe no-op.
+    for ev in &events_entries {
+        if let Some((score, weighted)) = state.anomaly_engine.observe(ev) {
+            info!(
+                score = format!("{:.3}", score),
+                weighted = format!("{:.3}", weighted),
+                maturity = format!("{:.2}", state.anomaly_engine.maturity),
+                kind = %ev.kind,
+                "autoencoder anomaly detected"
+            );
+            let incident = innerwarden_core::incident::Incident {
+                ts: ev.ts,
+                host: ev.host.clone(),
+                incident_id: format!(
+                    "neural_anomaly:{}:{}",
+                    (score * 100.0) as u32,
+                    ev.ts.format("%Y-%m-%dT%H:%MZ")
+                ),
+                severity: if score > 0.9 {
+                    innerwarden_core::event::Severity::Critical
+                } else if score > 0.8 {
+                    innerwarden_core::event::Severity::High
+                } else {
+                    innerwarden_core::event::Severity::Medium
+                },
+                title: format!(
+                    "Neural anomaly: {:.0}% anomaly score (maturity {:.0}%)",
+                    score * 100.0,
+                    state.anomaly_engine.maturity * 100.0
+                ),
+                summary: format!(
+                    "Autoencoder flagged unusual event pattern. \
+                     Trigger: {} | Score: {:.3} | Weighted: {:.3} | \
+                     Training cycles: {}",
+                    ev.kind, score, weighted, state.anomaly_engine.training_cycles
+                ),
+                evidence: serde_json::json!({
+                    "score": score,
+                    "weighted": weighted,
+                    "maturity": state.anomaly_engine.maturity,
+                    "training_cycles": state.anomaly_engine.training_cycles,
+                    "model": "autoencoder-48f",
+                    "trigger_event": ev.kind,
+                }),
+                recommended_checks: vec![
+                    "Review recent events for unusual patterns".to_string(),
+                    "Check if rule-based detectors also flagged this".to_string(),
+                ],
+                tags: vec!["neural_model".to_string(), "autoencoder".to_string()],
+                entities: ev.entities.clone(),
+            };
+            let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&incidents_path)
+            {
+                use std::io::Write;
+                if let Ok(json) = serde_json::to_string(&incident) {
+                    let _ = writeln!(f, "{json}");
                 }
-                state.scoring_engine.reset();
             }
         }
-    } // end: if false (neural scoring disabled)
+    }
 
     // Also ingest any new incidents incrementally
     let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
@@ -7243,6 +7281,7 @@ mod tests {
             pending_confirmations: HashMap::new(),
             approval_rx: None,
             telegram_batcher: telegram::TelegramBatcher::new(60),
+            anomaly_engine: neural_lifecycle::AnomalyEngine::new(Default::default()),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
@@ -7385,6 +7424,7 @@ mod tests {
             pending_confirmations: HashMap::new(),
             approval_rx: None,
             telegram_batcher: telegram::TelegramBatcher::new(60),
+            anomaly_engine: neural_lifecycle::AnomalyEngine::new(Default::default()),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
@@ -7502,6 +7542,7 @@ mod tests {
             pending_confirmations: HashMap::new(),
             approval_rx: None,
             telegram_batcher: telegram::TelegramBatcher::new(60),
+            anomaly_engine: neural_lifecycle::AnomalyEngine::new(Default::default()),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
@@ -7631,6 +7672,7 @@ mod tests {
             pending_confirmations: HashMap::new(),
             approval_rx: None,
             telegram_batcher: telegram::TelegramBatcher::new(60),
+            anomaly_engine: neural_lifecycle::AnomalyEngine::new(Default::default()),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
@@ -7737,6 +7779,7 @@ mod tests {
             pending_confirmations: HashMap::new(),
             approval_rx: None,
             telegram_batcher: telegram::TelegramBatcher::new(60),
+            anomaly_engine: neural_lifecycle::AnomalyEngine::new(Default::default()),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
@@ -7855,6 +7898,7 @@ mod tests {
             pending_confirmations: HashMap::new(),
             approval_rx: None,
             telegram_batcher: telegram::TelegramBatcher::new(60),
+            anomaly_engine: neural_lifecycle::AnomalyEngine::new(Default::default()),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
