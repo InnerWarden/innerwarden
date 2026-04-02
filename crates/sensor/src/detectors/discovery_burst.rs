@@ -153,7 +153,14 @@ impl DiscoveryBurstDetector {
         }
 
         let count = self.windows.get(&key).map(|e| e.len()).unwrap_or(0);
-        if count < self.threshold {
+        // Root (uid=0) legitimately runs many commands during deploys,
+        // package installs, and system administration. Use 3x threshold.
+        let effective_threshold = if uid == 0 {
+            self.threshold * 3
+        } else {
+            self.threshold
+        };
+        if count < effective_threshold {
             return None;
         }
 

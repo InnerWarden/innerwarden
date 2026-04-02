@@ -154,6 +154,8 @@ impl SigmaRuleDetector {
             if path.starts_with("/etc/profile.d/")
                 || path.starts_with("/etc/skel/")
                 || path.starts_with("/etc/bash_completion.d/")
+                || path.contains("/.git/")
+                || path.ends_with("/.git/HEAD")
             {
                 return None;
             }
