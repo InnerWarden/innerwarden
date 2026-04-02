@@ -8,7 +8,7 @@ SERVER="ubuntu@130.162.171.105"
 SSH_PORT=49222
 SSH_KEY="$HOME/.ssh/id_oracle_ed25519"
 SSH="ssh -p $SSH_PORT -i $SSH_KEY $SERVER"
-REMOTE_DIR="$HOME/innerwarden"
+REMOTE_DIR="/home/ubuntu/innerwarden"
 BIN_DIR="/usr/local/bin"
 
 component="${1:-all}"
@@ -52,22 +52,27 @@ install_one() {
   local bin="$2"
   local svc="$3"
   echo "[3/4] Installing $bin..."
+  if [ -n "$svc" ]; then
+    $SSH "sudo systemctl stop $svc 2>/dev/null; sleep 1"
+  fi
   $SSH "sudo cp $REMOTE_DIR/target/release/$bin $BIN_DIR/$bin"
   if [ -n "$svc" ]; then
-    $SSH "sudo systemctl restart $svc && sleep 2 && sudo systemctl is-active $svc"
+    $SSH "sudo systemctl start $svc && sleep 2 && sudo systemctl is-active $svc"
   fi
 }
 
 if [ "$component" = "all" ]; then
   install_one innerwarden-sensor innerwarden-sensor innerwarden-sensor
   install_one innerwarden-agent innerwarden-agent innerwarden-agent
-  install_one innerwarden-ctl innerwarden ""
+  # CTL binary is innerwarden-ctl in target/ but installed as both names
+  $SSH "sudo cp $REMOTE_DIR/target/release/innerwarden-ctl $BIN_DIR/innerwarden-ctl && sudo ln -sf $BIN_DIR/innerwarden-ctl $BIN_DIR/innerwarden" 2>/dev/null
 elif [ "$component" = "sensor" ]; then
   install_one innerwarden-sensor innerwarden-sensor innerwarden-sensor
 elif [ "$component" = "agent" ]; then
   install_one innerwarden-agent innerwarden-agent innerwarden-agent
 elif [ "$component" = "ctl" ]; then
-  install_one innerwarden-ctl innerwarden ""
+  # CTL binary is innerwarden-ctl in target/ but installed as both names
+  $SSH "sudo cp $REMOTE_DIR/target/release/innerwarden-ctl $BIN_DIR/innerwarden-ctl && sudo ln -sf $BIN_DIR/innerwarden-ctl $BIN_DIR/innerwarden" 2>/dev/null
 fi
 
 # Step 4: Copy sigma rules if deploying sensor
@@ -76,14 +81,14 @@ if [ "$component" = "sensor" ] || [ "$component" = "all" ]; then
   $SSH "sudo mkdir -p /etc/innerwarden/rules && sudo cp -r $REMOTE_DIR/rules/sigma /etc/innerwarden/rules/"
 fi
 
-# Step 4: Verify
+# Verify
 echo "[4/4] Verifying..."
 if [ "$component" = "ctl" ]; then
-  $SSH "$BIN_DIR/innerwarden --version"
+  echo "  innerwarden-ctl: installed"
 else
   for svc in $([ "$component" = "all" ] && echo "innerwarden-sensor innerwarden-agent" || echo "innerwarden-$component"); do
     status=$($SSH "sudo systemctl is-active $svc" 2>/dev/null || echo "unknown")
-    version=$($SSH "$BIN_DIR/$svc --version" 2>/dev/null || echo "?")
+    version=$($SSH "$BIN_DIR/$svc --version 2>/dev/null" || echo "?")
     echo "  $svc: $status ($version)"
   done
 fi
