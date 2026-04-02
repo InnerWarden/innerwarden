@@ -140,6 +140,9 @@ const SYSTEM_PATHS: &[&str] = &[
     "/usr/lib/",
     "/snap/",
     "/nix/store/",
+    // Linuxbrew (Homebrew on Linux) installs binaries to this path,
+    // including systemctl shims for compatibility on non-systemd distros.
+    "/home/linuxbrew/.linuxbrew/",
 ];
 
 /// T1036.005 — Attacker-writable paths where masquerading binaries appear

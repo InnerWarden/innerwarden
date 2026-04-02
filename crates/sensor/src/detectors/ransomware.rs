@@ -100,6 +100,9 @@ const SAFE_MASS_WRITERS: &[&str] = &[
     "containerd",
     "git",
     "git-remote-https",
+    // Node.js worker threads — libuv thread pool writes files legitimately
+    // (npm install, build output, cache writes). Not ransomware.
+    "libuv-worker",
 ];
 
 /// Ransom note filenames (case-insensitive comparison).
