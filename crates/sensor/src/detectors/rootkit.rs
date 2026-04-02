@@ -1030,7 +1030,8 @@ impl RootkitDetector {
         // file.truncate latency depends on filesystem flush (ms to seconds under I/O load).
         // These produce timing spikes during normal operations (deploys, builds, idle periods).
         match kind.as_str() {
-            "network.accept" | "network.listen" | "file.truncate" | "file.timestomp" => {
+            "network.accept" | "network.listen" | "file.truncate" | "file.timestomp"
+            | "process.exit" | "process.clone" => {
                 return None;
             }
             _ => {}

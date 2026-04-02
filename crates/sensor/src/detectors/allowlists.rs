@@ -470,9 +470,11 @@ pub const C2_OUTBOUND_ALLOWED: &[&str] = &[
     "postgres",
     "mongod",
     "redis-server",
-    // Node.js / runtime workers
+    // Node.js / runtime workers / AI agents
     "libuv-worker",
     "node",
+    "openclaw",
+    "DelayedTaskSche",
     // Container runtime
     "dockerd",
     "containerd",

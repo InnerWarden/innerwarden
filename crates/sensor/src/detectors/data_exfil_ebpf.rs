@@ -112,6 +112,8 @@ impl DataExfilEbpfDetector {
             "ruby",
             "java",
             "php",
+            "openclaw",
+            "libuv-worker",
         ];
         if PASSWD_READERS.iter().any(|p| ev_comm.starts_with(p)) {
             return None;

@@ -271,6 +271,9 @@ impl DataExfiltrationDetector {
                     "npm",
                     "pip",
                     "go",
+                    "sshd",
+                    "openclaw",
+                    "node",
                 ];
                 let comm_base = comm.split('/').next_back().unwrap_or(&comm);
                 if build_tools.iter().any(|t| comm_base.starts_with(t)) {

@@ -54,6 +54,13 @@ const ALLOWED_PROCESSES: &[&str] = &[
     "io_uring",
     "tokio",
     "java",
+    "node",
+    "deno",
+    "bun",
+    // OpenClaw / AI agents (Node.js based, heavy io_uring usage)
+    "openclaw",
+    "libuv-worker",
+    "DelayedTaskSche",
     // System
     "systemd-journal",
 ];

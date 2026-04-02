@@ -139,10 +139,18 @@ impl DiscoveryBurstDetector {
             return None;
         }
 
-        // Skip discovery commands embedded in larger scripts (bash -lc "cd ... && ip neigh").
-        // Real recon runs commands standalone; scripts chain them with && or ;
-        if (comm == "sh" || comm == "bash") && lower.contains("&&") {
-            return None;
+        // Skip discovery commands from shell wrappers (scripts, cron, AI agents).
+        // Real recon runs many commands manually; scripts/cron run isolated commands.
+        if comm == "sh" || comm == "bash" {
+            // Chained commands in scripts
+            if lower.contains("&&") {
+                return None;
+            }
+            // Single command via sh -c "ip neigh show" (cron/agent pattern)
+            let word_count = command.split_whitespace().count();
+            if word_count <= 4 {
+                return None;
+            }
         }
 
         let now = event.ts;
