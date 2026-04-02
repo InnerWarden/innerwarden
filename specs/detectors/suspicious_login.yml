@@ -1,0 +1,94 @@
+kind: detector
+name: suspicious_login
+version: 1
+description: "Detects successful SSH logins from IPs that previously had failed attempts (brute-force-then-success pattern)"
+
+context: |
+  The brute-force-then-success pattern is one of the strongest compromise
+  indicators: an IP fails many times, then succeeds. This means the attacker
+  found a valid credential.
+
+  Severity scales with prior failure count:
+  - 1-4 prior failures: High
+  - 5+ prior failures: Critical
+
+  Key decisions:
+  - Maintains a known-good IP baseline. First-time IPs that login
+    successfully without prior failures are added to baseline silently.
+  - Known-good IPs never trigger alerts (even if new failures appear later),
+    because an established admin IP having occasional typos is normal.
+  - Internal IPs excluded.
+  - After alerting, the IP is added to known-good to avoid re-alerting on
+    the same compromise session.
+
+behavior:
+  does:
+    - "Tracks ssh.login_failed events per IP in a sliding window"
+    - "Fires on ssh.login_success if the IP had prior failures"
+    - "Fires High severity for 1-4 prior failures"
+    - "Fires Critical severity for 5+ prior failures"
+    - "Builds known-good IP baseline from clean first logins"
+  does_not:
+    - "Alert on first-time IPs with no prior failures (added to baseline)"
+    - "Alert on known-good IPs (previously seen clean logins)"
+    - "Alert on internal IPs"
+    - "Re-alert for same IP within window"
+
+config:
+  window_secs: 300
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "3 failures then success from same IP"
+      input:
+        sequence:
+          - { kind: "ssh.login_failed", ip: "1.2.3.4" }
+          - { kind: "ssh.login_failed", ip: "1.2.3.4" }
+          - { kind: "ssh.login_failed", ip: "1.2.3.4" }
+          - { kind: "ssh.login_success", ip: "1.2.3.4", user: "root" }
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "6 failures then success (Critical)"
+      input:
+        sequence:
+          - { kind: "ssh.login_failed", ip: "5.6.7.8", count: 6 }
+          - { kind: "ssh.login_success", ip: "5.6.7.8", user: "admin" }
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "Clean first login (no prior failures)"
+      input:
+        kind: "ssh.login_success"
+        ip: "9.9.9.9"
+        user: "ubuntu"
+      expected:
+        alert: false
+        reason: "No prior failures — added to known-good baseline"
+
+    - description: "Known-good IP with subsequent failures"
+      input:
+        sequence:
+          - { kind: "ssh.login_success", ip: "1.1.1.1", user: "ubuntu" }
+          - { kind: "ssh.login_failed", ip: "1.1.1.1" }
+          - { kind: "ssh.login_success", ip: "1.1.1.1", user: "ubuntu" }
+      expected:
+        alert: false
+        reason: "IP is in known-good baseline"
+
+    - description: "Internal IP"
+      input:
+        sequence:
+          - { kind: "ssh.login_failed", ip: "192.168.1.1" }
+          - { kind: "ssh.login_success", ip: "192.168.1.1", user: "root" }
+      expected:
+        alert: false
+        reason: "Internal IPs are excluded"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

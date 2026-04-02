@@ -1,0 +1,81 @@
+kind: detector
+name: sensitive_write
+version: 1
+description: "Detects writes to sensitive system paths by unexpected processes via eBPF LSM file_open hook"
+
+context: |
+  Monitors eBPF file.write_access events (LSM file_open hook) for writes
+  to sensitive system paths organized by category:
+  - Credential paths: /etc/shadow, /etc/passwd, /etc/gshadow, /etc/group
+  - SSH paths: .ssh/authorized_keys, .ssh/id_rsa, .ssh/config, etc.
+  - Sudo paths: /etc/sudoers, /etc/sudoers.d/
+  - Cron paths: /etc/crontab, /etc/cron.d/, /var/spool/cron/, etc.
+  - Persistence paths: /etc/systemd/system/, /etc/init.d/, /etc/rc.local,
+    /etc/ld.so.preload, /etc/profile, usercustomize.py, etc.
+  - Log paths: /var/log/auth.log, .bash_history, etc.
+  - User persistence suffixes: /.bashrc, /.profile, /.zshrc, etc.
+  - PAM paths: /etc/pam.d/
+
+  Key decisions:
+  - Large allowlist of legitimate processes: dpkg, apt, passwd, useradd,
+    sshd, cron, systemd, cloud-init, puppet, ansible, etc.
+  - Category determines incident tags and context.
+
+behavior:
+  does:
+    - "Fires on writes to credential, SSH, sudo, cron, persistence, log, PAM paths"
+    - "Fires on writes to user persistence suffixes (/.bashrc, /.profile)"
+    - "Categorizes paths for clear incident reporting"
+    - "Per-path cooldown"
+  does_not:
+    - "Alert on allowlisted processes (dpkg, apt, passwd, sshd, systemd, etc.)"
+    - "Alert on reads (only writes)"
+    - "Alert on paths not in any sensitive category"
+    - "Re-alert within cooldown"
+
+config:
+  cooldown_secs: 600
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "Unknown process writing to /etc/shadow"
+      input:
+        kind: "file.write_access"
+        filename: "/etc/shadow"
+        comm: "python3"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "Unknown process writing to .bashrc"
+      input:
+        kind: "file.write_access"
+        filename: "/home/user/.bashrc"
+        comm: "curl"
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "passwd writing to /etc/shadow (allowlisted)"
+      input:
+        kind: "file.write_access"
+        filename: "/etc/shadow"
+        comm: "passwd"
+      expected:
+        alert: false
+        reason: "passwd is in ALLOWED_PROCESSES"
+
+    - description: "Write to non-sensitive path"
+      input:
+        kind: "file.write_access"
+        filename: "/tmp/test.txt"
+        comm: "bash"
+      expected:
+        alert: false
+        reason: "Path not in any sensitive category"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

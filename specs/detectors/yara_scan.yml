@@ -1,0 +1,86 @@
+kind: detector
+name: yara_scan
+version: 1
+description: "Pure-Rust binary scanner using YAML-defined pattern rules for malware detection on eBPF execve events"
+
+context: |
+  When eBPF detects execution of an unknown binary, this detector reads the
+  binary, computes SHA-256 hash, checks against a known-good allowlist, and
+  scans content against pattern rules for malware indicators.
+
+  Rules loaded from rules/yara/*.yml. 8 built-in rules: XMRig, webshells,
+  packers, reverse shells, credential tools, Cobalt Strike, Metasploit,
+  rootkits. Custom rules can be added.
+
+  Rule format:
+  - id, name, severity
+  - strings: ASCII patterns to search in binary
+  - hex_patterns: hex byte patterns with ?? wildcards
+  - condition: "any" (at least one match) or "all" (all must match)
+  - tags
+
+  Key decisions:
+  - Max scan size: 10 MB (larger files skipped).
+  - Known-good hashes auto-populated on first exec (max 50K entries).
+  - Per-binary-path cooldown.
+  - Pure Rust — no libyara dependency.
+
+behavior:
+  does:
+    - "Scans unknown binaries on eBPF execve events"
+    - "Matches ASCII strings and hex patterns with wildcards"
+    - "Computes SHA-256 hash for known-good allowlisting"
+    - "Auto-populates known-good hash list"
+    - "Loads custom rules from rules/yara/*.yml"
+  does_not:
+    - "Scan known-good binaries (SHA-256 allowlist)"
+    - "Scan binaries larger than 10 MB"
+    - "Re-alert for same binary path within cooldown"
+    - "Depend on libyara (pure Rust implementation)"
+
+config:
+  cooldown_secs: configurable
+  max_scan_size_bytes: 10485760
+  max_allowlist_entries: 50000
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "Binary containing XMRig strings"
+      input:
+        kind: "shell.command_exec"
+        binary_contains: ["stratum+tcp://", "xmrig"]
+        binary_sha256: "unknown_hash"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "Binary with webshell patterns"
+      input:
+        kind: "shell.command_exec"
+        binary_contains: ["system(", "passthru(", "eval("]
+        binary_sha256: "unknown_hash"
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "Known-good binary (hash in allowlist)"
+      input:
+        kind: "shell.command_exec"
+        binary_sha256: "known_good_hash"
+      expected:
+        alert: false
+        reason: "SHA-256 hash is in known-good allowlist"
+
+    - description: "Binary larger than 10 MB"
+      input:
+        kind: "shell.command_exec"
+        binary_size_bytes: 15000000
+      expected:
+        alert: false
+        reason: "Exceeds MAX_SCAN_SIZE"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

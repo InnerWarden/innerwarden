@@ -1,0 +1,111 @@
+kind: detector
+name: outbound_anomaly
+version: 1
+description: "Detects outbound traffic anomalies: connection flood, port spray, UDP flood, fan-out, and DDoS tool execution"
+
+context: |
+  Five detection patterns:
+  1. Connection flood — process opens many outbound connections in 30s window
+  2. Port spray — process connects to many ports on same external IP
+  3. UDP flood — high-volume UDP connections (common DDoS pattern)
+  4. Fan-out — process connects to many unique IPs on same port (botnet C2)
+  5. Known DDoS tool execution — instant Critical (hping3, slowloris, etc.)
+
+  Key decisions:
+  - Internal IPs excluded (only external destinations).
+  - Port 0 (DNS artifacts) and port 9 (discard protocol) excluded.
+  - InnerWarden processes excluded via is_innerwarden_process.
+  - Verified infrastructure processes excluded via is_verified_infra_process
+    with C2_OUTBOUND_ALLOWED list (binary path validation via /proc/PID/exe).
+  - DDoS tools: hping3, slowloris, goldeneye, hulk, torshammer, loic, hoic,
+    xerxes, slowhttptest.
+  - Flood window is 30s; spray/fanout window is configurable.
+
+behavior:
+  does:
+    - "Fires on connection flood (many outbound connections in 30s)"
+    - "Fires on port spray (many unique ports to same IP)"
+    - "Fires on UDP flood (high-volume UDP connections)"
+    - "Fires on fan-out (many unique IPs on same port)"
+    - "Fires Critical instantly on DDoS tool execution"
+  does_not:
+    - "Alert on internal/private destination IPs"
+    - "Alert on InnerWarden processes (uid=998, tokio-rt-worker)"
+    - "Alert on verified infrastructure processes (nginx, prometheus, apt, etc.)"
+    - "Alert on port 0 (DNS artifacts) or port 9 (discard)"
+    - "Re-alert within cooldown"
+
+config:
+  connection_flood_threshold: configurable
+  port_spray_threshold: configurable
+  udp_flood_threshold: configurable
+  fanout_threshold: configurable
+  window_secs: configurable
+  cooldown_secs: configurable
+
+dependencies:
+  - "allowlists.rs: is_innerwarden_process, C2_OUTBOUND_ALLOWED"
+  - "mod.rs: is_internal_ip, is_verified_infra_process"
+
+test_cases:
+  true_positives:
+    - description: "hping3 execution (DDoS tool)"
+      input:
+        kind: "shell.command_exec"
+        comm: "hping3"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "Fan-out: process connecting to many IPs on port 80"
+      input:
+        kind: "network.outbound_connect"
+        comm: "botnet"
+        connections_to_unique_ips: 50
+        dst_port: 80
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "InnerWarden process making outbound connections"
+      input:
+        kind: "network.outbound_connect"
+        comm: "tokio-rt-worker"
+        uid: 998
+        dst_ip: "1.2.3.4"
+        dst_port: 443
+      expected:
+        alert: false
+        reason: "InnerWarden processes excluded"
+
+    - description: "Connection to port 0 (DNS artifact)"
+      input:
+        kind: "network.outbound_connect"
+        comm: "python3"
+        dst_ip: "8.8.8.8"
+        dst_port: 0
+      expected:
+        alert: false
+        reason: "Port 0 excluded"
+
+  false_positive_fixes:
+    - date: "2026-04-02"
+      description: "Infrastructure processes verified by binary path"
+      context: |
+        An attacker could rename a malicious binary to "nginx" or "prometheus"
+        to evade comm-based allowlisting. The detector uses
+        is_verified_infra_process() which checks the binary path via
+        /proc/PID/exe. The binary must be in /usr/bin, /usr/sbin,
+        /usr/local/bin, /snap, or /opt — not /tmp or /dev/shm.
+      input:
+        kind: "network.outbound_connect"
+        comm: "nginx"
+        pid: 1000
+        dst_ip: "1.2.3.4"
+        dst_port: 443
+      expected:
+        alert: false
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

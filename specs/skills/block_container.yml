@@ -1,0 +1,44 @@
+kind: skill
+name: block_container
+version: 1
+description: "Pauses a Docker container in response to anomalous activity (reversible)"
+
+context: |
+  Pauses a Docker container using `docker pause <container_id>`. This is
+  reversible (unlike docker stop). TTL metadata is written for automatic
+  cleanup via cleanup_expired_container_blocks(). Container ID/name is
+  validated. TTL range: 60s to 86400s (default 1800s). Always uses pause
+  (safer than stop, which is irreversible and not done automatically).
+
+behavior:
+  does:
+    - "Pauses container via: sudo docker pause <container_id>"
+    - "Validates container ID/name format"
+    - "Writes block metadata JSON for automatic cleanup"
+    - "Clamps TTL between 60s and 86400s (default 1800s)"
+    - "Supports dry-run mode"
+  does_not:
+    - "Does not stop or remove containers (only pause)"
+    - "Does not handle non-Docker containers (podman, etc.)"
+    - "Does not pause containers by image name"
+
+pre_conditions:
+  - "Docker installed and accessible"
+  - "sudo docker configured"
+  - "Container exists and is running"
+
+post_conditions:
+  - "Container paused (all processes frozen)"
+  - "Auto-unpauses after TTL via cleanup_expired_container_blocks()"
+
+rollback:
+  - "sudo docker unpause <container_id>"
+
+applicable_detectors:
+  - "suspicious_execution"
+  - "execution_guard"
+
+tier: "Open"
+
+history:
+  - "2026-04-02: initial spec"

@@ -1,0 +1,84 @@
+kind: detector
+name: cgroup_abuse
+version: 1
+description: "Detects sustained high CPU (cryptominer pattern) and memory spikes in cgroups via periodic polling"
+
+context: |
+  Runs as a periodic scanner (not event-driven). Reads cgroups v2
+  cpu.stat and memory.current from /sys/fs/cgroup/ to detect resource abuse.
+
+  Two detection types:
+  1. cgroup.cpu_abuse: sustained CPU > 95% of one core for 3+ consecutive
+     readings. Emits High severity event. Strong cryptominer indicator.
+  2. cgroup.memory_spike: memory > 256 MB. Emits Medium severity event.
+
+  Key decisions:
+  - CPU threshold: 950,000 us/s (95% of one core).
+  - Memory threshold: 256 MB.
+  - Minimum 3 consecutive high-CPU readings before alerting to avoid
+    spikes from legitimate computation.
+  - Per-cgroup cooldown of 300s.
+  - Discovers cgroups up to 2 levels deep (for container sub-cgroups).
+  - Disables itself gracefully if /sys/fs/cgroup doesn't exist.
+
+behavior:
+  does:
+    - "Emits cgroup.cpu_abuse events at High severity for sustained CPU > 95%"
+    - "Emits cgroup.memory_spike events at Medium severity for memory > 256 MB"
+    - "Requires 3+ consecutive high-CPU readings before alerting"
+    - "Per-cgroup cooldown (300s)"
+    - "Discovers container sub-cgroups (2 levels deep)"
+  does_not:
+    - "Alert on single CPU spikes (requires sustained pattern)"
+    - "Alert when /sys/fs/cgroup doesn't exist (graceful disable)"
+    - "Re-alert for same cgroup within cooldown"
+    - "Alert below thresholds"
+
+config:
+  cpu_threshold_us: 950000
+  memory_threshold_bytes: 268435456
+  cpu_min_readings: 3
+  cooldown_secs: 300
+  poll_interval_secs: configurable
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "Sustained 97% CPU for 3 consecutive readings"
+      input:
+        cgroup: "/system.slice/miner.service"
+        cpu_rate_percent: 97.0
+        consecutive_readings: 3
+      expected:
+        event_kind: "cgroup.cpu_abuse"
+        severity: "high"
+
+    - description: "Memory usage 512 MB"
+      input:
+        cgroup: "/docker/abc123"
+        memory_mb: 512
+      expected:
+        event_kind: "cgroup.memory_spike"
+        severity: "medium"
+
+  true_negatives:
+    - description: "Single CPU spike (only 1 reading)"
+      input:
+        cgroup: "/system.slice/build.service"
+        cpu_rate_percent: 98.0
+        consecutive_readings: 1
+      expected:
+        alert: false
+        reason: "Requires 3+ consecutive high readings"
+
+    - description: "Memory below threshold (100 MB)"
+      input:
+        cgroup: "/docker/abc123"
+        memory_mb: 100
+      expected:
+        alert: false
+        reason: "Below 256 MB threshold"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

@@ -1,0 +1,55 @@
+kind: api
+name: agent_api
+version: 1
+description: "API for AI agents (OpenClaw, n8n integration) to query security context and validate commands"
+
+context: |
+  Endpoints that autonomous AI agents query to check security context and
+  validate commands before execution. Includes agent-guard integration for
+  MCP inspection and ATR rule matching. The check-command endpoint acts as
+  a "snitch" -- immediately notifies operator via Telegram/Slack/webhook
+  when a dangerous command is detected.
+
+endpoints:
+  - path: "GET /api/agent/security-context"
+    description: "Current threat level, incident counts, and recommendation"
+    response_fields: [threat_level, incident_count_24h, active_blocks, recommendation]
+
+  - path: "GET /api/agent/check-ip?ip=X"
+    description: "Check if an IP is a known threat or currently blocked"
+    response_fields: [ip, is_blocked, is_known_threat, reputation_score, incidents]
+
+  - path: "POST /api/agent/check-command"
+    description: "Analyze a command for dangerous patterns without executing it"
+    request_body: "{ command: string }"
+    response: "deny | review | allow"
+    response_fields: [verdict, reason, matched_patterns, atr_rules]
+
+  - path: "POST /api/advisor/check-command"
+    description: "Alias for check-command with advisor context"
+
+  - path: "POST /api/agent-guard/connect"
+    description: "Register an AI agent for session tracking"
+
+  - path: "POST /api/agent-guard/disconnect"
+    description: "Unregister an AI agent session"
+
+  - path: "GET /api/agent-guard/agents"
+    description: "List connected AI agents"
+
+behavior:
+  does:
+    - "Returns current threat level based on recent incidents"
+    - "Checks IPs against blocklist and reputation database"
+    - "Analyzes commands for dangerous patterns (reverse shells, download+execute, obfuscation, persistence, destructive)"
+    - "Matches commands against 71 ATR community rules (multilingual injection, tool poisoning, skill compromise, agent manipulation)"
+    - "Immediately notifies operator via Telegram/Slack/webhook when dangerous command detected (snitch mode)"
+    - "Returns deny/review/allow verdict with matched patterns and ATR rules"
+    - "Tracks connected AI agent sessions"
+  does_not:
+    - "Execute commands (analysis only)"
+    - "Block commands directly (returns verdict for caller to enforce)"
+    - "Require authentication for security-context endpoint"
+
+history:
+  - "2026-04-02: initial spec"

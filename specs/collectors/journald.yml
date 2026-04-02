@@ -1,0 +1,42 @@
+kind: collector
+name: journald
+version: 1
+description: "Streams SSH, sudo, and firewall events from systemd journal"
+
+context: |
+  Streams events via `journalctl --follow --output=json`. Resumes from a
+  cursor string persisted across restarts. Filters by SYSLOG_IDENTIFIER:
+  sshd, sudo, kernel. Reuses parse_sshd_message() from auth_log collector
+  for SSH event parsing. Auto-restarts if journalctl exits unexpectedly.
+  Verifies journal access at startup (graceful disable if unavailable).
+
+behavior:
+  does:
+    - "Parses sshd messages via shared parse_sshd_message() (same as auth_log)"
+    - "Parses sudo command execution (USER=, COMMAND= fields)"
+    - "Parses kernel firewall block messages (UFW/iptables/nftables SRC=/DST=/DPT=)"
+    - "Resumes from cursor on restart (no duplicate events)"
+    - "Auto-restarts journalctl after unexpected exit (5s delay)"
+    - "Verifies journal access at startup with journalctl -n 0"
+  does_not:
+    - "Does not parse identifiers other than sshd, sudo, kernel"
+    - "Does not emit events for sudo session open/close (only command execution)"
+    - "Does not emit events for kernel messages without firewall fields"
+
+output:
+  event_kinds:
+    - kind: "ssh.login_failed"
+      fields: [ip, user, reason]
+    - kind: "ssh.login_success"
+      fields: [ip, user, method]
+    - kind: "sudo.command"
+      fields: [user, run_as, command]
+    - kind: "network.connection_blocked"
+      fields: [src_ip, dst_ip, dst_port, proto]
+
+config:
+  units: ["sshd", "sudo", "kernel"]
+  cursor: "journald cursor string (persisted via shared Mutex)"
+
+history:
+  - "2026-04-02: initial spec"

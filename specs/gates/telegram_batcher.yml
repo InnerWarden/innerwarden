@@ -1,0 +1,41 @@
+kind: gate
+name: telegram_batcher
+version: 1
+description: "Groups repeated alerts into periodic summaries to prevent Telegram spam"
+
+context: |
+  Prevents Telegram notification spam during sustained attacks. First occurrence
+  of each detector in a window goes immediately. Subsequent same-detector alerts
+  are batched. Critical severity always bypasses batching and sends immediately.
+  Batched alerts are flushed as summary messages showing count and unique IPs.
+  Default window: 60 seconds (configurable).
+
+behavior:
+  does:
+    - "Sends first occurrence of each detector immediately"
+    - "Batches subsequent same-detector alerts within the window"
+    - "Always sends Critical severity immediately (never batched)"
+    - "Flushes batched alerts as summary messages on window expiry"
+    - "Summary includes: detector name, batched count, unique IPs (up to 5 preview)"
+    - "Tracks unique IPs per detector for the summary"
+  does_not:
+    - "Drop or discard any alerts (all are either sent immediately or batched)"
+    - "Batch across different detectors (each detector tracked independently)"
+    - "Affect non-Telegram notifications (webhook, Slack, etc. are separate)"
+
+window: "configurable (default 60s)"
+
+flush_format: |
+  {detector}: {count} alerts batched (last {window}s)
+  IPs: {ip1}, {ip2}, ... (+N more)
+
+immediate_conditions:
+  - "Critical severity"
+  - "First occurrence of detector in current window"
+
+batch_conditions:
+  - "Same detector already seen in current window"
+  - "Not Critical severity"
+
+history:
+  - "2026-04-02: initial spec"

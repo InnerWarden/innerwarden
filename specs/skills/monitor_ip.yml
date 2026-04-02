@@ -1,0 +1,43 @@
+kind: skill
+name: monitor_ip
+version: 1
+description: "Shadow-monitors an IP by capturing bounded network traffic without blocking"
+
+context: |
+  Performs a short-lived tcpdump capture for a target IP and stores the results
+  as a .pcap file with a .txt metadata sidecar. Useful to gather evidence before
+  deciding to block. Capture is bounded: max 200 packets, 30-second timeout.
+  Output stored in /var/lib/innerwarden/monitoring/.
+
+behavior:
+  does:
+    - "Runs: sudo timeout 30s tcpdump -nn -i any host <IP> -c 200 -w <file>.pcap"
+    - "Validates target IP address format"
+    - "Creates timestamped .pcap file with IP tag in filename"
+    - "Writes .txt metadata sidecar with incident context"
+    - "Supports dry-run mode"
+  does_not:
+    - "Does not block the IP"
+    - "Does not analyze captured traffic (for later human review)"
+    - "Does not capture indefinitely (bounded by time and packet count)"
+
+pre_conditions:
+  - "tcpdump installed"
+  - "sudo tcpdump configured"
+  - "Monitoring directory writable"
+
+post_conditions:
+  - ".pcap file saved to /var/lib/innerwarden/monitoring/"
+  - ".txt metadata sidecar saved alongside"
+
+rollback:
+  - "Delete .pcap and .txt files"
+
+applicable_detectors: []
+
+tier: "Open"
+capture_timeout: "30s"
+max_packets: 200
+
+history:
+  - "2026-04-02: initial spec"

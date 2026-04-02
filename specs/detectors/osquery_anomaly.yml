@@ -1,0 +1,73 @@
+kind: detector
+name: osquery_anomaly
+version: 1
+description: "Promotes High/Critical osquery events to incidents with per-query-kind cooldown"
+
+context: |
+  Watches events with source "osquery". Only promotes events with High or
+  Critical severity (sudoers changes, SUID binaries, authorized_keys changes,
+  crontab modifications). Lower severity osquery events are ignored.
+
+  Tags are derived from the query kind: sudoers_change, suid_binary,
+  authorized_keys_change, crontab_change, listening_ports, host_anomaly.
+
+  Incident severity matches the original event severity. Entities are
+  propagated from the original event.
+
+behavior:
+  does:
+    - "Promotes osquery events with High or Critical severity to incidents"
+    - "Applies per-query-kind cooldown to suppress duplicates"
+    - "Tags incidents based on query kind content"
+    - "Propagates entities from original event"
+  does_not:
+    - "Alert on Medium, Low, or Info severity osquery events"
+    - "Alert on non-osquery events"
+    - "Re-alert for same query kind within cooldown"
+
+config:
+  cooldown_secs: 3600
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "High severity osquery sudoers change"
+      input:
+        source: "osquery"
+        kind: "osquery.sudoers"
+        severity: "high"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "Critical severity authorized_keys change"
+      input:
+        source: "osquery"
+        kind: "osquery.authorized_keys"
+        severity: "critical"
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "Medium severity osquery event"
+      input:
+        source: "osquery"
+        kind: "osquery.listening_ports"
+        severity: "medium"
+      expected:
+        alert: false
+        reason: "Only High and Critical events are promoted"
+
+    - description: "Non-osquery source"
+      input:
+        source: "auth.log"
+        kind: "ssh.login_failed"
+        severity: "high"
+      expected:
+        alert: false
+        reason: "Source must be osquery"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

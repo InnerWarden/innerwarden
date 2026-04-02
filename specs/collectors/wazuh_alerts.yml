@@ -1,0 +1,34 @@
+kind: collector
+name: wazuh_alerts
+version: 1
+description: "Tails Wazuh alerts JSON log and maps to InnerWarden events"
+
+context: |
+  Tails the Wazuh alerts JSON log file using byte-offset cursor with 1-second
+  polling. Parses Wazuh alert JSON format and maps rule_id, description, agent,
+  and source fields to InnerWarden events. Uses spawn_blocking for file I/O.
+  Optional integration for environments already running Wazuh.
+
+behavior:
+  does:
+    - "Parses Wazuh JSON alert lines"
+    - "Maps Wazuh severity levels to InnerWarden severity"
+    - "Extracts rule ID, description, agent info, and source data"
+    - "Handles log rotation (file not found returns empty result)"
+  does_not:
+    - "Does not start or manage the Wazuh agent/manager"
+    - "Does not modify Wazuh rules"
+    - "Does not deduplicate alerts across Wazuh + native InnerWarden detectors"
+
+output:
+  event_kinds:
+    - kind: "wazuh.alert"
+      fields: [rule_id, description, level, agent_name, src_ip]
+
+config:
+  path: "/var/ossec/logs/alerts/alerts.json"
+  poll_interval: "1s"
+  cursor: "byte offset (persisted via shared AtomicU64)"
+
+history:
+  - "2026-04-02: initial spec"

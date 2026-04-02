@@ -1,0 +1,34 @@
+kind: collector
+name: cloudtrail
+version: 1
+description: "Polls a directory for AWS CloudTrail JSON files and emits cloud API events"
+
+context: |
+  Polls a configured directory every 5 seconds for new CloudTrail JSON files.
+  Each file must contain a JSON object with a "Records" array. Tracks processed
+  files via a HashSet to avoid re-processing. Uses spawn_blocking for file I/O.
+  Maps CloudTrail event types to InnerWarden events with appropriate severity
+  based on the AWS API action.
+
+behavior:
+  does:
+    - "Polls directory for new CloudTrail JSON files every 5 seconds"
+    - "Parses Records array from each JSON file"
+    - "Tracks processed filenames to avoid re-processing"
+    - "Emits events with cloud-specific entity references"
+  does_not:
+    - "Does not fetch CloudTrail logs from AWS API (expects local files)"
+    - "Does not delete processed files"
+    - "Does not handle CloudTrail Insights events"
+
+output:
+  event_kinds:
+    - kind: "cloud.api_call"
+      fields: [event_name, event_source, user_identity, source_ip, aws_region]
+
+config:
+  dir: "/var/lib/innerwarden/cloudtrail/"
+  poll_interval: "5s"
+
+history:
+  - "2026-04-02: initial spec"

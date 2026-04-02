@@ -1,0 +1,67 @@
+kind: detector
+name: distributed_ssh
+version: 1
+description: "Detects distributed SSH attacks from many distinct IPs failing in a short window (botnet coordination)"
+
+context: |
+  Unlike ssh_bruteforce (which tracks one IP), this detector tracks the
+  aggregate pattern: if N+ distinct IPs fail SSH in the window, it indicates
+  a coordinated scan from a rotating botnet.
+
+  When triggered, the agent should activate the honeypot for all SSH traffic
+  to capture the botnet behavior.
+
+  Key decisions:
+  - Counts distinct IPs, not total failures.
+  - Internal IPs excluded.
+  - Single alert suppression within window.
+  - Default threshold: 8 distinct IPs in 5 minutes.
+
+behavior:
+  does:
+    - "Counts distinct IPs with ssh.login_failed in sliding window"
+    - "Fires High severity when distinct IP count reaches threshold"
+    - "Triggers honeypot activation recommendation"
+  does_not:
+    - "Alert on internal IPs"
+    - "Alert when fewer than threshold distinct IPs"
+    - "Re-alert within window"
+    - "Track per-IP failures (that's ssh_bruteforce)"
+
+config:
+  threshold: 8
+  window_secs: 300
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "8 distinct external IPs failing SSH in 5 minutes"
+      input:
+        kind: "ssh.login_failed"
+        distinct_ips: 8
+        window: 300
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "7 distinct IPs (below threshold)"
+      input:
+        kind: "ssh.login_failed"
+        distinct_ips: 7
+      expected:
+        alert: false
+        reason: "Below threshold of 8"
+
+    - description: "Same IP failing many times"
+      input:
+        kind: "ssh.login_failed"
+        ip: "1.2.3.4"
+        count: 50
+      expected:
+        alert: false
+        reason: "Only 1 distinct IP (handled by ssh_bruteforce instead)"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

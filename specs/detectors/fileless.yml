@@ -1,0 +1,98 @@
+kind: detector
+name: fileless
+version: 1
+description: "Detects fileless malware execution from memory-backed paths (memfd, /dev/fd, deleted binaries)"
+
+context: |
+  Fileless execution occurs when binaries run from memory-backed paths
+  rather than on-disk files. This detector checks shell.command_exec events
+  for suspicious execution paths.
+
+  Suspicious paths:
+  - /memfd:* — anonymous memory-backed file (memfd_create)
+  - /dev/fd/* — file descriptor pseudo-filesystem
+  - /proc/self/fd/* — process file descriptor symlinks
+  - /proc/{pid}/fd/* — another process's file descriptors
+  - *(deleted) — binary deleted after execution started
+
+  Always Critical severity — fileless execution is a strong indicator of
+  sophisticated malware.
+
+behavior:
+  does:
+    - "Fires Critical on execution from /memfd:*, /dev/fd/*, /proc/*/fd/*"
+    - "Fires Critical on execution of deleted binaries (path ending in '(deleted)')"
+    - "Suppresses re-alerts per PID within window"
+    - "Container-aware: includes container_id if present"
+  does_not:
+    - "Alert on container runtimes (runc, containerd-shim, crun, docker*)"
+    - "Alert on normal file paths (/usr/bin/*, /bin/*)"
+    - "Alert on /proc/cpuinfo or /proc/net/fd/* (non-numeric PID segments)"
+    - "Alert on non-exec events"
+
+config:
+  window_secs: 300
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "memfd execution"
+      input:
+        kind: "shell.command_exec"
+        command: "/memfd:payload"
+        comm: "malware"
+        pid: 1234
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "Deleted binary execution"
+      input:
+        kind: "shell.command_exec"
+        command: "/tmp/dropper (deleted)"
+        comm: "dropper"
+        pid: 7777
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "Normal binary execution"
+      input:
+        kind: "shell.command_exec"
+        command: "/usr/bin/curl"
+        comm: "curl"
+        pid: 1234
+      expected:
+        alert: false
+        reason: "Normal file path"
+
+    - description: "runc executing from memfd (container runtime)"
+      input:
+        kind: "shell.command_exec"
+        command: "/memfd:runc"
+        comm: "runc"
+        pid: 5000
+      expected:
+        alert: false
+        reason: "Container runtimes are excluded"
+
+  false_positive_fixes:
+    - date: "2026-04-02"
+      description: "Container runtimes using memfd for init"
+      context: |
+        runc, crun, and containerd-shim legitimately execute from
+        memfd/procfs paths as part of container initialization. These
+        are not fileless malware. Fixed by checking comm against known
+        container runtime names.
+      input:
+        kind: "shell.command_exec"
+        command: "/memfd:runc-init"
+        comm: "runc"
+        pid: 9000
+      expected:
+        alert: false
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

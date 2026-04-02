@@ -1,0 +1,94 @@
+kind: detector
+name: process_injection
+version: 1
+description: "Detects ptrace-based process injection, LD_PRELOAD attacks, and debug tool attachment"
+
+context: |
+  Four detection patterns:
+  1. Debug tool attachment — gdb/strace/ltrace with -p/--pid flag
+  2. ptrace injection — commands with ptrace + ATTACH/POKETEXT/POKEDATA
+  3. LD_PRELOAD injection — commands containing LD_PRELOAD=
+  4. /proc/{pid}/mem or /proc/{pid}/maps access (file events)
+
+  Severity:
+  - Critical: ptrace POKETEXT/POKEDATA, /proc/*/mem write
+  - High: debug tool attachment, LD_PRELOAD, /proc/*/mem read, /proc/*/maps
+
+  Key decisions:
+  - gdb without -p flag is NOT flagged (debugging a binary, not attaching).
+  - Self /proc access skipped (pid == target_pid).
+  - Non-numeric /proc paths skipped (/proc/self/mem).
+  - Per (comm, alert_key, pid) cooldown.
+  - Container-aware.
+
+behavior:
+  does:
+    - "Fires Critical on ptrace POKETEXT/POKEDATA and /proc/*/mem writes"
+    - "Fires High on gdb -p, strace -p, ltrace -p attachment"
+    - "Fires High on LD_PRELOAD= in commands"
+    - "Fires High on /proc/*/maps reads"
+    - "Container-aware"
+  does_not:
+    - "Alert on gdb ./myapp (debugging binary, not attaching to process)"
+    - "Alert on self /proc access"
+    - "Alert on /proc/self/mem"
+    - "Alert on non-exec/file events"
+    - "Re-alert within cooldown"
+
+config:
+  cooldown_secs: 600
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "gdb attaching to running process"
+      input:
+        kind: "shell.command_exec"
+        command: "gdb -p 1234"
+        comm: "gdb"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "ptrace POKETEXT injection"
+      input:
+        kind: "shell.command_exec"
+        command: "python3 ptrace_inject.py ptrace POKETEXT 1234"
+        comm: "python3"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "Writing to another process's memory"
+      input:
+        kind: "file.write_access"
+        comm: "evil"
+        filename: "/proc/1234/mem"
+        pid: 5000
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "gdb on a binary file (not attached to PID)"
+      input:
+        kind: "shell.command_exec"
+        command: "gdb ./myapp"
+        comm: "gdb"
+      expected:
+        alert: false
+        reason: "No -p or --pid flag means not attaching to running process"
+
+    - description: "Self /proc access"
+      input:
+        kind: "file.read_access"
+        comm: "app"
+        filename: "/proc/1234/mem"
+        pid: 1234
+      expected:
+        alert: false
+        reason: "Self-access is ignored"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

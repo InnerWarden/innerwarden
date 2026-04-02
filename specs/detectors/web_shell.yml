@@ -1,0 +1,81 @@
+kind: detector
+name: web_shell
+version: 1
+description: "Detects web shell creation in web-accessible directories via file writes, commands, and HTTP uploads"
+
+context: |
+  Web shells are a primary post-exploitation tool. Three detection patterns:
+  1. File write to web directories with suspicious extensions (.php, .jsp,
+     .jspx, .asp, .aspx, .cgi, .pl, .py)
+  2. Commands that write script files to web directories (echo/wget/curl to .php)
+  3. HTTP upload detection — POST/PUT with multipart/octet-stream content-type
+     to paths with suspicious extensions, plus polyglot detection (image.jpg.php)
+
+  Web directories: /var/www/, /usr/share/nginx/, /var/lib/nginx/,
+  /srv/http/, /opt/lampp/htdocs/
+
+  Key decisions:
+  - Allowlisted deployer processes: apt, dpkg, pip, composer, npm, git, rsync, cp.
+  - HTTP upload check excludes internal/Docker source IPs.
+  - Polyglot detection catches double extensions (image.jpg.php).
+
+behavior:
+  does:
+    - "Fires on script file creation in web directories"
+    - "Fires on commands writing to web directories"
+    - "Fires on HTTP POST/PUT uploads with suspicious extensions"
+    - "Detects polyglot attacks (double extensions like image.jpg.php)"
+  does_not:
+    - "Alert on allowlisted deployers (apt, dpkg, pip, npm, git, rsync, cp)"
+    - "Alert on file writes outside web directories"
+    - "Alert on non-suspicious extensions (.html, .css, .js)"
+    - "Alert on internal source IPs for HTTP uploads"
+
+config:
+  cooldown_secs: 600
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "PHP file created in /var/www/"
+      input:
+        kind: "file.write_access"
+        filename: "/var/www/html/shell.php"
+        comm: "curl"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "Polyglot upload: image.jpg.php"
+      input:
+        kind: "http.request"
+        method: "POST"
+        path: "/upload/avatar.jpg.php"
+        content_type: "multipart/form-data"
+        src_ip: "1.2.3.4"
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "git deploying PHP files (allowlisted)"
+      input:
+        kind: "file.write_access"
+        filename: "/var/www/html/index.php"
+        comm: "git"
+      expected:
+        alert: false
+        reason: "git is in ALLOWED_DEPLOYERS"
+
+    - description: "HTML file in web directory (non-suspicious extension)"
+      input:
+        kind: "file.write_access"
+        filename: "/var/www/html/index.html"
+        comm: "bash"
+      expected:
+        alert: false
+        reason: ".html is not a suspicious extension"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

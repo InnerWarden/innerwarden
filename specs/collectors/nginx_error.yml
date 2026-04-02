@@ -1,0 +1,35 @@
+kind: collector
+name: nginx_error
+version: 1
+description: "Tails nginx error log and emits http.error events with client IP extraction"
+
+context: |
+  Tails nginx error log using byte-offset cursor with 500ms polling. Parses
+  standard nginx error log format extracting level, client IP, server, request,
+  and message. Filters out debug/info/notice levels. Only emits events with
+  client IP (except crit/alert/emerg which are emitted without client IP).
+
+behavior:
+  does:
+    - "Parses nginx error log format: YYYY/MM/DD HH:MM:SS [level] pid#tid: *NNN message, client: IP"
+    - "Extracts client IP, server, request (quoted), and message fields"
+    - "Maps error levels to severity (warn=Low, error=Medium, crit/alert/emerg=High)"
+    - "Strips optional request context prefix (*NNN) from message body"
+    - "Emits crit/alert/emerg events even without client IP"
+  does_not:
+    - "Does not emit debug, info, or notice level messages"
+    - "Does not emit error-level messages without client IP (server-internal errors)"
+    - "Does not parse access log format"
+
+output:
+  event_kinds:
+    - kind: "http.error"
+      fields: [level, ip, server, request, message]
+
+config:
+  path: "/var/log/nginx/error.log"
+  poll_interval: "500ms"
+  cursor: "byte offset (persisted via shared AtomicU64)"
+
+history:
+  - "2026-04-02: initial spec"

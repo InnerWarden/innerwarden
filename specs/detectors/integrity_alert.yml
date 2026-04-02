@@ -1,0 +1,71 @@
+kind: detector
+name: integrity_alert
+version: 1
+description: "Fires an incident for every file.changed event on monitored paths, with Critical severity for /etc/shadow, /etc/passwd, /etc/sudoers"
+
+context: |
+  Every change to a monitored path (from the integrity collector) is
+  inherently suspicious. These are critical system files that should only
+  change during package installs or explicit admin operations.
+
+  Severity:
+  - /etc/shadow, /etc/passwd, /etc/sudoers: Critical
+  - All other monitored paths: High
+
+  Subject to per-path cooldown to avoid duplicate alerts when a file
+  is modified multiple times rapidly (e.g., during a package install).
+
+behavior:
+  does:
+    - "Fires an incident for every file.changed event"
+    - "Critical severity for /etc/shadow, /etc/passwd, /etc/sudoers"
+    - "High severity for all other monitored paths"
+    - "Includes old_hash and new_hash in evidence"
+    - "Per-path cooldown suppresses duplicates"
+  does_not:
+    - "Alert on file.scanned or other non-change events"
+    - "Re-alert for same path within cooldown"
+
+config:
+  cooldown_secs: 3600
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "/etc/shadow modified"
+      input:
+        kind: "file.changed"
+        path: "/etc/shadow"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "/etc/hosts modified"
+      input:
+        kind: "file.changed"
+        path: "/etc/hosts"
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "file.scanned event (not a change)"
+      input:
+        kind: "file.scanned"
+        path: "/etc/hosts"
+      expected:
+        alert: false
+        reason: "Only file.changed events trigger alerts"
+
+    - description: "Same path within cooldown period"
+      input:
+        kind: "file.changed"
+        path: "/etc/hosts"
+        delay_after_first: 60
+      expected:
+        alert: false
+        reason: "Suppressed by per-path cooldown (3600s)"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

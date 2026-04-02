@@ -1,0 +1,43 @@
+kind: gate
+name: obvious_incident_gate
+version: 1
+description: "Auto-blocks obvious incidents without AI call to save API costs and speed response"
+
+context: |
+  Skips the AI provider call for high-confidence detectors when the attacking
+  IP is already known (previously blocked or has prior incidents). This saves
+  API costs during sustained attacks from known malicious IPs. The decision
+  is logged with ai_provider="obvious-gate" for auditability. Requires the
+  responder to be enabled.
+
+conditions:
+  all_required:
+    - detector: "ssh_bruteforce | credential_stuffing | packet_flood | port_scan"
+    - severity: "High | Critical"
+    - ip_known: "IP is already in blocklist OR has total_incidents > 1 in reputation DB"
+    - responder_enabled: true
+
+behavior:
+  does:
+    - "Skips AI API call for matching incidents"
+    - "Creates auto-decision with confidence 0.95"
+    - "Executes block_ip skill using configured block_backend"
+    - "Logs decision with ai_provider='obvious-gate' for audit trail"
+    - "Updates IP reputation after blocking"
+    - "Pushes to Cloudflare if configured"
+    - "Sends Telegram/Slack notification"
+  does_not:
+    - "Block IPs that have never been seen before (first-time offenders go through AI)"
+    - "Block IPs when responder is disabled"
+    - "Override dry-run mode (respects responder.dry_run config)"
+    - "Handle detectors other than ssh_bruteforce, credential_stuffing, packet_flood, port_scan"
+
+auto_decision:
+  action: "block_ip"
+  confidence: 0.95
+  auto_execute: true
+  estimated_threat: "high"
+  reason: "Auto-blocked: obvious {detector} from repeat offender {ip}"
+
+history:
+  - "2026-04-02: initial spec"

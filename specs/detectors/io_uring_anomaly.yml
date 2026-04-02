@@ -1,0 +1,80 @@
+kind: detector
+name: io_uring_anomaly
+version: 1
+description: "Detects security-relevant io_uring operations: CONNECT, ACCEPT, OPENAT, URING_CMD from non-allowlisted processes"
+
+context: |
+  io_uring is an async I/O interface that bypasses traditional syscall
+  monitoring. Attackers can use it to make network connections, open files,
+  and execute device commands without triggering standard syscall-based
+  detection.
+
+  High-risk opcodes (always generate alerts):
+  - 16 (CONNECT) — outbound network (C2, exfil)
+  - 13 (ACCEPT) — inbound network (reverse shell, backdoor)
+  - 18 (OPENAT) — file access (credential theft)
+  - 46 (URING_CMD) — device passthrough (always dangerous, Critical)
+
+  Key decisions:
+  - Allowlisted processes: nginx, caddy, haproxy, postgres, mysqld, redis,
+    clickhouse, java, node, deno, bun, etc.
+  - URING_CMD (opcode 46) is always Critical — device passthrough can be
+    a kernel exploit vector.
+  - Other high-risk opcodes are High severity.
+
+behavior:
+  does:
+    - "Fires Critical on URING_CMD (opcode 46) from non-allowlisted processes"
+    - "Fires High on CONNECT, ACCEPT, OPENAT via io_uring from non-allowlisted processes"
+    - "Includes opcode name in evidence"
+  does_not:
+    - "Alert on allowlisted processes (nginx, postgres, redis, node, etc.)"
+    - "Alert on non-security-relevant opcodes (READ, WRITE, etc.)"
+    - "Re-alert within cooldown"
+
+config:
+  cooldown_secs: configurable
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "URING_CMD from unknown process"
+      input:
+        kind: "io_uring.submit"
+        comm: "exploit"
+        opcode: 46
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "CONNECT via io_uring from unknown process"
+      input:
+        kind: "io_uring.submit"
+        comm: "suspicious"
+        opcode: 16
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "nginx using io_uring CONNECT (allowlisted)"
+      input:
+        kind: "io_uring.submit"
+        comm: "nginx"
+        opcode: 16
+      expected:
+        alert: false
+        reason: "nginx is in ALLOWED_PROCESSES"
+
+    - description: "READ opcode (not security-relevant)"
+      input:
+        kind: "io_uring.submit"
+        comm: "unknown"
+        opcode: 22
+      expected:
+        alert: false
+        reason: "READ is not in HIGH_RISK_OPCODES"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

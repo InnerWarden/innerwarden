@@ -1,0 +1,98 @@
+kind: detector
+name: ransomware
+version: 1
+description: "Detects mass file encryption indicators: rapid writes, ransomware extensions, ransom notes, high-entropy writes"
+
+context: |
+  Multiple detection patterns based on arXiv:2409.06452 and traditional IOCs:
+  1. Mass file write — single process writes to N+ files within window
+  2. Ransomware extensions — .encrypted, .locked, .crypt, .enc, etc. (14 extensions)
+  3. Ransom note creation — README.txt, DECRYPT.txt, HOW_TO_DECRYPT in multiple dirs
+  4. Encryption commands — openssl enc or gpg --encrypt on many files
+  5. Shannon entropy analysis — high-entropy file writes indicate encrypted data
+     (threshold 7.5/8.0, alert after 3 high-entropy writes)
+
+  Key decisions:
+  - SAFE_MASS_WRITERS allowlist: cargo, rustc, gcc, npm, apt, dpkg, tar, rsync,
+    cp, mv, docker, git, etc. (34 processes). Prevents FPs from build systems.
+  - Ransom note filenames checked case-insensitively (9 patterns).
+  - Entropy threshold 7.5 (max 8.0 for perfectly random data).
+  - 3 high-entropy writes before Critical alert (early detection before mass damage).
+
+behavior:
+  does:
+    - "Fires on mass file writes exceeding threshold in window"
+    - "Fires on files with ransomware extensions (.encrypted, .locked, etc.)"
+    - "Fires on ransom note file creation in multiple directories"
+    - "Fires Critical on 3+ high-entropy file writes (Shannon > 7.5)"
+    - "Fires on encryption commands (openssl enc, gpg --encrypt)"
+  does_not:
+    - "Alert on safe mass writers (cargo, rustc, gcc, apt, dpkg, tar, etc.)"
+    - "Alert on low-entropy file writes (normal data)"
+    - "Alert on single high-entropy write (requires 3+)"
+    - "Re-alert within cooldown"
+
+config:
+  file_threshold: configurable
+  window_secs: configurable
+  cooldown_secs: configurable
+  entropy_threshold: 7.5
+  entropy_count_threshold: 3
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "File renamed to .encrypted extension"
+      input:
+        kind: "file.write_access"
+        path: "/home/user/documents/report.docx.encrypted"
+        comm: "unknown_process"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "3 high-entropy file writes"
+      input:
+        files_with_entropy_above_7_5: 3
+        comm: "unknown_process"
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "cargo writing many files (compiler output)"
+      input:
+        kind: "file.write_access"
+        comm: "cargo"
+        file_count: 500
+      expected:
+        alert: false
+        reason: "cargo is in SAFE_MASS_WRITERS"
+
+    - description: "Normal file write with low entropy"
+      input:
+        kind: "file.write_access"
+        comm: "vim"
+        entropy: 4.2
+      expected:
+        alert: false
+        reason: "Entropy below threshold (7.5)"
+
+  false_positive_fixes:
+    - date: "2026-04-02"
+      description: "Build systems triggering mass-write detection"
+      context: |
+        Compilers (rustc, gcc, g++), build tools (cargo, make, cmake, ninja),
+        package managers (apt, dpkg, npm, pip), and file utilities (tar, rsync,
+        cp, mv) legitimately write thousands of files in short windows. Without
+        SAFE_MASS_WRITERS, every cargo build would trigger ransomware alerts.
+      input:
+        kind: "file.write_access"
+        comm: "rustc"
+        file_count: 200
+      expected:
+        alert: false
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

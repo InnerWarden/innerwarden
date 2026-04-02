@@ -1,0 +1,38 @@
+kind: collector
+name: tls_fingerprint
+version: 1
+description: "Captures TLS ClientHello and computes JA3/JA4 fingerprints for malware detection"
+
+context: |
+  Captures TLS ClientHello messages via AF_PACKET raw socket and computes
+  JA3 (MD5-based) and JA4 fingerprints. These identify the TLS implementation
+  used by a process -- malware has distinctive fingerprints even when connecting
+  to legitimate domains. Includes 10 known malicious JA3 hashes (Cobalt Strike,
+  Metasploit, Emotet, Trickbot, etc.). Strips GREASE values per JA3 spec.
+  Extracts SNI and ALPN from ClientHello extensions. Pure-Rust MD5 implementation.
+
+behavior:
+  does:
+    - "Captures TLS ClientHello messages from all interfaces"
+    - "Computes JA3 hash: MD5(TLSVersion,Ciphers,Extensions,EllipticCurves,ECPointFormats)"
+    - "Computes JA4 fingerprint: TLSVersion_SNI-presence_CipherCount_ExtCount_ALPN"
+    - "Extracts SNI (Server Name Indication) from extension 0x0000"
+    - "Extracts ALPN protocols from extension 0x0010"
+    - "Strips GREASE values from cipher suites and extensions per JA3 spec"
+    - "Matches against 10 known malicious JA3 hashes (Cobalt Strike, Metasploit, Emotet, Trickbot, AsyncRAT, IcedID, Qakbot, SUNBURST)"
+  does_not:
+    - "Does not decrypt TLS traffic"
+    - "Does not capture TLS ServerHello"
+    - "Does not run on non-Linux platforms"
+    - "Does not follow compression pointers in DNS-encoded names"
+
+output:
+  event_kinds:
+    - kind: "tls.fingerprint"
+      fields: [ja3_hash, ja3_raw, ja4, sni, src_ip, dst_ip, dst_port]
+
+config:
+  requires: "Linux, CAP_NET_RAW, ebpf feature flag"
+
+history:
+  - "2026-04-02: initial spec"

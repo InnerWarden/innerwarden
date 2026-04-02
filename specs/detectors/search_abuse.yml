@@ -1,0 +1,71 @@
+kind: detector
+name: search_abuse
+version: 1
+description: "Detects automated abuse of expensive HTTP search routes from a single IP"
+
+context: |
+  Monitors http.request events for high-rate access to a configurable path
+  prefix (e.g., /api/search). Fires when a single IP exceeds the threshold
+  within the window. Designed to catch scrapers and automated query tools
+  hammering search APIs.
+
+  Key decisions:
+  - Path prefix is configurable. Empty prefix matches any path.
+  - Query strings are stripped before matching (path_without_qs).
+  - Known good bots (tag "bot:known") are excluded.
+  - Internal IPs are excluded.
+
+behavior:
+  does:
+    - "Counts http.request events per IP matching a path prefix"
+    - "Fires High severity when count reaches threshold"
+    - "Strips query strings before prefix matching"
+    - "Suppresses re-alerts for same IP within window"
+  does_not:
+    - "Alert on known bots (tag bot:known)"
+    - "Alert on internal IPs"
+    - "Alert on paths not matching the configured prefix"
+    - "Alert on non-http.request events"
+
+config:
+  threshold: 100
+  window_secs: 60
+  path_prefix: "/api/search"
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "100 requests to /api/search from same IP in 60s"
+      input:
+        kind: "http.request"
+        ip: "1.2.3.4"
+        path: "/api/search?q=test"
+        count: 100
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "Requests to /api/users (non-matching prefix)"
+      input:
+        kind: "http.request"
+        ip: "1.2.3.4"
+        path: "/api/users"
+        count: 200
+      expected:
+        alert: false
+        reason: "Path does not match configured prefix"
+
+    - description: "Known bot accessing search"
+      input:
+        kind: "http.request"
+        ip: "1.2.3.4"
+        path: "/api/search"
+        tags: ["bot:known"]
+      expected:
+        alert: false
+        reason: "Known bots are excluded"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

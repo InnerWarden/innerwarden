@@ -1,0 +1,81 @@
+kind: detector
+name: user_agent_scanner
+version: 1
+description: "Detects HTTP requests from known security scanning tools by User-Agent header matching"
+
+context: |
+  Matches User-Agent headers against 20 known scanner signatures (Nikto,
+  sqlmap, Nuclei, Masscan, Burp Suite, Metasploit, etc.). Unlike
+  threshold-based detectors, a single request with a scanner UA is already
+  actionable — no threshold needed.
+
+  MITRE ATT&CK: T1595 (Active Scanning), T1595.002 (Vulnerability Scanning).
+
+  Key decisions:
+  - Case-insensitive matching (UA is lowercased before comparison).
+  - Dedup window of 10 minutes per (IP, scanner_name) pair to prevent
+    flooding from a single scan run.
+  - Different scanners from the same IP alert independently.
+  - python-requests/ and go-http-client/ are included as they're commonly
+    used for automated scanning.
+
+behavior:
+  does:
+    - "Matches User-Agent against 20 known scanner signatures"
+    - "Fires High severity on first match"
+    - "Case-insensitive matching"
+    - "Deduplicates per (IP, scanner) pair with 10-minute window"
+    - "Tags incidents with T1595 and T1595.002"
+  does_not:
+    - "Alert on normal browser User-Agents (Chrome, Firefox, Safari)"
+    - "Alert on empty User-Agents"
+    - "Alert on non-http.request events"
+    - "Alert on internal IPs"
+    - "Re-alert for same IP+scanner within 10 minutes"
+
+config:
+  dedup_window_minutes: 10
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "Nikto scanner detected"
+      input:
+        kind: "http.request"
+        ip: "1.2.3.4"
+        user_agent: "Nikto/2.1.6"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "sqlmap scanner detected"
+      input:
+        kind: "http.request"
+        ip: "5.6.7.8"
+        user_agent: "sqlmap/1.7.2#stable (https://sqlmap.org)"
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "Normal Chrome browser"
+      input:
+        kind: "http.request"
+        ip: "1.2.3.4"
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"
+      expected:
+        alert: false
+        reason: "Not a known scanner signature"
+
+    - description: "Empty User-Agent"
+      input:
+        kind: "http.request"
+        ip: "1.2.3.4"
+        user_agent: ""
+      expected:
+        alert: false
+        reason: "Empty UA is skipped"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

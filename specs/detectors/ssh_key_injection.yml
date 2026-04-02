@@ -1,0 +1,82 @@
+kind: detector
+name: ssh_key_injection
+version: 1
+description: "Detects unauthorized SSH key modifications and sshd_config tampering"
+
+context: |
+  SSH key injection is a common persistence technique: attacker writes their
+  public key into ~/.ssh/authorized_keys. Four detection patterns:
+  1. File write to path containing .ssh/authorized_keys
+  2. File write to /etc/ssh/sshd_config by non-root non-sshd process
+  3. Command with ssh-keygen + authorized_keys
+  4. Command with echo + >>.*authorized_keys
+
+  Severity:
+  - authorized_keys write: Critical
+  - sshd_config write by non-root: High
+  - Command patterns: High to Critical depending on context
+
+  Key decisions:
+  - Allowlisted processes: sshd, ssh-keygen, cloud-init, waagent.
+  - sshd_config modification by root is NOT flagged (normal admin operation).
+  - sshd_config modification by non-root IS flagged (suspicious).
+
+behavior:
+  does:
+    - "Fires Critical on writes to .ssh/authorized_keys"
+    - "Fires High on sshd_config modification by non-root"
+    - "Fires on ssh-keygen + authorized_keys in commands"
+    - "Fires on echo >> authorized_keys in commands"
+  does_not:
+    - "Alert on allowlisted processes (sshd, ssh-keygen, cloud-init, waagent)"
+    - "Alert on root modifying sshd_config (normal admin operation)"
+    - "Re-alert within cooldown"
+
+config:
+  cooldown_secs: 600
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "Unauthorized write to authorized_keys"
+      input:
+        kind: "file.write_access"
+        filename: "/root/.ssh/authorized_keys"
+        comm: "bash"
+        uid: 1000
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "Non-root modifying sshd_config"
+      input:
+        kind: "file.write_access"
+        filename: "/etc/ssh/sshd_config"
+        comm: "vim"
+        uid: 1000
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "sshd writing authorized_keys (allowlisted)"
+      input:
+        kind: "file.write_access"
+        filename: "/root/.ssh/authorized_keys"
+        comm: "sshd"
+      expected:
+        alert: false
+        reason: "sshd is in ALLOWED_PROCESSES"
+
+    - description: "cloud-init provisioning SSH keys"
+      input:
+        kind: "file.write_access"
+        filename: "/home/ubuntu/.ssh/authorized_keys"
+        comm: "cloud-init"
+      expected:
+        alert: false
+        reason: "cloud-init is in ALLOWED_PROCESSES"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

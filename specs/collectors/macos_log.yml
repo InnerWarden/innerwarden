@@ -1,0 +1,38 @@
+kind: collector
+name: macos_log
+version: 1
+description: "Streams SSH and sudo events from macOS unified log system"
+
+context: |
+  Streams macOS system log events via `log stream` with a predicate filter for
+  sshd and sudo processes. Reuses parse_sshd_message() from auth_log collector
+  for SSH event parsing. Auto-restarts if `log stream` exits unexpectedly.
+  Verifies `log` binary availability at startup (graceful disable if unavailable).
+
+behavior:
+  does:
+    - "Streams macOS log events filtered to process == sshd OR process == sudo"
+    - "Parses SSH login success/failure events via shared parse_sshd_message()"
+    - "Parses sudo command execution events"
+    - "Uses --style syslog --info flags for readable output"
+    - "Auto-restarts log stream after unexpected exit (5s delay)"
+  does_not:
+    - "Does not parse kernel or other process logs"
+    - "Does not run on Linux (macOS only)"
+    - "Does not persist cursor across restarts (tails from current position)"
+
+output:
+  event_kinds:
+    - kind: "ssh.login_failed"
+      fields: [ip, user, reason]
+    - kind: "ssh.login_success"
+      fields: [ip, user, method]
+    - kind: "sudo.command"
+      fields: [user, run_as, command]
+
+config:
+  predicate: "process == 'sshd' OR process == 'sudo'"
+  requires: "macOS, `log` binary"
+
+history:
+  - "2026-04-02: initial spec"

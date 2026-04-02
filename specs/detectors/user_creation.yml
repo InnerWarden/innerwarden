@@ -1,0 +1,83 @@
+kind: detector
+name: user_creation
+version: 1
+description: "Detects unauthorized user/group creation, UID 0 accounts, and privilege group additions"
+
+context: |
+  Monitors for user/group management commands (useradd, adduser, usermod,
+  groupadd, addgroup) and file writes to identity files (/etc/passwd,
+  /etc/group, /etc/shadow).
+
+  Severity escalation:
+  - Critical: user creation with UID 0 (root equivalent backdoor)
+  - Critical: usermod adding user to privileged group (sudo, wheel, admin, root, docker)
+  - High: standard user/group creation or identity file write
+
+  Key decisions:
+  - Parent process (ppid_comm) checked against allowlist for command events.
+  - Allowlisted parents: apt, dpkg, cloud-init, puppet, chef, ansible,
+    salt-minion, snap, useradd, adduser, usermod, passwd, etc.
+  - NSS cache hooks skipped (nscd, sss_cache paths in commands).
+  - For file writes: ALLOWLISTED_PARENTS checked against comm.
+  - Privileged groups: sudo, wheel, admin, root, docker.
+
+behavior:
+  does:
+    - "Fires Critical on useradd/adduser with UID 0"
+    - "Fires Critical on usermod adding to sudo/wheel/admin/root/docker group"
+    - "Fires High on user/group management commands"
+    - "Fires High on writes to /etc/passwd, /etc/group, /etc/shadow"
+    - "Checks parent process against allowlist"
+  does_not:
+    - "Alert when parent is allowlisted (apt, dpkg, puppet, ansible, etc.)"
+    - "Alert on NSS cache hook commands (nscd, sss_cache)"
+    - "Alert on non-user-management commands"
+    - "Alert on writes by allowlisted processes"
+
+config:
+  cooldown_secs: 600
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "Root-equivalent user creation (UID 0)"
+      input:
+        kind: "shell.command_exec"
+        command: "useradd -o -u 0 backdoor"
+        comm: "useradd"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "Adding user to sudo group"
+      input:
+        kind: "shell.command_exec"
+        command: "usermod -aG sudo attacker"
+        comm: "usermod"
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "dpkg creating system user during install"
+      input:
+        kind: "shell.command_exec"
+        command: "useradd nginx"
+        comm: "useradd"
+        ppid_comm: "dpkg"
+      expected:
+        alert: false
+        reason: "Parent process dpkg is allowlisted"
+
+    - description: "NSS cache invalidation"
+      input:
+        kind: "shell.command_exec"
+        command: "usermod /usr/sbin/nscd"
+        comm: "usermod"
+      expected:
+        alert: false
+        reason: "NSS cache hooks are skipped"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

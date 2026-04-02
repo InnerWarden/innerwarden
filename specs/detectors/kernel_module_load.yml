@@ -1,0 +1,79 @@
+kind: detector
+name: kernel_module_load
+version: 1
+description: "Detects runtime kernel module loading/unloading via insmod/modprobe/rmmod commands"
+
+context: |
+  Kernel module loading at runtime can indicate rootkit installation or
+  privilege escalation. Watches shell.command_exec and process.exec events
+  for insmod, modprobe, and rmmod commands.
+
+  Severity:
+  - Critical when loading from suspicious paths (/tmp/, /dev/shm/, /home/, /var/tmp/)
+  - High for any non-allowlisted module
+
+  Key decisions:
+  - 26 standard modules allowlisted (ext4, xfs, overlay, nf_conntrack, etc.).
+  - 6 module family prefixes allowlisted (virtio_*, kvm*, hv_*, xen_*, vmw_*, nf_*).
+  - Module name extracted from command (handles path-based insmod and name-based modprobe).
+  - Strips .ko, .ko.xz, .ko.zst extensions from insmod paths.
+
+behavior:
+  does:
+    - "Fires High on insmod/modprobe/rmmod of non-standard modules"
+    - "Escalates to Critical when loading from /tmp, /dev/shm, /home, /var/tmp"
+    - "Extracts module name from insmod paths and modprobe args"
+    - "Handles compressed module extensions (.ko.xz, .ko.zst)"
+  does_not:
+    - "Alert on standard modules (ext4, overlay, nf_conntrack, etc.)"
+    - "Alert on module family prefixes (virtio_*, kvm*, hv_*, etc.)"
+    - "Alert on non-module commands (ls, curl, cat)"
+    - "Alert on non-exec events"
+    - "Re-alert for same module+comm within cooldown"
+
+config:
+  cooldown_secs: 600
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "insmod rootkit from /tmp"
+      input:
+        kind: "shell.command_exec"
+        command: "insmod /tmp/rootkit.ko"
+        comm: "bash"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "modprobe unknown module"
+      input:
+        kind: "shell.command_exec"
+        command: "modprobe evil_module"
+        comm: "bash"
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "modprobe ext4 (standard module)"
+      input:
+        kind: "shell.command_exec"
+        command: "modprobe ext4"
+        comm: "mount"
+      expected:
+        alert: false
+        reason: "ext4 is in ALLOWED_MODULES"
+
+    - description: "modprobe virtio_net (prefix match)"
+      input:
+        kind: "shell.command_exec"
+        command: "modprobe virtio_net"
+        comm: "systemd"
+      expected:
+        alert: false
+        reason: "virtio_ prefix is in ALLOWED_PREFIXES"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

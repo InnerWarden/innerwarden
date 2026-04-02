@@ -1,0 +1,78 @@
+kind: detector
+name: suricata_alert
+version: 1
+description: "Promotes clusters of Suricata IDS alerts from a single IP to incidents"
+
+context: |
+  Watches events with kind starting with "suricata.alert." and clusters
+  them per source IP. When a single IP triggers enough Suricata alerts
+  within the window, the cluster is promoted to an incident.
+
+  Severity depends on Suricata's own severity field:
+  - If any alert in the burst has Suricata severity 1 (highest): Critical
+  - Otherwise: High
+
+  Key decisions:
+  - Internal source IPs excluded.
+  - severity_one tracker is reset after firing to avoid sticky escalation.
+
+behavior:
+  does:
+    - "Counts suricata.alert.* events per source IP"
+    - "Fires High severity when count reaches threshold"
+    - "Escalates to Critical if any alert in the burst has Suricata severity 1"
+    - "Includes last signature and category in evidence"
+  does_not:
+    - "Alert on non-suricata events"
+    - "Alert on internal source IPs"
+    - "Alert below threshold"
+    - "Re-alert for same IP within window"
+
+config:
+  threshold: 3
+  window_secs: 300
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "3 Suricata alerts from same external IP"
+      input:
+        kind: "suricata.alert.potentially_bad_traffic"
+        src_ip: "1.2.3.4"
+        count: 3
+        suricata_severity: 2
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "3 alerts including severity 1"
+      input:
+        kind: "suricata.alert.exploit"
+        src_ip: "5.6.7.8"
+        count: 3
+        suricata_severity: 1
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "Only 2 alerts (below threshold)"
+      input:
+        kind: "suricata.alert.potentially_bad_traffic"
+        src_ip: "1.2.3.4"
+        count: 2
+      expected:
+        alert: false
+        reason: "Below threshold of 3"
+
+    - description: "Non-suricata event"
+      input:
+        kind: "ssh.login_failed"
+        src_ip: "1.2.3.4"
+      expected:
+        alert: false
+        reason: "Kind does not start with suricata.alert."
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

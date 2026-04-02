@@ -1,0 +1,93 @@
+kind: detector
+name: ssh_bruteforce
+version: 1
+description: "Detects SSH brute force attacks by counting failed login attempts per IP within a sliding window"
+
+context: |
+  Classic brute force detection: a single IP producing many failed SSH login
+  attempts in a short time window. This is the most common attack vector on
+  internet-facing servers.
+
+  Severity scales with attempt count:
+  - threshold..2x threshold: Medium (generic bot noise, Shodan scanners)
+  - 2x threshold+: High (real directed brute force attack)
+
+  Key decisions:
+  - Internal IPs (RFC1918, loopback, link-local) are excluded because
+    failed logins from internal IPs are usually misconfiguration, not attacks.
+  - Re-alerts are suppressed per IP within the same window period to avoid
+    flooding the operator with repeated incidents for the same ongoing attack.
+  - Only processes ssh.login_failed events (ignores ssh.login_success).
+  - Different IPs are tracked independently (isolated sliding windows).
+
+behavior:
+  does:
+    - "Counts ssh.login_failed events per source IP in a sliding window"
+    - "Fires Medium severity at threshold (e.g., 5 failures in 300s)"
+    - "Escalates to High severity at 2x threshold (e.g., 10 failures)"
+    - "Suppresses re-alerts for the same IP within the window period"
+  does_not:
+    - "Alert on ssh.login_success events"
+    - "Alert on internal IPs (192.168.x.x, 10.x.x.x, 172.16-31.x.x, 127.x.x.x)"
+    - "Alert below threshold (e.g., 4 failures when threshold is 5)"
+    - "Alert twice for the same IP within the same window"
+
+config:
+  threshold: 5
+  window_secs: 300
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "5 failed SSH logins from same external IP in 300s"
+      input:
+        kind: "ssh.login_failed"
+        ip: "1.2.3.4"
+        count: 5
+        window: 300
+      expected:
+        alert: true
+        severity: "medium"
+
+    - description: "10 failed SSH logins from same external IP (2x threshold)"
+      input:
+        kind: "ssh.login_failed"
+        ip: "5.6.7.8"
+        count: 10
+        window: 300
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "4 failed logins from same IP (below threshold of 5)"
+      input:
+        kind: "ssh.login_failed"
+        ip: "1.2.3.4"
+        count: 4
+        window: 300
+      expected:
+        alert: false
+        reason: "Count below threshold"
+
+    - description: "ssh.login_success events (not failures)"
+      input:
+        kind: "ssh.login_success"
+        ip: "1.2.3.4"
+        count: 10
+      expected:
+        alert: false
+        reason: "Only ssh.login_failed events are counted"
+
+    - description: "Internal IP with many failures"
+      input:
+        kind: "ssh.login_failed"
+        ip: "192.168.1.1"
+        count: 20
+      expected:
+        alert: false
+        reason: "Internal IPs are excluded"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

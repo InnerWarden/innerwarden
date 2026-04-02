@@ -1,0 +1,38 @@
+kind: collector
+name: auth_log
+version: 1
+description: "Parses SSH events from /var/log/auth.log (syslog format)"
+
+context: |
+  Tails /var/log/auth.log using byte-offset cursor with 1-second polling.
+  Parses sshd lines for login success and failure events. Handles log rotation
+  by resetting offset when file size shrinks. Uses spawn_blocking for file I/O.
+  Shared with journald collector via parse_sshd_message().
+
+behavior:
+  does:
+    - "Parses 'Failed password for invalid user' lines (reason: invalid_user)"
+    - "Parses 'Failed password for' lines (reason: wrong_password)"
+    - "Parses 'Invalid user' lines (reason: invalid_user)"
+    - "Parses 'Accepted password for' and 'Accepted publickey for' lines"
+    - "Extracts IP, username, and auth method from each line"
+    - "Detects log rotation (file size < offset) and resets offset"
+  does_not:
+    - "Does not parse non-sshd lines (sudo, kernel, etc.)"
+    - "Does not call any external API or network service"
+    - "Does not buffer events across poll cycles"
+
+output:
+  event_kinds:
+    - kind: "ssh.login_failed"
+      fields: [ip, user, reason]
+    - kind: "ssh.login_success"
+      fields: [ip, user, method]
+
+config:
+  path: "/var/log/auth.log"
+  poll_interval: "1s"
+  cursor: "byte offset (persisted via shared AtomicU64)"
+
+history:
+  - "2026-04-02: initial spec"

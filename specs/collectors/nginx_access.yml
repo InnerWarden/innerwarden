@@ -1,0 +1,39 @@
+kind: collector
+name: nginx_access
+version: 1
+description: "Tails nginx access logs (Combined/Common/NPM formats) and emits http.request events"
+
+context: |
+  Tails nginx access log using byte-offset cursor with 500ms polling. Parses
+  three log formats: standard Combined Log Format, Common Log Format, and
+  Nginx Proxy Manager format (auto-detected per line). Identifies known good
+  bots by User-Agent and verifies major bots (Googlebot, Bingbot, etc.) via
+  reverse DNS lookup with 2-second timeout. Tags verified bots as bot:known,
+  unverified claimants as bot:spoofed.
+
+behavior:
+  does:
+    - "Parses standard Combined Log Format (IP method path status bytes referer UA)"
+    - "Parses Common Log Format (no referer/UA)"
+    - "Parses Nginx Proxy Manager format ([date] status METHOD proto host path [Client IP] [Length N] UA)"
+    - "Identifies 28 known good bot User-Agents (Google, Bing, GPT, Claude, etc.)"
+    - "Verifies bot identity via rDNS for Googlebot, Bingbot, Yandexbot, Baiduspider, DuckDuckBot, Applebot"
+    - "Tags verified bots as bot:known, spoofed bots as bot:spoofed"
+    - "Maps HTTP status codes to severity (2xx=Info, 3xx=Debug, 4xx=Low, 5xx=Medium)"
+  does_not:
+    - "Does not parse error log format (separate collector)"
+    - "Does not block or filter requests"
+    - "Does not track sessions across requests"
+
+output:
+  event_kinds:
+    - kind: "http.request"
+      fields: [ip, method, path, status, bytes, user_agent]
+
+config:
+  path: "/var/log/nginx/access.log"
+  poll_interval: "500ms"
+  cursor: "byte offset (persisted via shared AtomicU64)"
+
+history:
+  - "2026-04-02: initial spec"

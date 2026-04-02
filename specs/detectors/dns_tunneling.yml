@@ -1,0 +1,111 @@
+kind: detector
+name: dns_tunneling
+version: 1
+description: "Detects DNS tunneling via entropy analysis, subdomain volume, long domains, eBPF beaconing, and DNS bursts"
+
+context: |
+  Two detection paths:
+
+  Suricata/DNS capture path (deep inspection):
+  1. High Shannon entropy in subdomain labels (encoded/encrypted data)
+  2. Volume of unique subdomains to same base domain (C2 channel)
+  3. Unusually long domain names (data exfiltration payload)
+
+  eBPF fallback (port 53 connect analysis, works WITHOUT Suricata):
+  4. DNS beaconing — same process connects to same DNS server 20+ times in 60s
+  5. Non-standard DNS server — connect to port 53 on a non-common resolver
+  6. DNS burst — 50+ port 53 connections in 30s from any process
+
+  Key decisions:
+  - Cloud/infra domains allowlisted (26 domains: oraclecloud, amazonaws,
+    ubuntu, docker, github, etc.).
+  - Dynamic allowlist dns_allowed_domains also checked.
+  - Standard resolvers allowlisted (127.0.0.53, 8.8.8.8, 1.1.1.1, 9.9.9.9, etc.).
+  - DNS_ALLOWED_COMMS: crowdsec, cscli, gomon, systemd-reso, unbound, named,
+    dnsmasq, snapd.
+
+behavior:
+  does:
+    - "Fires on high-entropy DNS subdomains (encoded data)"
+    - "Fires on high volume of unique subdomains to same base domain"
+    - "Fires on unusually long domain names"
+    - "Fires on DNS beaconing (20+ connections to same server in 60s)"
+    - "Fires on non-standard DNS server connections"
+    - "Fires on DNS burst (50+ port 53 connections in 30s)"
+  does_not:
+    - "Alert on cloud/infrastructure domains (amazonaws, ubuntu, docker, etc.)"
+    - "Alert on standard resolvers (8.8.8.8, 1.1.1.1, 9.9.9.9)"
+    - "Alert on DNS_ALLOWED_COMMS processes (crowdsec, dnsmasq, etc.)"
+    - "Alert on dynamically allowlisted domains"
+    - "Re-alert within cooldown"
+
+config:
+  entropy_threshold: configurable
+  volume_threshold: configurable
+  length_threshold: configurable
+  window_secs: configurable
+
+dependencies:
+  - "allowlists.rs: DynamicAllowlist.dns_allowed_domains"
+
+test_cases:
+  true_positives:
+    - description: "High-entropy subdomain query (DNS tunnel data)"
+      input:
+        kind: "suricata.dns.query"
+        rrname: "aGVsbG8gd29ybGQ.evil.com"
+        src_ip: "10.0.0.5"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "DNS beaconing via eBPF (25 connections to same server)"
+      input:
+        kind: "network.outbound_connect"
+        comm: "malware"
+        dst_ip: "5.6.7.8"
+        dst_port: 53
+        count: 25
+        window: 60
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "Normal DNS query to google.com"
+      input:
+        kind: "suricata.dns.query"
+        rrname: "www.google.com"
+        src_ip: "10.0.0.5"
+      expected:
+        alert: false
+        reason: "Low entropy, normal domain"
+
+    - description: "crowdsec querying DNS (allowlisted)"
+      input:
+        kind: "network.outbound_connect"
+        comm: "crowdsec"
+        dst_ip: "5.6.7.8"
+        dst_port: 53
+        count: 30
+      expected:
+        alert: false
+        reason: "crowdsec is in DNS_ALLOWED_COMMS"
+
+  false_positive_fixes:
+    - date: "2026-04-02"
+      description: "Cloud infrastructure domains triggering volume alerts"
+      context: |
+        Servers on Oracle Cloud, AWS, Azure, etc. generate many DNS queries
+        to infrastructure domains (oraclecloud.com, amazonaws.com, etc.).
+        Without the static DNS_ALLOWED_DOMAINS list, normal cloud operations
+        would trigger DNS tunneling alerts.
+      input:
+        kind: "suricata.dns.query"
+        rrname: "metadata.oraclecloud.com"
+        src_ip: "10.0.0.5"
+      expected:
+        alert: false
+
+history:
+  - "2026-04-02: initial spec from source code analysis"
