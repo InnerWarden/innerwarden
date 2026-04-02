@@ -211,6 +211,34 @@ impl ProcessTreeDetector {
         let child_base = comm.split('/').next_back().unwrap_or(&comm);
         let parent_base = parent_comm.split('/').next_back().unwrap_or(&parent_comm);
 
+        // Skip node → sh when the command is a standard build/npm operation.
+        // Node.js spawns sh for every child_process.exec() call which is
+        // normal for npm scripts, build tools, etc.
+        let command = event.details["command"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase();
+        if parent_base == "node"
+            && (child_base == "sh" || child_base == "bash")
+            && (command.contains("npm ")
+                || command.contains("npx ")
+                || command.contains("yarn ")
+                || command.contains("pnpm ")
+                || command.contains("node ")
+                || command.contains("tsc ")
+                || command.contains("eslint")
+                || command.contains("prettier")
+                || command.contains("webpack")
+                || command.contains("vite")
+                || command.contains("next ")
+                || command.contains("remotion")
+                || command.contains("git ")
+                || command.contains("which ")
+                || command.is_empty())
+        {
+            return None;
+        }
+
         // Check against suspicious lineage patterns
         for &(parent_pat, child_pat, ref severity, description) in SUSPICIOUS_LINEAGE {
             if parent_base == parent_pat && child_base == child_pat {
