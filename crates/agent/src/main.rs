@@ -284,6 +284,8 @@ struct AgentState {
     /// Receives approval results from the Telegram polling task.
     /// Drained at the start of every incident tick via try_recv.
     approval_rx: Option<tokio::sync::mpsc::Receiver<telegram::ApprovalResult>>,
+    /// Telegram batcher — groups repeated alerts to avoid spam.
+    telegram_batcher: telegram::TelegramBatcher,
     /// In-memory trust rules: set of "detector:action" strings.
     /// Loaded from data_dir/trust-rules.json at startup; updated live when operator clicks "Always".
     trust_rules: std::collections::HashSet<String>,
@@ -1616,6 +1618,7 @@ async fn main() -> Result<()> {
         telegram_client,
         pending_confirmations: HashMap::new(),
         approval_rx: None, // set below in continuous mode
+        telegram_batcher: telegram::TelegramBatcher::new(60),
         trust_rules: load_trust_rules(&cli.data_dir),
         crowdsec: if cfg.crowdsec.enabled {
             info!(url = %cfg.crowdsec.url, "CrowdSec integration enabled");
@@ -1941,6 +1944,19 @@ async fn main() -> Result<()> {
                             warn!("narrative tick error: {e:#}");
                         }
                     }
+                    // Flush Telegram batcher — send grouped summaries
+                    if state.telegram_batcher.should_flush() {
+                        let summaries = state.telegram_batcher.flush();
+                        if !summaries.is_empty() {
+                            if let Some(ref tg) = state.telegram_client {
+                                let digest = summaries.join("\n");
+                                if let Err(e) = tg.send_raw_html(&digest).await {
+                                    warn!("Telegram batch digest failed: {e:#}");
+                                }
+                            }
+                        }
+                    }
+
                     // Trim in-memory structures to prevent unbounded memory growth
                     state.blocklist.trim_if_needed(10_000);
                     let cutoff_2h = chrono::Utc::now() - chrono::Duration::hours(2);
@@ -2235,6 +2251,19 @@ async fn main() -> Result<()> {
                             warn!("narrative tick error: {e:#}");
                         }
                     }
+                    // Flush Telegram batcher — send grouped summaries
+                    if state.telegram_batcher.should_flush() {
+                        let summaries = state.telegram_batcher.flush();
+                        if !summaries.is_empty() {
+                            if let Some(ref tg) = state.telegram_client {
+                                let digest = summaries.join("\n");
+                                if let Err(e) = tg.send_raw_html(&digest).await {
+                                    warn!("Telegram batch digest failed: {e:#}");
+                                }
+                            }
+                        }
+                    }
+
                     // Trim in-memory structures to prevent unbounded memory growth
                     state.blocklist.trim_if_needed(10_000);
                     let cutoff_2h = chrono::Utc::now() - chrono::Duration::hours(2);
@@ -2730,15 +2759,19 @@ async fn process_incidents(
             }
 
             // 1b. Telegram T.1 - push notification for High/Critical incidents
+            //     Batching: first occurrence of a detector goes immediately.
+            //     Repeated same-detector alerts are grouped into periodic summaries.
             if let Some(min_rank) = telegram_min_rank {
                 if webhook::severity_rank(&incident.severity) >= min_rank {
-                    // Clone the Arc to avoid holding a borrow on state during the await
                     let tg = state.telegram_client.clone();
                     if let Some(tg) = tg {
-                        let mode = guardian_mode(cfg);
-                        if let Err(e) = tg.send_incident_alert(incident, mode).await {
-                            warn!(incident_id = %incident.incident_id, "Telegram alert failed: {e:#}");
+                        if state.telegram_batcher.should_send_immediately(incident) {
+                            let mode = guardian_mode(cfg);
+                            if let Err(e) = tg.send_incident_alert(incident, mode).await {
+                                warn!(incident_id = %incident.incident_id, "Telegram alert failed: {e:#}");
+                            }
                         }
+                        state.telegram_batcher.record(incident);
                     }
                 }
             }
@@ -7209,6 +7242,7 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
+            telegram_batcher: telegram::TelegramBatcher::new(60),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
@@ -7350,6 +7384,7 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
+            telegram_batcher: telegram::TelegramBatcher::new(60),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
@@ -7466,6 +7501,7 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
+            telegram_batcher: telegram::TelegramBatcher::new(60),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
@@ -7594,6 +7630,7 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
+            telegram_batcher: telegram::TelegramBatcher::new(60),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
@@ -7699,6 +7736,7 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
+            telegram_batcher: telegram::TelegramBatcher::new(60),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
@@ -7816,6 +7854,7 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
+            telegram_batcher: telegram::TelegramBatcher::new(60),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
             abuseipdb: None,
