@@ -497,6 +497,12 @@ impl MitreHuntDetector {
             None => return None,
         };
 
+        // Skip admin restarts of InnerWarden services (deploy, upgrade).
+        // uid=0 stopping innerwarden-* is normal operations.
+        if uid == 0 && target_service == "innerwarden" {
+            return None;
+        }
+
         self.emit(
             "service_stop",
             Severity::High,

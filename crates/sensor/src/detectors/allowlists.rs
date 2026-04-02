@@ -222,15 +222,26 @@ pub const DISCOVERY_ALLOWED: &[&str] = &[
     "salt",
     "salt-call",
     "salt-minion",
-    // CI/CD and dev tools
+    // CI/CD and dev tools (including compiler sub-processes)
     "cargo",
     "rustc",
     "git",
     "make",
     "cmake",
     "gcc",
+    "g++",
+    "cc",
+    "cc1",
+    "ld",
+    "collect2",
+    "lto-wrapper",
     "go",
     "node",
+    "python",
+    "python3",
+    // grep variants (build scripts, overlayroot checks, cron health)
+    "egrep",
+    "fgrep",
     // System tools that run discovery commands
     "journalctl",
     "systemctl",

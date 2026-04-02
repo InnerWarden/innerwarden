@@ -81,6 +81,42 @@ impl DataExfilEbpfDetector {
             return None;
         }
 
+        // Skip processes that legitimately read /etc/passwd for NSS uid→name
+        // resolution and then make outbound connections (CrowdSec, web servers).
+        const PASSWD_READERS: &[&str] = &[
+            "http",
+            "https",
+            "nginx",
+            "apache",
+            "httpd",
+            "crowdsec",
+            "cscli",
+            "cs-",
+            "bouncer",
+            "sshd",
+            "login",
+            "su",
+            "sudo",
+            "cron",
+            "crond",
+            "atd",
+            "postfix",
+            "dovecot",
+            "sendmail",
+            "systemd",
+            "dbus-daemon",
+            "polkitd",
+            "node",
+            "python",
+            "python3",
+            "ruby",
+            "java",
+            "php",
+        ];
+        if PASSWD_READERS.iter().any(|p| ev_comm.starts_with(p)) {
+            return None;
+        }
+
         // Phase 1: Track sensitive file reads
         if event.kind == "file.read_access" || event.kind == "file.write_access" {
             let filename = event
