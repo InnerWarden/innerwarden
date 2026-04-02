@@ -1560,7 +1560,9 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.sigma_rule {
-        if let Some(incident) = det.process(&ev) {
+        if let Some(incident) =
+            det.process_with_suppressions(&ev, &detectors.dynamic_allowlist.suppress_sigma_rules)
+        {
             write_incident(writer, stats, incident, syslog);
         }
     }

@@ -519,6 +519,8 @@ pub struct DynamicAllowlist {
     /// IPs that are technically private but should be treated as external
     /// for testing purposes (e.g., Mac on local network running attacks).
     pub test_external_ips: HashSet<String>,
+    /// Sigma rule IDs to suppress entirely (no alerts).
+    pub suppress_sigma_rules: HashSet<String>,
     /// Path to the TOML file
     path: PathBuf,
     /// Last modification time (for reload detection)
@@ -535,6 +537,7 @@ impl DynamicAllowlist {
             per_detector: std::collections::HashMap::new(),
             dns_allowed_domains: HashSet::new(),
             test_external_ips: HashSet::new(),
+            suppress_sigma_rules: HashSet::new(),
             path: path.to_path_buf(),
             last_modified: None,
         };
@@ -571,6 +574,7 @@ impl DynamicAllowlist {
         self.per_detector.clear();
         self.dns_allowed_domains.clear();
         self.test_external_ips.clear();
+        self.suppress_sigma_rules.clear();
 
         let mut section = String::new();
         let mut detector_section: Option<String> = None;
@@ -618,6 +622,17 @@ impl DynamicAllowlist {
                             }
                         }
                     }
+                    "suppress" => {
+                        // sigma_rules = "id1", "id2", ...
+                        if key == "sigma_rules" {
+                            for part in value.split(',') {
+                                let id = part.trim().trim_matches('"').trim();
+                                if !id.is_empty() {
+                                    self.suppress_sigma_rules.insert(id.to_string());
+                                }
+                            }
+                        }
+                    }
                     _ => {
                         if let Some(ref det) = detector_section {
                             let entries = self.per_detector.entry(det.clone()).or_default();
@@ -639,6 +654,7 @@ impl DynamicAllowlist {
             dns = self.dns_allowed_domains.len(),
             test_external = self.test_external_ips.len(),
             detectors = self.per_detector.len(),
+            suppress_sigma = self.suppress_sigma_rules.len(),
             path = %self.path.display(),
             "Dynamic allowlist loaded"
         );
@@ -695,6 +711,11 @@ impl DynamicAllowlist {
         self.dns_allowed_domains
             .iter()
             .any(|d| domain.ends_with(d.as_str()))
+    }
+
+    /// Check if a Sigma rule ID is suppressed via config.
+    pub fn is_sigma_rule_suppressed(&self, rule_id: &str) -> bool {
+        self.suppress_sigma_rules.contains(rule_id)
     }
 
     /// Check if an IP should be treated as external even though it's technically

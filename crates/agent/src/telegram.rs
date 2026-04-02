@@ -2042,4 +2042,166 @@ mod tests {
         assert!("1.2.3.4; rm -rf /".parse::<std::net::IpAddr>().is_err());
         assert!("".parse::<std::net::IpAddr>().is_err());
     }
+
+    #[test]
+    fn telegram_batcher_groups_same_detector() {
+        let mut b = super::TelegramBatcher::new(30);
+        let now = chrono::Utc::now();
+
+        let inc = |det: &str, sev: &str| Incident {
+            ts: now,
+            host: "test".into(),
+            incident_id: format!("{det}:x:{}", now.format("%H:%M")),
+            severity: match sev {
+                "critical" => innerwarden_core::event::Severity::Critical,
+                "high" => innerwarden_core::event::Severity::High,
+                _ => innerwarden_core::event::Severity::Medium,
+            },
+            title: format!("{det} alert"),
+            summary: format!("{det} summary"),
+            evidence: serde_json::json!([]),
+            recommended_checks: vec![],
+            tags: vec![],
+            entities: vec![],
+        };
+
+        // Critical always immediate
+        assert!(b.should_send_immediately(&inc("reverse_shell", "critical")));
+
+        // First ssh_bruteforce goes through
+        assert!(b.should_send_immediately(&inc("ssh_bruteforce", "high")));
+        b.record(&inc("ssh_bruteforce", "high"));
+
+        // Second ssh_bruteforce should batch
+        assert!(!b.should_send_immediately(&inc("ssh_bruteforce", "high")));
+        b.record(&inc("ssh_bruteforce", "high"));
+        b.record(&inc("ssh_bruteforce", "high"));
+
+        // Flush produces summary
+        let summaries = b.flush();
+        assert_eq!(summaries.len(), 1);
+        assert!(summaries[0].contains("ssh_bruteforce"));
+        assert!(summaries[0].contains("2")); // 2 batched
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Telegram Batcher — groups repeated alerts into periodic summaries
+// ---------------------------------------------------------------------------
+
+use std::collections::HashMap;
+
+/// Groups repeated incidents by detector to avoid Telegram spam.
+/// Critical incidents always go immediately. Repeated incidents of the
+/// same detector within `window_secs` are batched into a single summary.
+pub struct TelegramBatcher {
+    /// detector → (count, first_title, unique_ips)
+    pending: HashMap<String, (u32, String, std::collections::HashSet<String>)>,
+    /// When the current batch window started
+    window_start: chrono::DateTime<chrono::Utc>,
+    /// Batch window in seconds
+    window_secs: i64,
+    /// Detectors seen in current window (for "first occurrence" logic)
+    seen_this_window: std::collections::HashSet<String>,
+}
+
+impl TelegramBatcher {
+    pub fn new(window_secs: i64) -> Self {
+        Self {
+            pending: HashMap::new(),
+            window_start: chrono::Utc::now(),
+            window_secs,
+            seen_this_window: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Returns true if this incident should be sent immediately (not batched).
+    /// Critical severity always goes immediately. First occurrence of a detector
+    /// in a window also goes immediately. Subsequent same-detector alerts batch.
+    pub fn should_send_immediately(&self, incident: &Incident) -> bool {
+        // Critical always immediate
+        if matches!(
+            incident.severity,
+            innerwarden_core::event::Severity::Critical
+        ) {
+            return true;
+        }
+
+        let detector = extract_detector(&incident.incident_id);
+
+        // First occurrence in this window — send immediately
+        !self.seen_this_window.contains(detector)
+    }
+
+    /// Record an incident for batching (call after checking should_send_immediately).
+    /// Only counts incidents that were NOT sent immediately (batched ones).
+    pub fn record(&mut self, incident: &Incident) {
+        let detector = extract_detector(&incident.incident_id).to_string();
+        let already_seen = self.seen_this_window.contains(&detector);
+        self.seen_this_window.insert(detector.clone());
+
+        // Only count if this is a repeat (first occurrence was sent immediately)
+        if !already_seen {
+            return;
+        }
+
+        let entry = self
+            .pending
+            .entry(detector)
+            .or_insert_with(|| (0, incident.title.clone(), std::collections::HashSet::new()));
+        entry.0 += 1;
+
+        // Collect unique IPs
+        for entity in &incident.entities {
+            if entity.r#type == innerwarden_core::entities::EntityType::Ip {
+                entry.2.insert(entity.value.clone());
+            }
+        }
+    }
+
+    /// Check if the batch window has elapsed.
+    pub fn should_flush(&self) -> bool {
+        let elapsed = chrono::Utc::now() - self.window_start;
+        elapsed.num_seconds() >= self.window_secs
+    }
+
+    /// Flush all pending batched incidents into summary messages.
+    /// Returns formatted HTML summaries ready to send.
+    pub fn flush(&mut self) -> Vec<String> {
+        let mut summaries = Vec::new();
+
+        // Only emit summaries for detectors with batched (>0) incidents
+        for (detector, (count, _title, ips)) in &self.pending {
+            if *count == 0 {
+                continue;
+            }
+            let ip_list = if ips.is_empty() {
+                String::new()
+            } else {
+                let preview: Vec<&str> = ips.iter().map(|s| s.as_str()).take(5).collect();
+                let more = if ips.len() > 5 {
+                    format!(" +{} more", ips.len() - 5)
+                } else {
+                    String::new()
+                };
+                format!("\nIPs: <code>{}</code>{}", preview.join(", "), more)
+            };
+            summaries.push(format!(
+                "📊 <b>{detector}</b>: {count} alerts batched (last {}s){ip_list}",
+                self.window_secs
+            ));
+        }
+
+        // Reset
+        self.pending.clear();
+        self.seen_this_window.clear();
+        self.window_start = chrono::Utc::now();
+
+        summaries
+    }
+}
+
+/// Extract detector name from incident_id (format: "detector:rest:...")
+fn extract_detector(incident_id: &str) -> &str {
+    incident_id.split(':').next().unwrap_or(incident_id)
 }

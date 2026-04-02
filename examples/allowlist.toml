@@ -49,3 +49,22 @@
 
 # [detectors.ransomware]
 # "backup-agent" = "Backup tool writes many files rapidly"
+
+# [detectors.data_exfil_ebpf]
+# "http" = "CrowdSec HTTP bouncer reads /etc/passwd for NSS"
+
+# [detectors.service_stop]
+# "innerwarden" = "Admin restart during deploy"
+
+# ─── Sigma rule suppression ──────────────────────────────────────────────
+# Suppress specific Sigma rules by ID. No alerts will fire for these rules.
+# Get rule IDs from incident logs: incident_id = "sigma:<rule_id>:..."
+
+[suppress]
+# sigma_rules = "2d2f44ff-4611-4778-a8fc-323a0e9850cc", "ab75c0b8-4e80-4940-b3f1-0e8ddf5ae1f3"
+
+# ─── DNS domains ─────────────────────────────────────────────────────────
+# Domains excluded from DNS tunneling detection (suffix matching).
+
+# [dns_domains]
+# "mycompany.internal" = "Internal DNS"

@@ -100,7 +100,24 @@ impl SigmaRuleDetector {
         }
     }
 
+    pub fn process_with_suppressions(
+        &mut self,
+        event: &Event,
+        suppressed: &std::collections::HashSet<String>,
+    ) -> Option<Incident> {
+        self.process_inner(event, suppressed)
+    }
+
+    #[allow(dead_code)]
     pub fn process(&mut self, event: &Event) -> Option<Incident> {
+        self.process_inner(event, &std::collections::HashSet::new())
+    }
+
+    fn process_inner(
+        &mut self,
+        event: &Event,
+        dynamic_suppressed: &std::collections::HashSet<String>,
+    ) -> Option<Incident> {
         if self.rules.is_empty() {
             return None;
         }
@@ -155,7 +172,8 @@ impl SigmaRuleDetector {
         ];
 
         for rule in &self.rules {
-            if SUPPRESSED_RULES.contains(&rule.id.as_str()) {
+            if SUPPRESSED_RULES.contains(&rule.id.as_str()) || dynamic_suppressed.contains(&rule.id)
+            {
                 continue;
             }
             // Cooldown check
