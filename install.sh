@@ -1102,9 +1102,16 @@ else
   fi
 fi
 
-# Show welcome animation, then auto-run setup
-# The welcome command handles the cool terminal animation
-# Falls back to simple output if binary doesn't support it
+# If canary was requested but fell back to stable, try to upgrade just the CTL
+# binary from canary release (has latest setup UX)
+if [[ "${CANARY}" -eq 1 ]] && [[ "${IW_VERSION}" != "canary" ]]; then
+  CANARY_CTL="https://github.com/${GITHUB_REPO}/releases/download/canary/innerwarden-ctl-linux-${ARCH}"
+  if $SUDO curl -fsSL --output "${BIN_DIR}/innerwarden" "${CANARY_CTL}" 2>/dev/null; then
+    $SUDO chmod +x "${BIN_DIR}/innerwarden"
+  fi
+fi
+
+# Show welcome, then auto-run setup
 if ! innerwarden welcome 2>/dev/null; then
   echo "  ✓ Downloaded ${IW_VERSION}"
   echo "  ✓ Installed"
