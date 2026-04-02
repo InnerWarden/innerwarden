@@ -53,6 +53,9 @@ pub struct AgentConfig {
     /// Firmware security monitoring (innerwarden-smm)
     #[serde(default)]
     pub firmware: FirmwareConfig,
+    /// Security settings (2FA, etc.)
+    #[serde(default)]
+    pub security: Option<SecurityConfig>,
     /// Redis URL for reading events from Redis Streams instead of JSONL files.
     /// When set, events are consumed via XREADGROUP. Incidents still read from JSONL.
     #[serde(default)]
@@ -1181,6 +1184,37 @@ impl Default for WebPushConfig {
             vapid_private_key: String::new(),
             vapid_public_key: String::new(),
             min_severity: default_web_push_min_severity(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Security (2FA)
+// ---------------------------------------------------------------------------
+
+/// Security settings for operator authentication.
+#[derive(Debug, Deserialize)]
+pub struct SecurityConfig {
+    /// Two-factor authentication method: "none", "totp", "dashboard".
+    /// Default: "none" (2FA disabled, v1 behavior).
+    #[serde(default = "default_two_factor_method")]
+    pub two_factor_method: String,
+    /// TOTP secret (base32 encoded). Stored in agent.env as INNERWARDEN_TOTP_SECRET.
+    /// Leave empty in TOML; set via `innerwarden configure 2fa`.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub totp_secret: String,
+}
+
+fn default_two_factor_method() -> String {
+    "none".to_string()
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            two_factor_method: default_two_factor_method(),
+            totp_secret: String::new(),
         }
     }
 }
