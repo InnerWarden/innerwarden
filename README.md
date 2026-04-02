@@ -590,6 +590,31 @@ sudo launchctl kickstart -k system/com.innerwarden.agent  # macOS
 
 Run `innerwarden doctor` to validate your provider.
 
+### Daily mode (simple commands)
+
+For day-to-day operations, use the simplified command group:
+
+```bash
+innerwarden daily status
+innerwarden daily threats --live
+innerwarden daily actions
+innerwarden daily report
+innerwarden daily doctor
+innerwarden daily test
+
+# aliases
+innerwarden quick status
+innerwarden day threats
+```
+
+Agent connection is also available in daily mode and does not require PID:
+
+```bash
+innerwarden daily agent scan
+innerwarden daily agent connect          # auto-detect + choose
+innerwarden daily agent connect 1234     # explicit PID (optional)
+```
+
 ### After install
 
 ```bash
@@ -651,6 +676,8 @@ innerwarden configure responder --enable --dry-run false
 innerwarden backup                                  # archive configs to tar.gz
 innerwarden metrics                                 # events, decisions, AI latency, uptime
 innerwarden test                                    # verify full pipeline end-to-end
+innerwarden daily                                   # simplified day-to-day command set
+innerwarden daily agent connect                     # connect running agents without PID lookup
 ```
 
 ---

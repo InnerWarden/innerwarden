@@ -108,6 +108,25 @@ enum Command {
         days: u64,
     },
 
+    /// Simple daily commands for common day-to-day operations.
+    ///
+    /// Keeps the most used actions easy to remember. Advanced workflows
+    /// remain available via the full command set.
+    ///
+    /// Examples:
+    ///   innerwarden daily
+    ///   innerwarden daily status
+    ///   innerwarden daily threats --live
+    ///   innerwarden daily actions --days 7
+    ///   innerwarden daily agent scan
+    ///   innerwarden daily agent connect
+    ///   innerwarden quick status
+    #[command(visible_aliases = ["quick", "day"])]
+    Daily {
+        #[command(subcommand)]
+        command: Option<DailyCommand>,
+    },
+
     /// Scan system configuration and suggest security hardening improvements.
     ///
     /// Checks SSH, firewall, kernel, permissions, updates, Docker, and
@@ -565,9 +584,10 @@ enum Command {
     ///
     /// Examples:
     ///   innerwarden agent                    (interactive menu)
-    ///   innerwarden agent add openclaw       (install an agent)
+    ///   innerwarden agent add <name>         (install an agent)
     ///   innerwarden agent scan               (find running agents)
     ///   innerwarden agent status             (view connected agents)
+    ///   innerwarden agent connect            (auto-detect and connect)
     ///   innerwarden agent connect 1234       (connect a specific PID)
     ///   innerwarden agent disconnect ag-0001 (disconnect an agent)
     Agent {
@@ -594,7 +614,7 @@ enum Command {
 
 #[derive(Subcommand)]
 enum AgentCommand {
-    /// Install a new agent (OpenClaw, ZeroClaw)
+    /// Install a new agent (OpenClaw, ZeroClaw, and others in `agent list`)
     Add {
         /// Agent name (run 'innerwarden agent add' without args to see options)
         name: Option<String>,
@@ -606,10 +626,18 @@ enum AgentCommand {
     /// View connected agents and detected tools
     Status,
 
-    /// Connect a running agent by PID
+    /// Connect a running agent.
+    ///
+    /// If PID is omitted, InnerWarden auto-detects running agents and:
+    /// - connects automatically when only one is found
+    /// - offers a guided selection when multiple are found
     Connect {
-        /// Process ID of the agent to connect
-        pid: u32,
+        /// Optional process ID of the agent to connect
+        pid: Option<u32>,
+
+        /// Match an agent by name/command (avoids manual PID lookup)
+        #[arg(long)]
+        name: Option<String>,
 
         /// Optional label for this instance (e.g., "personal", "work")
         #[arg(long)]
@@ -624,6 +652,64 @@ enum AgentCommand {
 
     /// List available agents for installation
     List,
+}
+
+#[derive(Subcommand)]
+enum DailyCommand {
+    /// Quick system overview (services, capabilities, modules, today's activity).
+    Status,
+
+    /// Show recent threats (default: High/Critical from today).
+    Threats {
+        /// How many days back to look (default: 1)
+        #[arg(long, default_value = "1")]
+        days: u64,
+
+        /// Minimum severity: low, medium, high, critical (default: high)
+        #[arg(long, default_value = "high")]
+        severity: String,
+
+        /// Stream new incidents in real time
+        #[arg(long)]
+        live: bool,
+    },
+
+    /// Show recent actions taken by InnerWarden.
+    Actions {
+        /// How many days back to look (default: 1)
+        #[arg(long, default_value = "1")]
+        days: u64,
+    },
+
+    /// Print daily security report.
+    Report {
+        /// Date: today, yesterday, or YYYY-MM-DD
+        #[arg(long, default_value = "today")]
+        date: String,
+    },
+
+    /// Run diagnostics and print fix hints.
+    Doctor,
+
+    /// Inject synthetic incident and verify end-to-end pipeline.
+    Test {
+        /// Maximum seconds to wait for the agent to respond
+        #[arg(long, default_value = "12")]
+        wait: u64,
+    },
+
+    /// Agent connection and protection commands (basic flow).
+    ///
+    /// Examples:
+    ///   innerwarden daily agent
+    ///   innerwarden daily agent scan
+    ///   innerwarden daily agent status
+    ///   innerwarden daily agent connect
+    ///   innerwarden daily agent connect 1234
+    Agent {
+        #[command(subcommand)]
+        command: Option<AgentCommand>,
+    },
 }
 
 /// System configuration sub-commands.
@@ -1199,6 +1285,7 @@ fn main() -> Result<()> {
     }
 
     match cli.command {
+        Command::Daily { ref command } => cmd_daily(&cli, &registry, command.as_ref()),
         Command::Harden { verbose } => harden::cmd_harden(verbose),
         Command::Doctor => cmd_doctor(&cli, &registry),
         Command::Setup => cmd_setup(&cli),
@@ -1584,6 +1671,59 @@ fn cmd_list(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
     println!("Run 'innerwarden scan' to see what's recommended for this machine.");
 
     Ok(())
+}
+
+fn cmd_daily(
+    cli: &Cli,
+    registry: &CapabilityRegistry,
+    command: Option<&DailyCommand>,
+) -> Result<()> {
+    match command {
+        Some(DailyCommand::Status) => {
+            let modules_dir = Path::new("/etc/innerwarden/modules");
+            cmd_status_global(cli, registry, modules_dir)
+        }
+        Some(DailyCommand::Threats {
+            days,
+            severity,
+            live,
+        }) => {
+            if *live {
+                cmd_incidents_live(cli, severity, &cli.data_dir.clone())
+            } else {
+                cmd_incidents(cli, *days, severity, &cli.data_dir.clone())
+            }
+        }
+        Some(DailyCommand::Actions { days }) => {
+            cmd_decisions(cli, *days, None, &cli.data_dir.clone())
+        }
+        Some(DailyCommand::Report { date }) => cmd_report(cli, date, &cli.data_dir.clone()),
+        Some(DailyCommand::Doctor) => cmd_doctor(cli, registry),
+        Some(DailyCommand::Test { wait }) => cmd_pipeline_test(cli, *wait, &cli.data_dir.clone()),
+        Some(DailyCommand::Agent { command }) => cmd_agent(cli, command.as_ref()),
+        None => {
+            println!("InnerWarden Daily Commands");
+            println!("{}", "═".repeat(52));
+            println!("Use these for day-to-day operations:");
+            println!("  innerwarden daily status");
+            println!("  innerwarden daily threats");
+            println!("  innerwarden daily actions");
+            println!("  innerwarden daily report");
+            println!("  innerwarden daily doctor");
+            println!("  innerwarden daily test");
+            println!("  innerwarden daily agent");
+            println!();
+            println!("Short aliases:");
+            println!("  innerwarden quick status");
+            println!("  innerwarden day threats --live");
+            println!("  innerwarden quick agent scan");
+            println!();
+            println!("Need advanced operations?");
+            println!("  innerwarden --help");
+            println!("  innerwarden <command> --help");
+            Ok(())
+        }
+    }
 }
 
 fn cmd_status(cli: &Cli, registry: &CapabilityRegistry, id: &str) -> Result<()> {
@@ -3744,12 +3884,14 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
     println!("  innerwarden harden      security audit + auto-fix");
     println!();
     println!("  Using AI coding agents? (Claude Code, Cursor, Aider, etc.)");
-    println!("  innerwarden protect-agent   guard against prompt injection + tool poisoning");
+    println!("  innerwarden daily agent scan     detect running agents/tools");
+    println!("  innerwarden daily agent connect  connect selected agents (no PID required)");
     println!();
     println!("  Want to change something?");
     println!("  innerwarden setup       re-run this wizard");
     println!("  innerwarden configure   all settings menu");
-    println!("  innerwarden help        all available commands");
+    println!("  innerwarden daily       simple day-to-day commands");
+    println!("  innerwarden --help      full advanced command list");
 
     Ok(())
 }
@@ -10729,6 +10871,32 @@ fn resolve_dashboard_url(cli: &Cli) -> String {
     "http://127.0.0.1:8787".to_string()
 }
 
+fn parse_selection_indices(input: &str, max: usize) -> Option<Vec<usize>> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || max == 0 {
+        return None;
+    }
+    if trimmed.eq_ignore_ascii_case("all") {
+        return Some((1..=max).collect());
+    }
+
+    let mut indexes = Vec::new();
+    for part in trimmed.split(',') {
+        let idx: usize = part.trim().parse().ok()?;
+        if idx == 0 || idx > max {
+            return None;
+        }
+        if !indexes.contains(&idx) {
+            indexes.push(idx);
+        }
+    }
+    if indexes.is_empty() {
+        None
+    } else {
+        Some(indexes)
+    }
+}
+
 fn cmd_agent(cli: &Cli, command: Option<&AgentCommand>) -> Result<()> {
     use innerwarden_agent_guard::signatures::{Kind, SignatureIndex, KNOWN};
 
@@ -10740,13 +10908,13 @@ fn cmd_agent(cli: &Cli, command: Option<&AgentCommand>) -> Result<()> {
             println!();
             println!("  \x1b[1mWhat do you want to do?\x1b[0m");
             println!();
-            println!("  1. Install a new agent        (OpenClaw, ZeroClaw)");
+            println!("  1. Install a new agent        (OpenClaw, ZeroClaw, others)");
             println!("  2. Scan for existing agents   (find agents already running)");
             println!("  3. View connected agents      (see what's being protected)");
             println!("  4. List available agents       (see what we support)");
             println!();
             println!("  Or use directly:");
-            println!("    innerwarden agent add openclaw");
+            println!("    innerwarden agent add <name>");
             println!("    innerwarden agent scan");
             println!("    innerwarden agent status");
             println!();
@@ -10899,8 +11067,9 @@ fn cmd_agent(cli: &Cli, command: Option<&AgentCommand>) -> Result<()> {
             if found.is_empty() {
                 println!("  No known agents or tools detected.");
                 println!();
-                println!("  To install an agent: innerwarden agent add openclaw");
-                println!("  To connect a custom agent: innerwarden agent connect <pid>");
+                println!("  To install an agent: innerwarden agent add <name>");
+                println!("  See supported names: innerwarden agent list");
+                println!("  To connect detected agents: innerwarden agent connect");
             } else {
                 println!(
                     "  {:<6} {:<8} {:<16} {:<10} STATUS",
@@ -10922,8 +11091,7 @@ fn cmd_agent(cli: &Cli, command: Option<&AgentCommand>) -> Result<()> {
                     );
                 }
                 println!();
-                println!("  Connect with: innerwarden agent connect <pid>");
-                println!("  Or connect all: innerwarden agent connect --all");
+                println!("  Connect with: innerwarden agent connect");
             }
             println!();
             Ok(())
@@ -10976,72 +11144,167 @@ fn cmd_agent(cli: &Cli, command: Option<&AgentCommand>) -> Result<()> {
             } else {
                 println!();
                 println!("  No agents or tools detected.");
-                println!("  Install one with: innerwarden agent add openclaw");
+                println!("  Install one with: innerwarden agent add <name>");
+                println!("  See options: innerwarden agent list");
             }
             println!();
             Ok(())
         }
 
-        Some(AgentCommand::Connect { pid, label }) => {
+        Some(AgentCommand::Connect { pid, name, label }) => {
             println!();
             let index = SignatureIndex::new();
 
-            // Read /proc/<pid>/comm to identify
-            let comm_path = format!("/proc/{pid}/comm");
-            let comm = std::fs::read_to_string(&comm_path)
-                .map(|s| s.trim().to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
-
-            let name = if let Some(sig) = index.identify(&comm) {
-                sig.name.to_string()
+            let selected_pids: Vec<u32> = if let Some(pid) = *pid {
+                vec![pid]
             } else {
-                comm.clone()
+                let found = innerwarden_agent_guard::detect::scan_processes(&index);
+                if found.is_empty() {
+                    println!("  No known agent process detected.");
+                    println!("  Run one first, then use: innerwarden agent connect");
+                    println!("  Or install one with: innerwarden agent add <name>");
+                    println!("  See options: innerwarden agent list");
+                    println!();
+                    return Ok(());
+                }
+
+                let candidates: Vec<_> = if let Some(filter) = name.as_deref() {
+                    let filter_lc = filter.to_lowercase();
+                    let matches: Vec<_> = found
+                        .iter()
+                        .filter(|a| {
+                            a.name.to_lowercase().contains(&filter_lc)
+                                || a.comm.to_lowercase().contains(&filter_lc)
+                        })
+                        .collect();
+                    if matches.is_empty() {
+                        println!("  No running agent matched '{filter}'.");
+                        println!("  Running detections:");
+                        for agent in &found {
+                            println!(
+                                "    - {} (pid {}, comm {}, integration {})",
+                                agent.name, agent.pid, agent.comm, agent.integration
+                            );
+                        }
+                        println!();
+                        return Ok(());
+                    }
+                    matches
+                } else {
+                    found.iter().collect()
+                };
+
+                if candidates.len() == 1 {
+                    println!(
+                        "  Auto-detected: {} (pid {})",
+                        candidates[0].name, candidates[0].pid
+                    );
+                    vec![candidates[0].pid]
+                } else {
+                    println!("  Detected agents:");
+                    println!("  {:<4} {:<8} {:<16} TYPE", "NO.", "PID", "NAME");
+                    println!("  {}", "─".repeat(48));
+                    for (i, agent) in candidates.iter().enumerate() {
+                        println!(
+                            "  {:<4} {:<8} {:<16} {}",
+                            i + 1,
+                            agent.pid,
+                            agent.name,
+                            agent.integration
+                        );
+                    }
+                    println!();
+                    print!("  Select one or more (ex: 1,3) or 'all' [Enter to cancel]: ");
+                    std::io::stdout().flush()?;
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                    let trimmed = input.trim();
+                    if trimmed.is_empty() {
+                        println!("  Cancelled.");
+                        println!();
+                        return Ok(());
+                    }
+                    let Some(indexes) = parse_selection_indices(trimmed, candidates.len()) else {
+                        println!("  Invalid selection '{trimmed}'.");
+                        println!();
+                        return Ok(());
+                    };
+                    indexes
+                        .into_iter()
+                        .map(|idx| candidates[idx - 1].pid)
+                        .collect()
+                }
             };
 
-            println!("  Connecting {name} (pid {pid})...");
-
-            // Call agent-guard API to register
             let dashboard_url = resolve_dashboard_url(cli);
-            let payload = serde_json::json!({
-                "name": name,
-                "pid": pid,
-                "label": label.as_deref().unwrap_or(""),
-            });
+            let mut connected = 0usize;
 
-            let url = format!("{dashboard_url}/api/agent-guard/connect");
-            match ureq::post(url).send_json(&payload) {
-                Ok(resp) => {
-                    let body: serde_json::Value = resp.into_body().read_json().unwrap_or_default();
-                    let agent_id = body
-                        .get("agent_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    println!("  \x1b[32m✓\x1b[0m {name} (pid {pid}) connected as {agent_id}");
-                }
-                Err(e) => {
-                    // Fallback: write to persistence file for agent to pick up on restart
-                    let path = cli.data_dir.join("agent-connections.jsonl");
-                    if let Ok(mut f) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&path)
-                    {
-                        use std::io::Write;
-                        let entry = serde_json::json!({
-                            "ts": chrono::Utc::now().to_rfc3339(),
-                            "action": "connect",
-                            "name": name,
-                            "pid": pid,
-                            "label": label,
-                        });
-                        let _ = writeln!(f, "{}", entry);
+            for selected_pid in selected_pids {
+                // Read /proc/<pid>/comm to identify
+                let comm_path = format!("/proc/{selected_pid}/comm");
+                let comm = std::fs::read_to_string(&comm_path)
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|_| "unknown".to_string());
+
+                let name = if let Some(sig) = index.identify(&comm) {
+                    sig.name.to_string()
+                } else {
+                    comm.clone()
+                };
+
+                println!("  Connecting {name} (pid {selected_pid})...");
+
+                // Call agent-guard API to register
+                let payload = serde_json::json!({
+                    "name": name,
+                    "pid": selected_pid,
+                    "label": label.as_deref().unwrap_or(""),
+                });
+
+                let url = format!("{dashboard_url}/api/agent-guard/connect");
+                match ureq::post(url).send_json(&payload) {
+                    Ok(resp) => {
+                        let body: serde_json::Value =
+                            resp.into_body().read_json().unwrap_or_default();
+                        let agent_id = body
+                            .get("agent_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        println!(
+                            "  \x1b[32m✓\x1b[0m {name} (pid {selected_pid}) connected as {agent_id}"
+                        );
+                        connected += 1;
                     }
-                    println!("  \x1b[33m!\x1b[0m Dashboard not reachable ({e:#}), saved for next agent restart");
+                    Err(e) => {
+                        // Fallback: write to persistence file for agent to pick up on restart
+                        let path = cli.data_dir.join("agent-connections.jsonl");
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&path)
+                        {
+                            use std::io::Write;
+                            let entry = serde_json::json!({
+                                "ts": chrono::Utc::now().to_rfc3339(),
+                                "action": "connect",
+                                "name": name,
+                                "pid": selected_pid,
+                                "label": label,
+                            });
+                            let _ = writeln!(f, "{}", entry);
+                        }
+                        println!(
+                            "  \x1b[33m!\x1b[0m Dashboard not reachable ({e:#}), saved for next agent restart"
+                        );
+                    }
                 }
             }
 
             if let Some(lbl) = label {
                 println!("  Label: {lbl}");
+            }
+            if connected > 1 {
+                println!("  Connected {connected} agents.");
             }
             println!();
             println!("  \x1b[2mView status: innerwarden agent status\x1b[0m");
@@ -11196,6 +11459,20 @@ mod tests {
                 action: None,
             },
         }
+    }
+
+    #[test]
+    fn parse_selection_indices_all_and_csv() {
+        assert_eq!(parse_selection_indices("all", 3), Some(vec![1, 2, 3]));
+        assert_eq!(parse_selection_indices("1,3,3,2", 3), Some(vec![1, 3, 2]));
+    }
+
+    #[test]
+    fn parse_selection_indices_rejects_invalid_values() {
+        assert_eq!(parse_selection_indices("", 3), None);
+        assert_eq!(parse_selection_indices("0", 3), None);
+        assert_eq!(parse_selection_indices("4", 3), None);
+        assert_eq!(parse_selection_indices("x", 3), None);
     }
 
     #[test]
