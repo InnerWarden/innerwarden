@@ -275,7 +275,7 @@ Plus: `docker_anomaly`, `osquery_anomaly`, `suricata_alert`, `search_abuse`, `cr
 
 ## How it works
 
-**Sensor**: deterministic signal collection. No AI, no HTTP. 20 collectors (auth.log, journald, Docker events, file integrity, firmware integrity, nginx access/error, shell audit, macOS unified log, syslog firewall, eBPF syscall tracing with 38 kernel hooks, JA3/JA4 TLS fingerprinting, memory forensics via /proc/maps, real-time filesystem monitoring with entropy analysis, kernel integrity monitoring, cgroup resource abuse detection). Optional: Suricata, osquery, Wazuh, AWS CloudTrail, Falco. Events flow through JSONL files or Redis Streams to the agent. Syslog CEF output for SIEM integration.
+**Sensor**: deterministic signal collection. No AI, no HTTP. 20 collectors (auth.log, journald, Docker events, file integrity, firmware integrity, nginx access/error, shell audit, macOS unified log, syslog firewall, eBPF syscall tracing with 38 kernel hooks, JA3/JA4 TLS fingerprinting, memory forensics via /proc/maps, real-time filesystem monitoring with entropy analysis, kernel integrity monitoring, cgroup resource abuse detection). Optional: Suricata, osquery, Wazuh, AWS CloudTrail. Events flow through JSONL files or Redis Streams to the agent. Syslog CEF output for SIEM integration.
 
 **eBPF**: 38 kernel hooks running inside Linux (5.8+, CO-RE/BTF portable):
 - **23 tracepoints**: execve, connect, openat, ptrace, setuid, bind, mount, memfd_create, init_module, dup2/dup3, listen, mprotect, clone, unlinkat, renameat2, kill, prctl, accept4, sched_process_exit, ioperm, iopl, io_uring_submit, io_uring_create
@@ -390,7 +390,6 @@ Enable what you need.
 | `geoip-enrichment` | Country/ISP geolocation | Enriched AI prompt |
 | `fail2ban-integration` | Sync active fail2ban bans | Block enforcement |
 | `crowdsec-integration` | CrowdSec community intel | Block enforcement (experimental) |
-| `falco-integration` | Kernel/container anomalies | Incident passthrough |
 | `suricata-integration` | Network IDS alerts (optional) | Incident passthrough |
 | `osquery-integration` | Host state queries | Enriched events |
 | `wazuh-integration` | Wazuh HIDS alerts | Incident passthrough |
@@ -512,7 +511,6 @@ $ innerwarden scan
   sshd       running  → ssh-protection       ESSENTIAL    [NATIVE]
   docker     running  → container-security    RECOMMENDED  [NATIVE]
   nginx      running  → search-protection     RECOMMENDED  [NATIVE]
-  falco      not found → falco-integration    OPTIONAL     [EXTERNAL] requires: falco install
   fail2ban   running  → fail2ban-integration  RECOMMENDED  [NATIVE]
 
   Conflicts detected:

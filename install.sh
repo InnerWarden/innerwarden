@@ -1011,21 +1011,11 @@ _append_integration_collector() {
 install_integrations() {
   echo
   log "=== Integration setup (--with-integrations) ==="
-  echo "  InnerWarden can ingest alerts from Falco, Suricata, and osquery."
+  echo "  InnerWarden can ingest alerts from Suricata and osquery."
   echo "  Each tool covers a different detection layer."
   echo
 
   local need_restart=0
-
-  if _offer_install_falco; then
-    _append_integration_collector \
-      "[collectors.falco_log]
-enabled = true
-path = \"${FALCO_LOG_PATH}\"" \
-      "collectors.falco_log"
-    need_restart=1
-    log "Falco collector added to sensor config"
-  fi
 
   if _offer_install_suricata; then
     _append_integration_collector \
@@ -1144,6 +1134,6 @@ echo
 if [[ "$OS_TYPE" != "Darwin" ]]; then
 echo "── Optional integrations ────────────────────────────────────────"
 echo "  curl -fsSL https://innerwarden.com/install | sudo bash -s -- --with-integrations"
-echo "  Detects and installs Falco, Suricata, and osquery."
+echo "  Detects and configures Suricata and osquery."
 echo
 fi
