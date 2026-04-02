@@ -222,9 +222,40 @@ fn matches_field(event: &Event, matcher: &FieldMatcher) -> bool {
     })
 }
 
+/// Map Sigma standard field names to InnerWarden event fields.
+/// This allows importing community Sigma rules (SigmaHQ) without modification.
+fn alias_field(field: &str) -> &str {
+    match field {
+        // Process creation fields (Sigma process_creation category)
+        "Image" | "image" => "details.filename",
+        "CommandLine" | "commandline" | "command_line" => "details.command",
+        "ParentImage" | "parentimage" => "details.parent",
+        "ParentCommandLine" | "parentcommandline" => "details.parent_command",
+        "User" | "user" => "details.user",
+        "OriginalFileName" | "originalfilename" => "details.filename",
+        "CurrentDirectory" | "currentdirectory" => "details.cwd",
+        "Product" | "product" => "source",
+        "Category" | "category" => "kind",
+        // File event fields
+        "TargetFilename" | "targetfilename" => "details.filename",
+        // Network fields
+        "DestinationIp" | "destinationip" | "dst_ip" => "details.dst_ip",
+        "DestinationPort" | "destinationport" | "dst_port" => "details.dst_port",
+        "SourceIp" | "sourceip" | "src_ip" => "details.src_ip",
+        // Auditd fields
+        "type" => "kind",
+        "exe" => "details.filename",
+        "key" | "a0" | "a1" | "a2" | "a3" => field, // pass through
+        // Already correct format
+        _ => field,
+    }
+}
+
 /// Extract a field value from an event.
 /// Supports: "kind", "source", "summary", "host", "details.X" (nested JSON).
+/// Also resolves Sigma field aliases (Image, CommandLine, etc).
 fn extract_field(event: &Event, field: &str) -> Option<String> {
+    let field = alias_field(field);
     match field {
         "kind" => Some(event.kind.clone()),
         "source" => Some(event.source.clone()),
@@ -241,7 +272,16 @@ fn extract_field(event: &Event, field: &str) -> Option<String> {
                 }
             })
         }
-        _ => None,
+        _ => {
+            // Try as details key directly (for pass-through fields like "a0")
+            event.details.get(field).and_then(|v| {
+                if v.is_string() {
+                    v.as_str().map(String::from)
+                } else {
+                    Some(v.to_string())
+                }
+            })
+        }
     }
 }
 
@@ -252,15 +292,31 @@ fn extract_field(event: &Event, field: &str) -> Option<String> {
 fn load_sigma_rules(rules_dir: &Path) -> Vec<SigmaRule> {
     let mut rules = Vec::new();
 
-    let entries = match std::fs::read_dir(rules_dir) {
+    // Recursively walk the rules directory (supports subdirectories)
+    load_sigma_dir(rules_dir, &mut rules);
+
+    if rules.is_empty() {
+        info!("No custom Sigma rules found, using built-in rules only");
+    } else {
+        info!(count = rules.len(), "Loaded custom Sigma rules from disk");
+    }
+
+    rules.extend(builtin_sigma_rules());
+    rules
+}
+
+fn load_sigma_dir(dir: &Path, rules: &mut Vec<SigmaRule>) {
+    let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => {
-            return builtin_sigma_rules();
-        }
+        Err(_) => return,
     };
 
     for entry in entries.flatten() {
         let path = entry.path();
+        if path.is_dir() {
+            load_sigma_dir(&path, rules);
+            continue;
+        }
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if !name.ends_with(".yml") && !name.ends_with(".yaml") {
             continue;
@@ -271,14 +327,13 @@ fn load_sigma_rules(rules_dir: &Path) -> Vec<SigmaRule> {
                     debug!(id = %rule.id, title = %rule.title, "loaded Sigma rule");
                     rules.push(rule);
                 }
-                None => warn!(path = %path.display(), "failed to parse Sigma rule"),
+                None => {
+                    // Many community rules use complex conditions we don't support yet — skip silently
+                }
             },
             Err(e) => warn!(path = %path.display(), "failed to read Sigma rule: {e}"),
         }
     }
-
-    rules.extend(builtin_sigma_rules());
-    rules
 }
 
 /// Parse a Sigma YAML rule.
@@ -286,7 +341,7 @@ fn parse_sigma_yaml(content: &str) -> Option<SigmaRule> {
     let mut id = String::new();
     let mut title = String::new();
     let mut level = Severity::Medium;
-    let mut selection = Vec::new();
+    let mut selection: Vec<FieldMatcher> = Vec::new();
     let mut tags = Vec::new();
     let mut in_selection = false;
     let mut in_tags = false;
@@ -347,35 +402,48 @@ fn parse_sigma_yaml(content: &str) -> Option<SigmaRule> {
         }
 
         // Parse selection fields
-        if in_selection && trimmed.contains(':') {
-            if let Some((field_spec, value)) = trimmed.split_once(':') {
-                let field_spec = field_spec.trim();
-                let value = value
-                    .trim()
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .to_string();
-                if value.is_empty() {
-                    continue;
+        if in_selection {
+            // List item under a field (e.g., "- '/base64'")
+            if let Some(rest) = trimmed.strip_prefix("- ") {
+                let val = rest.trim().trim_matches('"').trim_matches('\'').to_string();
+                if !val.is_empty() {
+                    if let Some(last) = selection.last_mut() {
+                        last.values.push(val);
+                    }
                 }
+                continue;
+            }
 
-                let (field, op) = if let Some(f) = field_spec.strip_suffix("|contains") {
-                    (f.to_string(), MatchOp::Contains)
-                } else if let Some(f) = field_spec.strip_suffix("|startswith") {
-                    (f.to_string(), MatchOp::StartsWith)
-                } else if let Some(f) = field_spec.strip_suffix("|endswith") {
-                    (f.to_string(), MatchOp::EndsWith)
-                } else if let Some(f) = field_spec.strip_suffix("|re") {
-                    (f.to_string(), MatchOp::Regex)
-                } else {
-                    (field_spec.to_string(), MatchOp::Equals)
-                };
+            if trimmed.contains(':') {
+                if let Some((field_spec, value)) = trimmed.split_once(':') {
+                    let field_spec = field_spec.trim();
+                    let value = value
+                        .trim()
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                        .to_string();
 
-                selection.push(FieldMatcher {
-                    field,
-                    op,
-                    values: vec![value],
-                });
+                    let (field, op) = if let Some(f) = field_spec.strip_suffix("|contains") {
+                        (f.to_string(), MatchOp::Contains)
+                    } else if let Some(f) = field_spec.strip_suffix("|startswith") {
+                        (f.to_string(), MatchOp::StartsWith)
+                    } else if let Some(f) = field_spec.strip_suffix("|endswith") {
+                        (f.to_string(), MatchOp::EndsWith)
+                    } else if let Some(f) = field_spec.strip_suffix("|re") {
+                        (f.to_string(), MatchOp::Regex)
+                    } else {
+                        (field_spec.to_string(), MatchOp::Equals)
+                    };
+
+                    // Value may be empty if list follows on next lines
+                    let values = if value.is_empty() {
+                        vec![]
+                    } else {
+                        vec![value]
+                    };
+
+                    selection.push(FieldMatcher { field, op, values });
+                }
             }
         }
 
