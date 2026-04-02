@@ -1772,11 +1772,11 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResp
             LiveFeedItem {
                 ts: inc.ts.to_rfc3339(),
                 severity: format!("{:?}", inc.severity).to_lowercase(),
-                title: inc.title.clone(),
+                title: live_feed_title(detector, &inc.severity),
                 ip,
                 action: dec.map(|d| d.action_type.clone()),
                 confidence: dec.map(|d| d.confidence),
-                reason: dec.map(|d| d.reason.clone()),
+                reason: dec.map(|d| live_feed_reason(detector, &d.action_type)),
                 reputation,
                 mitre: mitre_info,
             }
@@ -1791,6 +1791,82 @@ async fn api_live_feed(State(state): State<DashboardState>) -> Json<LiveFeedResp
         unique_sources,
         items,
     })
+}
+
+/// Sanitized title for public live feed. No paths, PIDs, UIDs, usernames.
+/// Replaces with fun hacker-protector personality messages.
+fn live_feed_title(detector: &str, severity: &Severity) -> String {
+    match detector {
+        "ssh_bruteforce" => "Brute force in progress. Tracking attempt count and origin.".into(),
+        "credential_stuffing" => {
+            "Credential spray detected. Someone's trying stolen passwords.".into()
+        }
+        "port_scan" => "Port scan detected. Someone's knocking on every door.".into(),
+        "packet_flood" => "Traffic spike detected. Looks like someone brought friends.".into(),
+        "data_exfil" | "data_exfil_cmd" | "data_exfil_ebpf" => {
+            "Data exfiltration attempt caught. Nice try.".into()
+        }
+        "reverse_shell" => "Reverse shell blocked. Not today.".into(),
+        "privesc" => "Privilege escalation attempt detected and flagged.".into(),
+        "rootkit" => "Kernel anomaly detected. Running deep inspection.".into(),
+        "ransomware" => {
+            "Ransomware behavior detected. Encryption blocked, process terminated.".into()
+        }
+        "dns_tunneling" | "dns_tunneling_ebpf" => {
+            "DNS tunneling detected. Hidden channel exposed.".into()
+        }
+        "c2_callback" => "C2 beacon detected. Communication channel disrupted.".into(),
+        "crypto_miner" => "Cryptominer detected. Your CPU is not for rent.".into(),
+        "container_escape" => "Container escape attempt blocked.".into(),
+        "lateral_movement" => "Lateral movement detected. Containment in progress.".into(),
+        "web_shell" => "Web shell detected and neutralized.".into(),
+        "process_injection" => "Process injection blocked. Code integrity maintained.".into(),
+        "fileless" => "Fileless malware detected in memory. Cleaned.".into(),
+        "log_tampering" => "Log tampering attempt. Someone tried to erase their tracks.".into(),
+        "ssh_key_injection" => "SSH key injection blocked. Unauthorized access denied.".into(),
+        "crontab_persistence" | "systemd_persistence" => {
+            "Persistence mechanism detected and flagged.".into()
+        }
+        "kernel_module_load" => "New kernel module detected. Under review.".into(),
+        "discovery_burst" => "Reconnaissance sweep detected. Target is mapping the system.".into(),
+        "sigma" => "Known attack pattern matched by community rules.".into(),
+        "process_tree" => "Suspicious process chain detected.".into(),
+        "neural_anomaly" => "AI detected unusual behavior pattern.".into(),
+        "masquerading" => "Binary masquerading detected. Fake identity exposed.".into(),
+        "suspicious_execution" => "Suspicious process execution flagged for review.".into(),
+        "io_uring_create" => "io_uring syscall bypass attempt detected.".into(),
+        _ => match severity {
+            Severity::Critical => "Critical threat detected and handled.".into(),
+            Severity::High => "High severity threat detected.".into(),
+            _ => "Suspicious activity detected and logged.".into(),
+        },
+    }
+}
+
+/// Sanitized reason for public live feed with personality.
+fn live_feed_reason(detector: &str, action: &str) -> String {
+    let action_verb = match action {
+        "block_ip" => "IP blocked",
+        "kill_process" => "Process terminated",
+        "suspend_user_sudo" => "Access suspended",
+        "honeypot" => "Redirected to honeypot",
+        "monitor" => "Monitoring",
+        _ => "Handled",
+    };
+
+    match detector {
+        "ssh_bruteforce" => format!("Brute force detected and blocked. {action_verb}."),
+        "credential_stuffing" => format!("Credential spray neutralized. {action_verb}."),
+        "packet_flood" => format!("DDoS mitigated at wire speed. {action_verb}."),
+        "data_exfil" | "data_exfil_cmd" | "data_exfil_ebpf" => {
+            format!("Data theft attempt stopped cold. {action_verb}.")
+        }
+        "reverse_shell" => format!("Reverse shell terminated before execution. {action_verb}."),
+        "ransomware" => format!("Ransomware killed before encryption. {action_verb}."),
+        "c2_callback" => format!("C2 communication severed. {action_verb}."),
+        "web_shell" => format!("Backdoor removed. {action_verb}."),
+        _ => format!("{action_verb}."),
+    }
 }
 
 /// `GET /api/live-feed/stream` - SSE stream of alerts for public live page.
