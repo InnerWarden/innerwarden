@@ -169,8 +169,9 @@ impl SigmaRuleDetector {
             // "Inline Python Execution - Spawn Shell Via OS System Library"
             // Fires on ANY /bin/sh -c command, including ip neigh, cron jobs, etc.
             "2d2f44ff-4611-4778-a8fc-323a0e9850cc",
-            // "Linux Shell Pipe to Shell" — fires on normal shell pipelines
+            // "Linux Shell Pipe to Shell" — fires on normal shell pipelines (two variants)
             "ab75c0b8-4e80-4940-b3f1-0e8ddf5ae1f3",
+            "880973f3-9708-491c-a77b-2a35a1921158",
         ];
 
         for rule in &self.rules {
