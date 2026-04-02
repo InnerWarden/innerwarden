@@ -57,20 +57,12 @@ pub fn run_welcome(_ebpf_hooks: u32) {
     let sword_width = SWORDS.iter().map(|l| l.chars().count()).max().unwrap_or(80);
     let title_width = TITLE[0].chars().count();
 
-    println!();
-
-    // Swords
-    for line in SWORDS {
-        println!("{line}");
-    }
+    // Swords + block title saved for future use (too wide for some terminals)
+    let _ = (SWORDS, TITLE, sword_width, title_width);
 
     println!();
-
-    // Block title — centered under swords
-    let title_pad = sword_width.saturating_sub(title_width) / 2;
-    for line in TITLE {
-        println!("{}{line}", " ".repeat(title_pad));
-    }
+    println!("  🛡️  InnerWarden installed");
+    println!();
 
     println!();
 
