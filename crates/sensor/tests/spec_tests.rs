@@ -66,9 +66,24 @@ fn build_event(input: &Value) -> Event {
     }
 
     for field in &[
-        "comm", "pid", "ppid", "uid", "filename", "path", "command",
-        "dst_ip", "dst_port", "src_ip", "src_port", "container_id",
-        "sq_entries", "opcode", "fd", "proto", "user", "argv",
+        "comm",
+        "pid",
+        "ppid",
+        "uid",
+        "filename",
+        "path",
+        "command",
+        "dst_ip",
+        "dst_port",
+        "src_ip",
+        "src_port",
+        "container_id",
+        "sq_entries",
+        "opcode",
+        "fd",
+        "proto",
+        "user",
+        "argv",
     ] {
         if !details.contains_key(*field) {
             if let Some(val) = input.get(Value::String(field.to_string())) {
@@ -106,9 +121,7 @@ fn yaml_to_json(v: &Value) -> serde_json::Value {
             }
         }
         Value::String(s) => serde_json::Value::String(s.clone()),
-        Value::Sequence(seq) => {
-            serde_json::Value::Array(seq.iter().map(yaml_to_json).collect())
-        }
+        Value::Sequence(seq) => serde_json::Value::Array(seq.iter().map(yaml_to_json).collect()),
         Value::Mapping(map) => {
             let mut obj = serde_json::Map::new();
             for (k, val) in map {
@@ -138,7 +151,11 @@ fn run_test_case(name: &str, case: &Value) -> TestResult {
     let followup = case.get("followup");
 
     // Skip tests marked as needing complex multi-event state
-    if case.get("skip_runner").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if case
+        .get("skip_runner")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         // Return expected result to count as passed
         let expected_alert = case["expected"]["alert"].as_bool().unwrap_or(false);
         let expected_sev = case["expected"]["severity"]
@@ -163,7 +180,10 @@ fn run_test_case(name: &str, case: &Value) -> TestResult {
         "c2_callback" => run_c2_callback(case),
         _ => {
             eprintln!("  [skip] no runner for detector '{}' yet", name);
-            return TestResult { alerted: false, severity: None };
+            return TestResult {
+                alerted: false,
+                severity: None,
+            };
         }
     }
 }
@@ -192,7 +212,10 @@ fn run_data_exfil_ebpf(input: &Value, followup: Option<&Value>) -> TestResult {
         };
     }
 
-    TestResult { alerted: false, severity: None }
+    TestResult {
+        alerted: false,
+        severity: None,
+    }
 }
 
 fn run_data_exfil_cmd(input: &Value, followup: Option<&Value>) -> TestResult {
@@ -219,7 +242,10 @@ fn run_data_exfil_cmd(input: &Value, followup: Option<&Value>) -> TestResult {
         };
     }
 
-    TestResult { alerted: false, severity: None }
+    TestResult {
+        alerted: false,
+        severity: None,
+    }
 }
 
 fn run_discovery_burst(case: &Value) -> TestResult {
@@ -231,9 +257,20 @@ fn run_discovery_burst(case: &Value) -> TestResult {
 
     // Pre-fill with sequence commands if present
     let discovery_cmds = [
-        "ps aux", "id", "whoami", "uname -a", "hostname",
-        "ip addr", "ss -tnlp", "cat /etc/passwd", "cat /etc/os-release",
-        "netstat -an", "df -h", "free -m", "lscpu", "cat /proc/cpuinfo",
+        "ps aux",
+        "id",
+        "whoami",
+        "uname -a",
+        "hostname",
+        "ip addr",
+        "ss -tnlp",
+        "cat /etc/passwd",
+        "cat /etc/os-release",
+        "netstat -an",
+        "df -h",
+        "free -m",
+        "lscpu",
+        "cat /proc/cpuinfo",
         "cat /proc/meminfo",
     ];
 
@@ -266,7 +303,10 @@ fn run_discovery_burst(case: &Value) -> TestResult {
                 };
             }
         }
-        return TestResult { alerted: false, severity: None };
+        return TestResult {
+            alerted: false,
+            severity: None,
+        };
     }
 
     let result = det.process(&base_ev);
@@ -366,12 +406,18 @@ fn run_packet_flood(case: &Value) -> TestResult {
 
     let input = &case["input"];
     // Use low thresholds for spec tests so we can trigger with small sequences
-    let syn_thresh = case.get("syn_threshold")
-        .and_then(|v| v.as_u64()).unwrap_or(10) as usize;
-    let http_thresh = case.get("http_threshold")
-        .and_then(|v| v.as_u64()).unwrap_or(10) as usize;
-    let slowloris_thresh = case.get("slowloris_threshold")
-        .and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+    let syn_thresh = case
+        .get("syn_threshold")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10) as usize;
+    let http_thresh = case
+        .get("http_threshold")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10) as usize;
+    let slowloris_thresh = case
+        .get("slowloris_threshold")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5) as usize;
 
     let mut det = PacketFloodDetector::new(PacketFloodParams {
         host: "test".to_string(),
@@ -390,7 +436,13 @@ fn run_packet_flood(case: &Value) -> TestResult {
     if let Some(count) = case.get("sequence_ips").and_then(|v| v.as_u64()) {
         for i in 0..count {
             let mut ev = base_ev.clone();
-            let ip = format!("{}.{}.{}.{}", (i / 256 / 256) % 256 + 1, (i / 256) % 256, i % 256, 1);
+            let ip = format!(
+                "{}.{}.{}.{}",
+                (i / 256 / 256) % 256 + 1,
+                (i / 256) % 256,
+                i % 256,
+                1
+            );
             ev.details["src_ip"] = serde_json::Value::String(ip.clone());
             ev.details["ip"] = serde_json::Value::String(ip);
             ev.ts = base_ev.ts + Duration::milliseconds(i as i64 * 10);
@@ -403,7 +455,10 @@ fn run_packet_flood(case: &Value) -> TestResult {
                 };
             }
         }
-        return TestResult { alerted: false, severity: None };
+        return TestResult {
+            alerted: false,
+            severity: None,
+        };
     }
 
     // Sequence count from same IP (for slowloris)
@@ -421,7 +476,10 @@ fn run_packet_flood(case: &Value) -> TestResult {
                 };
             }
         }
-        return TestResult { alerted: false, severity: None };
+        return TestResult {
+            alerted: false,
+            severity: None,
+        };
     }
 
     let results = det.process(&base_ev);
@@ -431,7 +489,10 @@ fn run_packet_flood(case: &Value) -> TestResult {
             severity: Some(inc.severity.clone()),
         };
     }
-    TestResult { alerted: false, severity: None }
+    TestResult {
+        alerted: false,
+        severity: None,
+    }
 }
 
 fn run_service_stop(input: &Value) -> TestResult {
@@ -441,7 +502,10 @@ fn run_service_stop(input: &Value) -> TestResult {
 
     let comm_base = comm.split('/').next_back().unwrap_or(comm);
     if comm_base != "systemctl" && comm_base != "service" {
-        return TestResult { alerted: false, severity: None };
+        return TestResult {
+            alerted: false,
+            severity: None,
+        };
     }
 
     let cmd_lower = command.to_lowercase();
@@ -450,28 +514,63 @@ fn run_service_stop(input: &Value) -> TestResult {
         || cmd_lower.contains(" mask");
 
     if !is_stop {
-        return TestResult { alerted: false, severity: None };
+        return TestResult {
+            alerted: false,
+            severity: None,
+        };
     }
 
     let security_services = [
-        "sshd", "auditd", "fail2ban", "innerwarden", "apparmor",
-        "ufw", "firewalld", "iptables", "nftables", "crowdsec",
-        "ossec", "wazuh", "clamd", "clamav", "aide", "tripwire",
-        "snort", "suricata", "falco", "osqueryd", "syslog",
-        "rsyslog", "syslog-ng", "journald",
+        "sshd",
+        "auditd",
+        "fail2ban",
+        "innerwarden",
+        "apparmor",
+        "ufw",
+        "firewalld",
+        "iptables",
+        "nftables",
+        "crowdsec",
+        "ossec",
+        "wazuh",
+        "clamd",
+        "clamav",
+        "aide",
+        "tripwire",
+        "snort",
+        "suricata",
+        "falco",
+        "osqueryd",
+        "syslog",
+        "rsyslog",
+        "syslog-ng",
+        "journald",
     ];
 
-    let target = security_services.iter().find(|svc| cmd_lower.contains(**svc));
+    let target = security_services
+        .iter()
+        .find(|svc| cmd_lower.contains(**svc));
     let target = match target {
         Some(svc) => *svc,
-        None => return TestResult { alerted: false, severity: None },
+        None => {
+            return TestResult {
+                alerted: false,
+                severity: None,
+            }
+        }
     };
 
     if uid == 0 && target == "innerwarden" {
-        return TestResult { alerted: false, severity: None };
+        return TestResult {
+            alerted: false,
+            severity: None,
+        };
     }
 
-    TestResult { alerted: true, severity: Some(Severity::High) }
+    TestResult {
+        alerted: true,
+        severity: Some(Severity::High),
+    }
 }
 
 fn run_io_uring(case: &Value) -> TestResult {
@@ -519,7 +618,10 @@ fn run_c2_callback(case: &Value) -> TestResult {
                 };
             }
         }
-        return TestResult { alerted: false, severity: None };
+        return TestResult {
+            alerted: false,
+            severity: None,
+        };
     }
 
     let result = det.process(&ev);
@@ -558,9 +660,16 @@ fn spec_all_detectors() {
     let mut failed_details = Vec::new();
 
     const SUPPORTED: &[&str] = &[
-        "data_exfil_ebpf", "data_exfil_cmd", "discovery_burst", "rootkit",
-        "sigma_rule", "process_tree", "packet_flood", "service_stop",
-        "io_uring_create", "c2_callback",
+        "data_exfil_ebpf",
+        "data_exfil_cmd",
+        "discovery_burst",
+        "rootkit",
+        "sigma_rule",
+        "process_tree",
+        "packet_flood",
+        "service_stop",
+        "io_uring_create",
+        "c2_callback",
     ];
 
     for (name, doc) in &specs {
@@ -580,9 +689,9 @@ fn spec_all_detectors() {
                 for case in cases {
                     total += 1;
                     let desc = case["description"].as_str().unwrap_or("unnamed");
-                    let expected_alert = case["expected"]["alert"].as_bool().unwrap_or(
-                        *section == "true_positives",
-                    );
+                    let expected_alert = case["expected"]["alert"]
+                        .as_bool()
+                        .unwrap_or(*section == "true_positives");
                     let expected_severity = case["expected"]["severity"].as_str();
 
                     let result = run_test_case(name, case);
@@ -622,7 +731,9 @@ fn spec_all_detectors() {
 
     eprintln!(
         "\n=== Spec Tests: {}/{} passed ({} specs) ===",
-        passed, total, specs.len()
+        passed,
+        total,
+        specs.len()
     );
 
     if !failed_details.is_empty() {
@@ -631,7 +742,8 @@ fn spec_all_detectors() {
         }
         panic!(
             "\n{} spec test(s) FAILED out of {} total",
-            failed_details.len(), total
+            failed_details.len(),
+            total
         );
     }
 }
@@ -640,16 +752,46 @@ fn spec_all_detectors() {
 // Individual spec tests
 // ---------------------------------------------------------------------------
 
-#[test] fn spec_data_exfil_ebpf() { run_spec_by_name("data_exfil_ebpf"); }
-#[test] fn spec_data_exfil_cmd() { run_spec_by_name("data_exfil_cmd"); }
-#[test] fn spec_discovery_burst() { run_spec_by_name("discovery_burst"); }
-#[test] fn spec_rootkit() { run_spec_by_name("rootkit"); }
-#[test] fn spec_sigma_rule() { run_spec_by_name("sigma_rule"); }
-#[test] fn spec_process_tree() { run_spec_by_name("process_tree"); }
-#[test] fn spec_packet_flood() { run_spec_by_name("packet_flood"); }
-#[test] fn spec_service_stop() { run_spec_by_name("service_stop"); }
-#[test] fn spec_io_uring_create() { run_spec_by_name("io_uring_create"); }
-#[test] fn spec_c2_callback() { run_spec_by_name("c2_callback"); }
+#[test]
+fn spec_data_exfil_ebpf() {
+    run_spec_by_name("data_exfil_ebpf");
+}
+#[test]
+fn spec_data_exfil_cmd() {
+    run_spec_by_name("data_exfil_cmd");
+}
+#[test]
+fn spec_discovery_burst() {
+    run_spec_by_name("discovery_burst");
+}
+#[test]
+fn spec_rootkit() {
+    run_spec_by_name("rootkit");
+}
+#[test]
+fn spec_sigma_rule() {
+    run_spec_by_name("sigma_rule");
+}
+#[test]
+fn spec_process_tree() {
+    run_spec_by_name("process_tree");
+}
+#[test]
+fn spec_packet_flood() {
+    run_spec_by_name("packet_flood");
+}
+#[test]
+fn spec_service_stop() {
+    run_spec_by_name("service_stop");
+}
+#[test]
+fn spec_io_uring_create() {
+    run_spec_by_name("io_uring_create");
+}
+#[test]
+fn spec_c2_callback() {
+    run_spec_by_name("c2_callback");
+}
 
 fn run_spec_by_name(target_name: &str) {
     let specs = load_specs();
@@ -673,9 +815,9 @@ fn run_spec_by_name(target_name: &str) {
             for case in cases {
                 total += 1;
                 let desc = case["description"].as_str().unwrap_or("unnamed");
-                let expected_alert = case["expected"]["alert"].as_bool().unwrap_or(
-                    *section == "true_positives",
-                );
+                let expected_alert = case["expected"]["alert"]
+                    .as_bool()
+                    .unwrap_or(*section == "true_positives");
                 let expected_severity = case["expected"]["severity"].as_str();
 
                 let result = run_test_case(name, case);
