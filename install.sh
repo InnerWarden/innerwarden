@@ -1112,8 +1112,8 @@ if ! innerwarden welcome 2>/dev/null; then
   echo ""
 fi
 
-# Auto-run setup — stdin is the terminal since we didn't re-exec with sudo
-$SUDO innerwarden setup
+# Auto-run setup with terminal input via /dev/tty (curl pipe consumes stdin)
+$SUDO innerwarden setup < /dev/tty
 if [[ "$OS_TYPE" == "Darwin" ]]; then
 echo
 echo "  sudo tail -f ${LOG_DIR}/sensor.log"
