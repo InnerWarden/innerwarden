@@ -139,6 +139,12 @@ impl DiscoveryBurstDetector {
             return None;
         }
 
+        // Skip discovery commands embedded in larger scripts (bash -lc "cd ... && ip neigh").
+        // Real recon runs commands standalone; scripts chain them with && or ;
+        if (comm == "sh" || comm == "bash") && lower.contains("&&") {
+            return None;
+        }
+
         let now = event.ts;
         let cutoff = now - self.window;
 

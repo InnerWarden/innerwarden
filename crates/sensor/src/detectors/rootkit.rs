@@ -1024,6 +1024,18 @@ impl RootkitDetector {
     /// - network.connection anomaly → possible connect hook (hiding network connections)
     fn check_timing_anomaly(&mut self, event: &Event, now: DateTime<Utc>) -> Option<Incident> {
         let kind = &event.kind;
+
+        // Skip event kinds with naturally high latency variance.
+        // network.accept blocks until a connection arrives (seconds to hours).
+        // file.truncate latency depends on filesystem flush (ms to seconds under I/O load).
+        // These produce timing spikes during normal operations (deploys, builds, idle periods).
+        match kind.as_str() {
+            "network.accept" | "network.listen" | "file.truncate" | "file.timestomp" => {
+                return None;
+            }
+            _ => {}
+        }
+
         let min_samples = self.timing_min_samples;
         let z_threshold = self.timing_z_threshold;
         let consecutive_threshold = self.timing_consecutive_threshold;
