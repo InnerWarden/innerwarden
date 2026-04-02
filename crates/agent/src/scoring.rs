@@ -1,4 +1,5 @@
-//! Neural scoring model — trained by InnerWarden Gym.
+#![allow(dead_code)]
+//! Neural scoring model — trained by InnerWarden Gym (V10, deprecated).
 //!
 //! Classifies event streams as attack or benign using a small neural network
 //! (32 features → 64 → 32 → 1). Runs alongside the 48 detectors to catch
