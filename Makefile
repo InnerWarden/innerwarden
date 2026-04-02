@@ -197,3 +197,7 @@ clean:
 check:
 	$(CARGO) clippy --workspace -- -D warnings
 	$(CARGO) fmt --all --check
+
+.PHONY: spec-check
+spec-check:
+	$(CARGO) test -p innerwarden-sensor -- spec_ --test-threads=1
