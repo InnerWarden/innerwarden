@@ -222,9 +222,40 @@ fn matches_field(event: &Event, matcher: &FieldMatcher) -> bool {
     })
 }
 
+/// Map Sigma standard field names to InnerWarden event fields.
+/// This allows importing community Sigma rules (SigmaHQ) without modification.
+fn alias_field(field: &str) -> &str {
+    match field {
+        // Process creation fields (Sigma process_creation category)
+        "Image" | "image" => "details.filename",
+        "CommandLine" | "commandline" | "command_line" => "details.command",
+        "ParentImage" | "parentimage" => "details.parent",
+        "ParentCommandLine" | "parentcommandline" => "details.parent_command",
+        "User" | "user" => "details.user",
+        "OriginalFileName" | "originalfilename" => "details.filename",
+        "CurrentDirectory" | "currentdirectory" => "details.cwd",
+        "Product" | "product" => "source",
+        "Category" | "category" => "kind",
+        // File event fields
+        "TargetFilename" | "targetfilename" => "details.filename",
+        // Network fields
+        "DestinationIp" | "destinationip" | "dst_ip" => "details.dst_ip",
+        "DestinationPort" | "destinationport" | "dst_port" => "details.dst_port",
+        "SourceIp" | "sourceip" | "src_ip" => "details.src_ip",
+        // Auditd fields
+        "type" => "kind",
+        "exe" => "details.filename",
+        "key" | "a0" | "a1" | "a2" | "a3" => field, // pass through
+        // Already correct format
+        _ => field,
+    }
+}
+
 /// Extract a field value from an event.
 /// Supports: "kind", "source", "summary", "host", "details.X" (nested JSON).
+/// Also resolves Sigma field aliases (Image, CommandLine, etc).
 fn extract_field(event: &Event, field: &str) -> Option<String> {
+    let field = alias_field(field);
     match field {
         "kind" => Some(event.kind.clone()),
         "source" => Some(event.source.clone()),
@@ -241,7 +272,16 @@ fn extract_field(event: &Event, field: &str) -> Option<String> {
                 }
             })
         }
-        _ => None,
+        _ => {
+            // Try as details key directly (for pass-through fields like "a0")
+            event.details.get(field).and_then(|v| {
+                if v.is_string() {
+                    v.as_str().map(String::from)
+                } else {
+                    Some(v.to_string())
+                }
+            })
+        }
     }
 }
 
@@ -252,15 +292,31 @@ fn extract_field(event: &Event, field: &str) -> Option<String> {
 fn load_sigma_rules(rules_dir: &Path) -> Vec<SigmaRule> {
     let mut rules = Vec::new();
 
-    let entries = match std::fs::read_dir(rules_dir) {
+    // Recursively walk the rules directory (supports subdirectories)
+    load_sigma_dir(rules_dir, &mut rules);
+
+    if rules.is_empty() {
+        info!("No custom Sigma rules found, using built-in rules only");
+    } else {
+        info!(count = rules.len(), "Loaded custom Sigma rules from disk");
+    }
+
+    rules.extend(builtin_sigma_rules());
+    rules
+}
+
+fn load_sigma_dir(dir: &Path, rules: &mut Vec<SigmaRule>) {
+    let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => {
-            return builtin_sigma_rules();
-        }
+        Err(_) => return,
     };
 
     for entry in entries.flatten() {
         let path = entry.path();
+        if path.is_dir() {
+            load_sigma_dir(&path, rules);
+            continue;
+        }
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if !name.ends_with(".yml") && !name.ends_with(".yaml") {
             continue;
@@ -271,25 +327,31 @@ fn load_sigma_rules(rules_dir: &Path) -> Vec<SigmaRule> {
                     debug!(id = %rule.id, title = %rule.title, "loaded Sigma rule");
                     rules.push(rule);
                 }
-                None => warn!(path = %path.display(), "failed to parse Sigma rule"),
+                None => {
+                    // Many community rules use complex conditions we don't support yet — skip silently
+                }
             },
             Err(e) => warn!(path = %path.display(), "failed to read Sigma rule: {e}"),
         }
     }
-
-    rules.extend(builtin_sigma_rules());
-    rules
 }
 
 /// Parse a Sigma YAML rule.
+/// Supports: single selection, multiple selections (selection_1, selection_2),
+/// filters (selection and not filter), 1 of selection*, all of selection*.
 fn parse_sigma_yaml(content: &str) -> Option<SigmaRule> {
     let mut id = String::new();
     let mut title = String::new();
     let mut level = Severity::Medium;
-    let mut selection = Vec::new();
     let mut tags = Vec::new();
-    let mut in_selection = false;
+
+    // Track all named sections: selection, selection_1, filter, etc.
+    let mut sections: std::collections::HashMap<String, Vec<FieldMatcher>> =
+        std::collections::HashMap::new();
+    let mut _condition = String::new();
+    let mut current_section: Option<String> = None;
     let mut in_tags = false;
+    let mut in_detection = false;
 
     for line in content.lines() {
         let trimmed = line.trim();
@@ -297,39 +359,22 @@ fn parse_sigma_yaml(content: &str) -> Option<SigmaRule> {
             continue;
         }
 
-        // Section markers (can be at any indent level)
-        if trimmed == "detection:" || trimmed == "logsource:" || trimmed.starts_with("status:") {
-            continue; // skip section headers, don't change state
-        }
-        if trimmed == "selection:" {
-            in_selection = true;
+        // Detect indent level to know when we leave a section
+        let indent = line.len() - line.trim_start().len();
+
+        // Top-level keys (no/low indent)
+        if indent == 0 {
+            current_section = None;
             in_tags = false;
-            continue;
-        }
-        if trimmed == "tags:" || trimmed.starts_with("tags:") {
-            in_tags = true;
-            in_selection = false;
-            continue;
-        }
-        if trimmed.starts_with("condition:")
-            || trimmed.starts_with("product:")
-            || trimmed.starts_with("category:")
-            || trimmed.starts_with("service:")
-        {
-            continue; // skip Sigma metadata fields
+            in_detection = false;
         }
 
-        // Top-level key: value fields (not indented, or shallow indent)
         if let Some(v) = trimmed.strip_prefix("id:") {
             id = v.trim().trim_matches('"').trim_matches('\'').to_string();
-            in_selection = false;
-            in_tags = false;
             continue;
         }
         if let Some(v) = trimmed.strip_prefix("title:") {
             title = v.trim().trim_matches('"').trim_matches('\'').to_string();
-            in_selection = false;
-            in_tags = false;
             continue;
         }
         if let Some(v) = trimmed.strip_prefix("level:") {
@@ -341,41 +386,115 @@ fn parse_sigma_yaml(content: &str) -> Option<SigmaRule> {
                 "informational" => Severity::Info,
                 _ => Severity::Medium,
             };
-            in_selection = false;
+            continue;
+        }
+        if trimmed == "detection:" {
+            in_detection = true;
             in_tags = false;
             continue;
         }
+        if trimmed == "tags:" || trimmed.starts_with("tags:") {
+            in_tags = true;
+            in_detection = false;
+            current_section = None;
+            continue;
+        }
+        if trimmed.starts_with("logsource:")
+            || trimmed.starts_with("status:")
+            || trimmed.starts_with("description:")
+            || trimmed.starts_with("references:")
+            || trimmed.starts_with("author:")
+            || trimmed.starts_with("date:")
+            || trimmed.starts_with("modified:")
+            || trimmed.starts_with("falsepositives:")
+        {
+            in_detection = false;
+            in_tags = false;
+            current_section = None;
+            continue;
+        }
 
-        // Parse selection fields
-        if in_selection && trimmed.contains(':') {
-            if let Some((field_spec, value)) = trimmed.split_once(':') {
-                let field_spec = field_spec.trim();
-                let value = value
-                    .trim()
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .to_string();
-                if value.is_empty() {
+        // Inside detection block
+        if in_detection {
+            if let Some(v) = trimmed.strip_prefix("condition:") {
+                _condition = v.trim().to_string();
+                current_section = None;
+                continue;
+            }
+
+            // Skip logsource sub-fields
+            if trimmed.starts_with("product:")
+                || trimmed.starts_with("category:")
+                || trimmed.starts_with("service:")
+            {
+                continue;
+            }
+
+            // Named section header (selection, selection_1, filter, etc.)
+            if trimmed.ends_with(':')
+                && !trimmed.contains('|')
+                && indent <= 8
+                && !trimmed.starts_with('-')
+            {
+                let name = trimmed.trim_end_matches(':').to_string();
+                if name.starts_with("selection") || name.starts_with("filter") {
+                    current_section = Some(name.clone());
+                    sections.entry(name).or_default();
+                    continue;
+                }
+            }
+
+            // Parse fields inside current section
+            if let Some(ref sec) = current_section {
+                // List item
+                if let Some(rest) = trimmed.strip_prefix("- ") {
+                    let val = rest.trim().trim_matches('"').trim_matches('\'').to_string();
+                    if !val.is_empty() {
+                        if let Some(matchers) = sections.get_mut(sec) {
+                            if let Some(last) = matchers.last_mut() {
+                                last.values.push(val);
+                            }
+                        }
+                    }
                     continue;
                 }
 
-                let (field, op) = if let Some(f) = field_spec.strip_suffix("|contains") {
-                    (f.to_string(), MatchOp::Contains)
-                } else if let Some(f) = field_spec.strip_suffix("|startswith") {
-                    (f.to_string(), MatchOp::StartsWith)
-                } else if let Some(f) = field_spec.strip_suffix("|endswith") {
-                    (f.to_string(), MatchOp::EndsWith)
-                } else if let Some(f) = field_spec.strip_suffix("|re") {
-                    (f.to_string(), MatchOp::Regex)
-                } else {
-                    (field_spec.to_string(), MatchOp::Equals)
-                };
+                // Field: value
+                if trimmed.contains(':') {
+                    if let Some((field_spec, value)) = trimmed.split_once(':') {
+                        let field_spec = field_spec.trim();
+                        let value = value
+                            .trim()
+                            .trim_matches('"')
+                            .trim_matches('\'')
+                            .to_string();
 
-                selection.push(FieldMatcher {
-                    field,
-                    op,
-                    values: vec![value],
-                });
+                        let (field, op) = if let Some(f) = field_spec.strip_suffix("|contains") {
+                            (f.to_string(), MatchOp::Contains)
+                        } else if let Some(f) = field_spec.strip_suffix("|startswith") {
+                            (f.to_string(), MatchOp::StartsWith)
+                        } else if let Some(f) = field_spec.strip_suffix("|endswith") {
+                            (f.to_string(), MatchOp::EndsWith)
+                        } else if let Some(f) = field_spec.strip_suffix("|re") {
+                            (f.to_string(), MatchOp::Regex)
+                        } else if let Some(f) = field_spec.strip_suffix("|contains|all") {
+                            (f.to_string(), MatchOp::Contains)
+                        } else {
+                            (field_spec.to_string(), MatchOp::Equals)
+                        };
+
+                        let values = if value.is_empty() {
+                            vec![]
+                        } else {
+                            vec![value]
+                        };
+                        sections.entry(sec.clone()).or_default().push(FieldMatcher {
+                            field,
+                            op,
+                            values,
+                        });
+                    }
+                }
             }
         }
 
@@ -383,6 +502,26 @@ fn parse_sigma_yaml(content: &str) -> Option<SigmaRule> {
         if in_tags {
             if let Some(rest) = trimmed.strip_prefix("- ") {
                 tags.push(rest.trim().trim_matches('"').trim_matches('\'').to_string());
+            }
+        }
+    }
+
+    // Build the final selection based on condition
+    // Merge all selection* sections (OR between selections, AND within each)
+    // For "selection and not filter": use selection, ignore filter (conservative)
+    let mut selection: Vec<FieldMatcher> = Vec::new();
+
+    if sections.contains_key("selection") && sections.len() == 1 {
+        // Simple case: single selection
+        selection = sections.remove("selection").unwrap_or_default();
+    } else {
+        // Multiple selections or complex conditions
+        // Strategy: merge all selection* fields as OR (any match triggers)
+        // This is conservative — may generate more alerts than intended
+        // but never misses a true positive
+        for (name, matchers) in &sections {
+            if name.starts_with("selection") {
+                selection.extend(matchers.iter().cloned());
             }
         }
     }

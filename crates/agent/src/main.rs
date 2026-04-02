@@ -26,6 +26,13 @@ mod ioc;
 mod mesh;
 mod mitre;
 mod narrative;
+#[allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    clippy::needless_range_loop
+)]
+mod neural_lifecycle;
 mod pcap_capture;
 mod playbook;
 mod reader;
@@ -5642,17 +5649,20 @@ async fn process_narrative_tick(
         }
     }
 
-    // Neural scoring DISABLED: V10 classifier generates false positives on
-    // production traffic (Cloudflare, WordPress, Docker). Will be replaced by
-    // per-host autoencoder anomaly detection in a future release.
-    // Rules + kill chain + 48 detectors provide 95% detection without ML.
+    // Neural scoring DISABLED: V10 classifier generates FPs on production traffic
+    // (Cloudflare, WordPress, Docker). Will be replaced by autoencoder anomaly
+    // detection once neural_lifecycle.rs is wired into the main loop.
+    // See: feat/neural-autoencoder branch, Phase 1 roadmap in gym/CLAUDE.md
     if false {
+        #[allow(unused_variables)]
+        let events_entries_ref = &events_entries;
         for ev in &events_entries {
             if let Some((score, explanation)) = state.scoring_engine.observe(ev) {
                 info!(
                     score = format!("{:.2}", score),
                     "neural scoring: anomaly detected"
                 );
+                // Write as incident
                 let incident = innerwarden_core::incident::Incident {
                     ts: ev.ts,
                     host: ev.host.clone(),
@@ -5686,6 +5696,7 @@ async fn process_narrative_tick(
                     tags: vec!["neural_model".to_string(), "anomaly".to_string()],
                     entities: ev.entities.clone(),
                 };
+                // Write to incidents file
                 let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
                 if let Ok(mut f) = std::fs::OpenOptions::new()
                     .create(true)
@@ -5700,7 +5711,7 @@ async fn process_narrative_tick(
                 state.scoring_engine.reset();
             }
         }
-    } // neural scoring disabled
+    } // end: if false (neural scoring disabled)
 
     // Also ingest any new incidents incrementally
     let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));

@@ -285,6 +285,112 @@ pub fn all_technique_ids() -> Vec<&'static str> {
     ids.into_iter().collect()
 }
 
+/// Generate an ATT&CK Navigator layer JSON showing InnerWarden's coverage.
+///
+/// The output can be loaded directly into https://mitre-attack.github.io/attack-navigator/
+#[allow(dead_code)]
+pub fn generate_navigator_layer() -> serde_json::Value {
+    let all_detectors = &[
+        "ssh_bruteforce",
+        "credential_stuffing",
+        "distributed_ssh",
+        "credential_harvest",
+        "suspicious_login",
+        "port_scan",
+        "web_scan",
+        "user_agent_scanner",
+        "search_abuse",
+        "crypto_miner",
+        "outbound_anomaly",
+        "ransomware",
+        "execution_guard",
+        "reverse_shell",
+        "process_tree",
+        "docker_anomaly",
+        "fileless",
+        "integrity_alert",
+        "log_tampering",
+        "rootkit",
+        "process_injection",
+        "web_shell",
+        "osquery_anomaly",
+        "ssh_key_injection",
+        "kernel_module_load",
+        "crontab_persistence",
+        "systemd_persistence",
+        "user_creation",
+        "container_escape",
+        "privesc",
+        "sudo_abuse",
+        "c2_callback",
+        "dns_tunneling",
+        "data_exfiltration",
+        "lateral_movement",
+        "suricata_alert",
+        "sensitive_write",
+        "at_job_persist",
+        "file_permission_mod",
+        "hidden_artifact",
+        "remote_access_tool",
+        "service_stop",
+        "system_shutdown",
+        "network_sniffing",
+        "masquerading",
+        "data_archive",
+        "proxy_tunnel",
+        "data_exfil_ebpf",
+    ];
+
+    // Collect all techniques with their detector names
+    let mut technique_map: std::collections::BTreeMap<&str, Vec<&str>> =
+        std::collections::BTreeMap::new();
+
+    for det in all_detectors {
+        for mapping in map_detector_all(det) {
+            technique_map
+                .entry(mapping.technique_id)
+                .or_default()
+                .push(det);
+        }
+    }
+
+    let techniques: Vec<serde_json::Value> = technique_map
+        .iter()
+        .map(|(tid, detectors)| {
+            let comment = format!("Detectors: {}", detectors.join(", "));
+            serde_json::json!({
+                "techniqueID": tid,
+                "score": detectors.len(),
+                "color": "#00ff00",
+                "comment": comment,
+                "enabled": true,
+                "showSubtechniques": true,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "name": "InnerWarden Detection Coverage",
+        "versions": {
+            "attack": "16",
+            "navigator": "5.1.0",
+            "layer": "4.5"
+        },
+        "domain": "enterprise-attack",
+        "description": format!(
+            "InnerWarden detection coverage: {} techniques across {} detectors",
+            techniques.len(),
+            all_detectors.len()
+        ),
+        "gradient": {
+            "colors": ["#ffe766", "#00ff00"],
+            "minValue": 1,
+            "maxValue": 3
+        },
+        "techniques": techniques,
+    })
+}
+
 /// Extract the detector name from an incident_id.
 ///
 /// The convention is `detector_name:rest`, so we split on the first `:`.

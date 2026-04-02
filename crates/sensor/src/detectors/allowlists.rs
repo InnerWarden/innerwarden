@@ -503,6 +503,8 @@ pub struct DynamicAllowlist {
     pub ignored_ports: HashSet<u16>,
     /// Per-detector process suppressions: detector_name → set of comms
     pub per_detector: std::collections::HashMap<String, HashSet<String>>,
+    /// DNS domains to exclude from dns_tunneling detection.
+    pub dns_allowed_domains: HashSet<String>,
     /// IPs that are technically private but should be treated as external
     /// for testing purposes (e.g., Mac on local network running attacks).
     pub test_external_ips: HashSet<String>,
@@ -520,6 +522,7 @@ impl DynamicAllowlist {
             ips: HashSet::new(),
             ignored_ports: HashSet::new(),
             per_detector: std::collections::HashMap::new(),
+            dns_allowed_domains: HashSet::new(),
             test_external_ips: HashSet::new(),
             path: path.to_path_buf(),
             last_modified: None,
@@ -555,6 +558,7 @@ impl DynamicAllowlist {
         self.ips.clear();
         self.ignored_ports.clear();
         self.per_detector.clear();
+        self.dns_allowed_domains.clear();
         self.test_external_ips.clear();
 
         let mut section = String::new();
@@ -589,6 +593,9 @@ impl DynamicAllowlist {
                     "ips" => {
                         self.ips.insert(key.to_string());
                     }
+                    "dns_domains" => {
+                        self.dns_allowed_domains.insert(key.to_string());
+                    }
                     "test_external_ips" => {
                         self.test_external_ips.insert(key.to_string());
                     }
@@ -618,6 +625,7 @@ impl DynamicAllowlist {
             processes = self.processes.len(),
             ips = self.ips.len(),
             ports = self.ignored_ports.len(),
+            dns = self.dns_allowed_domains.len(),
             test_external = self.test_external_ips.len(),
             detectors = self.per_detector.len(),
             path = %self.path.display(),
@@ -669,6 +677,13 @@ impl DynamicAllowlist {
     /// Check if a destination port should be ignored.
     pub fn is_port_ignored(&self, port: u16) -> bool {
         self.ignored_ports.contains(&port)
+    }
+
+    /// Check if a DNS domain should be excluded from tunneling detection.
+    pub fn is_dns_domain_allowed(&self, domain: &str) -> bool {
+        self.dns_allowed_domains
+            .iter()
+            .any(|d| domain.ends_with(d.as_str()))
     }
 
     /// Check if an IP should be treated as external even though it's technically

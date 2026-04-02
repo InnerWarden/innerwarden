@@ -28,14 +28,43 @@ IW_USER="innerwarden"
 
 # Parse flags
 WITH_INTEGRATIONS=0
+CANARY=0
+VERBOSE=0
 for arg in "$@"; do
   case "$arg" in
     --with-integrations) WITH_INTEGRATIONS=1 ;;
+    --canary) CANARY=1 ;;
+    --verbose) VERBOSE=1 ;;
   esac
 done
 
-# Detect OS
+# Detect OS + arch + distro
 OS_TYPE="$(uname -s)"   # Linux | Darwin
+ARCH="$(uname -m)"      # x86_64 | aarch64 | arm64
+KERNEL="$(uname -r)"
+DISTRO=""
+if [[ -f /etc/os-release ]]; then
+  DISTRO="$(. /etc/os-release && echo "$NAME $VERSION_ID" 2>/dev/null)"
+fi
+
+# ── Sudo handling ────────────────────────────────────────────────────────
+# Instead of re-execing the entire script with sudo (which kills stdin/tty),
+# we validate sudo once and prefix privileged commands with $SUDO.
+# This keeps the terminal attached so innerwarden setup can prompt the user.
+if [[ "$(id -u)" -ne 0 ]]; then
+  # Check if user has passwordless sudo (common on cloud VMs)
+  if sudo -n true 2>/dev/null; then
+    SUDO="sudo"
+  else
+    echo ""
+    echo "  Root access needed."
+    echo ""
+    sudo -v || { echo "  sudo failed."; exit 1; }
+    SUDO="sudo"
+  fi
+else
+  SUDO=""
+fi
 
 BIN_DIR="/usr/local/bin"
 
@@ -67,7 +96,14 @@ AGENT_UNIT="/etc/systemd/system/innerwarden-agent.service"
 AUDIT_RULE_FILE="/etc/audit/rules.d/innerwarden-shell-audit.rules"
 
 log() {
-  printf '[innerwarden-install] %s\n' "$*"
+  if [[ "${VERBOSE:-0}" -eq 1 ]]; then
+    printf '  · %s\n' "$*"
+  fi
+}
+
+vlog() {
+  # Always visible log
+  printf '  · %s\n' "$*"
 }
 
 fail() {
@@ -102,6 +138,16 @@ prompt_yes_no() {
   normalized="$(normalize_bool "${answer}")"
   [[ "${normalized}" == "true" ]]
 }
+
+# ── Banner (only after sudo, so it shows once) ──────────────────────────
+echo ""
+echo "  ┌──────────────────────────────────┐"
+echo "  │  🛡️  InnerWarden                  │"
+echo "  │  Your server's immune system.    │"
+echo "  └──────────────────────────────────┘"
+echo ""
+echo "  ▸ ${OS_TYPE,,} ${ARCH} · kernel ${KERNEL}${DISTRO:+ · $DISTRO}"
+echo ""
 
 if [[ "$OS_TYPE" != "Linux" && "$OS_TYPE" != "Darwin" ]]; then
   fail "this installer supports Linux and macOS (Darwin) hosts only"
@@ -242,8 +288,16 @@ download_asset() {
   local asset="${binary}-${platform}-${arch}"
   local base_url="https://github.com/${GITHUB_REPO}/releases/download/${version}"
 
-  log "downloading ${asset}..."
-  curl -fsSL --output "${dest}" "${base_url}/${asset}"
+  if [[ "${VERBOSE}" -eq 1 ]]; then
+    log "Downloading ${asset}..."
+  fi
+  if ! curl -fsSL --output "${dest}" "${base_url}/${asset}"; then
+    fail "Download failed: ${asset}. The release may not exist yet.\nTry: curl -fsSL https://innerwarden.com/install | bash   (stable version)"
+  fi
+  # Verify file is not empty
+  if [[ ! -s "${dest}" ]]; then
+    fail "Downloaded file is empty: ${asset}. The release may be corrupted."
+  fi
 
   if curl -fsSL "${base_url}/${asset}.sha256" | awk '{print $1}' > /tmp/iw-expected-sha256 2>/dev/null; then
     local expected actual
@@ -295,11 +349,22 @@ else
   ARCH="$(detect_arch)"
   PLATFORM="$(detect_platform)"
 
-  # Resolve version: env override or latest from GitHub API
-  if [[ -n "${INNERWARDEN_VERSION:-}" ]]; then
+  # Resolve version: canary, env override, or latest stable
+  if [[ "${CANARY}" -eq 1 ]]; then
+    # Check if canary release actually exists
+    if curl -fsSL -o /dev/null "https://github.com/${GITHUB_REPO}/releases/download/canary/innerwarden-sensor-linux-x86_64" 2>/dev/null; then
+      IW_VERSION="canary"
+      log "Using canary channel (develop branch)"
+    else
+      echo "  ⚠ Canary build not ready yet. Installing latest stable instead."
+      echo ""
+      CANARY=0
+    fi
+  fi
+  if [[ "${CANARY}" -eq 0 ]] && [[ -n "${INNERWARDEN_VERSION:-}" ]]; then
     IW_VERSION="${INNERWARDEN_VERSION}"
   else
-    log "fetching latest release version..."
+    log "Fetching latest stable release..."
     IW_VERSION="$(curl -fsSL \
       -H "Accept: application/vnd.github+json" \
       "${GITHUB_API}/releases/latest" \
@@ -308,7 +373,9 @@ else
     [[ -n "${IW_VERSION}" ]] || fail "could not determine latest release version from GitHub API"
   fi
 
-  log "installing InnerWarden ${IW_VERSION} for ${PLATFORM}/${ARCH}"
+  if [[ "${VERBOSE}" -eq 1 ]]; then
+    log "Version: ${IW_VERSION} (${PLATFORM}/${ARCH})"
+  fi
 
   TMP_DIR="$(mktemp -d)"
   trap 'rm -rf "${TMP_DIR}"' EXIT
@@ -1035,59 +1102,25 @@ else
   fi
 fi
 
-log "installation complete."
-echo
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo " Inner Warden installed - services running in safe trial mode"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo
-echo "  responder.enabled = false  (no actions taken)"
-echo "  dry_run           = true   (logs what it would do)"
-echo "  confidence_threshold = 1.01 (AI runs, but never auto-executes)"
-echo
-echo "── AI provider ─────────────────────────────────────────────────"
-if [[ "${AI_ENABLED}" == "true" ]]; then
-echo "  ✓ Configured: ${AI_PROVIDER} / ${AI_MODEL}"
-else
-echo "  ✗ Not configured - AI analysis is disabled."
-echo
-echo "  To enable, edit ${AGENT_ENV} and uncomment one of:"
-echo
-echo "    OPENAI_API_KEY=sk-...          (OpenAI - fastest to set up)"
-echo "    ANTHROPIC_API_KEY=sk-ant-...   (Anthropic - also set provider in agent.toml)"
-echo
-echo "  Or use Ollama (local, no key needed):"
-echo "    curl -fsSL https://ollama.ai/install.sh | sh"
-echo "    ollama pull llama3.2"
-echo "    # then set in ${AGENT_CONFIG}:"
-echo "    #   provider = \"ollama\""
-echo "    #   model    = \"llama3.2\""
-echo
-echo "  Run 'innerwarden doctor' after configuring - it validates your setup."
+# If canary was requested but fell back to stable, try to upgrade just the CTL
+# binary from canary release (has latest setup UX)
+if [[ "${CANARY}" -eq 1 ]] && [[ "${IW_VERSION}" != "canary" ]]; then
+  CANARY_CTL="https://github.com/${GITHUB_REPO}/releases/download/canary/innerwarden-ctl-linux-${ARCH}"
+  if $SUDO curl -fsSL --output "${BIN_DIR}/innerwarden" "${CANARY_CTL}" 2>/dev/null; then
+    $SUDO chmod +x "${BIN_DIR}/innerwarden"
+  fi
 fi
-echo
-echo "── Enable response skills ───────────────────────────────────────"
-echo "  innerwarden enable block-ip          # IP blocking (ufw by default)"
-echo "  innerwarden enable sudo-protection   # suspend sudo on abuse"
-echo
-echo "── Dashboard ───────────────────────────────────────────────────"
-if [[ "$OS_TYPE" == "Darwin" ]]; then
-echo "  http://localhost:8787"
-else
-echo "  Dashboard binds to localhost for security. Access via SSH tunnel:"
-echo "    ssh -L 8787:localhost:8787 user@your-server"
-echo "  Then open http://localhost:8787 in your browser."
+
+# Show welcome, then auto-run setup
+if ! innerwarden welcome 2>/dev/null; then
+  echo "  ✓ Downloaded ${IW_VERSION}"
+  echo "  ✓ Installed"
+  echo "  ✓ Services running"
+  echo ""
 fi
-echo
-echo "── Getting started ─────────────────────────────────────────────"
-echo "  innerwarden setup    - interactive first-time wizard (AI + Telegram + modules)"
-echo
-echo "── Useful commands ─────────────────────────────────────────────"
-echo "  innerwarden status   - system overview"
-echo "  innerwarden doctor   - diagnose issues with fix hints"
-echo "  innerwarden scan     - detect what's on your server, recommend modules"
-echo "  innerwarden list     - show available capabilities"
-echo "  innerwarden upgrade  - update to the latest release"
+
+# Auto-run setup with terminal input via /dev/tty (curl pipe consumes stdin)
+$SUDO innerwarden setup < /dev/tty
 if [[ "$OS_TYPE" == "Darwin" ]]; then
 echo
 echo "  sudo tail -f ${LOG_DIR}/sensor.log"

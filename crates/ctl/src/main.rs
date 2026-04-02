@@ -17,6 +17,7 @@ mod scan;
 mod sudoers;
 mod systemd;
 mod upgrade;
+mod welcome;
 
 use capability::{ActivationOptions, CapabilityRegistry};
 use innerwarden_core::audit::{append_admin_action, current_operator, AdminActionEntry};
@@ -144,6 +145,23 @@ enum Command {
     /// Examples:
     ///   innerwarden setup
     Setup,
+
+    /// Show welcome animation (called by installer).
+    #[clap(hide = true)]
+    Welcome,
+
+    /// Export MITRE ATT&CK Navigator layer showing detection coverage.
+    ///
+    /// Output can be loaded into https://mitre-attack.github.io/attack-navigator/
+    ///
+    /// Examples:
+    ///   innerwarden navigator > coverage.json
+    ///   innerwarden navigator --output coverage.json
+    Navigator {
+        /// Write to file instead of stdout.
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 
     /// Check for a newer release and optionally upgrade all binaries.
     ///
@@ -1113,6 +1131,48 @@ enum GdprCommand {
 // Entry point
 // ---------------------------------------------------------------------------
 
+/// Check if we have write access to the config directory.
+fn am_root() -> bool {
+    let config_dir = Path::new("/etc/innerwarden");
+    if config_dir.exists() {
+        // Try to check write permission
+        std::fs::metadata(config_dir)
+            .map(|m| {
+                use std::os::unix::fs::MetadataExt;
+                m.uid() == 0 && unsafe { libc_geteuid() } == 0
+            })
+            .unwrap_or(false)
+    } else {
+        // Config dir doesn't exist yet — need root to create it
+        unsafe { libc_geteuid() == 0 }
+    }
+}
+
+/// Safe wrapper for geteuid without libc dep.
+unsafe fn libc_geteuid() -> u32 {
+    // geteuid is always available on Linux/macOS
+    extern "C" {
+        fn geteuid() -> u32;
+    }
+    geteuid()
+}
+
+/// Re-execute the current command with sudo, with clear user messaging.
+fn reexec_with_sudo() -> Result<()> {
+    eprintln!("┌─────────────────────────────────────────────────────────┐");
+    eprintln!("│  InnerWarden needs root access to write configuration. │");
+    eprintln!("│  Your password may be requested by sudo.               │");
+    eprintln!("└─────────────────────────────────────────────────────────┘");
+    eprintln!();
+    let exe = std::env::current_exe()?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let status = std::process::Command::new("sudo")
+        .arg(exe)
+        .args(&args)
+        .status()?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
 fn main() -> Result<()> {
     let mut cli = Cli::parse();
     let registry = CapabilityRegistry::default_all();
@@ -1132,6 +1192,34 @@ fn main() -> Result<()> {
         Command::Harden { verbose } => harden::cmd_harden(verbose),
         Command::Doctor => cmd_doctor(&cli, &registry),
         Command::Setup => cmd_setup(&cli),
+        Command::Welcome => {
+            let ebpf = std::process::Command::new("bpftool")
+                .args(["prog", "list"])
+                .output()
+                .ok()
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .matches("innerwarden")
+                        .count() as u32
+                })
+                .unwrap_or(0);
+            welcome::run_welcome(ebpf);
+            Ok(())
+        }
+        Command::Navigator { ref output } => {
+            let layer = generate_navigator_layer();
+            let json = serde_json::to_string_pretty(&layer)?;
+            if let Some(path) = output {
+                std::fs::write(path, &json)?;
+                eprintln!("  ✓ Navigator layer written to {path}");
+                eprintln!(
+                    "  Open https://mitre-attack.github.io/attack-navigator/ and load the file."
+                );
+            } else {
+                println!("{json}");
+            }
+            Ok(())
+        }
         Command::Scan { ref modules_dir } => scan::cmd_scan(modules_dir),
         Command::Upgrade {
             check,
@@ -3322,6 +3410,11 @@ fn write_env_key(env_path: &Path, key: &str, value: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_setup(cli: &Cli) -> Result<()> {
+    // Re-exec with sudo if not root — setup writes to /etc/innerwarden/
+    if !am_root() {
+        return reexec_with_sudo();
+    }
+
     let env_file = cli
         .agent_config
         .parent()
@@ -3349,87 +3442,60 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
     let telegram_ok = has_env("TELEGRAM_BOT_TOKEN") && has_env("TELEGRAM_CHAT_ID");
     let responder_ok = is_enabled("responder");
 
-    // ── Welcome ───────────────────────────────────────────────────────────
-    println!("InnerWarden - first-time setup\n");
-    println!("Scanning your system to see what's installed...\n");
+    // ── Header ──────────────────────────────────────────────────────────
+    println!();
+    println!("  Setup  (3 steps, skip any with Enter)\n");
 
+    // Auto-enable essential modules silently
     let probes = scan::run_probes();
     let recs = scan::score_modules(&probes);
-
-    // Print compact scan summary - essential modules only
-    let essential: Vec<&scan::ModuleRec> = recs
+    for r in recs
         .iter()
         .filter(|r| matches!(r.tier, scan::Tier::Essential))
-        .collect();
-    let recommended: Vec<&scan::ModuleRec> = recs
-        .iter()
-        .filter(|r| matches!(r.tier, scan::Tier::Recommended))
-        .collect();
-
-    if !essential.is_empty() {
-        println!("Detected on this host:");
-        for r in &essential {
-            println!(
-                "  ★ {}  - {}",
-                r.name,
-                r.why.split('.').next().unwrap_or("")
-            );
+    {
+        let parts: Vec<&str> = r.enable_hint.split_whitespace().collect();
+        if parts.len() >= 3 && parts[0] == "innerwarden" && parts[1] == "enable" {
+            let cap_id = parts[2];
+            let mut params = std::collections::HashMap::new();
+            let mut i = 3;
+            while i < parts.len() {
+                if parts[i] == "--param" && i + 1 < parts.len() {
+                    if let Some((k, v)) = parts[i + 1].split_once('=') {
+                        params.insert(k.to_string(), v.to_string());
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            let registry = capability::CapabilityRegistry::default_all();
+            let _ = cmd_enable(cli, &registry, cap_id, params, true);
         }
-        println!();
     }
-    if !recommended.is_empty() {
-        println!("Also available:");
-        for r in &recommended {
-            println!(
-                "  · {}  - {}",
-                r.name,
-                r.why.split('.').next().unwrap_or("")
-            );
-        }
-        println!();
-    }
-    println!("Run 'innerwarden scan' after setup for the full module advisor.\n");
-    println!("{}", "─".repeat(56));
 
-    println!();
-    println!("Now configuring the essentials in 6 steps:");
-    println!("  1. AI provider    - brains for threat analysis");
-    println!("  2. Telegram       - real-time alerts on your phone");
-    println!("  3. Responder      - decide how to react to threats");
-    println!("  4. Modules        - enable essential protections");
-    println!("  5. Sensitivity    - how often you get notified");
-    println!("  6. Mesh network   - collaborative defense with other nodes\n");
-    println!("You can skip any step and run it later with 'innerwarden configure'.\n");
-    println!("{}", "─".repeat(56));
+    // Set default sensitivity (High+Critical)
+    let _ = config_editor::write_str(&cli.agent_config, "telegram", "min_severity", "high");
+    let _ = config_editor::write_str(&cli.agent_config, "webhook", "min_severity", "high");
 
     // ── Step 1: AI ────────────────────────────────────────────────────────
-    println!();
     if ai_ok {
-        println!("Step 1/4 - AI provider   ✅ already configured\n");
+        println!("  [1/3] AI provider          ✅ configured");
     } else {
-        println!("Step 1/4 - AI provider\n");
-        println!("InnerWarden uses AI to evaluate threats and decide how to respond.");
-        println!("12 providers supported - pick what you have:\n");
-        println!("  1. Ollama    - fully local, free, no API key needed");
-        println!("  2. OpenAI    - gpt-4.1-nano, cheapest ($0.10/1M tokens)");
-        println!("  3. Anthropic - claude-haiku, fast and cheap");
-        println!(
-            "  4. Advanced  - interactive wizard (Groq, DeepSeek, Mistral, xAI, Gemini, etc.)"
-        );
-        println!("  s. Skip for now\n");
-        let choice = prompt("Choose provider [1/2/3/4/s]")?;
+        println!("  [1/3] AI provider\n");
+        println!("  1. Ollama      local, free, no key");
+        println!("  2. OpenAI      gpt-4.1-nano");
+        println!("  3. Anthropic   claude-haiku");
+        println!("  4. Other       12 providers\n");
+        let choice = prompt("  Choose [1-4]")?;
         println!();
-        match choice.trim().to_lowercase().as_str() {
-            "1" | "" => {
-                // Try local Ollama first, fall back to cloud install
+        match choice.trim() {
+            "1" => {
                 let local_models = fetch_models("http://localhost:11434", "", "ollama");
                 if !local_models.is_empty() {
-                    println!("Found {} local Ollama models:\n", local_models.len());
                     for (i, m) in local_models.iter().enumerate() {
                         println!("  {}. {}", i + 1, m);
                     }
-                    println!();
-                    let mc = prompt(&format!("Model [1-{}, default=1]", local_models.len()))?;
+                    let mc = prompt(&format!("  Model [1-{}]", local_models.len()))?;
                     let idx = mc
                         .trim()
                         .parse::<usize>()
@@ -3439,81 +3505,56 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
                     if let Err(e) =
                         cmd_configure_ai(cli, "ollama", None, Some(&local_models[idx]), None)
                     {
-                        println!("  Could not configure local Ollama: {e:#}");
+                        println!("  Could not configure Ollama: {e:#}");
                     }
                 } else {
-                    println!("Ollama not detected locally. Setting up Ollama cloud...\n");
                     if let Err(e) = cmd_ai_install(cli, "qwen3-coder:480b", None, true) {
-                        println!("  Could not configure Ollama automatically: {e:#}");
-                        println!("  Run later:  innerwarden ai install");
+                        println!("  Could not configure Ollama: {e:#}");
                     }
                 }
             }
-            "2" => {
-                println!("OpenAI - enter your API key (get one at platform.openai.com)");
-                match prompt("OPENAI_API_KEY") {
-                    Ok(k) if !k.is_empty() => {
-                        if let Err(e) = cmd_configure_ai(cli, "openai", Some(&k), None, None) {
-                            println!("  Could not configure OpenAI: {e:#}");
-                        }
+            "2" => match prompt("  API key") {
+                Ok(k) if !k.is_empty() => {
+                    if let Err(e) = cmd_configure_ai(cli, "openai", Some(&k), None, None) {
+                        println!("  Error: {e:#}");
                     }
-                    _ => println!(
-                        "  Skipped. Run later:  innerwarden configure ai openai --key <key>"
-                    ),
                 }
-            }
-            "3" => {
-                println!("Anthropic - enter your API key (get one at console.anthropic.com)");
-                match prompt("ANTHROPIC_API_KEY") {
-                    Ok(k) if !k.is_empty() => {
-                        if let Err(e) = cmd_configure_ai(cli, "anthropic", Some(&k), None, None) {
-                            println!("  Could not configure Anthropic: {e:#}");
-                        }
+                _ => println!("  Skipped"),
+            },
+            "3" => match prompt("  API key") {
+                Ok(k) if !k.is_empty() => {
+                    if let Err(e) = cmd_configure_ai(cli, "anthropic", Some(&k), None, None) {
+                        println!("  Error: {e:#}");
                     }
-                    _ => println!(
-                        "  Skipped. Run later:  innerwarden configure ai anthropic --key <key>"
-                    ),
                 }
-            }
+                _ => println!("  Skipped"),
+            },
             "4" => {
-                // Full interactive wizard with all 12 providers
-                if let Err(e) = cmd_configure_ai(cli, "", None, None, None) {
-                    println!("  Could not configure AI: {e:#}");
-                    println!("  Run later:  innerwarden configure ai");
-                }
+                let _ = cmd_configure_ai(cli, "", None, None, None);
             }
-            _ => println!("  Skipped. Run later:  innerwarden configure ai"),
+            _ => println!("  Skipped"),
         }
     }
-
-    println!("{}", "─".repeat(56));
 
     // ── Step 2: Telegram ──────────────────────────────────────────────────
     println!();
     if telegram_ok {
-        println!("Step 2/4 - Telegram alerts   ✅ already configured\n");
+        println!("  [2/3] Telegram alerts      ✅ configured");
     } else {
-        println!("Step 2/4 - Telegram alerts\n");
-        println!("Get instant alerts on your phone whenever a threat is detected.");
-        println!("You'll need a free Telegram account.\n");
-        print!("Set up Telegram now? [Y/n] ");
-        std::io::stdout().flush()?;
-        let mut ans = String::new();
-        std::io::stdin().read_line(&mut ans)?;
-        println!();
-        if ans.trim().to_lowercase() != "n" {
-            if let Err(e) = cmd_configure_telegram(cli, None, None, false) {
-                println!("  Skipped Telegram: {e:#}");
-                println!("  Run later:  innerwarden configure telegram");
+        println!("  [2/3] Telegram alerts\n");
+        println!("  Get threat alerts on your phone.");
+        println!("  Create a bot via @BotFather on Telegram.\n");
+        match prompt("  Bot token (Enter to skip)") {
+            Ok(t) if !t.is_empty() => {
+                if let Err(e) = cmd_configure_telegram(cli, Some(&t), None, false) {
+                    println!("  Error: {e:#}");
+                }
             }
-        } else {
-            println!("  Skipped. Run later:  innerwarden configure telegram");
+            _ => println!("  Skipped"),
         }
     }
 
-    println!("{}", "─".repeat(56));
-
-    // ── Step 3: Responder ─────────────────────────────────────────────────
+    // ── Step 3: Response mode ─────────────────────────────────────────────
     println!();
     if responder_ok {
         let dry = agent_doc
@@ -3522,154 +3563,43 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
             .and_then(|r| r.get("dry_run"))
             .and_then(|d| d.as_bool())
             .unwrap_or(true);
-        let mode = if dry {
-            "observe (dry-run)"
-        } else {
-            "live (executing actions)"
-        };
-        println!("Step 3/4 - Responder   ✅ already configured ({mode})\n");
+        let mode = if dry { "observe" } else { "auto-protect" };
+        println!("  [3/3] Response mode        ✅ {mode}");
     } else {
-        println!("Step 3/4 - Responder\n");
-        println!("The responder decides what to do when a threat is confirmed:");
-        println!("  observe - AI analyses threats, logs decisions, never blocks anything");
-        println!("  dry-run - AI decides and shows what it would do (safe for testing)");
-        println!("  live    - AI blocks attackers automatically (requires block skill)\n");
-        println!("Recommended for first setup: observe or dry-run.\n");
-        print!("Configure now? [Y/n] ");
-        std::io::stdout().flush()?;
-        let mut ans = String::new();
-        std::io::stdin().read_line(&mut ans)?;
-        println!();
-        if ans.trim().to_lowercase() != "n" {
-            if let Err(e) = cmd_configure_responder(cli, false, false, None) {
-                println!("  Skipped responder: {e:#}");
-                println!("  Run later:  innerwarden configure responder");
-            }
-        } else {
-            println!("  Skipped. Run later:  innerwarden configure responder");
-        }
-    }
-
-    println!("{}", "─".repeat(56));
-
-    // ── Step 4: Essential modules ─────────────────────────────────────────
-    println!();
-    {
-        let essential_unset: Vec<&scan::ModuleRec> = recs
-            .iter()
-            .filter(|r| matches!(r.tier, scan::Tier::Essential))
-            .collect();
-
-        if !essential_unset.is_empty() {
-            println!("Step 4/4 - Enable protection modules\n");
-            println!("Based on what's installed on this host, these modules are recommended:\n");
-            for (i, r) in essential_unset.iter().enumerate() {
-                println!(
-                    "  {}. {}  - {}",
-                    i + 1,
-                    r.name,
-                    r.why.split('.').next().unwrap_or("")
-                );
-                println!("     Enable with:  {}", r.enable_hint);
-            }
-            println!();
-            print!("Enable these now? [Y/n] ");
-            std::io::stdout().flush()?;
-            let mut ans = String::new();
-            std::io::stdin().read_line(&mut ans)?;
-            println!();
-            if ans.trim().to_lowercase() != "n" {
-                for r in &essential_unset {
-                    println!("  Enabling {} ...", r.name);
-                    // Parse the enable hint to extract capability id and params
-                    // hint is like "innerwarden enable block-ip" or "innerwarden enable block-ip --param backend=ufw"
-                    let parts: Vec<&str> = r.enable_hint.split_whitespace().collect();
-                    if parts.len() >= 3 && parts[0] == "innerwarden" && parts[1] == "enable" {
-                        let cap_id = parts[2];
-                        let mut params = std::collections::HashMap::new();
-                        let mut i = 3;
-                        while i < parts.len() {
-                            if parts[i] == "--param" && i + 1 < parts.len() {
-                                if let Some((k, v)) = parts[i + 1].split_once('=') {
-                                    params.insert(k.to_string(), v.to_string());
-                                }
-                                i += 2;
-                            } else {
-                                i += 1;
-                            }
-                        }
-                        let registry = capability::CapabilityRegistry::default_all();
-                        if let Err(e) = cmd_enable(cli, &registry, cap_id, params, true) {
-                            println!("  Could not enable {}: {e:#}", r.name);
-                        }
-                    }
+        println!("  [3/3] Response mode\n");
+        println!("  1. Watch & learn   observe only, never blocks");
+        println!("  2. Auto-protect    blocks threats automatically\n");
+        let choice = prompt("  Choose [1/2]")?;
+        match choice.trim() {
+            "2" => {
+                println!();
+                print!("  Auto-protect will block IPs and suspend users. Type 'yes' to confirm: ");
+                std::io::stdout().flush()?;
+                let mut ans = String::new();
+                std::io::stdin().read_line(&mut ans)?;
+                if ans.trim() == "yes" {
+                    let _ =
+                        config_editor::write_bool(&cli.agent_config, "responder", "enabled", true);
+                    let _ =
+                        config_editor::write_bool(&cli.agent_config, "responder", "dry_run", false);
+                    println!("  ✅ Auto-protect enabled");
+                } else {
+                    let _ =
+                        config_editor::write_bool(&cli.agent_config, "responder", "enabled", true);
+                    let _ =
+                        config_editor::write_bool(&cli.agent_config, "responder", "dry_run", true);
+                    println!("  ✅ Watch & learn (dry-run)");
                 }
-            } else {
-                println!("  Skipped. Enable later with the commands shown above.");
+            }
+            _ => {
+                let _ = config_editor::write_bool(&cli.agent_config, "responder", "enabled", true);
+                let _ = config_editor::write_bool(&cli.agent_config, "responder", "dry_run", true);
+                println!("  ✅ Watch & learn");
             }
         }
     }
-
-    println!("{}", "─".repeat(56));
-
-    // ── Step 5: Notification sensitivity ──────────────────────────────────
-    println!();
-    println!("Step 5/6 - Notification sensitivity\n");
-    println!("How often do you want to be notified?\n");
-    println!("  1. Quiet   - only Critical (server compromised, privesc)");
-    println!("  2. Normal  - High + Critical (recommended)");
-    println!("  3. Verbose - everything Medium+ (scans, mesh signals)\n");
-    let sens_choice = prompt("Choose [1/2/3]").unwrap_or_default();
-    match sens_choice.trim() {
-        "1" => {
-            let _ =
-                config_editor::write_str(&cli.agent_config, "telegram", "min_severity", "critical");
-            let _ =
-                config_editor::write_str(&cli.agent_config, "webhook", "min_severity", "critical");
-            println!("  ✅ Sensitivity: quiet");
-        }
-        "3" => {
-            let _ =
-                config_editor::write_str(&cli.agent_config, "telegram", "min_severity", "medium");
-            let _ =
-                config_editor::write_str(&cli.agent_config, "webhook", "min_severity", "medium");
-            println!("  ✅ Sensitivity: verbose");
-        }
-        _ => {
-            let _ = config_editor::write_str(&cli.agent_config, "telegram", "min_severity", "high");
-            let _ = config_editor::write_str(&cli.agent_config, "webhook", "min_severity", "high");
-            println!("  ✅ Sensitivity: normal (recommended)");
-        }
-    }
-
-    println!("{}", "─".repeat(56));
-
-    // ── Step 6: Mesh network ───────────────────────────────────────────
-    println!();
-    let mesh_ok = is_enabled("mesh");
-    if mesh_ok {
-        println!("Step 6/6 - Mesh network   ✅ already enabled\n");
-    } else {
-        println!("Step 6/6 - Mesh network\n");
-        println!("Connect your Inner Warden nodes together.");
-        println!("When one detects a threat, all others block it automatically.");
-        println!("Ed25519 signed, game-theory trust, staged with TTL.\n");
-        print!("Enable mesh network? [y/N] ");
-        std::io::stdout().flush()?;
-        let mut ans = String::new();
-        std::io::stdin().read_line(&mut ans)?;
-        println!();
-        if ans.trim().to_lowercase() == "y" {
-            let _ = cmd_mesh_enable(cli);
-        } else {
-            println!("  Skipped. Enable later:  innerwarden mesh enable");
-        }
-    }
-
-    println!("{}", "─".repeat(56));
 
     // ── Summary ───────────────────────────────────────────────────────────
-    // Re-read state after all changes
     let env_vars2 = load_env_file(&env_file);
     let agent_doc2: Option<toml_edit::DocumentMut> = std::fs::read_to_string(&cli.agent_config)
         .ok()
@@ -3687,55 +3617,27 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
             || std::env::var(key).is_ok_and(|v| !v.is_empty())
     };
 
-    println!();
-    println!("Setup complete!\n");
     let ai_done = is_enabled2("ai");
     let tg_done = has_env2("TELEGRAM_BOT_TOKEN") && has_env2("TELEGRAM_CHAT_ID");
     let resp_done = is_enabled2("responder");
-    println!(
-        "  AI provider   {}",
-        if ai_done {
-            "✅ configured"
-        } else {
-            "○  not set up"
-        }
-    );
-    println!(
-        "  Telegram      {}",
-        if tg_done {
-            "✅ configured"
-        } else {
-            "○  not set up"
-        }
-    );
-    println!(
-        "  Responder     {}",
-        if resp_done {
-            "✅ configured"
-        } else {
-            "○  not set up"
-        }
-    );
 
-    let mesh_done = is_enabled2("mesh");
-    println!("  Sensitivity   ✅ configured");
+    println!("\n  ────────────────────────────────────────");
     println!(
-        "  Mesh network  {}",
-        if mesh_done {
-            "✅ enabled"
-        } else {
-            "○  not enabled"
-        }
+        "  AI          {}",
+        if ai_done { "ready" } else { "not set" }
     );
-
+    println!(
+        "  Telegram    {}",
+        if tg_done { "ready" } else { "not set" }
+    );
+    println!(
+        "  Responder   {}",
+        if resp_done { "ready" } else { "not set" }
+    );
+    println!("  ────────────────────────────────────────");
     println!();
-    println!("Useful commands:");
-    println!("  innerwarden status                    - overview + last threat");
-    println!("  innerwarden incidents                 - recent threats");
-    println!("  innerwarden configure sensitivity     - quiet / normal / verbose");
-    println!("  innerwarden mesh enable               - join the defense network");
-    println!("  innerwarden mesh add-peer <url>       - connect a node");
-    println!("  innerwarden doctor                    - diagnose issues");
+    println!("  innerwarden status      check protection");
+    println!("  innerwarden configure   change any setting");
 
     Ok(())
 }
@@ -4545,25 +4447,39 @@ fn cmd_configure_telegram(
                 }
             }
             None => {
-                println!("\nStep 2 - Find your chat ID\n");
-                println!("  Auto-detect (easiest):");
-                println!("    Open Telegram and send any message to your new bot.");
-                println!(
-                    "    Then re-run this command - your chat ID will be detected automatically."
-                );
                 println!();
-                println!("  Or get it manually:");
-                println!(
-                    "    Message @userinfobot on Telegram - it replies with your numeric user ID."
-                );
-                println!();
-                let c = prompt("Chat ID (numeric, e.g. 123456789)")?;
-                if c.is_empty() {
-                    anyhow::bail!(
-                        "chat ID cannot be empty.\nSend a message to your bot on Telegram first, then re-run this command."
-                    );
+                println!("  Now open Telegram and send any message to your bot.");
+                println!("  Waiting for your message...");
+                std::io::stdout().flush()?;
+
+                // Long-poll getUpdates (5s timeout per request, up to 2 minutes total)
+                let mut found = None;
+                for _ in 0..24 {
+                    if let Some(id) = discover_telegram_chat_id(&token) {
+                        found = Some(id);
+                        break;
+                    }
+                    // discover_telegram_chat_id already waits 5s via long poll
+                    print!(".");
+                    std::io::stdout().flush()?;
                 }
-                c
+                println!();
+
+                match found {
+                    Some(id) => {
+                        println!("  ✓ Got it! Chat ID: {id}");
+                        id
+                    }
+                    None => {
+                        println!("  Timed out. Enter your chat ID manually:");
+                        println!("  (Message @userinfobot on Telegram to get it)");
+                        let c = prompt("Chat ID")?;
+                        if c.is_empty() {
+                            anyhow::bail!("chat ID cannot be empty");
+                        }
+                        c
+                    }
+                }
             }
         }
     };
@@ -4668,14 +4584,32 @@ fn cmd_configure_telegram(
     Ok(())
 }
 
-/// Try to get the chat_id from recent bot updates (works after the user messages the bot).
+/// Try to get the chat_id by long-polling for new messages.
+/// First clears any pending updates, then waits for a fresh message.
 fn discover_telegram_chat_id(token: &str) -> Option<String> {
-    let url = format!("https://api.telegram.org/bot{token}/getUpdates?limit=1&timeout=0");
-    let resp = ureq::get(&url).call().ok()?;
+    // Step 1: Clear old updates by fetching with offset -1
+    let clear_url =
+        format!("https://api.telegram.org/bot{token}/getUpdates?offset=-1&limit=1&timeout=0");
+    let mut next_offset = 0i64;
+    if let Ok(resp) = ureq::get(&clear_url).call() {
+        if let Ok(json) = resp.into_body().read_json::<serde_json::Value>() {
+            if let Some(last) = json["result"].as_array().and_then(|a| a.last()) {
+                if let Some(uid) = last["update_id"].as_i64() {
+                    next_offset = uid + 1; // Skip past all old updates
+                }
+            }
+        }
+    }
+
+    // Step 2: Long-poll for a NEW message (timeout=5s per request)
+    let poll_url = format!(
+        "https://api.telegram.org/bot{token}/getUpdates?offset={next_offset}&limit=1&timeout=5"
+    );
+    let resp = ureq::get(&poll_url).call().ok()?;
     let json: serde_json::Value = resp.into_body().read_json().ok()?;
     json["result"]
         .as_array()?
-        .last()?
+        .first()?
         .get("message")?
         .get("chat")?
         .get("id")?
@@ -10732,6 +10666,114 @@ fn cmd_agent(cli: &Cli, command: Option<&AgentCommand>) -> Result<()> {
             Ok(())
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// ATT&CK Navigator layer generation
+// ---------------------------------------------------------------------------
+
+fn generate_navigator_layer() -> serde_json::Value {
+    // All detector → technique mappings (mirrors agent/mitre.rs)
+    let techniques: Vec<(&str, &str, &str)> = vec![
+        ("T1110.001", "Credential Access", "ssh_bruteforce"),
+        ("T1110.004", "Credential Access", "credential_stuffing"),
+        ("T1110", "Credential Access", "distributed_ssh"),
+        ("T1003", "Credential Access", "credential_harvest"),
+        ("T1078", "Initial Access", "suspicious_login"),
+        ("T1595", "Reconnaissance", "port_scan"),
+        (
+            "T1595.002",
+            "Reconnaissance",
+            "web_scan, user_agent_scanner",
+        ),
+        ("T1499", "Impact", "search_abuse"),
+        ("T1496", "Impact", "crypto_miner"),
+        ("T1498", "Impact", "outbound_anomaly"),
+        ("T1486", "Impact", "ransomware"),
+        ("T1059", "Execution", "execution_guard, process_tree"),
+        ("T1059.004", "Execution", "reverse_shell"),
+        ("T1610", "Execution", "docker_anomaly"),
+        ("T1620", "Defense Evasion", "fileless"),
+        ("T1098", "Defense Evasion", "integrity_alert"),
+        ("T1070", "Defense Evasion", "log_tampering"),
+        ("T1014", "Defense Evasion", "rootkit"),
+        ("T1055", "Defense Evasion", "process_injection"),
+        ("T1505.003", "Persistence", "web_shell"),
+        ("T1098.004", "Persistence", "ssh_key_injection"),
+        ("T1547.006", "Persistence", "kernel_module_load"),
+        ("T1053.003", "Persistence", "crontab_persistence"),
+        ("T1543.002", "Persistence", "systemd_persistence"),
+        ("T1136", "Persistence", "user_creation"),
+        ("T1611", "Privilege Escalation", "container_escape"),
+        ("T1068", "Privilege Escalation", "privesc"),
+        ("T1548", "Privilege Escalation", "sudo_abuse"),
+        ("T1548.001", "Privilege Escalation", "sudo_abuse"),
+        ("T1071", "Command and Control", "c2_callback"),
+        ("T1571", "Command and Control", "c2_callback"),
+        ("T1048.001", "Exfiltration", "dns_tunneling"),
+        (
+            "T1041",
+            "Exfiltration",
+            "data_exfiltration, data_exfil_ebpf",
+        ),
+        ("T1021", "Lateral Movement", "lateral_movement"),
+        ("T1190", "Multiple", "suricata_alert"),
+        ("T1546.004", "Persistence", "sensitive_write"),
+        ("T1037.004", "Persistence", "sensitive_write"),
+        ("T1574.006", "Persistence", "sensitive_write"),
+        ("T1556", "Credential Access", "sensitive_write"),
+        ("T1053.002", "Persistence", "at_job_persist"),
+        ("T1222.002", "Defense Evasion", "file_permission_mod"),
+        ("T1564.001", "Defense Evasion", "hidden_artifact"),
+        ("T1219", "Command and Control", "remote_access_tool"),
+        ("T1489", "Impact", "service_stop"),
+        ("T1529", "Impact", "system_shutdown"),
+        ("T1040", "Credential Access", "network_sniffing"),
+        ("T1036.005", "Defense Evasion", "masquerading"),
+        ("T1560", "Collection", "data_archive"),
+        ("T1090", "Command and Control", "proxy_tunnel"),
+        ("T1105", "Command and Control", "execution_guard"),
+        ("T1140", "Defense Evasion", "execution_guard"),
+        ("T1552.001", "Credential Access", "data_exfil_ebpf"),
+        ("T1552.004", "Credential Access", "private_key_search"),
+        ("T1562.001", "Defense Evasion", "sudo_abuse"),
+        ("T1562.004", "Defense Evasion", "sudo_abuse"),
+        ("T1485", "Impact", "sudo_abuse"),
+    ];
+
+    let tech_entries: Vec<serde_json::Value> = techniques
+        .iter()
+        .map(|(tid, _tactic, detectors)| {
+            serde_json::json!({
+                "techniqueID": tid,
+                "score": 1,
+                "color": "#00ff00",
+                "comment": format!("Detectors: {detectors}"),
+                "enabled": true,
+                "showSubtechniques": true,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "name": "InnerWarden Detection Coverage",
+        "versions": {
+            "attack": "16",
+            "navigator": "5.1.0",
+            "layer": "4.5"
+        },
+        "domain": "enterprise-attack",
+        "description": format!(
+            "InnerWarden: {} MITRE ATT&CK techniques covered by 49 detectors + 8 YARA + 8 Sigma rules",
+            tech_entries.len()
+        ),
+        "gradient": {
+            "colors": ["#ffe766", "#00ff00"],
+            "minValue": 1,
+            "maxValue": 3
+        },
+        "techniques": tech_entries,
+    })
 }
 
 // Tests

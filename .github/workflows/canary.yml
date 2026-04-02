@@ -1,0 +1,100 @@
+name: Canary
+
+on:
+  push:
+    branches:
+      - develop
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  canary-release:
+    name: Build canary binaries
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@abea47f85e598557f500fa1fd2ab7464fcb39406 # v2
+        with:
+          version: 0.13.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          cache-directories: ~/.cargo/bin
+
+      - name: Install cargo-zigbuild
+        run: |
+          if ! command -v cargo-zigbuild &>/dev/null; then
+            cargo install cargo-zigbuild --locked
+          fi
+
+      - name: Install nightly + bpf-linker for eBPF
+        run: |
+          rustup toolchain install nightly --component rust-src
+          cargo +nightly install bpf-linker --locked
+
+      - name: Build eBPF bytecode
+        run: |
+          cd crates/sensor-ebpf
+          RUSTFLAGS="" cargo +nightly build \
+            --target bpfel-unknown-none \
+            -Z build-std=core \
+            --release \
+            --features dispatcher
+
+      - name: Build x86_64
+        run: |
+          cargo zigbuild --release \
+            --target x86_64-unknown-linux-gnu \
+            -p innerwarden-sensor --features ebpf-embedded
+          cargo zigbuild --release \
+            --target x86_64-unknown-linux-gnu \
+            -p innerwarden-agent -p innerwarden-ctl
+
+      - name: Build aarch64
+        run: |
+          cargo zigbuild --release \
+            --target aarch64-unknown-linux-gnu \
+            -p innerwarden-sensor --features ebpf-embedded
+          cargo zigbuild --release \
+            --target aarch64-unknown-linux-gnu \
+            -p innerwarden-agent -p innerwarden-ctl
+
+      - name: Stage assets
+        run: |
+          mkdir -p dist
+          for arch in x86_64 aarch64; do
+            target="${arch}-unknown-linux-gnu"
+            for binary in innerwarden-sensor innerwarden-agent innerwarden-ctl; do
+              cp "target/$target/release/$binary" "dist/${binary}-linux-${arch}"
+            done
+          done
+
+      - name: Update canary release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: canary
+          commit: ${{ github.sha }}
+          name: "Canary (develop)"
+          body: |
+            Automated canary build from `develop` branch.
+            Commit: ${{ github.sha }}
+            **Not for production** — use the latest stable release instead.
+          prerelease: true
+          allowUpdates: true
+          replacesArtifacts: true
+          artifacts: "dist/*"
+          token: ${{ secrets.GITHUB_TOKEN }}
