@@ -915,6 +915,12 @@ pub struct TelegramConfig {
     #[serde(default)]
     pub dev_mode: bool,
 
+    /// User profile: "simple" or "technical". Controls alert language and detail level.
+    /// Simple: plain language, no IPs, no detector names. For non-technical users.
+    /// Technical: full details, IPs, severity codes, evidence. For sysadmins.
+    #[serde(default = "default_user_profile")]
+    pub user_profile: String,
+
     /// Conversational bot configuration.
     #[serde(default)]
     pub bot: TelegramBotConfig,
@@ -973,6 +979,11 @@ impl TelegramConfig {
             }
         }
     }
+
+    /// Returns true if the user profile is "simple" (non-technical).
+    pub fn is_simple_profile(&self) -> bool {
+        self.user_profile.eq_ignore_ascii_case("simple")
+    }
 }
 
 impl Default for TelegramConfig {
@@ -986,6 +997,7 @@ impl Default for TelegramConfig {
             approval_ttl_secs: default_telegram_approval_ttl_secs(),
             daily_summary_hour: None,
             dev_mode: false,
+            user_profile: default_user_profile(),
             bot: TelegramBotConfig::default(),
         }
     }
@@ -1523,6 +1535,10 @@ fn default_crowdsec_max_per_sync() -> usize {
 
 fn default_telegram_approval_ttl_secs() -> u64 {
     600
+}
+
+fn default_user_profile() -> String {
+    "simple".to_string()
 }
 
 // ---------------------------------------------------------------------------

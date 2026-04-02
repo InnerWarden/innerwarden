@@ -1025,6 +1025,7 @@ fn decision_cooldown_key_from_entry(entry: &decisions::DecisionEntry) -> Option<
     }
 }
 
+#[allow(dead_code)]
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -2801,7 +2802,9 @@ async fn process_incidents(
                     if let Some(tg) = tg {
                         if state.telegram_batcher.should_send_immediately(incident) {
                             let mode = guardian_mode(cfg);
-                            if let Err(e) = tg.send_incident_alert(incident, mode).await {
+                            let is_simple = cfg.telegram.is_simple_profile();
+                            if let Err(e) = tg.send_incident_alert(incident, mode, is_simple).await
+                            {
                                 warn!(incident_id = %incident.incident_id, "Telegram alert failed: {e:#}");
                             }
                         }
@@ -4582,48 +4585,121 @@ async fn process_telegram_approval(
     if result.incident_id == "__status__" {
         info!(operator = %result.operator_name, "Telegram /status command received");
         if cfg.telegram.bot.enabled {
-            let today = chrono::Local::now()
-                .date_naive()
-                .format("%Y-%m-%d")
-                .to_string();
-            let incident_count = count_jsonl_lines(data_dir, &format!("incidents-{today}.jsonl"));
-            let decision_count = count_jsonl_lines(data_dir, &format!("decisions-{today}.jsonl"));
-            let mode = guardian_mode(cfg);
-            let mode_label = mode.label();
-            let mode_desc = mode.description();
-            let ai_label = if cfg.ai.enabled {
-                format!("{} / {}", cfg.ai.provider, cfg.ai.model)
+            if cfg.telegram.is_simple_profile() {
+                // Simple profile: semaphore status
+                let today = chrono::Local::now()
+                    .date_naive()
+                    .format("%Y-%m-%d")
+                    .to_string();
+                let decision_count =
+                    count_jsonl_lines(data_dir, &format!("decisions-{today}.jsonl")) as u64;
+
+                // Check for recent critical/high incidents from narrative accumulator
+                let now_utc = chrono::Utc::now();
+                let one_hour_ago = now_utc - chrono::Duration::hours(1);
+                let twenty_four_h_ago = now_utc - chrono::Duration::hours(24);
+                let mut has_critical_last_hour = false;
+                let mut has_high_last_hour = false;
+                let mut has_critical_last_24h = false;
+                let mut last_threat_ts: Option<chrono::DateTime<chrono::Utc>> = None;
+
+                for inc in state.narrative_acc.incidents.iter().rev() {
+                    if inc.ts > twenty_four_h_ago
+                        && matches!(inc.severity, innerwarden_core::event::Severity::Critical)
+                    {
+                        has_critical_last_24h = true;
+                    }
+                    if inc.ts > one_hour_ago {
+                        if matches!(inc.severity, innerwarden_core::event::Severity::Critical) {
+                            has_critical_last_hour = true;
+                        }
+                        if matches!(inc.severity, innerwarden_core::event::Severity::High) {
+                            has_high_last_hour = true;
+                        }
+                    }
+                    if last_threat_ts.is_none() {
+                        last_threat_ts = Some(inc.ts);
+                    }
+                }
+
+                // Estimate uptime from the data directory's creation time
+                let uptime_days = std::fs::metadata(data_dir)
+                    .and_then(|m| m.created())
+                    .map(|t| t.elapsed().map(|e| e.as_secs() / 86400).unwrap_or(0))
+                    .unwrap_or(0);
+
+                let last_threat_ago = match last_threat_ts {
+                    Some(ts) => {
+                        let diff = now_utc - ts;
+                        if diff.num_hours() >= 24 {
+                            format!("{} days ago", diff.num_days())
+                        } else if diff.num_hours() >= 1 {
+                            format!("{} hours ago", diff.num_hours())
+                        } else {
+                            format!("{} minutes ago", diff.num_minutes().max(1))
+                        }
+                    }
+                    None => "no threats recorded".to_string(),
+                };
+
+                let text = telegram::format_simple_status(
+                    has_critical_last_24h,
+                    has_high_last_hour,
+                    has_critical_last_hour,
+                    uptime_days,
+                    decision_count,
+                    &last_threat_ago,
+                );
+                tg_reply!(text);
             } else {
-                "not configured".to_string()
-            };
-            let host = std::env::var("HOSTNAME")
-                .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
-                .unwrap_or_else(|_| "unknown".to_string());
-            let today_line = if incident_count == 0 {
-                "All quiet. No threat actors in the logs today.".to_string()
-            } else if decision_count == 0 {
-                format!(
-                    "{incident_count} intrusion attempt{} detected - none acted on yet.",
-                    if incident_count == 1 { "" } else { "s" }
-                )
-            } else {
-                format!(
-                    "{incident_count} intrusion attempt{}, {decision_count} neutralized.",
-                    if incident_count == 1 { "" } else { "s" }
-                )
-            };
-            let text = format!(
-                "👾 <b>InnerWarden</b> - <b>{host}</b>\n\
-                 ━━━━━━━━━━━━━━━━\n\
-                 Mode: <b>{mode_label}</b>\n\
-                 <i>{mode_desc}</i>\n\
-                 \n\
-                 AI: {ai_label}\n\
-                 Today: {today_line}\n\
-                 \n\
-                 /threats · /decisions · /blocked",
-            );
-            tg_reply!(text);
+                // Technical profile: full status
+                let today = chrono::Local::now()
+                    .date_naive()
+                    .format("%Y-%m-%d")
+                    .to_string();
+                let incident_count =
+                    count_jsonl_lines(data_dir, &format!("incidents-{today}.jsonl"));
+                let decision_count =
+                    count_jsonl_lines(data_dir, &format!("decisions-{today}.jsonl"));
+                let mode = guardian_mode(cfg);
+                let mode_label = mode.label();
+                let mode_desc = mode.description();
+                let ai_label = if cfg.ai.enabled {
+                    format!("{} / {}", cfg.ai.provider, cfg.ai.model)
+                } else {
+                    "not configured".to_string()
+                };
+                let host = std::env::var("HOSTNAME")
+                    .or_else(|_| {
+                        std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string())
+                    })
+                    .unwrap_or_else(|_| "unknown".to_string());
+                let today_line = if incident_count == 0 {
+                    "All quiet. No threat actors in the logs today.".to_string()
+                } else if decision_count == 0 {
+                    format!(
+                        "{incident_count} intrusion attempt{} detected - none acted on yet.",
+                        if incident_count == 1 { "" } else { "s" }
+                    )
+                } else {
+                    format!(
+                        "{incident_count} intrusion attempt{}, {decision_count} neutralized.",
+                        if incident_count == 1 { "" } else { "s" }
+                    )
+                };
+                let text = format!(
+                    "\u{1f47e} <b>InnerWarden</b> - <b>{host}</b>\n\
+                     \u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\n\
+                     Mode: <b>{mode_label}</b>\n\
+                     <i>{mode_desc}</i>\n\
+                     \n\
+                     AI: {ai_label}\n\
+                     Today: {today_line}\n\
+                     \n\
+                     /threats \u{00b7} /decisions \u{00b7} /blocked",
+                );
+                tg_reply!(text);
+            }
         }
         return;
     }
@@ -4642,6 +4718,34 @@ async fn process_telegram_approval(
                  <i>{desc}</i>\n\n\
                  To apply permanently, run on server:\n\
                  <code>innerwarden configure sensitivity {level}</code>"
+            );
+            let tg = tg.clone();
+            tokio::spawn(async move {
+                let _ = tg.send_raw_html(&msg).await;
+            });
+        }
+        return;
+    }
+
+    // Profile toggle: "profile:simple" or "profile:technical"
+    if let Some(profile) = result.incident_id.strip_prefix("__profile__:") {
+        info!(operator = %result.operator_name, profile, "Telegram profile change");
+        if let Some(ref tg) = state.telegram_client {
+            let (emoji, desc) = match profile {
+                "simple" => (
+                    "✨",
+                    "Simple mode. Plain language alerts, no technical details.",
+                ),
+                _ => (
+                    "🔧",
+                    "Technical mode. Full details, IPs, detectors, evidence.",
+                ),
+            };
+            let msg = format!(
+                "{emoji} <b>Profile: {profile}</b>\n\n\
+                 <i>{desc}</i>\n\n\
+                 To apply permanently, run on server:\n\
+                 <code>innerwarden configure profile {profile}</code>"
             );
             let tg = tg.clone();
             tokio::spawn(async move {
@@ -4714,8 +4818,9 @@ async fn process_telegram_approval(
         if cfg.telegram.bot.enabled {
             if let Some(ref tg) = state.telegram_client {
                 let tg = tg.clone();
+                let is_simple = cfg.telegram.is_simple_profile();
                 tokio::spawn(async move {
-                    let _ = tg.send_menu().await;
+                    let _ = tg.send_menu(is_simple).await;
                 });
             }
         }
@@ -5918,10 +6023,42 @@ async fn process_narrative_tick(
                     let already_sent = state.last_daily_summary_telegram == Some(today_naive);
                     if !already_sent && now_local.hour() >= u32::from(hour) {
                         if let Some(tg) = &state.telegram_client {
-                            let preview: String = md.chars().take(3500).collect();
-                            let text = format!(
-                                "📋 <b>Daily report - {today}</b>\n\n<pre>{}</pre>",
-                                html_escape(&preview)
+                            let is_simple = cfg.telegram.is_simple_profile();
+                            // Count incidents by severity and top detector
+                            let mut incidents_today: u32 = 0;
+                            let mut critical_count: u32 = 0;
+                            let mut high_count: u32 = 0;
+                            let mut detector_counts: HashMap<String, u32> = HashMap::new();
+                            for inc in &state.narrative_acc.incidents {
+                                incidents_today += 1;
+                                match inc.severity {
+                                    innerwarden_core::event::Severity::Critical => {
+                                        critical_count += 1;
+                                    }
+                                    innerwarden_core::event::Severity::High => {
+                                        high_count += 1;
+                                    }
+                                    _ => {}
+                                }
+                                let det = telegram::extract_detector_pub(&inc.incident_id);
+                                *detector_counts.entry(det.to_string()).or_insert(0) += 1;
+                            }
+                            let blocks_today =
+                                count_jsonl_lines(data_dir, &format!("decisions-{today}.jsonl"))
+                                    as u32;
+                            let (top_detector, top_count) = detector_counts
+                                .iter()
+                                .max_by_key(|(_, c)| *c)
+                                .map(|(d, c)| (d.as_str(), *c))
+                                .unwrap_or(("none", 0));
+                            let text = telegram::format_daily_digest(
+                                incidents_today,
+                                blocks_today,
+                                critical_count,
+                                high_count,
+                                top_detector,
+                                top_count,
+                                is_simple,
                             );
                             match tg.send_text_message(&text).await {
                                 Ok(()) => {
