@@ -3409,8 +3409,6 @@ async fn api_collectors(State(state): State<DashboardState>) -> Json<serde_json:
     let syslog_fw = "/var/log/syslog";
     let kern_log = "/var/log/kern.log";
     let cloudtrail = "/var/log/cloudtrail/events.json";
-    let falco = "/var/log/falco/falco_output.json";
-
     let collectors = serde_json::json!([
         {
             "id": "auth_log",
@@ -3552,16 +3550,6 @@ async fn api_collectors(State(state): State<DashboardState>) -> Json<serde_json:
             "events_today": count_source("macos_log"),
             "desc": "macOS unified log stream - auth events, process exec, network"
         },
-        {
-            "id": "falco_log",
-            "name": "Falco Runtime Security",
-            "kind": "external",
-            "log_path": falco,
-            "detected": file_exists(falco),
-            "active": recent(file_age_secs(falco)),
-            "events_today": count_source("falco_log"),
-            "desc": "Falco kernel-level runtime security alerts (container + host)"
-        }
     ]);
 
     Json(serde_json::json!({ "collectors": collectors }))
@@ -7935,8 +7923,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     docker: '#60a5fa', nginx: '#f97316', suricata: '#a78bfa', osquery: '#22d3ee',
     syslog: '#8b9db8', wazuh: '#f472b6', integrity: '#84cc16', cloudtrail: '#3b82f6',
     exec_audit: '#fb7185', syslog_firewall: '#8b9db8', firmware_integrity: '#84cc16',
-    macos_log: '#a78bfa', falco_log: '#f472b6',
-  };
+    macos_log: '#a78bfa',  };
   function sensorColor(name) { return SENSOR_COLORS[name] || '#78e5ff'; }
 
   async function loadSensors() {
@@ -8784,8 +8771,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       const colIcons = {
         auth_log:'🔑', journald:'📋', docker:'🐳', nginx_access:'🌐', nginx_error:'⚠️',
         exec_audit:'🔎', ebpf:'⚡', suricata_eve:'🐉', wazuh_alerts:'🔒', osquery_log:'🔍',
-        syslog_firewall:'🧱', firmware_integrity:'🔧', cloudtrail:'☁️', macos_log:'🍎', falco_log:'🦅'
-      };
+        syslog_firewall:'🧱', firmware_integrity:'🔧', cloudtrail:'☁️', macos_log:'🍎',      };
       const colStyle =
         '.col-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:4px}' +
         '.col-row{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 14px;display:flex;align-items:center;gap:10px}' +
