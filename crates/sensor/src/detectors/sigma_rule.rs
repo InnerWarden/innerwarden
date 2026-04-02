@@ -124,9 +124,40 @@ impl SigmaRuleDetector {
             return None;
         }
 
+        // Skip system operations that trigger many Sigma rules:
+        // - file.read_access on /etc/profile.d (bash sourcing profiles on login)
+        // - shell.command_exec from cron/systemd/cloud-init
+        if event.kind == "file.read_access" {
+            let path = event
+                .details
+                .get("filename")
+                .or_else(|| event.details.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if path.starts_with("/etc/profile.d/")
+                || path.starts_with("/etc/skel/")
+                || path.starts_with("/etc/bash_completion.d/")
+            {
+                return None;
+            }
+        }
+
         let now = event.ts;
 
+        // Sigma rules suppressed because they are too noisy on production Linux
+        // servers. These fire on normal operations (cron, builds, logins).
+        const SUPPRESSED_RULES: &[&str] = &[
+            // "Inline Python Execution - Spawn Shell Via OS System Library"
+            // Fires on ANY /bin/sh -c command, including ip neigh, cron jobs, etc.
+            "2d2f44ff-4611-4778-a8fc-323a0e9850cc",
+            // "Linux Shell Pipe to Shell" — fires on normal shell pipelines
+            "ab75c0b8-4e80-4940-b3f1-0e8ddf5ae1f3",
+        ];
+
         for rule in &self.rules {
+            if SUPPRESSED_RULES.contains(&rule.id.as_str()) {
+                continue;
+            }
             // Cooldown check
             if let Some(&last) = self.alerted.get(&rule.id) {
                 if now - last < self.cooldown {

@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-agent"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1603,7 +1603,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-agent-guard"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-ctl"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -1644,7 +1644,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-ebpf-types"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "serde",
 ]
@@ -1672,7 +1672,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-sensor"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "aya",
@@ -1680,6 +1680,7 @@ dependencies = [
  "chrono",
  "clap",
  "dns-lookup",
+ "flate2",
  "innerwarden_core",
  "libc",
  "proptest",
@@ -1713,7 +1714,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden_core"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "chrono",

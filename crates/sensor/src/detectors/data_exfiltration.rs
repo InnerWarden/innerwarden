@@ -277,6 +277,32 @@ impl DataExfiltrationDetector {
                     return None;
                 }
 
+                // Also check the first word of the command itself — bash -c "cc ..."
+                // has comm=bash but the actual command is a build tool invocation.
+                let cmd_first_word = command
+                    .split_whitespace()
+                    .next()
+                    .and_then(|w| w.rsplit('/').next())
+                    .unwrap_or("");
+                if build_tools.iter().any(|t| cmd_first_word.starts_with(t)) {
+                    return None;
+                }
+
+                // Skip shell wrappers around build commands (bash -c "cd ... && cargo build ...")
+                if (comm_base == "bash" || comm_base == "sh") && command.len() > 100 {
+                    let lower_cmd = command.to_lowercase();
+                    if lower_cmd.contains("cargo build")
+                        || lower_cmd.contains("cargo test")
+                        || lower_cmd.contains("cargo install")
+                        || lower_cmd.contains("make ")
+                        || lower_cmd.contains("cmake ")
+                        || lower_cmd.contains("git pull")
+                        || lower_cmd.contains("git push")
+                    {
+                        return None;
+                    }
+                }
+
                 if command.is_empty() || !Self::is_exfil_command(command) {
                     return None;
                 }
