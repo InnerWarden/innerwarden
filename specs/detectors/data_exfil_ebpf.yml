@@ -1,0 +1,298 @@
+kind: detector
+name: data_exfil_ebpf
+version: 1
+description: "Correlates sensitive file reads with outbound connections from the same PID"
+
+context: |
+  This detector catches multi-step data exfiltration: a process reads a sensitive
+  file (credentials, SSH keys, cloud configs) then makes an outbound network
+  connection within a time window. Neither step alone is suspicious, but the
+  combination within the same PID strongly indicates exfiltration.
+
+  Key architectural decisions:
+  - Correlation is PID-scoped, not process-name-scoped. Two different processes
+    cannot cross-contaminate. This prevents false positives from unrelated
+    systemd children sharing the same name.
+  - Internal destination IPs are skipped because LAN traffic is not exfiltration.
+    The is_internal_ip() function respects test_external_ips overrides from the
+    dynamic allowlist for Caldera/red-team testing.
+  - Severity is always Critical because this pattern is a high-fidelity indicator
+    of real data theft. If someone reads /etc/shadow then connects externally,
+    they are either exfiltrating or doing something very wrong.
+  - PASSWD_READERS is an inline allowlist (not from allowlists.rs) because it
+    covers a different concern: processes that legitimately read /etc/passwd for
+    NSS uid-to-name resolution then connect outbound (CrowdSec, web servers,
+    mail daemons, Node.js apps). This is a read-then-connect false positive,
+    not a general sensitive-file-reader suppression.
+
+  Relationship to data_exfiltration (command-based):
+  - data_exfil_ebpf works at the eBPF syscall layer (file.read_access + network.outbound_connect)
+  - data_exfiltration works at the shell command layer (shell.command_exec with pipe patterns)
+  - Both catch exfil, but via different telemetry. They do NOT overlap.
+
+behavior:
+  does:
+    - "Correlates file.read_access (or file.write_access) on sensitive paths with subsequent network.outbound_connect from the SAME PID within the configured window"
+    - "Tracks pending reads per-PID and fires only when the same PID connects externally"
+    - "Fires at Critical severity with evidence including the sensitive file path, destination IP/port, and elapsed time"
+    - "Prunes pending_reads at 5000 entries and alerted map at 1000 entries"
+  does_not:
+    - "Alert on InnerWarden's own processes (uid=998 or comm starts with innerwarden/tokio-rt-worker) because the sensor reads /etc/ssh/sshd_config and the agent makes API calls (AbuseIPDB, GeoIP)"
+    - "Alert on PASSWD_READERS (sshd, nginx, crowdsec, systemd, node, python, etc.) because these legitimately do NSS uid lookup via /etc/passwd then connect outbound"
+    - "Alert on internal destination IPs (RFC1918, loopback, link-local) since LAN is not exfiltration"
+    - "Alert on non-sensitive file reads (/var/log/syslog, /usr/bin/ls, etc.) since the path must match SENSITIVE_PATHS"
+    - "Alert when connect happens after the window expires (staleness protection)"
+    - "Alert twice for the same PID within the cooldown period"
+
+config:
+  window_secs: 60
+  cooldown_secs: 300
+
+dependencies:
+  - "allowlists.rs: is_innerwarden_process (uid check + comm prefix)"
+  - "mod.rs: is_internal_ip (RFC1918/loopback/link-local + test_external_ips override)"
+  - "Inline PASSWD_READERS list for NSS uid-lookup false positives"
+
+test_cases:
+  true_positives:
+    - description: "Attacker reads /etc/shadow then connects to external C2"
+      input:
+        kind: "file.read_access"
+        comm: "cat"
+        pid: 1234
+        uid: 0
+        filename: "/etc/shadow"
+      followup:
+        kind: "network.outbound_connect"
+        comm: "cat"
+        pid: 1234
+        uid: 0
+        dst_ip: "5.6.7.8"
+        dst_port: 443
+        delay_secs: 5
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "SSH key exfiltration via custom tool"
+      input:
+        kind: "file.read_access"
+        comm: "exfil"
+        pid: 2000
+        uid: 1000
+        filename: "/home/admin/.ssh/id_rsa"
+      followup:
+        kind: "network.outbound_connect"
+        comm: "exfil"
+        pid: 2000
+        uid: 1000
+        dst_ip: "8.8.8.8"
+        dst_port: 80
+        delay_secs: 2
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "Kubernetes config exfiltration"
+      input:
+        kind: "file.read_access"
+        comm: "malware"
+        pid: 3000
+        uid: 1000
+        filename: "/home/user/.kube/config"
+      followup:
+        kind: "network.outbound_connect"
+        comm: "malware"
+        pid: 3000
+        uid: 1000
+        dst_ip: "45.33.32.156"
+        dst_port: 8080
+        delay_secs: 10
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "Environment file with secrets exfiltrated"
+      input:
+        kind: "file.read_access"
+        comm: "stealer"
+        pid: 4000
+        uid: 1000
+        filename: "/app/.env"
+      followup:
+        kind: "network.outbound_connect"
+        comm: "stealer"
+        pid: 4000
+        uid: 1000
+        dst_ip: "93.184.216.34"
+        dst_port: 443
+        delay_secs: 3
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "InnerWarden sensor reading sshd_config then making API call (uid 998)"
+      input:
+        kind: "file.read_access"
+        comm: "tokio-rt-worker"
+        pid: 9999
+        uid: 998
+        filename: "/etc/ssh/sshd_config"
+      expected:
+        alert: false
+        reason: "InnerWarden process (uid=998) legitimately reads configs and connects to APIs"
+
+    - description: "CrowdSec reading /etc/passwd for NSS then querying threat intel API"
+      input:
+        kind: "file.read_access"
+        comm: "crowdsec"
+        pid: 5000
+        uid: 0
+        filename: "/etc/passwd"
+      expected:
+        alert: false
+        reason: "CrowdSec is in PASSWD_READERS - reads /etc/passwd for uid lookup"
+
+    - description: "nginx reading /etc/passwd for worker user resolution"
+      input:
+        kind: "file.read_access"
+        comm: "nginx"
+        pid: 6000
+        uid: 0
+        filename: "/etc/passwd"
+      expected:
+        alert: false
+        reason: "nginx is in PASSWD_READERS list"
+
+    - description: "Read sensitive file but connect to internal IP"
+      input:
+        kind: "file.read_access"
+        comm: "cat"
+        pid: 7000
+        uid: 0
+        filename: "/etc/shadow"
+      followup:
+        kind: "network.outbound_connect"
+        comm: "cat"
+        pid: 7000
+        uid: 0
+        dst_ip: "192.168.1.1"
+        dst_port: 443
+        delay_secs: 5
+      expected:
+        alert: false
+        reason: "Internal destination IP - LAN traffic is not exfiltration"
+
+    - description: "Read non-sensitive file then connect externally"
+      input:
+        kind: "file.read_access"
+        comm: "cat"
+        pid: 8000
+        uid: 0
+        filename: "/var/log/syslog"
+      followup:
+        kind: "network.outbound_connect"
+        comm: "cat"
+        pid: 8000
+        uid: 0
+        dst_ip: "5.6.7.8"
+        dst_port: 443
+        delay_secs: 5
+      expected:
+        alert: false
+        reason: "/var/log/syslog is not in SENSITIVE_PATHS"
+
+    - description: "Different PID reads file vs connects (no correlation)"
+      input:
+        kind: "file.read_access"
+        comm: "cat"
+        pid: 1234
+        uid: 0
+        filename: "/etc/shadow"
+      followup:
+        kind: "network.outbound_connect"
+        comm: "curl"
+        pid: 5678
+        uid: 0
+        dst_ip: "5.6.7.8"
+        dst_port: 443
+        delay_secs: 5
+      expected:
+        alert: false
+        reason: "PID 1234 read the file but PID 5678 connected - no same-PID correlation"
+
+    - description: "Connect after window expires"
+      input:
+        kind: "file.read_access"
+        comm: "cat"
+        pid: 1234
+        uid: 0
+        filename: "/etc/shadow"
+      followup:
+        kind: "network.outbound_connect"
+        comm: "cat"
+        pid: 1234
+        uid: 0
+        dst_ip: "5.6.7.8"
+        dst_port: 443
+        delay_secs: 61
+      expected:
+        alert: false
+        reason: "61 seconds exceeds the 60s correlation window"
+
+  false_positive_fixes:
+    - date: "2026-04-02"
+      description: "InnerWarden sensor triggering on own sshd_config reads"
+      context: |
+        The InnerWarden sensor (uid=998) reads /etc/ssh/sshd_config for integrity
+        checking and the agent makes outbound HTTPS calls to AbuseIPDB and GeoIP.
+        Both run under uid 998 as tokio-rt-worker threads. Without the
+        is_innerwarden_process check, every integrity cycle would fire a Critical
+        data exfil alert. Fixed by checking uid==998 or comm prefix at the very
+        top of process().
+      input:
+        kind: "file.read_access"
+        comm: "tokio-rt-worker"
+        pid: 9999
+        uid: 998
+        filename: "/etc/ssh/sshd_config"
+      expected:
+        alert: false
+
+    - date: "2026-04-02"
+      description: "CrowdSec reading /etc/passwd for NSS uid resolution"
+      context: |
+        CrowdSec and its sub-processes (cscli, cs-*, bouncer) read /etc/passwd
+        for NSS user/group resolution, then make HTTPS calls to CAPI and LAPI.
+        This is standard glibc behavior for any process calling getpwuid().
+        Added CrowdSec family to PASSWD_READERS. Same pattern applies to web
+        servers (nginx, apache), mail daemons (postfix, dovecot), and language
+        runtimes (node, python, ruby, java) that all do NSS lookup.
+      input:
+        kind: "file.read_access"
+        comm: "crowdsec"
+        pid: 5000
+        uid: 0
+        filename: "/etc/passwd"
+      expected:
+        alert: false
+
+    - date: "2026-04-02"
+      description: "OpenClaw AI agent doing NSS lookup then HTTP calls"
+      context: |
+        OpenClaw (and its libuv-worker threads) is a Node.js-based AI agent that
+        reads /etc/passwd via NSS glibc calls, then makes HTTP requests to MCP
+        servers and external APIs. Without adding openclaw and libuv-worker to
+        PASSWD_READERS, every API call cycle would trigger a false exfil alert.
+      input:
+        kind: "file.read_access"
+        comm: "openclaw"
+        pid: 7777
+        uid: 1000
+        filename: "/etc/passwd"
+      expected:
+        alert: false
+
+history:
+  - "2026-04-02: initial spec from production FP analysis"

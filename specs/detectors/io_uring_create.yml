@@ -1,0 +1,226 @@
+kind: detector
+name: io_uring_create
+version: 1
+description: "Detects io_uring usage that may indicate evasion of syscall-based monitoring"
+
+context: |
+  io_uring submits kernel operations via shared ring buffers, completely bypassing
+  traditional syscall interception mechanisms (seccomp, ptrace, audit, most eBPF
+  tools). Attackers use this to perform file I/O, network connections, and data
+  exfiltration invisible to most security tools. Reference: ARMO "curing" rootkit.
+
+  Two detection modes:
+  1. Ring creation (io_uring.create): any non-allowlisted process creating an
+     io_uring instance is suspicious because most userspace programs don't use
+     io_uring. Severity: Medium (creation alone is not an attack).
+  2. High-risk operation submission (io_uring.submit): only alerts on 4 specific
+     opcodes that have security implications:
+     - CONNECT (16): outbound network connection (C2, exfil)
+     - ACCEPT (13): inbound connection (reverse shell, backdoor)
+     - OPENAT (18): file access (credential theft)
+     - URING_CMD (46): device driver passthrough (always dangerous, Critical)
+     All other opcodes (READ, WRITE, SEND, RECV, etc.) are not alerted because
+     they are normal I/O operations.
+
+  Allowlisted processes: nginx, caddy, haproxy, envoy (high-perf web servers),
+  postgres, mysqld, mariadbd, mongod, redis-server, clickhouse, scylladb
+  (databases), io_uring, tokio, java, node, deno, bun (runtimes), openclaw,
+  libuv-worker, DelayedTaskSche (AI agents), systemd-journal (system).
+
+  The allowlist uses starts_with matching to handle kernel comm truncation
+  (16 char limit). E.g., "DelayedTaskSche" matches "DelayedTaskScheduler".
+
+behavior:
+  does:
+    - "Detects io_uring.create by non-allowlisted processes at Medium severity"
+    - "Detects io_uring.submit of CONNECT (16) at High severity"
+    - "Detects io_uring.submit of ACCEPT (13) at High severity"
+    - "Detects io_uring.submit of OPENAT (18) at High severity"
+    - "Detects io_uring.submit of URING_CMD (46) at Critical severity"
+    - "Tracks ring creators by PID"
+  does_not:
+    - "Alert on allowlisted processes (nginx, postgres, node, openclaw, etc.)"
+    - "Alert on non-high-risk opcodes (READ=22, WRITE=23, SEND=26, RECV=27, etc.)"
+    - "Alert twice for same comm:pid (create) or comm:opcode_name (submit) within cooldown"
+
+config:
+  cooldown_secs: 300
+
+dependencies:
+  - "Inline ALLOWED_PROCESSES list"
+  - "Inline HIGH_RISK_OPCODES and CRITICAL_OPCODES lists"
+
+test_cases:
+  true_positives:
+    - description: "Unknown process creates io_uring ring"
+      input:
+        kind: "io_uring.create"
+        comm: "evil"
+        pid: 1234
+        uid: 1000
+        sq_entries: 128
+      expected:
+        alert: true
+        severity: "medium"
+
+    - description: "Malware does CONNECT via io_uring (C2 callback)"
+      input:
+        kind: "io_uring.submit"
+        comm: "malware"
+        pid: 2000
+        uid: 1000
+        opcode: 16
+        fd: 3
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "Exploit uses ACCEPT via io_uring (reverse shell)"
+      input:
+        kind: "io_uring.submit"
+        comm: "exploit"
+        pid: 3000
+        uid: 0
+        opcode: 13
+        fd: 4
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "Rootkit uses OPENAT via io_uring (credential theft)"
+      input:
+        kind: "io_uring.submit"
+        comm: "stealer"
+        pid: 4000
+        uid: 0
+        opcode: 18
+        fd: 5
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "Exploit uses URING_CMD (device passthrough - Critical)"
+      input:
+        kind: "io_uring.submit"
+        comm: "exploit"
+        pid: 5000
+        uid: 0
+        opcode: 46
+        fd: 6
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "nginx creates io_uring ring (allowlisted)"
+      input:
+        kind: "io_uring.create"
+        comm: "nginx"
+        pid: 100
+        uid: 0
+        sq_entries: 256
+      expected:
+        alert: false
+        reason: "nginx is in ALLOWED_PROCESSES"
+
+    - description: "postgres does CONNECT via io_uring (allowlisted)"
+      input:
+        kind: "io_uring.submit"
+        comm: "postgres"
+        pid: 200
+        uid: 999
+        opcode: 16
+        fd: 3
+      expected:
+        alert: false
+        reason: "postgres is in ALLOWED_PROCESSES"
+
+    - description: "App uses READ opcode via io_uring (not high-risk)"
+      input:
+        kind: "io_uring.submit"
+        comm: "app"
+        pid: 300
+        uid: 1000
+        opcode: 22
+        fd: 7
+      expected:
+        alert: false
+        reason: "READ (22) is not in HIGH_RISK_OPCODES"
+
+    - description: "OpenClaw AI agent creates io_uring (allowlisted)"
+      input:
+        kind: "io_uring.create"
+        comm: "openclaw"
+        pid: 400
+        uid: 1000
+        sq_entries: 64
+      expected:
+        alert: false
+        reason: "openclaw is in ALLOWED_PROCESSES"
+
+    - description: "libuv-worker does io_uring submit (allowlisted)"
+      input:
+        kind: "io_uring.submit"
+        comm: "libuv-worker"
+        pid: 500
+        uid: 1000
+        opcode: 16
+        fd: 8
+      expected:
+        alert: false
+        reason: "libuv-worker is in ALLOWED_PROCESSES"
+
+    - description: "Cooldown suppresses duplicate alert"
+      test_cooldown: true
+      input:
+        kind: "io_uring.submit"
+        comm: "evil"
+        pid: 1234
+        uid: 1000
+        opcode: 16
+        fd: 3
+      expected:
+        alert: false
+        reason: "Same comm:opcode_name within cooldown is suppressed"
+
+  false_positive_fixes:
+    - date: "2026-04-02"
+      description: "OpenClaw and libuv-worker triggering io_uring alerts"
+      context: |
+        OpenClaw is a Node.js-based AI agent that uses libuv under the hood.
+        libuv has io_uring support on modern Linux kernels (5.1+) and uses it
+        for file I/O and network operations. The libuv-worker threads create
+        io_uring instances and submit CONNECT/ACCEPT/OPENAT operations as
+        part of normal MCP server communication. Without adding openclaw,
+        libuv-worker, and DelayedTaskSche to the allowlist, every API call
+        would generate io_uring alerts.
+      input:
+        kind: "io_uring.create"
+        comm: "libuv-worker"
+        pid: 500
+        uid: 1000
+        sq_entries: 32
+      expected:
+        alert: false
+
+    - date: "2026-04-02"
+      description: "High-performance databases using io_uring for I/O"
+      context: |
+        Modern databases (PostgreSQL 16+, ScyllaDB, ClickHouse) use io_uring
+        for asynchronous I/O to improve throughput. They perform CONNECT
+        (replication), ACCEPT (client connections), and OPENAT (data files)
+        via io_uring. These are legitimate high-performance I/O operations.
+        Added postgres, mysqld, mariadbd, mongod, redis-server, clickhouse,
+        scylladb to the allowlist.
+      input:
+        kind: "io_uring.submit"
+        comm: "postgres"
+        pid: 200
+        uid: 999
+        opcode: 18
+        fd: 10
+      expected:
+        alert: false
+
+history:
+  - "2026-04-02: initial spec from production FP analysis"

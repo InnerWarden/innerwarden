@@ -1,0 +1,249 @@
+kind: detector
+name: c2_callback
+version: 1
+description: "Detects Command & Control callback patterns via C2 ports, beaconing, and data exfiltration"
+
+context: |
+  This detector identifies C2 (Command & Control) communication patterns from
+  outbound network connections. Three detection patterns:
+
+  1. C2 port from suspicious process: Connections to well-known C2 ports (4444,
+     4445, 1337, 31337, 8888, 9999, 5555, 6666, 7777) from shell/scripting
+     processes (sh, bash, python, perl, nc, socat, etc.). Ports 443/8080 are
+     only suspicious from specific processes (sh, bash, nc, ncat, netcat, socat)
+     because curl/wget to HTTPS is normal.
+
+  2. Beaconing: 3+ connections to the same external IP at regular intervals.
+     Uses coefficient of variation (stddev/mean) < 0.3 to identify periodic
+     patterns. This catches C2 implants that "phone home" every N seconds.
+
+  3. Data exfiltration: A suspicious process connecting to 10+ unique external
+     IPs within the window. Indicates bulk data spray or scanning behavior.
+
+  Key decisions:
+  - InnerWarden and C2_OUTBOUND_ALLOWED processes are excluded (apt, snapd,
+    oracle-cloud-ag, telegraf, prometheus, osqueryd, nginx, mysqld, etc.).
+  - Internal IPs are excluded (is_internal_ip).
+  - Cloud metadata IP (169.254.169.254) and its byte-swapped variant
+    (254.169.254.169) are excluded. Port 0 (DNS artifacts) is excluded.
+  - C2_ALLOWED_COMMS is a separate list from allowlists.rs C2_OUTBOUND_ALLOWED.
+    It's an inline list of processes verified via /proc/PID/exe path check
+    (is_verified_infra_process). This prevents evasion by renaming a malicious
+    binary to "crowdsec" or "nginx" - the binary path must be in a legitimate
+    system directory.
+  - Beaconing uses coefficient of variation: stddev/mean < 0.3 means intervals
+    are very regular (e.g., every 30s +/- 9s). Minimum interval mean > 1.0s
+    to filter out burst connections. Minimum 3 data points.
+
+behavior:
+  does:
+    - "Detects connections to C2 ports (4444, 1337, 31337, etc.) from suspicious processes at High severity"
+    - "Detects beaconing (3+ connections at regular intervals) to same external IP at Critical severity"
+    - "Detects data exfiltration (10+ unique destination IPs from suspicious process) at Critical severity"
+    - "Verifies infra process binary paths via /proc/PID/exe to prevent name spoofing"
+  does_not:
+    - "Alert on InnerWarden processes (uid=998 or comm in C2_OUTBOUND_ALLOWED)"
+    - "Alert on verified infrastructure processes (gomon, crowdsec, nginx, etc. with valid binary path)"
+    - "Alert on internal IPs (RFC1918, loopback, link-local)"
+    - "Alert on cloud metadata IP (169.254.169.254) or port 0"
+    - "Alert on curl/wget to port 443 (normal HTTPS traffic)"
+    - "Alert on irregular connection patterns (CV >= 0.3 is not beaconing)"
+    - "Alert twice for same dst_ip:comm within window"
+
+config:
+  window_secs: 300
+
+dependencies:
+  - "allowlists.rs: is_innerwarden_process, C2_OUTBOUND_ALLOWED, comm_in_allowlist"
+  - "mod.rs: is_internal_ip, is_verified_infra_process"
+  - "Inline C2_ALLOWED_COMMS list (verified via /proc binary path)"
+
+test_cases:
+  true_positives:
+    - description: "bash connects to C2 port 4444"
+      input:
+        kind: "network.outbound_connect"
+        comm: "bash"
+        pid: 1234
+        uid: 0
+        dst_ip: "1.2.3.4"
+        dst_port: 4444
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "nc connects to C2 port 31337"
+      input:
+        kind: "network.outbound_connect"
+        comm: "nc"
+        pid: 2000
+        uid: 1000
+        dst_ip: "5.6.7.8"
+        dst_port: 31337
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "Beaconing: regular 30-second intervals to same IP"
+      sequence:
+        - delay_secs: 0
+        - delay_secs: 30
+        - delay_secs: 60
+        - delay_secs: 90
+        - delay_secs: 120
+      input:
+        kind: "network.outbound_connect"
+        comm: "malware"
+        pid: 3000
+        uid: 1000
+        dst_ip: "5.6.7.8"
+        dst_port: 8080
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "curl to port 443 (normal HTTPS)"
+      input:
+        kind: "network.outbound_connect"
+        comm: "curl"
+        pid: 1234
+        uid: 1000
+        dst_ip: "1.2.3.4"
+        dst_port: 443
+      expected:
+        alert: false
+        reason: "curl to 443 is normal HTTPS traffic"
+
+    - description: "InnerWarden connecting to AbuseIPDB"
+      input:
+        kind: "network.outbound_connect"
+        comm: "tokio-rt-worker"
+        pid: 5000
+        uid: 998
+        dst_ip: "104.16.1.1"
+        dst_port: 443
+      expected:
+        alert: false
+        reason: "InnerWarden process excluded via is_innerwarden_process"
+
+    - description: "bash connects to internal IP on C2 port"
+      input:
+        kind: "network.outbound_connect"
+        comm: "bash"
+        pid: 6000
+        uid: 0
+        dst_ip: "192.168.1.1"
+        dst_port: 4444
+      expected:
+        alert: false
+        reason: "Internal IP excluded by is_internal_ip"
+
+    - description: "bash connects to loopback on C2 port"
+      input:
+        kind: "network.outbound_connect"
+        comm: "bash"
+        pid: 7000
+        uid: 0
+        dst_ip: "127.0.0.1"
+        dst_port: 4444
+      expected:
+        alert: false
+        reason: "Loopback IP excluded by is_internal_ip"
+
+    - description: "apt connecting externally (in C2_OUTBOUND_ALLOWED)"
+      input:
+        kind: "network.outbound_connect"
+        comm: "apt"
+        pid: 8000
+        uid: 0
+        dst_ip: "91.189.88.152"
+        dst_port: 443
+      expected:
+        alert: false
+        reason: "apt is in C2_OUTBOUND_ALLOWED"
+
+    - description: "Cloud metadata IP excluded"
+      input:
+        kind: "network.outbound_connect"
+        comm: "python3"
+        pid: 9000
+        uid: 1000
+        dst_ip: "169.254.169.254"
+        dst_port: 80
+      expected:
+        alert: false
+        reason: "Cloud metadata IP is explicitly excluded"
+
+    - description: "Irregular connection intervals (not beaconing)"
+      skip_runner: true  # Needs multi-event timing that exceeds window boundary
+      input:
+        kind: "network.outbound_connect"
+        comm: "app"
+        pid: 1000
+        uid: 1000
+        dst_ip: "9.9.9.9"
+        dst_port: 443
+      expected:
+        alert: false
+        reason: "Irregular intervals have high CV (>0.3) - not beaconing"
+
+  false_positive_fixes:
+    - date: "2026-04-02"
+      description: "Monitoring tools (gomon, prometheus) triggering beaconing"
+      context: |
+        Monitoring tools make HTTPS calls to APIs at regular intervals (health
+        checks, metric scraping, threat intel queries). This produces a perfect
+        beaconing pattern: regular intervals to the same IP. Initially these
+        were only filtered by C2_OUTBOUND_ALLOWED comm matching, but an attacker
+        could rename a binary to "prometheus" to evade. Fixed by adding
+        C2_ALLOWED_COMMS with is_verified_infra_process() check that validates
+        the binary path via /proc/PID/exe. The binary must be in /usr/bin,
+        /usr/sbin, /usr/local/bin, /snap, or /opt - not /tmp or /dev/shm.
+      input:
+        kind: "network.outbound_connect"
+        comm: "gomon"
+        pid: 10000
+        uid: 0
+        dst_ip: "1.2.3.4"
+        dst_port: 443
+      expected:
+        alert: false
+
+    - date: "2026-04-02"
+      description: "Cloud metadata IP byte-swapped variant"
+      context: |
+        On some kernel versions, the eBPF connect tracepoint reports the
+        destination IP in a different byte order. The cloud metadata service
+        IP 169.254.169.254 appears as 254.169.254.169. Without filtering
+        both variants, every cloud instance would trigger C2 port alerts
+        when containers/processes query the metadata service.
+      input:
+        kind: "network.outbound_connect"
+        comm: "python3"
+        pid: 11000
+        uid: 1000
+        dst_ip: "254.169.254.169"
+        dst_port: 80
+      expected:
+        alert: false
+
+    - date: "2026-04-02"
+      description: "Port 0 DNS resolution artifacts"
+      context: |
+        Some eBPF connect events report dst_port=0 for DNS resolution calls.
+        These are internal glibc/systemd-resolved operations, not actual
+        C2 connections. Without filtering port 0, every DNS resolution would
+        trigger C2 port alerts if the destination IP was external.
+      input:
+        kind: "network.outbound_connect"
+        comm: "python3"
+        pid: 12000
+        uid: 1000
+        dst_ip: "8.8.8.8"
+        dst_port: 0
+      expected:
+        alert: false
+
+history:
+  - "2026-04-02: initial spec from production FP analysis"

@@ -1,0 +1,238 @@
+kind: detector
+name: discovery_burst
+version: 1
+description: "Alerts when a user runs many reconnaissance commands in a short window"
+
+context: |
+  Individual discovery commands (ps, id, whoami, ss, ip addr) are normal admin
+  activity. But 5+ in 60 seconds from the same uid is active reconnaissance,
+  commonly the first phase of an attack after initial access.
+
+  Key architectural decisions:
+  - Tracking is per-uid, not per-PID. An attacker in one SSH session may spawn
+    multiple shells, but they all share the same uid. PID-based tracking would
+    miss this because each command has a new PID.
+  - Root (uid=0) gets a 3x threshold multiplier because sysadmins legitimately
+    run many discovery commands during deploys, package installs, and debugging.
+    A normal admin might run "ps aux && id && uname -a && df -h && free -m" in
+    a single session. The 3x multiplier avoids false positives during admin work
+    while still catching sustained automated recon.
+  - Severity escalates: Medium at threshold, High at 2x threshold. This is
+    because sustained recon (10+ commands) is more likely automated attack
+    tooling than human admin activity.
+  - Cooldown is 30 minutes (1800s), intentionally long. One alert per recon
+    burst is enough; follow-up commands in the same session are suppressed.
+  - Chained commands from shell wrappers (sh/bash with &&) are skipped because
+    real recon runs standalone commands from an interactive shell, while scripts
+    chain them. This prevents cron jobs and CI/CD from triggering.
+  - The DISCOVERY_ALLOWED list from allowlists.rs covers monitoring tools
+    (innerwarden, osqueryd, telegraf, etc.), config management (ansible, puppet,
+    chef, salt), CI/CD (cargo, git, make, gcc), cloud-init, and Ubuntu MOTD
+    scripts (00-header, 10-help-text, etc.) that run discovery on SSH login.
+
+  MITRE ATT&CK coverage:
+  T1087 (Account Discovery), T1082 (System Info), T1016 (Network Config),
+  T1049 (Network Connections), T1057 (Process Discovery), T1083 (File Discovery)
+
+behavior:
+  does:
+    - "Counts shell.command_exec events matching DISCOVERY_COMMANDS per uid in a sliding window"
+    - "Alerts at threshold (default 5) for non-root, at 3x threshold (15) for root"
+    - "Severity Medium at threshold, escalates to High at 2x threshold"
+    - "Uses 30-minute cooldown - one alert per burst"
+  does_not:
+    - "Alert on InnerWarden processes (uid check + comm prefix via is_innerwarden_process)"
+    - "Alert on DISCOVERY_ALLOWED processes (osqueryd, telegraf, cargo, git, cloud-init, MOTD scripts, etc.)"
+    - "Alert on chained commands (sh/bash with &&) since those are scripts, not interactive recon"
+    - "Alert on non-discovery commands (vim, gcc, npm install)"
+    - "Alert below threshold (4 commands from non-root, 14 from root)"
+    - "Track different uids together - each uid has its own sliding window"
+
+config:
+  threshold: 5
+  window_secs: 60
+  cooldown_secs: 1800
+
+dependencies:
+  - "allowlists.rs: is_innerwarden_process, DISCOVERY_ALLOWED, comm_in_allowlist"
+
+test_cases:
+  true_positives:
+    - description: "Non-root user runs 5 discovery commands in 60s"
+      sequence:
+        - command: "ps aux"
+        - command: "id"
+        - command: "whoami"
+        - command: "uname -a"
+      input:
+        kind: "shell.command_exec"
+        comm: "bash"
+        uid: 1000
+        pid: 1234
+        command: "cat /etc/passwd"
+      expected:
+        alert: true
+        severity: "medium"
+
+    - description: "Recon at threshold fires at Medium severity"
+      sequence_count: 6
+      input:
+        kind: "shell.command_exec"
+        comm: "bash"
+        uid: 1000
+        pid: 1234
+        command: "hostname"
+      expected:
+        alert: true
+        severity: "medium"
+
+    - description: "Root user exceeds 3x threshold (15+ commands)"
+      sequence_count: 16
+      input:
+        kind: "shell.command_exec"
+        comm: "bash"
+        uid: 0
+        pid: 1234
+        command: "ps aux"
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "4 discovery commands from non-root (under threshold)"
+      sequence:
+        - command: "ps aux"
+        - command: "id"
+        - command: "whoami"
+      input:
+        kind: "shell.command_exec"
+        comm: "bash"
+        uid: 1000
+        pid: 1234
+        command: "uname -a"
+      expected:
+        alert: false
+        reason: "4 commands is below the threshold of 5"
+
+    - description: "Discovery from innerwarden-sensor (allowlisted)"
+      input:
+        kind: "shell.command_exec"
+        comm: "innerwarden-sensor"
+        uid: 998
+        pid: 1
+        command: "ps aux"
+      expected:
+        alert: false
+        reason: "innerwarden-sensor matches is_innerwarden_process"
+
+    - description: "Discovery from cargo (build tool in DISCOVERY_ALLOWED)"
+      input:
+        kind: "shell.command_exec"
+        comm: "cargo"
+        uid: 1000
+        pid: 2000
+        command: "ps aux"
+      expected:
+        alert: false
+        reason: "cargo is in DISCOVERY_ALLOWED list"
+
+    - description: "Cloud-init boot discovery"
+      input:
+        kind: "shell.command_exec"
+        comm: "cloud-init"
+        uid: 0
+        pid: 500
+        command: "uname -a"
+      expected:
+        alert: false
+        reason: "cloud-init is in DISCOVERY_ALLOWED list"
+
+    - description: "Non-discovery commands (vim, gcc, npm)"
+      input:
+        kind: "shell.command_exec"
+        comm: "bash"
+        uid: 1000
+        pid: 1234
+        command: "vim file.txt"
+      expected:
+        alert: false
+        reason: "vim is not in DISCOVERY_COMMANDS"
+
+    - description: "Different uids tracked separately"
+      input:
+        kind: "shell.command_exec"
+        comm: "bash"
+        uid: 1001
+        pid: 3000
+        command: "whoami"
+      expected:
+        alert: false
+        reason: "Commands from uid 1000 do not count toward uid 1001 threshold"
+
+    - description: "Chained discovery commands from shell script"
+      input:
+        kind: "shell.command_exec"
+        comm: "sh"
+        uid: 1000
+        pid: 4000
+        command: "ps aux && id && whoami && uname -a && hostname"
+      expected:
+        alert: false
+        reason: "Chained commands (contains &&) from sh/bash are skipped - indicates script, not interactive recon"
+
+  false_positive_fixes:
+    - date: "2026-04-02"
+      description: "Ubuntu MOTD scripts triggering on every SSH login"
+      context: |
+        Ubuntu's MOTD system runs scripts (00-header, 10-help-text, 50-motd-news,
+        60-unminimize, 91-release-upgr) on every SSH login. These scripts execute
+        uname, id, hostname, and other discovery commands. On a busy server with
+        many SSH sessions, this exceeded the burst threshold. Fixed by adding all
+        MOTD script names to DISCOVERY_ALLOWED in allowlists.rs. Also added
+        run-parts (the MOTD runner) and release-upgrade-motd.
+      input:
+        kind: "shell.command_exec"
+        comm: "00-header"
+        uid: 0
+        pid: 5000
+        command: "uname -a"
+      expected:
+        alert: false
+
+    - date: "2026-04-02"
+      description: "Root admin deploys triggering burst during package install"
+      context: |
+        During apt-get install and systemd service restarts, root runs many
+        discovery-like commands (systemctl status, ps aux, journalctl) in rapid
+        succession. The 3x threshold multiplier for uid=0 was added to give
+        admins more room. At threshold=5 and multiplier=3, root needs 15
+        discovery commands in 60s to trigger, which is well above normal admin
+        activity but still catches automated recon tools.
+      input:
+        kind: "shell.command_exec"
+        comm: "bash"
+        uid: 0
+        pid: 6000
+        command: "ps aux"
+      expected:
+        alert: false
+
+    - date: "2026-04-02"
+      description: "CI/CD compiler subprocesses (cc1, collect2) running discovery"
+      context: |
+        During compilation, gcc spawns cc1, collect2, and lto-wrapper which
+        execute discovery-like commands (checking system architecture, CPU
+        features). Added these to DISCOVERY_ALLOWED so build processes don't
+        trigger burst detection. Also added egrep and fgrep since overlayroot
+        health checks and cron jobs use grep variants.
+      input:
+        kind: "shell.command_exec"
+        comm: "cc1"
+        uid: 1000
+        pid: 7000
+        command: "uname -m"
+      expected:
+        alert: false
+
+history:
+  - "2026-04-02: initial spec from production FP analysis"

@@ -42,3 +42,5 @@ redis-sink = ["redis"]
 [dev-dependencies]
 tempfile = "3"
 proptest = "1"
+serde_yaml = "0.9"
+glob = "0.3"

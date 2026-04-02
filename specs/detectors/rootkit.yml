@@ -1,0 +1,265 @@
+kind: detector
+name: rootkit
+version: 1
+description: "Detects rootkit indicators via hidden processes, artifacts, LD_PRELOAD, kernel modules, timing anomalies, and process name spoofing"
+
+context: |
+  This is the most complex detector in the sensor. It covers 7 distinct rootkit
+  detection patterns, each targeting a different evasion technique:
+
+  1. Hidden process: eBPF sees a PID executing but /proc/{pid}/ doesn't exist.
+     Rootkits hook getdents64 to hide /proc entries from userspace tools (ps, top).
+     eBPF tracepoints see everything at kernel level, so the mismatch indicates
+     a rootkit hiding the process. Requires the PID to have been seen 5+ times
+     (persistent process) and to have been alive for 5+ seconds (not short-lived).
+
+  2. Known rootkit artifacts: files at paths commonly created by rootkits
+     (/dev/.hidden, /dev/shm/.hidden, /usr/lib/libprocesshider.so) and
+     suspicious dot-prefixed files in /tmp and /dev/shm (.r00t, .kdev, .bd, etc.).
+
+  3. LD_PRELOAD hijacking: process loads a shared library via LD_PRELOAD from
+     an unusual location (not /usr/lib, /lib, /usr/local/lib). Libraries from
+     /tmp or /dev/shm are almost certainly malicious.
+
+  4. /etc/ld.so.preload modification: any write to this file is a rootkit
+     installation technique (system-wide library preloading).
+
+  5. Kernel module operations: insmod/modprobe/rmmod for modules not in the
+     KNOWN_GOOD_MODULES list (100+ entries covering filesystem, networking,
+     storage, virtualization, drivers, security, and cloud modules).
+
+  6. Syscall table reconnaissance: reading /boot/System.map or /proc/kallsyms
+     to find kernel symbol addresses for syscall table hooking. Legitimate tools
+     (modprobe, depmod, perf, bpftool, innerwarden) are allowed.
+
+  7. Kernel function timing analysis (Welford's online algorithm): tracks
+     inter-event timing per syscall kind. After collecting min_samples (100),
+     uses z-score thresholding to detect anomalous latency. Rootkits that hook
+     kernel functions (e.g., getdents64 for file hiding) add measurable latency.
+     Requires consecutive_threshold (5) consecutive anomalies to fire, reducing
+     noise from transient I/O spikes. Event kinds with naturally high variance
+     (network.accept, file.truncate, process.exit) are excluded.
+     Based on ait-aecid/rootkit-detection-ebpf-time-trace research.
+
+  8. Process name spoofing: eBPF sees the real binary path via execve but the
+     comm field doesn't match. Only flags if binary is from a suspicious location
+     (/tmp, /dev/shm, /var/tmp, hidden dirs). Linux comm is truncated to 15 chars.
+
+behavior:
+  does:
+    - "Detects hidden processes via eBPF-vs-/proc mismatch (Critical severity)"
+    - "Detects known rootkit artifact file accesses (Critical severity)"
+    - "Detects /etc/ld.so.preload modification (Critical severity)"
+    - "Detects LD_PRELOAD from non-standard paths in execve (High severity)"
+    - "Detects suspicious kernel module operations (Critical severity)"
+    - "Detects syscall table reconnaissance (/proc/kallsyms, /boot/System.map) (High severity)"
+    - "Detects kernel function timing anomalies via Welford statistics (High severity)"
+    - "Detects process name spoofing from suspicious binary locations (High severity)"
+  does_not:
+    - "Alert on hidden processes seen fewer than 5 times (filters short-lived one-shot commands)"
+    - "Alert on hidden processes last seen within 5 seconds (allows normal exit race condition)"
+    - "Alert on known-good kernel modules (100+ modules: ext4, ip_tables, kvm, nvidia, etc.)"
+    - "Alert on syscall recon from legitimate tools (modprobe, depmod, perf, bpftool, innerwarden)"
+    - "Alert on LD_PRELOAD from legitimate lib dirs (/usr/lib, /lib, /usr/local/lib)"
+    - "Alert on timing anomalies for high-variance event kinds (network.accept, file.truncate, process.exit, process.clone)"
+    - "Alert on timing anomalies before min_samples (100) have been collected"
+    - "Alert on process name mismatches where binary is from a legitimate path"
+    - "Contaminate timing baseline with anomalous samples (only non-anomalous samples update Welford stats)"
+
+config:
+  check_interval_secs: 30
+  cooldown_secs: 300
+  timing_enabled: true
+  timing_min_samples: 100
+  timing_z_threshold: 4.0
+  timing_consecutive_threshold: 5
+
+dependencies:
+  - "Inline KNOWN_GOOD_MODULES (100+ known kernel modules)"
+  - "Inline ROOTKIT_ARTIFACT_PATHS, SUSPICIOUS_TMPFILE_NAMES"
+  - "Inline RECON_PATHS, LEGIT_LIB_DIRS"
+  - "mod.rs: is_internal_ip (for hidden process /proc check)"
+
+test_cases:
+  true_positives:
+    - description: "Hidden process: PID visible to eBPF but missing from /proc"
+      skip_runner: true  # Requires /proc mock and repeated events (5+ sightings)
+      input:
+        kind: "shell.command_exec"
+        comm: "hidden_daemon"
+        pid: 31337
+        uid: 0
+        command: "/tmp/.hidden/daemon"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "Rootkit artifact accessed: /dev/.hidden"
+      input:
+        kind: "file.read_access"
+        comm: "rootkit"
+        pid: 1234
+        uid: 0
+        filename: "/dev/.hidden"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "LD_PRELOAD from /tmp (malicious library)"
+      input:
+        kind: "shell.command_exec"
+        comm: "bash"
+        pid: 2000
+        uid: 0
+        command: "LD_PRELOAD=/tmp/evil.so /usr/bin/ls"
+        argv: ["LD_PRELOAD=/tmp/evil.so", "/usr/bin/ls"]
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "/etc/ld.so.preload written to"
+      input:
+        kind: "file.write_access"
+        comm: "installer"
+        pid: 3000
+        uid: 0
+        filename: "/etc/ld.so.preload"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "Unknown kernel module loaded"
+      input:
+        kind: "shell.command_exec"
+        comm: "insmod"
+        pid: 4000
+        uid: 0
+        command: "insmod /tmp/evil_rootkit.ko"
+        argv: ["insmod", "/tmp/evil_rootkit.ko"]
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "Process seen only 3 times (below min seen_count of 5)"
+      input:
+        kind: "shell.command_exec"
+        comm: "one_shot"
+        pid: 5000
+        uid: 0
+        command: "/usr/bin/one_shot"
+      expected:
+        alert: false
+        reason: "PID needs 5+ sightings to be considered persistent enough for hidden-process check"
+
+    - description: "Known kernel module loaded (ext4)"
+      input:
+        kind: "shell.command_exec"
+        comm: "modprobe"
+        pid: 6000
+        uid: 0
+        command: "modprobe ext4"
+        argv: ["modprobe", "ext4"]
+      expected:
+        alert: false
+        reason: "ext4 is in KNOWN_GOOD_MODULES"
+
+    - description: "perf reading /proc/kallsyms (legitimate tool)"
+      input:
+        kind: "file.read_access"
+        comm: "perf"
+        pid: 7000
+        uid: 0
+        filename: "/proc/kallsyms"
+      expected:
+        alert: false
+        reason: "perf is in the legitimate tools list for syscall recon"
+
+    - description: "LD_PRELOAD from /usr/lib (legitimate path)"
+      input:
+        kind: "shell.command_exec"
+        comm: "app"
+        pid: 8000
+        uid: 1000
+        command: "LD_PRELOAD=/usr/lib/libasan.so ./test"
+        argv: ["LD_PRELOAD=/usr/lib/libasan.so", "./test"]
+      expected:
+        alert: false
+        reason: "/usr/lib is a legitimate library directory"
+
+    - description: "Non-suspicious file in /tmp (not in SUSPICIOUS_TMPFILE_NAMES)"
+      input:
+        kind: "file.read_access"
+        comm: "python3"
+        pid: 9000
+        uid: 1000
+        filename: "/tmp/normal_script.py"
+      expected:
+        alert: false
+        reason: "normal_script.py is not in the suspicious tmpfile names list"
+
+    - description: "Timing anomaly - network.accept excluded from timing analysis"
+      input:
+        kind: "network.accept"
+        comm: "nginx"
+        pid: 100
+        uid: 0
+      expected:
+        alert: false
+        reason: "network.accept has naturally high latency variance and is excluded"
+
+  false_positive_fixes:
+    - date: "2026-04-02"
+      description: "Short-lived processes flagged as hidden"
+      context: |
+        Processes that start and exit between eBPF check intervals would appear
+        as "hidden" because /proc/{pid} no longer exists by the time we check.
+        Fixed by requiring seen_count >= 5 (persistent process) and last_seen
+        must be > 5 seconds ago. Also added process.exit event tracking to
+        remove PIDs from the tracked set when they exit normally.
+      input:
+        kind: "shell.command_exec"
+        comm: "ls"
+        pid: 12345
+        uid: 1000
+        command: "ls -la"
+      expected:
+        alert: false
+
+    - date: "2026-04-02"
+      description: "Timing anomalies from network.accept and file.truncate"
+      context: |
+        network.accept blocks until a connection arrives, producing timing
+        deltas from milliseconds to hours. file.truncate latency depends on
+        filesystem flush state. Both produced timing spikes during normal
+        operations (idle periods, deploys, builds). Fixed by adding these
+        event kinds to the timing exclusion list along with process.exit,
+        process.clone, file.timestomp, and network.listen.
+      input:
+        kind: "network.accept"
+        comm: "nginx"
+        pid: 100
+        uid: 0
+      expected:
+        alert: false
+
+    - date: "2026-04-02"
+      description: "Timing baseline contamination from anomalous samples"
+      context: |
+        When an anomalous timing sample was included in the Welford stats,
+        it inflated the mean and stddev, making future anomalies harder to
+        detect. This meant a rootkit that gradually increased latency could
+        "boil the frog" and never trigger. Fixed by only updating the
+        baseline with non-anomalous samples. Anomalous samples increment
+        the consecutive_anomalies counter but do not contaminate the stats.
+      input:
+        kind: "file.read_access"
+        comm: "cat"
+        pid: 200
+        uid: 0
+        filename: "/etc/passwd"
+      expected:
+        alert: false
+
+history:
+  - "2026-04-02: initial spec from production FP analysis"

