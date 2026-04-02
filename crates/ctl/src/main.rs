@@ -3477,6 +3477,43 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
     let _ = config_editor::write_str(&cli.agent_config, "telegram", "min_severity", "high");
     let _ = config_editor::write_str(&cli.agent_config, "webhook", "min_severity", "high");
 
+    // ── Profile: simple vs technical ──────────────────────────────────
+    {
+        let current_profile = agent_doc
+            .as_ref()
+            .and_then(|v| v.get("telegram"))
+            .and_then(|t| t.get("user_profile"))
+            .and_then(|p| p.as_str())
+            .unwrap_or("simple");
+
+        if current_profile == "simple" || current_profile == "technical" {
+            // Only ask if not yet explicitly set (first install)
+            let was_set = agent_doc
+                .as_ref()
+                .and_then(|v| v.get("telegram"))
+                .and_then(|t| t.get("user_profile"))
+                .is_some();
+
+            if !was_set {
+                println!("  Your experience level\n");
+                println!("  1. Keep it simple    plain language, just tell me what happened");
+                println!("  2. Technical         full details, IPs, detectors, evidence\n");
+                let profile_choice = prompt("  Choose [1/2]")?;
+                let profile = match profile_choice.trim() {
+                    "2" => "technical",
+                    _ => "simple",
+                };
+                let _ = config_editor::write_str(
+                    &cli.agent_config,
+                    "telegram",
+                    "user_profile",
+                    profile,
+                );
+                println!("  ✅ Profile: {profile}\n");
+            }
+        }
+    }
+
     // ── Step 1: AI ────────────────────────────────────────────────────────
     if ai_ok {
         println!("  [1/3] AI provider          ✅ configured");
