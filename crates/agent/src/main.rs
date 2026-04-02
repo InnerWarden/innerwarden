@@ -4778,7 +4778,7 @@ fn write_telegram_triage_audit(
             ts: chrono::Utc::now(),
             incident_id: incident_id.to_string(),
             host: local_hostname_for_audit(),
-            ai_provider: format!("operator:telegram:{operator}"),
+            ai_provider: "operator:telegram".to_string(),
             action_type: action_type.to_string(),
             target_ip,
             target_user,
@@ -5198,7 +5198,7 @@ async fn process_telegram_approval(
                 let allowlist_path = Path::new("/etc/innerwarden/allowlist.toml");
                 let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
                 let operator = result.operator_name.replace('"', "'");
-                let reason = format!("Auto-FP allowlist via Telegram by {operator} ({ts})");
+                let reason = format!("Auto-FP allowlist via Telegram ({ts})");
 
                 match telegram::append_to_allowlist(allowlist_path, section, entity, &reason) {
                     Ok(()) => {
@@ -5591,7 +5591,7 @@ async fn process_telegram_approval(
                 let allowlist_path = Path::new("/etc/innerwarden/allowlist.toml");
                 let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
                 let operator = result.operator_name.replace('"', "'");
-                let reason = format!("Allowed via Telegram by {operator} ({ts})");
+                let reason = format!("Allowed via Telegram ({ts})");
                 match telegram::append_to_allowlist(allowlist_path, "processes", &comm, &reason) {
                     Ok(()) => {
                         // Log to allowlist history for undo support
@@ -5714,7 +5714,7 @@ async fn process_telegram_approval(
                 let allowlist_path = Path::new("/etc/innerwarden/allowlist.toml");
                 let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
                 let operator = result.operator_name.replace('"', "'");
-                let reason = format!("Allowed via Telegram by {operator} ({ts})");
+                let reason = format!("Allowed via Telegram ({ts})");
                 match telegram::append_to_allowlist(allowlist_path, "ips", &ip, &reason) {
                     Ok(()) => {
                         // Log to allowlist history for undo support
@@ -5909,7 +5909,7 @@ async fn process_telegram_approval(
                 incident_id: format!("telegram:quick_block:{ip}"),
                 severity: Severity::High,
                 title: format!("Quick block of {ip} via Telegram"),
-                summary: format!("Operator {operator} requested immediate block of {ip}"),
+                summary: format!("Telegram operator requested immediate block of {ip}"),
                 evidence: serde_json::json!({}),
                 recommended_checks: vec![],
                 tags: vec!["telegram".to_string(), "manual".to_string()],
@@ -5937,7 +5937,7 @@ async fn process_telegram_approval(
 
         // Audit trail
         if let Some(writer) = &mut state.decision_writer {
-            let provider = format!("telegram:{operator}");
+            let provider = "telegram".to_string();
             let entry = decisions::DecisionEntry {
                 ts: chrono::Utc::now(),
                 incident_id: inc.incident_id.clone(),
@@ -5950,7 +5950,7 @@ async fn process_telegram_approval(
                 confidence: 1.0,
                 auto_executed: true,
                 dry_run: cfg.responder.dry_run,
-                reason: format!("Quick block requested by operator {operator} via Telegram"),
+                reason: "Quick block requested by Telegram operator".to_string(),
                 estimated_threat: "manual".to_string(),
                 execution_result: exec_result.message.clone(),
                 prev_hash: None,
@@ -5990,7 +5990,7 @@ async fn process_telegram_approval(
         };
 
         let host = choice.incident.host.clone();
-        let provider_label = format!("operator:telegram:{operator}");
+        let provider_label = "operator:telegram".to_string();
 
         match chosen {
             "honeypot" => {
@@ -6046,7 +6046,7 @@ async fn process_telegram_approval(
                             confidence: 1.0,
                             auto_executed: true,
                             dry_run: cfg.responder.dry_run,
-                            reason: format!("Operator {operator} chose honeypot via Telegram"),
+                            reason: "Telegram operator chose honeypot".to_string(),
                             estimated_threat: "high".to_string(),
                             execution_result: msg.clone(),
                             prev_hash: None,
@@ -6107,7 +6107,7 @@ async fn process_telegram_approval(
                             confidence: 1.0,
                             auto_executed: true,
                             dry_run: cfg.responder.dry_run,
-                            reason: format!("Operator {operator} chose block via Telegram"),
+                            reason: "Telegram operator chose block".to_string(),
                             estimated_threat: "high".to_string(),
                             execution_result: exec_result.message.clone(),
                             prev_hash: None,
@@ -6142,7 +6142,7 @@ async fn process_telegram_approval(
                         confidence: 1.0,
                         auto_executed: false,
                         dry_run: cfg.responder.dry_run,
-                        reason: format!("Operator {operator} chose monitor via Telegram"),
+                        reason: "Telegram operator chose monitor".to_string(),
                         estimated_threat: "medium".to_string(),
                         execution_result: "monitoring: no active action taken".to_string(),
                         prev_hash: None,
@@ -6170,7 +6170,7 @@ async fn process_telegram_approval(
                         confidence: 1.0,
                         auto_executed: false,
                         dry_run: cfg.responder.dry_run,
-                        reason: format!("Operator {operator} chose ignore via Telegram"),
+                        reason: "Telegram operator chose ignore".to_string(),
                         estimated_threat: "low".to_string(),
                         execution_result: "ignored by operator".to_string(),
                         prev_hash: None,
