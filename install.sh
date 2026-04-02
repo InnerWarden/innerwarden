@@ -1111,29 +1111,3 @@ fi
 
 # Auto-run setup with terminal input via /dev/tty (curl pipe consumes stdin)
 $SUDO innerwarden setup < /dev/tty
-if [[ "$OS_TYPE" == "Darwin" ]]; then
-echo
-echo "  sudo tail -f ${LOG_DIR}/sensor.log"
-echo "  sudo tail -f ${LOG_DIR}/agent.log"
-else
-echo
-echo "  sudo journalctl -u innerwarden-sensor -f --no-pager"
-echo "  sudo journalctl -u innerwarden-agent -f --no-pager"
-fi
-echo
-echo "── Go live (when you trust the decisions) ───────────────────────"
-echo "  Edit ${AGENT_CONFIG}:"
-echo "    [responder]"
-echo "    dry_run = false"
-if [[ "$OS_TYPE" == "Darwin" ]]; then
-echo "  sudo launchctl kickstart -k system/com.innerwarden.agent"
-else
-echo "  sudo systemctl restart innerwarden-agent"
-fi
-echo
-if [[ "$OS_TYPE" != "Darwin" ]]; then
-echo "── Optional integrations ────────────────────────────────────────"
-echo "  curl -fsSL https://innerwarden.com/install | sudo bash -s -- --with-integrations"
-echo "  Detects and configures Suricata and osquery."
-echo
-fi
