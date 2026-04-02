@@ -108,6 +108,25 @@ enum Command {
         days: u64,
     },
 
+    /// Simple daily commands for common day-to-day operations.
+    ///
+    /// Keeps the most used actions easy to remember. Advanced workflows
+    /// remain available via the full command set.
+    ///
+    /// Examples:
+    ///   innerwarden daily
+    ///   innerwarden daily status
+    ///   innerwarden daily threats --live
+    ///   innerwarden daily actions --days 7
+    ///   innerwarden daily agent scan
+    ///   innerwarden daily agent connect
+    ///   innerwarden quick status
+    #[command(visible_aliases = ["quick", "day"])]
+    Daily {
+        #[command(subcommand)]
+        command: Option<DailyCommand>,
+    },
+
     /// Scan system configuration and suggest security hardening improvements.
     ///
     /// Checks SSH, firewall, kernel, permissions, updates, Docker, and
@@ -565,9 +584,10 @@ enum Command {
     ///
     /// Examples:
     ///   innerwarden agent                    (interactive menu)
-    ///   innerwarden agent add openclaw       (install an agent)
+    ///   innerwarden agent add <name>         (install an agent)
     ///   innerwarden agent scan               (find running agents)
     ///   innerwarden agent status             (view connected agents)
+    ///   innerwarden agent connect            (auto-detect and connect)
     ///   innerwarden agent connect 1234       (connect a specific PID)
     ///   innerwarden agent disconnect ag-0001 (disconnect an agent)
     Agent {
@@ -594,7 +614,7 @@ enum Command {
 
 #[derive(Subcommand)]
 enum AgentCommand {
-    /// Install a new agent (OpenClaw, ZeroClaw)
+    /// Install a new agent (OpenClaw, ZeroClaw, and others in `agent list`)
     Add {
         /// Agent name (run 'innerwarden agent add' without args to see options)
         name: Option<String>,
@@ -606,10 +626,18 @@ enum AgentCommand {
     /// View connected agents and detected tools
     Status,
 
-    /// Connect a running agent by PID
+    /// Connect a running agent.
+    ///
+    /// If PID is omitted, InnerWarden auto-detects running agents and:
+    /// - connects automatically when only one is found
+    /// - offers a guided selection when multiple are found
     Connect {
-        /// Process ID of the agent to connect
-        pid: u32,
+        /// Optional process ID of the agent to connect
+        pid: Option<u32>,
+
+        /// Match an agent by name/command (avoids manual PID lookup)
+        #[arg(long)]
+        name: Option<String>,
 
         /// Optional label for this instance (e.g., "personal", "work")
         #[arg(long)]
@@ -624,6 +652,64 @@ enum AgentCommand {
 
     /// List available agents for installation
     List,
+}
+
+#[derive(Subcommand)]
+enum DailyCommand {
+    /// Quick system overview (services, capabilities, modules, today's activity).
+    Status,
+
+    /// Show recent threats (default: High/Critical from today).
+    Threats {
+        /// How many days back to look (default: 1)
+        #[arg(long, default_value = "1")]
+        days: u64,
+
+        /// Minimum severity: low, medium, high, critical (default: high)
+        #[arg(long, default_value = "high")]
+        severity: String,
+
+        /// Stream new incidents in real time
+        #[arg(long)]
+        live: bool,
+    },
+
+    /// Show recent actions taken by InnerWarden.
+    Actions {
+        /// How many days back to look (default: 1)
+        #[arg(long, default_value = "1")]
+        days: u64,
+    },
+
+    /// Print daily security report.
+    Report {
+        /// Date: today, yesterday, or YYYY-MM-DD
+        #[arg(long, default_value = "today")]
+        date: String,
+    },
+
+    /// Run diagnostics and print fix hints.
+    Doctor,
+
+    /// Inject synthetic incident and verify end-to-end pipeline.
+    Test {
+        /// Maximum seconds to wait for the agent to respond
+        #[arg(long, default_value = "12")]
+        wait: u64,
+    },
+
+    /// Agent connection and protection commands (basic flow).
+    ///
+    /// Examples:
+    ///   innerwarden daily agent
+    ///   innerwarden daily agent scan
+    ///   innerwarden daily agent status
+    ///   innerwarden daily agent connect
+    ///   innerwarden daily agent connect 1234
+    Agent {
+        #[command(subcommand)]
+        command: Option<AgentCommand>,
+    },
 }
 
 /// System configuration sub-commands.
@@ -1199,6 +1285,7 @@ fn main() -> Result<()> {
     }
 
     match cli.command {
+        Command::Daily { ref command } => cmd_daily(&cli, &registry, command.as_ref()),
         Command::Harden { verbose } => harden::cmd_harden(verbose),
         Command::Doctor => cmd_doctor(&cli, &registry),
         Command::Setup => cmd_setup(&cli),
@@ -1584,6 +1671,59 @@ fn cmd_list(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
     println!("Run 'innerwarden scan' to see what's recommended for this machine.");
 
     Ok(())
+}
+
+fn cmd_daily(
+    cli: &Cli,
+    registry: &CapabilityRegistry,
+    command: Option<&DailyCommand>,
+) -> Result<()> {
+    match command {
+        Some(DailyCommand::Status) => {
+            let modules_dir = Path::new("/etc/innerwarden/modules");
+            cmd_status_global(cli, registry, modules_dir)
+        }
+        Some(DailyCommand::Threats {
+            days,
+            severity,
+            live,
+        }) => {
+            if *live {
+                cmd_incidents_live(cli, severity, &cli.data_dir.clone())
+            } else {
+                cmd_incidents(cli, *days, severity, &cli.data_dir.clone())
+            }
+        }
+        Some(DailyCommand::Actions { days }) => {
+            cmd_decisions(cli, *days, None, &cli.data_dir.clone())
+        }
+        Some(DailyCommand::Report { date }) => cmd_report(cli, date, &cli.data_dir.clone()),
+        Some(DailyCommand::Doctor) => cmd_doctor(cli, registry),
+        Some(DailyCommand::Test { wait }) => cmd_pipeline_test(cli, *wait, &cli.data_dir.clone()),
+        Some(DailyCommand::Agent { command }) => cmd_agent(cli, command.as_ref()),
+        None => {
+            println!("InnerWarden Daily Commands");
+            println!("{}", "═".repeat(52));
+            println!("Use these for day-to-day operations:");
+            println!("  innerwarden daily status");
+            println!("  innerwarden daily threats");
+            println!("  innerwarden daily actions");
+            println!("  innerwarden daily report");
+            println!("  innerwarden daily doctor");
+            println!("  innerwarden daily test");
+            println!("  innerwarden daily agent");
+            println!();
+            println!("Short aliases:");
+            println!("  innerwarden quick status");
+            println!("  innerwarden day threats --live");
+            println!("  innerwarden quick agent scan");
+            println!();
+            println!("Need advanced operations?");
+            println!("  innerwarden --help");
+            println!("  innerwarden <command> --help");
+            Ok(())
+        }
+    }
 }
 
 fn cmd_status(cli: &Cli, registry: &CapabilityRegistry, id: &str) -> Result<()> {
@@ -3420,8 +3560,584 @@ fn write_env_key(env_path: &Path, key: &str, value: &str) -> Result<()> {
 
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone)]
+struct SetupCapabilityPlan {
+    id: String,
+    params: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SetupPreconfigPlan {
+    essential_capabilities: Vec<SetupCapabilityPlan>,
+    set_telegram_min_severity: bool,
+    set_webhook_min_severity: bool,
+}
+
+impl SetupPreconfigPlan {
+    fn is_empty(&self) -> bool {
+        self.essential_capabilities.is_empty()
+            && !self.set_telegram_min_severity
+            && !self.set_webhook_min_severity
+    }
+}
+
+#[derive(Debug, Clone)]
+enum SetupAiKey {
+    None,
+    Env { var: String, value: String },
+    Config { value: String },
+}
+
+#[derive(Debug, Clone)]
+struct SetupAiPlan {
+    label: String,
+    provider: String,
+    model: String,
+    base_url: Option<String>,
+    key: SetupAiKey,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SetupNotificationPlan {
+    DashboardOnly,
+    Telegram,
+    TelegramAndDashboard,
+}
+
+impl SetupNotificationPlan {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::DashboardOnly => "Dashboard",
+            Self::Telegram => "Telegram",
+            Self::TelegramAndDashboard => "Telegram + Dashboard",
+        }
+    }
+
+    fn needs_telegram(&self) -> bool {
+        matches!(self, Self::Telegram | Self::TelegramAndDashboard)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SetupResponderPlan {
+    dry_run: bool,
+}
+
+impl SetupResponderPlan {
+    fn label(&self) -> &'static str {
+        if self.dry_run {
+            "Watch only"
+        } else {
+            "Auto-protect"
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SetupCheck {
+    label: String,
+    detail: String,
+    ok: bool,
+    critical: bool,
+}
+
+fn read_agent_doc(path: &Path) -> Option<toml_edit::DocumentMut> {
+    std::fs::read_to_string(path).ok()?.parse().ok()
+}
+
+fn agent_bool(doc: Option<&toml_edit::DocumentMut>, section: &str, key: &str) -> bool {
+    doc.and_then(|d| d.get(section))
+        .and_then(|s| s.get(key))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+fn agent_str(doc: Option<&toml_edit::DocumentMut>, section: &str, key: &str) -> Option<String> {
+    doc.and_then(|d| d.get(section))
+        .and_then(|s| s.get(key))
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string())
+}
+
+fn env_has(env_vars: &HashMap<String, String>, key: &str) -> bool {
+    env_vars.get(key).is_some_and(|v| !v.trim().is_empty())
+        || std::env::var(key).is_ok_and(|v| !v.trim().is_empty())
+}
+
+fn prompt_yes_no(label: &str, default_yes: bool) -> Result<bool> {
+    print!("{label}");
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let trimmed = input.trim().to_lowercase();
+    if trimmed.is_empty() {
+        return Ok(default_yes);
+    }
+    Ok(matches!(trimmed.as_str(), "y" | "yes"))
+}
+
+fn parse_setup_capability_hint(hint: &str) -> Option<SetupCapabilityPlan> {
+    let parts: Vec<&str> = hint.split_whitespace().collect();
+    if parts.len() < 3 || parts[0] != "innerwarden" || parts[1] != "enable" {
+        return None;
+    }
+
+    let mut params = HashMap::new();
+    let mut i = 3;
+    while i < parts.len() {
+        if parts[i] == "--param" && i + 1 < parts.len() {
+            if let Some((k, v)) = parts[i + 1].split_once('=') {
+                params.insert(k.to_string(), v.to_string());
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    Some(SetupCapabilityPlan {
+        id: parts[2].to_string(),
+        params,
+    })
+}
+
+fn collect_setup_preconfig_plan(agent_doc: Option<&toml_edit::DocumentMut>) -> SetupPreconfigPlan {
+    let probes = scan::run_probes();
+    let recs = scan::score_modules(&probes);
+
+    let essential_capabilities = recs
+        .iter()
+        .filter(|r| matches!(r.tier, scan::Tier::Essential))
+        .filter_map(|r| parse_setup_capability_hint(&r.enable_hint))
+        .collect();
+
+    let set_telegram_min_severity = agent_doc
+        .and_then(|d| d.get("telegram"))
+        .and_then(|t| t.get("min_severity"))
+        .is_none();
+    let set_webhook_min_severity = agent_doc
+        .and_then(|d| d.get("webhook"))
+        .and_then(|t| t.get("min_severity"))
+        .is_none();
+
+    SetupPreconfigPlan {
+        essential_capabilities,
+        set_telegram_min_severity,
+        set_webhook_min_severity,
+    }
+}
+
+fn ai_provider_defaults(provider: &str) -> (String, Option<String>, Option<String>) {
+    match provider {
+        "openai" => (
+            "gpt-4o-mini".to_string(),
+            Some("OPENAI_API_KEY".to_string()),
+            None,
+        ),
+        "anthropic" => (
+            "claude-haiku-4-5-20251001".to_string(),
+            Some("ANTHROPIC_API_KEY".to_string()),
+            None,
+        ),
+        "ollama" => ("llama3.2".to_string(), None, None),
+        "groq" => (
+            "llama-3.3-70b-versatile".to_string(),
+            Some("GROQ_API_KEY".to_string()),
+            Some("https://api.groq.com/openai".to_string()),
+        ),
+        "deepseek" => (
+            "deepseek-chat".to_string(),
+            Some("DEEPSEEK_API_KEY".to_string()),
+            Some("https://api.deepseek.com".to_string()),
+        ),
+        "together" => (
+            "meta-llama/Llama-3.3-70B-Instruct-Turbo".to_string(),
+            Some("TOGETHER_API_KEY".to_string()),
+            Some("https://api.together.xyz".to_string()),
+        ),
+        "minimax" => (
+            "MiniMax-Text-01".to_string(),
+            Some("MINIMAX_API_KEY".to_string()),
+            Some("https://api.minimaxi.chat".to_string()),
+        ),
+        "mistral" => (
+            "mistral-small-latest".to_string(),
+            Some("MISTRAL_API_KEY".to_string()),
+            Some("https://api.mistral.ai".to_string()),
+        ),
+        "xai" => (
+            "grok-3-mini-fast".to_string(),
+            Some("XAI_API_KEY".to_string()),
+            Some("https://api.x.ai".to_string()),
+        ),
+        "fireworks" => (
+            "accounts/fireworks/models/llama-v3p3-70b-instruct".to_string(),
+            Some("FIREWORKS_API_KEY".to_string()),
+            Some("https://api.fireworks.ai/inference".to_string()),
+        ),
+        "openrouter" => (
+            "meta-llama/llama-3.3-70b-instruct".to_string(),
+            Some("OPENROUTER_API_KEY".to_string()),
+            Some("https://openrouter.ai/api".to_string()),
+        ),
+        "gemini" => (
+            "gemini-2.0-flash".to_string(),
+            Some("GEMINI_API_KEY".to_string()),
+            Some("https://generativelanguage.googleapis.com/v1beta/openai".to_string()),
+        ),
+        _ => (
+            "gpt-4o-mini".to_string(),
+            Some(format!("{}_API_KEY", provider.to_uppercase())),
+            None,
+        ),
+    }
+}
+
+fn build_setup_ai_plan(
+    provider: &str,
+    label: &str,
+    key: Option<String>,
+    model: Option<String>,
+    base_url: Option<String>,
+) -> SetupAiPlan {
+    let (default_model, key_var, default_base_url) = ai_provider_defaults(provider);
+    let effective_model = model.unwrap_or(default_model);
+    let effective_base_url = base_url.or(default_base_url);
+    let key = match key {
+        None => SetupAiKey::None,
+        Some(value)
+            if provider == "ollama"
+                && effective_base_url.as_deref() == Some("https://api.ollama.com") =>
+        {
+            SetupAiKey::Config { value }
+        }
+        Some(value) => SetupAiKey::Env {
+            var: key_var.unwrap_or_else(|| format!("{}_API_KEY", provider.to_uppercase())),
+            value,
+        },
+    };
+
+    SetupAiPlan {
+        label: label.to_string(),
+        provider: provider.to_string(),
+        model: effective_model,
+        base_url: effective_base_url,
+        key,
+    }
+}
+
+fn prompt_setup_other_ai_plan() -> Result<Option<SetupAiPlan>> {
+    let other_providers = [
+        "groq",
+        "deepseek",
+        "together",
+        "minimax",
+        "mistral",
+        "xai",
+        "fireworks",
+        "openrouter",
+        "gemini",
+    ];
+
+    println!("  Other provider\n");
+    for (idx, provider_name) in other_providers.iter().enumerate() {
+        let provider = WIZARD_PROVIDERS
+            .iter()
+            .find(|p| p.name == *provider_name)
+            .expect("wizard provider exists");
+        println!("  {}. {}", idx + 1, provider.label);
+    }
+    let custom_idx = other_providers.len() + 1;
+    println!("  {custom_idx}. Custom OpenAI-compatible\n");
+
+    let choice = prompt(&format!("  Choose [1-{custom_idx}]"))?;
+    let trimmed = choice.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    let idx = trimmed.parse::<usize>().unwrap_or(0);
+    if (1..=other_providers.len()).contains(&idx) {
+        let provider_name = other_providers[idx - 1];
+        let provider = WIZARD_PROVIDERS
+            .iter()
+            .find(|p| p.name == provider_name)
+            .expect("wizard provider exists");
+        let key = prompt(&format!("  {} API key", provider.label))?;
+        if key.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(build_setup_ai_plan(
+            provider.name,
+            provider.label,
+            Some(key),
+            None,
+            None,
+        )));
+    }
+
+    if idx == custom_idx {
+        let provider = prompt("  Provider name")?;
+        let base_url = prompt("  Base URL")?;
+        let key = prompt("  API key")?;
+        let model = prompt("  Model")?;
+
+        if provider.is_empty() || base_url.is_empty() || key.is_empty() || model.is_empty() {
+            return Ok(None);
+        }
+
+        return Ok(Some(build_setup_ai_plan(
+            &provider,
+            &provider,
+            Some(key),
+            Some(model),
+            Some(base_url),
+        )));
+    }
+
+    Ok(None)
+}
+
+fn prompt_setup_ai_plan() -> Result<Option<SetupAiPlan>> {
+    println!("  [2/4] AI\n");
+    println!("  1. Ollama Local");
+    println!("  2. OpenAI");
+    println!("  3. Anthropic");
+    println!("  4. Ollama Cloud");
+    println!("  5. Other\n");
+
+    let choice = prompt("  Choose [1-5]")?;
+    println!();
+
+    match choice.trim() {
+        "1" => {
+            let local_models = fetch_models("http://localhost:11434", "", "ollama");
+            if local_models.is_empty() {
+                println!("  No local Ollama model found.");
+                println!("  Use Ollama Cloud or another provider.\n");
+                return Ok(None);
+            }
+
+            for (i, model) in local_models.iter().enumerate() {
+                println!("  {}. {}", i + 1, model);
+            }
+            println!();
+            let model_choice = prompt(&format!("  Model [1-{}, default=1]", local_models.len()))?;
+            let idx = model_choice
+                .trim()
+                .parse::<usize>()
+                .unwrap_or(1)
+                .saturating_sub(1)
+                .min(local_models.len() - 1);
+
+            Ok(Some(build_setup_ai_plan(
+                "ollama",
+                "Ollama Local",
+                None,
+                Some(local_models[idx].clone()),
+                None,
+            )))
+        }
+        "2" => {
+            let key = prompt("  OpenAI API key")?;
+            if key.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(build_setup_ai_plan(
+                    "openai",
+                    "OpenAI",
+                    Some(key),
+                    None,
+                    None,
+                )))
+            }
+        }
+        "3" => {
+            let key = prompt("  Anthropic API key")?;
+            if key.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(build_setup_ai_plan(
+                    "anthropic",
+                    "Anthropic",
+                    Some(key),
+                    None,
+                    None,
+                )))
+            }
+        }
+        "4" => {
+            let key = prompt_ollama_api_key()?;
+            Ok(Some(build_setup_ai_plan(
+                "ollama",
+                "Ollama Cloud",
+                Some(key),
+                Some("qwen3-coder:480b".to_string()),
+                Some("https://api.ollama.com".to_string()),
+            )))
+        }
+        "5" => prompt_setup_other_ai_plan(),
+        _ => Ok(None),
+    }
+}
+
+fn apply_setup_ai_plan(cli: &Cli, env_file: &Path, plan: &SetupAiPlan) -> Result<()> {
+    match &plan.key {
+        SetupAiKey::None => {}
+        SetupAiKey::Env { var, value } => write_env_key(env_file, var, value)?,
+        SetupAiKey::Config { value } => {
+            config_editor::write_str(&cli.agent_config, "ai", "api_key", value)?;
+        }
+    }
+
+    config_editor::write_bool(&cli.agent_config, "ai", "enabled", true)?;
+    config_editor::write_str(&cli.agent_config, "ai", "provider", &plan.provider)?;
+    config_editor::write_str(&cli.agent_config, "ai", "model", &plan.model)?;
+    if let Some(base_url) = &plan.base_url {
+        config_editor::write_str(&cli.agent_config, "ai", "base_url", base_url)?;
+    }
+
+    Ok(())
+}
+
+fn setup_current_ai_summary(agent_doc: Option<&toml_edit::DocumentMut>) -> String {
+    let provider = agent_str(agent_doc, "ai", "provider").unwrap_or_else(|| "configured".into());
+    let model = agent_str(agent_doc, "ai", "model").unwrap_or_default();
+    if model.is_empty() {
+        provider
+    } else {
+        format!("{provider} ({model})")
+    }
+}
+
+fn count_failed_setup_checks(checks: &[SetupCheck]) -> usize {
+    checks
+        .iter()
+        .filter(|check| check.critical && !check.ok)
+        .count()
+}
+
+fn collect_setup_checks(
+    cli: &Cli,
+    env_file: &Path,
+    notification_plan: SetupNotificationPlan,
+    responder_plan: SetupResponderPlan,
+    expect_mesh: bool,
+    detected_agents: usize,
+) -> Vec<SetupCheck> {
+    let agent_doc = read_agent_doc(&cli.agent_config);
+    let env_vars = load_env_file(env_file);
+    let is_macos = std::env::consts::OS == "macos";
+    let dashboard_url = resolve_dashboard_url(cli);
+    let dashboard_status_url = format!("{dashboard_url}/api/status");
+    let dashboard_ok = ureq::get(&dashboard_status_url)
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(2)))
+        .build()
+        .call()
+        .map(|resp| resp.status().as_u16() < 500)
+        .unwrap_or(false);
+    let agent_running = if is_macos {
+        std::process::Command::new("launchctl")
+            .args(["list", "com.innerwarden.agent"])
+            .output()
+            .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("\"PID\""))
+            .unwrap_or(false)
+    } else {
+        systemd::is_service_active("innerwarden-agent")
+    };
+
+    let ai_ready = agent_bool(agent_doc.as_ref(), "ai", "enabled");
+    let telegram_ready = env_has(&env_vars, "TELEGRAM_BOT_TOKEN")
+        && env_has(&env_vars, "TELEGRAM_CHAT_ID")
+        && agent_bool(agent_doc.as_ref(), "telegram", "enabled");
+    let responder_ready = agent_bool(agent_doc.as_ref(), "responder", "enabled")
+        && agent_bool(agent_doc.as_ref(), "responder", "dry_run") == responder_plan.dry_run;
+    let mesh_ready = if expect_mesh {
+        agent_bool(agent_doc.as_ref(), "mesh", "enabled")
+    } else {
+        true
+    };
+    let notifications_ready = match notification_plan {
+        SetupNotificationPlan::DashboardOnly => dashboard_ok,
+        SetupNotificationPlan::Telegram | SetupNotificationPlan::TelegramAndDashboard => {
+            telegram_ready
+        }
+    };
+
+    vec![
+        SetupCheck {
+            label: "AI".to_string(),
+            detail: if ai_ready {
+                setup_current_ai_summary(agent_doc.as_ref())
+            } else {
+                "not configured".to_string()
+            },
+            ok: ai_ready,
+            critical: true,
+        },
+        SetupCheck {
+            label: "Alerts".to_string(),
+            detail: if notifications_ready {
+                notification_plan.label().to_string()
+            } else {
+                format!("{} not ready", notification_plan.label())
+            },
+            ok: notifications_ready,
+            critical: true,
+        },
+        SetupCheck {
+            label: "Protection".to_string(),
+            detail: responder_plan.label().to_string(),
+            ok: responder_ready,
+            critical: true,
+        },
+        SetupCheck {
+            label: "Agent service".to_string(),
+            detail: if agent_running {
+                "running".to_string()
+            } else {
+                "not running".to_string()
+            },
+            ok: agent_running,
+            critical: true,
+        },
+        SetupCheck {
+            label: "Dashboard".to_string(),
+            detail: if dashboard_ok {
+                dashboard_url
+            } else {
+                "not reachable".to_string()
+            },
+            ok: dashboard_ok,
+            critical: false,
+        },
+        SetupCheck {
+            label: "Mesh".to_string(),
+            detail: if expect_mesh {
+                "enabled".to_string()
+            } else {
+                "not enabled".to_string()
+            },
+            ok: mesh_ready,
+            critical: false,
+        },
+        SetupCheck {
+            label: "AI agents".to_string(),
+            detail: if detected_agents == 0 {
+                "none detected".to_string()
+            } else if detected_agents == 1 {
+                "1 detected".to_string()
+            } else {
+                format!("{detected_agents} detected")
+            },
+            ok: detected_agents > 0,
+            critical: false,
+        },
+    ]
+}
+
 fn cmd_setup(cli: &Cli) -> Result<()> {
-    // Re-exec with sudo if not root — setup writes to /etc/innerwarden/
     if !am_root() {
         return reexec_with_sudo();
     }
@@ -3432,329 +4148,305 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
         .map(|p| p.join("agent.env"))
         .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
     let env_vars = load_env_file(&env_file);
+    let agent_doc = read_agent_doc(&cli.agent_config);
 
-    let agent_doc: Option<toml_edit::DocumentMut> = std::fs::read_to_string(&cli.agent_config)
-        .ok()
-        .and_then(|s| s.parse().ok());
-    let is_enabled = |section: &str| -> bool {
-        agent_doc
-            .as_ref()
-            .and_then(|v| v.get(section))
-            .and_then(|s| s.get("enabled"))
-            .and_then(|e| e.as_bool())
-            .unwrap_or(false)
-    };
-    let has_env = |key: &str| -> bool {
-        env_vars.get(key).is_some_and(|v| !v.is_empty())
-            || std::env::var(key).is_ok_and(|v| !v.is_empty())
-    };
+    let ai_ok = agent_bool(agent_doc.as_ref(), "ai", "enabled");
+    let telegram_ok =
+        env_has(&env_vars, "TELEGRAM_BOT_TOKEN") && env_has(&env_vars, "TELEGRAM_CHAT_ID");
+    let responder_ok = agent_bool(agent_doc.as_ref(), "responder", "enabled");
+    let mesh_ok = agent_bool(agent_doc.as_ref(), "mesh", "enabled");
 
-    let ai_ok = is_enabled("ai");
-    let telegram_ok = has_env("TELEGRAM_BOT_TOKEN") && has_env("TELEGRAM_CHAT_ID");
-    let responder_ok = is_enabled("responder");
-
-    // ── Header ──────────────────────────────────────────────────────────
     println!();
-    println!("  Setup  (3 steps, skip any with Enter)\n");
+    println!("  Setup  (4 quick steps)\n");
 
-    // Auto-enable essential modules silently
-    let probes = scan::run_probes();
-    let recs = scan::score_modules(&probes);
-    for r in recs
-        .iter()
-        .filter(|r| matches!(r.tier, scan::Tier::Essential))
-    {
-        let parts: Vec<&str> = r.enable_hint.split_whitespace().collect();
-        if parts.len() >= 3 && parts[0] == "innerwarden" && parts[1] == "enable" {
-            let cap_id = parts[2];
-            let mut params = std::collections::HashMap::new();
-            let mut i = 3;
-            while i < parts.len() {
-                if parts[i] == "--param" && i + 1 < parts.len() {
-                    if let Some((k, v)) = parts[i + 1].split_once('=') {
-                        params.insert(k.to_string(), v.to_string());
-                    }
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            let registry = capability::CapabilityRegistry::default_all();
-            let _ = cmd_enable(cli, &registry, cap_id, params, true);
-        }
-    }
-
-    // Set default sensitivity (High+Critical)
-    let _ = config_editor::write_str(&cli.agent_config, "telegram", "min_severity", "high");
-    let _ = config_editor::write_str(&cli.agent_config, "webhook", "min_severity", "high");
-
-    // ── Profile: simple vs technical ──────────────────────────────────
-    {
-        let current_profile = agent_doc
-            .as_ref()
-            .and_then(|v| v.get("telegram"))
-            .and_then(|t| t.get("user_profile"))
-            .and_then(|p| p.as_str())
-            .unwrap_or("simple");
-
-        if current_profile == "simple" || current_profile == "technical" {
-            // Only ask if not yet explicitly set (first install)
-            let was_set = agent_doc
-                .as_ref()
-                .and_then(|v| v.get("telegram"))
-                .and_then(|t| t.get("user_profile"))
-                .is_some();
-
-            if !was_set {
-                println!("  Your experience level\n");
-                println!("  1. Keep it simple    plain language, just tell me what happened");
-                println!("  2. Technical         full details, IPs, detectors, evidence\n");
-                let profile_choice = prompt("  Choose [1/2]")?;
-                let profile = match profile_choice.trim() {
-                    "2" => "technical",
-                    _ => "simple",
-                };
-                let _ = config_editor::write_str(
-                    &cli.agent_config,
-                    "telegram",
-                    "user_profile",
-                    profile,
-                );
-                println!("  ✅ Profile: {profile}\n");
-            }
-        }
-    }
-
-    // ── Step 1: AI ────────────────────────────────────────────────────────
-    if ai_ok {
-        println!("  [1/3] AI provider          ✅ configured");
+    let preconfig_plan = collect_setup_preconfig_plan(agent_doc.as_ref());
+    let apply_preconfig = if preconfig_plan.is_empty() {
+        false
     } else {
-        println!("  [1/3] AI provider\n");
-        println!("  1. Ollama      local, free, no key");
-        println!("  2. OpenAI      gpt-4.1-nano");
-        println!("  3. Anthropic   claude-haiku");
-        println!("  4. Other       12 providers\n");
-        let choice = prompt("  Choose [1-4]")?;
+        println!("  Safe defaults\n");
+        for capability in &preconfig_plan.essential_capabilities {
+            println!("  - Enable {}", capability.id);
+        }
+        if preconfig_plan.set_telegram_min_severity {
+            println!("  - Telegram alerts: High + Critical");
+        }
+        if preconfig_plan.set_webhook_min_severity {
+            println!("  - Webhook alerts: High + Critical");
+        }
+        println!();
+        prompt_yes_no("  Apply these during setup? [Y/n] ", true)?
+    };
+
+    println!();
+
+    let profile_already_set = agent_doc
+        .as_ref()
+        .and_then(|doc| doc.get("telegram"))
+        .and_then(|t| t.get("user_profile"))
+        .is_some();
+    let current_profile = agent_str(agent_doc.as_ref(), "telegram", "user_profile")
+        .unwrap_or_else(|| "simple".to_string());
+    let profile_plan = if profile_already_set {
+        println!("  [1/4] Experience         OK ({current_profile})");
+        None
+    } else {
+        println!("  [1/4] Experience\n");
+        println!("  1. Simple");
+        println!("  2. Technical\n");
+        let profile_choice = prompt("  Choose [1/2, default=1]")?;
+        println!();
+        Some(match profile_choice.trim() {
+            "2" => "technical".to_string(),
+            _ => "simple".to_string(),
+        })
+    };
+
+    let ai_plan = if ai_ok {
+        println!(
+            "  [2/4] AI                 OK ({})",
+            setup_current_ai_summary(agent_doc.as_ref())
+        );
+        None
+    } else {
+        let plan = prompt_setup_ai_plan()?;
+        if let Some(plan) = &plan {
+            println!("  Ready: {} ({})", plan.label, plan.model);
+        } else {
+            println!("  AI not set yet");
+        }
+        plan
+    };
+
+    println!();
+    let notification_plan = if telegram_ok {
+        println!("  [3/4] Alerts             OK (Telegram + Dashboard)");
+        SetupNotificationPlan::TelegramAndDashboard
+    } else {
+        println!("  [3/4] Alerts\n");
+        println!("  1. Telegram");
+        println!("  2. Dashboard");
+        println!("  3. Both\n");
+        let choice = prompt("  Choose [1/2/3, default=1]")?;
         println!();
         match choice.trim() {
-            "1" => {
-                let local_models = fetch_models("http://localhost:11434", "", "ollama");
-                if !local_models.is_empty() {
-                    for (i, m) in local_models.iter().enumerate() {
-                        println!("  {}. {}", i + 1, m);
-                    }
-                    let mc = prompt(&format!("  Model [1-{}]", local_models.len()))?;
-                    let idx = mc
-                        .trim()
-                        .parse::<usize>()
-                        .unwrap_or(1)
-                        .saturating_sub(1)
-                        .min(local_models.len() - 1);
-                    if let Err(e) =
-                        cmd_configure_ai(cli, "ollama", None, Some(&local_models[idx]), None)
-                    {
-                        println!("  Could not configure Ollama: {e:#}");
-                    }
-                } else {
-                    if let Err(e) = cmd_ai_install(cli, "qwen3-coder:480b", None, true) {
-                        println!("  Could not configure Ollama: {e:#}");
-                    }
-                }
-            }
-            "2" => match prompt("  API key") {
-                Ok(k) if !k.is_empty() => {
-                    if let Err(e) = cmd_configure_ai(cli, "openai", Some(&k), None, None) {
-                        println!("  Error: {e:#}");
-                    }
-                }
-                _ => println!("  Skipped"),
-            },
-            "3" => match prompt("  API key") {
-                Ok(k) if !k.is_empty() => {
-                    if let Err(e) = cmd_configure_ai(cli, "anthropic", Some(&k), None, None) {
-                        println!("  Error: {e:#}");
-                    }
-                }
-                _ => println!("  Skipped"),
-            },
-            "4" => {
-                let _ = cmd_configure_ai(cli, "", None, None, None);
-            }
-            _ => println!("  Skipped"),
+            "2" => SetupNotificationPlan::DashboardOnly,
+            "3" => SetupNotificationPlan::TelegramAndDashboard,
+            _ => SetupNotificationPlan::Telegram,
         }
-    }
-
-    // ── Step 2: Notifications ───────────────────────────────────────────
-    println!();
-    if telegram_ok {
-        println!("  [2/3] Notifications        ✅ Telegram configured");
-    } else {
-        println!("  [2/3] Notifications\n");
-        println!("  How do you want to receive alerts?\n");
-        println!("  1. Telegram    alerts on your phone");
-        println!("  2. Dashboard   web interface only");
-        println!("  3. Both\n");
-        let notif_choice = prompt("  Choose [1/2/3]")?;
-        match notif_choice.trim() {
-            "1" | "3" => {
-                println!();
-                println!("  How to get a Telegram bot token:");
-                println!("    1. Open Telegram and search for @BotFather");
-                println!("    2. Send /newbot and follow the instructions");
-                println!("    3. Copy the token (looks like 123456:ABC-DEF...)\n");
-                match prompt("  Bot token") {
-                    Ok(t) if !t.is_empty() => {
-                        println!(
-                            "  ✓ Token accepted. One more step: detecting your chat ID..."
-                        );
-                        if let Err(e) = cmd_configure_telegram(cli, Some(&t), None, false) {
-                            println!("  Error: {e:#}");
-                        }
-                    }
-                    _ => println!("  Skipped Telegram. You can set it up later: innerwarden configure telegram"),
-                }
-                if notif_choice.trim() == "3" {
-                    println!("  Dashboard is always available at http://localhost:8787");
-                }
-            }
-            "2" => {
-                println!("  ✅ Dashboard only (http://localhost:8787)");
-                println!("  You can add Telegram later: innerwarden configure telegram");
-            }
-            _ => {
-                println!("  ✅ Dashboard only (http://localhost:8787)");
-            }
-        }
-    }
-
-    // ── Step 3: Response mode ─────────────────────────────────────────────
-    println!();
-    if responder_ok {
-        let dry = agent_doc
-            .as_ref()
-            .and_then(|v| v.get("responder"))
-            .and_then(|r| r.get("dry_run"))
-            .and_then(|d| d.as_bool())
-            .unwrap_or(true);
-        let mode = if dry { "observe" } else { "auto-protect" };
-        println!("  [3/3] Response mode        ✅ {mode}");
-    } else {
-        println!("  [3/3] Response mode\n");
-        println!("  1. Watch & learn   observe only, never blocks");
-        println!("  2. Auto-protect    blocks threats automatically\n");
-        let choice = prompt("  Choose [1/2]")?;
-        match choice.trim() {
-            "2" => {
-                println!();
-                print!("  Auto-protect will block IPs and suspend users. Type 'yes' to confirm: ");
-                std::io::stdout().flush()?;
-                let mut ans = String::new();
-                std::io::stdin().read_line(&mut ans)?;
-                if ans.trim() == "yes" {
-                    let _ =
-                        config_editor::write_bool(&cli.agent_config, "responder", "enabled", true);
-                    let _ =
-                        config_editor::write_bool(&cli.agent_config, "responder", "dry_run", false);
-                    println!("  ✅ Auto-protect enabled");
-                } else {
-                    let _ =
-                        config_editor::write_bool(&cli.agent_config, "responder", "enabled", true);
-                    let _ =
-                        config_editor::write_bool(&cli.agent_config, "responder", "dry_run", true);
-                    println!("  ✅ Watch & learn (dry-run)");
-                }
-            }
-            _ => {
-                let _ = config_editor::write_bool(&cli.agent_config, "responder", "enabled", true);
-                let _ = config_editor::write_bool(&cli.agent_config, "responder", "dry_run", true);
-                println!("  ✅ Watch & learn");
-            }
-        }
-    }
-
-    // ── Summary ───────────────────────────────────────────────────────────
-    let env_vars2 = load_env_file(&env_file);
-    let agent_doc2: Option<toml_edit::DocumentMut> = std::fs::read_to_string(&cli.agent_config)
-        .ok()
-        .and_then(|s| s.parse().ok());
-    let is_enabled2 = |section: &str| -> bool {
-        agent_doc2
-            .as_ref()
-            .and_then(|v| v.get(section))
-            .and_then(|s| s.get("enabled"))
-            .and_then(|e| e.as_bool())
-            .unwrap_or(false)
-    };
-    let has_env2 = |key: &str| -> bool {
-        env_vars2.get(key).is_some_and(|v| !v.is_empty())
-            || std::env::var(key).is_ok_and(|v| !v.is_empty())
     };
 
-    let ai_done = is_enabled2("ai");
-    let tg_done = has_env2("TELEGRAM_BOT_TOKEN") && has_env2("TELEGRAM_CHAT_ID");
-    let resp_done = is_enabled2("responder");
-
-    // ── Mesh network (auto-join) ──────────────────────────────────────
-    println!();
-    let mesh_ok = is_enabled2("mesh");
-    if !mesh_ok {
-        print!("  Join the defense network? When one node detects a threat, all nodes block it. [Y/n] ");
-        std::io::stdout().flush()?;
-        let mut ans = String::new();
-        std::io::stdin().read_line(&mut ans)?;
-        if ans.trim().to_lowercase() != "n" {
-            let _ = cmd_mesh_enable(cli);
-            println!("  ✅ Mesh network enabled");
-        }
-    }
-
-    // ── Summary ───────────────────────────────────────────────────────
-    println!();
-    println!("  ✅ Setup complete!\n");
-    println!("  ────────────────────────────────────────");
-    if ai_done {
-        println!("  AI          ready");
+    let responder_plan = if responder_ok {
+        let current = SetupResponderPlan {
+            dry_run: agent_bool(agent_doc.as_ref(), "responder", "dry_run"),
+        };
+        println!("  [4/4] Protection         OK ({})", current.label());
+        current
     } else {
-        println!("  AI          not set (innerwarden configure ai)");
-    }
-    if tg_done {
-        println!("  Telegram    ready");
-    } else {
-        println!("  Telegram    not set (innerwarden configure telegram)");
-    }
-    if resp_done {
-        let dry = agent_doc2
-            .as_ref()
-            .and_then(|v| v.get("responder"))
-            .and_then(|r| r.get("dry_run"))
-            .and_then(|d| d.as_bool())
-            .unwrap_or(true);
-        if dry {
-            println!("  Protection  watch & learn");
+        println!("  [4/4] Protection\n");
+        println!("  1. Watch only");
+        println!("  2. Auto-protect\n");
+        let choice = prompt("  Choose [1/2, default=1]")?;
+        println!();
+        if choice.trim() == "2" {
+            print!("  Type 'yes' to enable auto-protect: ");
+            std::io::stdout().flush()?;
+            let mut confirm = String::new();
+            std::io::stdin().read_line(&mut confirm)?;
+            if confirm.trim() == "yes" {
+                SetupResponderPlan { dry_run: false }
+            } else {
+                SetupResponderPlan { dry_run: true }
+            }
         } else {
-            println!("  Protection  auto-protect (active)");
+            SetupResponderPlan { dry_run: true }
+        }
+    };
+
+    println!();
+    let enable_mesh = if mesh_ok {
+        println!("  Mesh                OK (enabled)");
+        true
+    } else {
+        let enabled = prompt_yes_no(
+            "  Share threat blocks with your other InnerWarden nodes? [y/N] ",
+            false,
+        )?;
+        println!();
+        enabled
+    };
+
+    let review_profile = profile_plan
+        .clone()
+        .unwrap_or_else(|| current_profile.clone());
+    let review_ai = ai_plan
+        .as_ref()
+        .map(|plan| format!("{} ({})", plan.label, plan.model))
+        .unwrap_or_else(|| setup_current_ai_summary(agent_doc.as_ref()));
+
+    println!("  Review\n");
+    println!("  - Experience: {review_profile}");
+    println!("  - AI: {review_ai}");
+    println!("  - Alerts: {}", notification_plan.label());
+    println!("  - Protection: {}", responder_plan.label());
+    println!(
+        "  - Mesh: {}",
+        if enable_mesh {
+            "enabled"
+        } else {
+            "not enabled"
+        }
+    );
+    if apply_preconfig {
+        if preconfig_plan.essential_capabilities.is_empty() {
+            println!("  - Safe defaults: alert thresholds");
+        } else {
+            println!(
+                "  - Safe defaults: {} capability change(s)",
+                preconfig_plan.essential_capabilities.len()
+            );
+        }
+    }
+    println!(
+        "  - Files: {} and {}",
+        cli.agent_config.display(),
+        env_file.display()
+    );
+    if !telegram_ok && notification_plan.needs_telegram() {
+        println!("  - Telegram: guided setup will run after apply");
+    }
+    println!();
+
+    if !prompt_yes_no("  Apply now? [Y/n] ", true)? {
+        println!("\n  Setup cancelled. Nothing changed.");
+        return Ok(());
+    }
+
+    println!();
+
+    let registry = CapabilityRegistry::default_all();
+    if apply_preconfig {
+        for capability in &preconfig_plan.essential_capabilities {
+            if let Err(err) = cmd_enable(
+                cli,
+                &registry,
+                &capability.id,
+                capability.params.clone(),
+                true,
+            ) {
+                println!("  [warn] Could not enable {}: {err:#}", capability.id);
+            }
+        }
+        if preconfig_plan.set_telegram_min_severity {
+            let _ = config_editor::write_str(&cli.agent_config, "telegram", "min_severity", "high");
+        }
+        if preconfig_plan.set_webhook_min_severity {
+            let _ = config_editor::write_str(&cli.agent_config, "webhook", "min_severity", "high");
+        }
+    }
+
+    if let Some(profile) = &profile_plan {
+        config_editor::write_str(&cli.agent_config, "telegram", "user_profile", profile)?;
+    }
+
+    if let Some(plan) = &ai_plan {
+        apply_setup_ai_plan(cli, &env_file, plan)?;
+    }
+
+    config_editor::write_bool(&cli.agent_config, "responder", "enabled", true)?;
+    config_editor::write_bool(
+        &cli.agent_config,
+        "responder",
+        "dry_run",
+        responder_plan.dry_run,
+    )?;
+    let mut restart_needed = true;
+
+    if enable_mesh && !mesh_ok {
+        config_editor::write_bool(&cli.agent_config, "mesh", "enabled", true)?;
+        if agent_doc.as_ref().and_then(|doc| doc.get("mesh")).is_none() {
+            config_editor::write_str(&cli.agent_config, "mesh", "bind", "0.0.0.0:8790")?;
+            config_editor::write_int(&cli.agent_config, "mesh", "poll_secs", 30)?;
+            config_editor::write_bool(&cli.agent_config, "mesh", "auto_broadcast", true)?;
+        }
+    }
+
+    let needs_telegram_setup = !telegram_ok && notification_plan.needs_telegram();
+    if needs_telegram_setup {
+        println!("  Telegram\n");
+        if let Err(err) = cmd_configure_telegram(cli, None, None, false) {
+            println!("  [warn] Telegram setup did not finish: {err:#}");
+        } else {
+            restart_needed = false;
+        }
+    }
+
+    if restart_needed {
+        restart_agent(cli);
+    }
+
+    let detected_agents = {
+        use innerwarden_agent_guard::detect;
+        use innerwarden_agent_guard::signatures::SignatureIndex;
+
+        let index = SignatureIndex::new();
+        detect::scan_processes(&index).len()
+    };
+
+    if detected_agents > 0 {
+        println!();
+        let prompt = if detected_agents == 1 {
+            "  We found 1 running AI agent. Connect it now? [Y/n] "
+        } else {
+            "  We found running AI agents. Connect them now? [Y/n] "
+        };
+        if prompt_yes_no(prompt, true)? {
+            let connect_command = AgentCommand::Connect {
+                pid: None,
+                name: None,
+                label: None,
+            };
+            let _ = cmd_agent(cli, Some(&connect_command));
         }
     } else {
-        println!("  Protection  not set");
+        println!();
+        println!("  No supported AI agents detected right now.");
     }
-    println!("  ────────────────────────────────────────");
+
+    let checks = collect_setup_checks(
+        cli,
+        &env_file,
+        notification_plan,
+        responder_plan,
+        enable_mesh,
+        detected_agents,
+    );
+    let critical_failures = count_failed_setup_checks(&checks);
+
     println!();
-    println!("  Recommended next steps:");
-    println!("  innerwarden doctor      validate everything works");
-    println!("  innerwarden harden      security audit + auto-fix");
+    if critical_failures == 0 {
+        println!("  Ready to use\n");
+    } else if critical_failures == 1 {
+        println!("  Setup finished with 1 item to fix\n");
+    } else {
+        println!("  Setup finished with {critical_failures} items to fix\n");
+    }
+
+    for check in &checks {
+        let status = if check.ok { "OK" } else { "FIX" };
+        println!("  {:<14} {:<4} {}", check.label, status, check.detail);
+    }
+
     println!();
-    println!("  Using AI coding agents? (Claude Code, Cursor, Aider, etc.)");
-    println!("  innerwarden protect-agent   guard against prompt injection + tool poisoning");
-    println!();
-    println!("  Want to change something?");
-    println!("  innerwarden setup       re-run this wizard");
-    println!("  innerwarden configure   all settings menu");
-    println!("  innerwarden help        all available commands");
+    if critical_failures == 0 {
+        println!("  Dashboard: {}", resolve_dashboard_url(cli));
+        println!("  Re-run anytime: innerwarden setup");
+    } else {
+        println!("  Run innerwarden setup again after fixing the items above.");
+    }
 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // innerwarden configure (interactive menu)
 // ---------------------------------------------------------------------------
 
@@ -3914,6 +4606,20 @@ const WIZARD_PROVIDERS: &[WizardProvider] = &[
         api_style: "openai",
     },
     WizardProvider {
+        name: "together",
+        label: "Together",
+        signup_url: "api.together.ai",
+        models_url: "https://api.together.xyz",
+        api_style: "openai",
+    },
+    WizardProvider {
+        name: "minimax",
+        label: "MiniMax",
+        signup_url: "platform.minimaxi.com",
+        models_url: "https://api.minimaxi.chat",
+        api_style: "openai",
+    },
+    WizardProvider {
         name: "mistral",
         label: "Mistral",
         signup_url: "console.mistral.ai",
@@ -3925,6 +4631,20 @@ const WIZARD_PROVIDERS: &[WizardProvider] = &[
         label: "xAI / Grok",
         signup_url: "console.x.ai",
         models_url: "https://api.x.ai",
+        api_style: "openai",
+    },
+    WizardProvider {
+        name: "fireworks",
+        label: "Fireworks",
+        signup_url: "fireworks.ai",
+        models_url: "https://api.fireworks.ai/inference",
+        api_style: "openai",
+    },
+    WizardProvider {
+        name: "openrouter",
+        label: "OpenRouter",
+        signup_url: "openrouter.ai",
+        models_url: "https://openrouter.ai/api",
         api_style: "openai",
     },
     WizardProvider {
@@ -4194,69 +4914,8 @@ fn cmd_configure_ai(
     if !cli.dry_run {
         require_sudo(cli);
     }
-    // Known providers with their defaults. Any OpenAI-compatible provider works
-    // if the user passes --key and optionally --base-url.
-    let (default_model, key_var, default_base_url): (&str, Option<&str>, Option<&str>) =
-        match provider {
-            "openai" => ("gpt-4o-mini", Some("OPENAI_API_KEY"), None),
-            "anthropic" => ("claude-haiku-4-5-20251001", Some("ANTHROPIC_API_KEY"), None),
-            "ollama" => ("llama3.2", None, None),
-            "groq" => (
-                "llama-3.3-70b-versatile",
-                Some("GROQ_API_KEY"),
-                Some("https://api.groq.com/openai"),
-            ),
-            "deepseek" => (
-                "deepseek-chat",
-                Some("DEEPSEEK_API_KEY"),
-                Some("https://api.deepseek.com"),
-            ),
-            "together" => (
-                "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-                Some("TOGETHER_API_KEY"),
-                Some("https://api.together.xyz"),
-            ),
-            "minimax" => (
-                "MiniMax-Text-01",
-                Some("MINIMAX_API_KEY"),
-                Some("https://api.minimaxi.chat"),
-            ),
-            "mistral" => (
-                "mistral-small-latest",
-                Some("MISTRAL_API_KEY"),
-                Some("https://api.mistral.ai"),
-            ),
-            "xai" => (
-                "grok-3-mini-fast",
-                Some("XAI_API_KEY"),
-                Some("https://api.x.ai"),
-            ),
-            "fireworks" => (
-                "accounts/fireworks/models/llama-v3p3-70b-instruct",
-                Some("FIREWORKS_API_KEY"),
-                Some("https://api.fireworks.ai/inference"),
-            ),
-            "openrouter" => (
-                "meta-llama/llama-3.3-70b-instruct",
-                Some("OPENROUTER_API_KEY"),
-                Some("https://openrouter.ai/api"),
-            ),
-            "gemini" => (
-                "gemini-2.0-flash",
-                Some("GEMINI_API_KEY"),
-                Some("https://generativelanguage.googleapis.com/v1beta/openai"),
-            ),
-            // Unknown provider - still works if the user provides base_url + key
-            _ => (
-                "gpt-4o-mini",
-                Some(&*Box::leak(
-                    format!("{}_API_KEY", provider.to_uppercase()).into_boxed_str(),
-                )),
-                None,
-            ),
-        };
-
-    let model = model.unwrap_or(default_model);
+    let (default_model, key_var, default_base_url) = ai_provider_defaults(provider);
+    let model = model.unwrap_or(&default_model);
 
     let env_file = cli
         .agent_config
@@ -4281,7 +4940,7 @@ fn cmd_configure_ai(
                 env_file.display()
             );
         } else {
-            write_env_key(&env_file, var, k)?;
+            write_env_key(&env_file, &var, k)?;
             println!("  [ok] {}=... written to {}", var, env_file.display());
         }
     }
@@ -4297,9 +4956,12 @@ fn cmd_configure_ai(
         config_editor::write_str(&cli.agent_config, "ai", "provider", provider)?;
         config_editor::write_str(&cli.agent_config, "ai", "model", model)?;
         // Write base_url: explicit flag > provider default > empty
-        let effective_url = base_url.or(default_base_url).unwrap_or("");
+        let effective_url = base_url
+            .map(|url| url.to_string())
+            .or(default_base_url)
+            .unwrap_or_default();
         if !effective_url.is_empty() {
-            config_editor::write_str(&cli.agent_config, "ai", "base_url", effective_url)?;
+            config_editor::write_str(&cli.agent_config, "ai", "base_url", &effective_url)?;
         }
         println!("  [ok] agent.toml updated: provider={provider}, model={model}");
     }
@@ -4489,7 +5151,7 @@ fn cmd_configure_responder_interactive(cli: &Cli) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// innerwarden configure telegram
+// innerwarden notify telegram
 // ---------------------------------------------------------------------------
 
 fn cmd_configure_telegram(
@@ -5885,7 +6547,7 @@ fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
             }
             _ => {
                 if test_only == Some("telegram") {
-                    println!("  Telegram ... not configured (run: innerwarden configure telegram)");
+                    println!("  Telegram ... not configured (run: innerwarden notify telegram)");
                     any_failed = true;
                 } else {
                     println!("  Telegram ... skipped (not configured)");
@@ -10729,6 +11391,32 @@ fn resolve_dashboard_url(cli: &Cli) -> String {
     "http://127.0.0.1:8787".to_string()
 }
 
+fn parse_selection_indices(input: &str, max: usize) -> Option<Vec<usize>> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || max == 0 {
+        return None;
+    }
+    if trimmed.eq_ignore_ascii_case("all") {
+        return Some((1..=max).collect());
+    }
+
+    let mut indexes = Vec::new();
+    for part in trimmed.split(',') {
+        let idx: usize = part.trim().parse().ok()?;
+        if idx == 0 || idx > max {
+            return None;
+        }
+        if !indexes.contains(&idx) {
+            indexes.push(idx);
+        }
+    }
+    if indexes.is_empty() {
+        None
+    } else {
+        Some(indexes)
+    }
+}
+
 fn cmd_agent(cli: &Cli, command: Option<&AgentCommand>) -> Result<()> {
     use innerwarden_agent_guard::signatures::{Kind, SignatureIndex, KNOWN};
 
@@ -10740,13 +11428,13 @@ fn cmd_agent(cli: &Cli, command: Option<&AgentCommand>) -> Result<()> {
             println!();
             println!("  \x1b[1mWhat do you want to do?\x1b[0m");
             println!();
-            println!("  1. Install a new agent        (OpenClaw, ZeroClaw)");
+            println!("  1. Install a new agent        (OpenClaw, ZeroClaw, others)");
             println!("  2. Scan for existing agents   (find agents already running)");
             println!("  3. View connected agents      (see what's being protected)");
             println!("  4. List available agents       (see what we support)");
             println!();
             println!("  Or use directly:");
-            println!("    innerwarden agent add openclaw");
+            println!("    innerwarden agent add <name>");
             println!("    innerwarden agent scan");
             println!("    innerwarden agent status");
             println!();
@@ -10899,8 +11587,9 @@ fn cmd_agent(cli: &Cli, command: Option<&AgentCommand>) -> Result<()> {
             if found.is_empty() {
                 println!("  No known agents or tools detected.");
                 println!();
-                println!("  To install an agent: innerwarden agent add openclaw");
-                println!("  To connect a custom agent: innerwarden agent connect <pid>");
+                println!("  To install an agent: innerwarden agent add <name>");
+                println!("  See supported names: innerwarden agent list");
+                println!("  To connect detected agents: innerwarden agent connect");
             } else {
                 println!(
                     "  {:<6} {:<8} {:<16} {:<10} STATUS",
@@ -10922,8 +11611,7 @@ fn cmd_agent(cli: &Cli, command: Option<&AgentCommand>) -> Result<()> {
                     );
                 }
                 println!();
-                println!("  Connect with: innerwarden agent connect <pid>");
-                println!("  Or connect all: innerwarden agent connect --all");
+                println!("  Connect with: innerwarden agent connect");
             }
             println!();
             Ok(())
@@ -10976,72 +11664,167 @@ fn cmd_agent(cli: &Cli, command: Option<&AgentCommand>) -> Result<()> {
             } else {
                 println!();
                 println!("  No agents or tools detected.");
-                println!("  Install one with: innerwarden agent add openclaw");
+                println!("  Install one with: innerwarden agent add <name>");
+                println!("  See options: innerwarden agent list");
             }
             println!();
             Ok(())
         }
 
-        Some(AgentCommand::Connect { pid, label }) => {
+        Some(AgentCommand::Connect { pid, name, label }) => {
             println!();
             let index = SignatureIndex::new();
 
-            // Read /proc/<pid>/comm to identify
-            let comm_path = format!("/proc/{pid}/comm");
-            let comm = std::fs::read_to_string(&comm_path)
-                .map(|s| s.trim().to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
-
-            let name = if let Some(sig) = index.identify(&comm) {
-                sig.name.to_string()
+            let selected_pids: Vec<u32> = if let Some(pid) = *pid {
+                vec![pid]
             } else {
-                comm.clone()
+                let found = innerwarden_agent_guard::detect::scan_processes(&index);
+                if found.is_empty() {
+                    println!("  No known agent process detected.");
+                    println!("  Run one first, then use: innerwarden agent connect");
+                    println!("  Or install one with: innerwarden agent add <name>");
+                    println!("  See options: innerwarden agent list");
+                    println!();
+                    return Ok(());
+                }
+
+                let candidates: Vec<_> = if let Some(filter) = name.as_deref() {
+                    let filter_lc = filter.to_lowercase();
+                    let matches: Vec<_> = found
+                        .iter()
+                        .filter(|a| {
+                            a.name.to_lowercase().contains(&filter_lc)
+                                || a.comm.to_lowercase().contains(&filter_lc)
+                        })
+                        .collect();
+                    if matches.is_empty() {
+                        println!("  No running agent matched '{filter}'.");
+                        println!("  Running detections:");
+                        for agent in &found {
+                            println!(
+                                "    - {} (pid {}, comm {}, integration {})",
+                                agent.name, agent.pid, agent.comm, agent.integration
+                            );
+                        }
+                        println!();
+                        return Ok(());
+                    }
+                    matches
+                } else {
+                    found.iter().collect()
+                };
+
+                if candidates.len() == 1 {
+                    println!(
+                        "  Auto-detected: {} (pid {})",
+                        candidates[0].name, candidates[0].pid
+                    );
+                    vec![candidates[0].pid]
+                } else {
+                    println!("  Detected agents:");
+                    println!("  {:<4} {:<8} {:<16} TYPE", "NO.", "PID", "NAME");
+                    println!("  {}", "─".repeat(48));
+                    for (i, agent) in candidates.iter().enumerate() {
+                        println!(
+                            "  {:<4} {:<8} {:<16} {}",
+                            i + 1,
+                            agent.pid,
+                            agent.name,
+                            agent.integration
+                        );
+                    }
+                    println!();
+                    print!("  Select one or more (ex: 1,3) or 'all' [Enter to cancel]: ");
+                    std::io::stdout().flush()?;
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                    let trimmed = input.trim();
+                    if trimmed.is_empty() {
+                        println!("  Cancelled.");
+                        println!();
+                        return Ok(());
+                    }
+                    let Some(indexes) = parse_selection_indices(trimmed, candidates.len()) else {
+                        println!("  Invalid selection '{trimmed}'.");
+                        println!();
+                        return Ok(());
+                    };
+                    indexes
+                        .into_iter()
+                        .map(|idx| candidates[idx - 1].pid)
+                        .collect()
+                }
             };
 
-            println!("  Connecting {name} (pid {pid})...");
-
-            // Call agent-guard API to register
             let dashboard_url = resolve_dashboard_url(cli);
-            let payload = serde_json::json!({
-                "name": name,
-                "pid": pid,
-                "label": label.as_deref().unwrap_or(""),
-            });
+            let mut connected = 0usize;
 
-            let url = format!("{dashboard_url}/api/agent-guard/connect");
-            match ureq::post(url).send_json(&payload) {
-                Ok(resp) => {
-                    let body: serde_json::Value = resp.into_body().read_json().unwrap_or_default();
-                    let agent_id = body
-                        .get("agent_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    println!("  \x1b[32m✓\x1b[0m {name} (pid {pid}) connected as {agent_id}");
-                }
-                Err(e) => {
-                    // Fallback: write to persistence file for agent to pick up on restart
-                    let path = cli.data_dir.join("agent-connections.jsonl");
-                    if let Ok(mut f) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&path)
-                    {
-                        use std::io::Write;
-                        let entry = serde_json::json!({
-                            "ts": chrono::Utc::now().to_rfc3339(),
-                            "action": "connect",
-                            "name": name,
-                            "pid": pid,
-                            "label": label,
-                        });
-                        let _ = writeln!(f, "{}", entry);
+            for selected_pid in selected_pids {
+                // Read /proc/<pid>/comm to identify
+                let comm_path = format!("/proc/{selected_pid}/comm");
+                let comm = std::fs::read_to_string(&comm_path)
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|_| "unknown".to_string());
+
+                let name = if let Some(sig) = index.identify(&comm) {
+                    sig.name.to_string()
+                } else {
+                    comm.clone()
+                };
+
+                println!("  Connecting {name} (pid {selected_pid})...");
+
+                // Call agent-guard API to register
+                let payload = serde_json::json!({
+                    "name": name,
+                    "pid": selected_pid,
+                    "label": label.as_deref().unwrap_or(""),
+                });
+
+                let url = format!("{dashboard_url}/api/agent-guard/connect");
+                match ureq::post(url).send_json(&payload) {
+                    Ok(resp) => {
+                        let body: serde_json::Value =
+                            resp.into_body().read_json().unwrap_or_default();
+                        let agent_id = body
+                            .get("agent_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        println!(
+                            "  \x1b[32m✓\x1b[0m {name} (pid {selected_pid}) connected as {agent_id}"
+                        );
+                        connected += 1;
                     }
-                    println!("  \x1b[33m!\x1b[0m Dashboard not reachable ({e:#}), saved for next agent restart");
+                    Err(e) => {
+                        // Fallback: write to persistence file for agent to pick up on restart
+                        let path = cli.data_dir.join("agent-connections.jsonl");
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&path)
+                        {
+                            use std::io::Write;
+                            let entry = serde_json::json!({
+                                "ts": chrono::Utc::now().to_rfc3339(),
+                                "action": "connect",
+                                "name": name,
+                                "pid": selected_pid,
+                                "label": label,
+                            });
+                            let _ = writeln!(f, "{}", entry);
+                        }
+                        println!(
+                            "  \x1b[33m!\x1b[0m Dashboard not reachable ({e:#}), saved for next agent restart"
+                        );
+                    }
                 }
             }
 
             if let Some(lbl) = label {
                 println!("  Label: {lbl}");
+            }
+            if connected > 1 {
+                println!("  Connected {connected} agents.");
             }
             println!();
             println!("  \x1b[2mView status: innerwarden agent status\x1b[0m");
@@ -11196,6 +11979,58 @@ mod tests {
                 action: None,
             },
         }
+    }
+
+    #[test]
+    fn parse_selection_indices_all_and_csv() {
+        assert_eq!(parse_selection_indices("all", 3), Some(vec![1, 2, 3]));
+        assert_eq!(parse_selection_indices("1,3,3,2", 3), Some(vec![1, 3, 2]));
+    }
+
+    #[test]
+    fn parse_selection_indices_rejects_invalid_values() {
+        assert_eq!(parse_selection_indices("", 3), None);
+        assert_eq!(parse_selection_indices("0", 3), None);
+        assert_eq!(parse_selection_indices("4", 3), None);
+        assert_eq!(parse_selection_indices("x", 3), None);
+    }
+
+    #[test]
+    fn ai_provider_defaults_cover_known_and_custom_providers() {
+        let (model, key_var, base_url) = ai_provider_defaults("openrouter");
+        assert_eq!(model, "meta-llama/llama-3.3-70b-instruct");
+        assert_eq!(key_var.as_deref(), Some("OPENROUTER_API_KEY"));
+        assert_eq!(base_url.as_deref(), Some("https://openrouter.ai/api"));
+
+        let (_model, key_var, base_url) = ai_provider_defaults("acme");
+        assert_eq!(key_var.as_deref(), Some("ACME_API_KEY"));
+        assert!(base_url.is_none());
+    }
+
+    #[test]
+    fn count_failed_setup_checks_only_counts_critical_failures() {
+        let checks = vec![
+            SetupCheck {
+                label: "AI".to_string(),
+                detail: "not configured".to_string(),
+                ok: false,
+                critical: true,
+            },
+            SetupCheck {
+                label: "Dashboard".to_string(),
+                detail: "not reachable".to_string(),
+                ok: false,
+                critical: false,
+            },
+            SetupCheck {
+                label: "Protection".to_string(),
+                detail: "watch only".to_string(),
+                ok: true,
+                critical: true,
+            },
+        ];
+
+        assert_eq!(count_failed_setup_checks(&checks), 1);
     }
 
     #[test]
