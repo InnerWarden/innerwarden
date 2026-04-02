@@ -1,0 +1,52 @@
+kind: skill
+name: honeypot
+version: 1
+description: "Deploys SSH/HTTP decoy listeners with fake shell interaction for attacker intelligence"
+
+context: |
+  Two modes: 'demo' (controlled marker only) and 'listener' (real bounded
+  decoy listeners with selective iptables redirect and forensics artifacts).
+  SSH decoy sends OpenSSH 9.2p1 banner and interacts via fake shell with 40+
+  commands. HTTP decoy sends 302 redirect to /login. Sessions are bounded by
+  duration, max connections, and max payload size. Evidence is written to
+  timestamped directories. Supports iptables-based port redirect from real
+  service ports to decoy ports for targeted IPs. Session isolation profiles
+  available. HMAC-SHA256 session ID generation.
+
+behavior:
+  does:
+    - "Binds SSH and HTTP decoy listeners on configurable ports"
+    - "Sends realistic SSH banner (SSH-2.0-OpenSSH_9.2p1 Ubuntu-4ubuntu0.5)"
+    - "Provides fake shell with 40+ commands (ls, whoami, cat, etc.)"
+    - "Captures attacker commands, credentials, and payloads"
+    - "Records session transcripts with timestamps"
+    - "Optionally redirects real ports to decoy via iptables DNAT rules (target IP only)"
+    - "Cleans up redirect rules after session ends (verified absent)"
+    - "Extracts IOCs from session data"
+    - "Supports bounded sessions (max duration, connections, payload)"
+  does_not:
+    - "Does not provide real shell access"
+    - "Does not execute attacker commands"
+    - "Does not expose real system files or data"
+    - "Does not persist beyond session TTL"
+
+pre_conditions:
+  - "Ports available for binding"
+  - "iptables for redirect rules (optional)"
+  - "sudo configured for iptables redirect commands"
+
+post_conditions:
+  - "Session evidence saved to data_dir/honeypot/<session_id>/"
+  - "All redirect rules cleaned up"
+  - "Listeners closed after session ends"
+
+rollback:
+  - "Kill listener processes"
+  - "Remove iptables redirect rules"
+
+applicable_detectors: []
+
+tier: "Open"
+
+history:
+  - "2026-04-02: initial spec"

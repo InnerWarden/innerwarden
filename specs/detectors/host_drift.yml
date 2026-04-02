@@ -1,0 +1,79 @@
+kind: detector
+name: host_drift
+version: 1
+description: "Detects execution of binaries from unexpected filesystem locations (non-package-manager paths)"
+
+context: |
+  On a well-managed server, binaries should come from package managers
+  (installed in /usr/bin, /usr/sbin, /opt, etc). A binary executed from
+  /tmp, /dev/shm, or writable directories outside trusted paths is
+  suspicious — possible malware, web shell, or post-exploitation tool.
+
+  Trusted paths: /usr/bin/, /usr/sbin/, /usr/local/bin/, /bin/, /sbin/,
+  /opt/, /snap/, etc.
+
+  Development paths (NOT flagged): /home/, /root/, /var/lib/docker/,
+  /run/, /proc/, /sys/.
+
+  Key decisions:
+  - Allowlisted processes: ld-linux, dpkg, apt, pip, npm, cargo, python,
+    node, java, innerwarden, etc.
+  - Complements LSM exec blocking (which blocks /tmp, /dev/shm).
+  - Non-container host-level detection (container_drift handles containers).
+
+behavior:
+  does:
+    - "Fires on binary execution from non-trusted, non-development paths"
+    - "Targets /tmp, /dev/shm, /var/tmp, and other writable directories"
+    - "Per binary path cooldown"
+  does_not:
+    - "Alert on trusted paths (/usr/bin, /usr/sbin, /opt, /snap)"
+    - "Alert on development paths (/home, /root, /var/lib/docker)"
+    - "Alert on allowlisted processes (dpkg, apt, python, node, etc.)"
+
+config:
+  cooldown_secs: 600
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "Binary executed from /tmp"
+      input:
+        kind: "shell.command_exec"
+        command: "/tmp/exploit"
+        comm: "exploit"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "Binary executed from /dev/shm"
+      input:
+        kind: "shell.command_exec"
+        command: "/dev/shm/backdoor"
+        comm: "backdoor"
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "Binary from /usr/bin (trusted path)"
+      input:
+        kind: "shell.command_exec"
+        command: "/usr/bin/curl"
+        comm: "curl"
+      expected:
+        alert: false
+        reason: "/usr/bin is a trusted path"
+
+    - description: "Binary from /home (development path)"
+      input:
+        kind: "shell.command_exec"
+        command: "/home/user/project/target/debug/myapp"
+        comm: "myapp"
+      expected:
+        alert: false
+        reason: "/home is a development path"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

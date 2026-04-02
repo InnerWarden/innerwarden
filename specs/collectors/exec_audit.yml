@@ -1,0 +1,41 @@
+kind: collector
+name: exec_audit
+version: 1
+description: "Parses Linux audit.log for EXECVE and optional TTY input records"
+
+context: |
+  Tails /var/log/audit/audit.log for command execution and TTY keystroke
+  records. Disabled by default because audit trails can contain sensitive data.
+  Parses EXECVE records to reconstruct full command lines from argc/argv fields.
+  Optionally parses TTY records with hex-decoded preview. Uses spawn_blocking
+  for file I/O.
+
+behavior:
+  does:
+    - "Parses type=EXECVE audit lines into shell.command_exec events"
+    - "Reconstructs full command from numbered argv fields (a0, a1, a2, ...)"
+    - "Extracts audit timestamp and audit ID from msg=audit(ts:id)"
+    - "Parses type=TTY lines when include_tty is enabled"
+    - "Hex-decodes TTY input for human-readable preview (up to 96 chars)"
+    - "Handles key=value parsing with quoted/escaped values"
+    - "Detects log rotation and resets offset"
+  does_not:
+    - "Does not parse SYSCALL, USER_AUTH, or other audit record types"
+    - "Does not emit TTY events unless include_tty flag is explicitly set"
+    - "Does not resolve UIDs to usernames"
+
+output:
+  event_kinds:
+    - kind: "shell.command_exec"
+      fields: [audit_ts, audit_id, argc, argv, command]
+    - kind: "shell.tty_input"
+      fields: [audit_ts, audit_id, tty, uid, auid, raw_hex, decoded_preview]
+
+config:
+  path: "/var/log/audit/audit.log"
+  include_tty: false
+  poll_interval: "1s"
+  cursor: "byte offset (persisted via shared AtomicU64)"
+
+history:
+  - "2026-04-02: initial spec"

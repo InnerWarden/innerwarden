@@ -1,0 +1,43 @@
+kind: collector
+name: kernel_integrity
+version: 1
+description: "Syscall table integrity, eBPF program inventory, and kernel module monitoring for rootkit detection"
+
+context: |
+  Three complementary kernel integrity checks. (1) Reads /proc/kallsyms at boot
+  for addresses of 10 key syscall handlers; periodically compares to detect rootkit
+  hooking. (2) Reads eBPF program list via bpftool at boot; alerts on new programs
+  not from innerwarden (VoidLink-style attacks). (3) Reads /proc/modules at boot;
+  alerts on new kernel modules loaded after baseline. Cooldown of 600 seconds
+  per alert type.
+
+behavior:
+  does:
+    - "Establishes syscall address baseline from /proc/kallsyms at boot"
+    - "Monitors 10 syscalls: __x64_sys_execve, __x64_sys_openat, __x64_sys_connect, __x64_sys_ptrace, __x64_sys_init_module, __x64_sys_finit_module, __x64_sys_mount, __x64_sys_setuid, __x64_sys_setgid, __x64_sys_kill"
+    - "Detects syscall table hooking (address changes)"
+    - "Establishes eBPF program inventory baseline at boot"
+    - "Detects new eBPF programs not matching innerwarden prefixes (innerwarden, iw_, tracepoint__, kprobe__, lsm__, xdp__)"
+    - "Establishes kernel module inventory from /proc/modules at boot"
+    - "Detects new kernel modules loaded after baseline"
+    - "600-second cooldown per alert to prevent flooding"
+  does_not:
+    - "Does not modify kernel state"
+    - "Does not unload suspicious modules or eBPF programs"
+    - "Does not run on non-Linux platforms"
+
+output:
+  event_kinds:
+    - kind: "kernel.syscall_table_hooked"
+      fields: [syscall_name, expected_addr, current_addr]
+    - kind: "kernel.bpf_program_loaded"
+      fields: [program_id, program_name]
+    - kind: "kernel.module_loaded"
+      fields: [module_name]
+
+config:
+  poll_interval: "configurable (seconds)"
+  requires: "Linux, /proc/kallsyms, bpftool, /proc/modules"
+
+history:
+  - "2026-04-02: initial spec"

@@ -1,0 +1,43 @@
+kind: collector
+name: proc_maps
+version: 1
+description: "Memory forensics via /proc/[pid]/maps scanning for shellcode and injection indicators"
+
+context: |
+  Periodically scans /proc/[pid]/maps for all processes to detect indicators
+  of memory compromise. Runs every 60 seconds by default and on-demand when
+  triggered by High/Critical incidents. Skips kernel threads and known safe
+  processes (kworker, ksoftirqd, systemd-journal, innerwarden, etc.).
+
+behavior:
+  does:
+    - "Detects RWX memory regions (read+write+execute) - classic shellcode indicator (severity: Critical)"
+    - "Detects anonymous executable mappings - injected code (severity: High)"
+    - "Detects deleted file mappings - fileless malware loaded then unlinked (severity: Critical)"
+    - "Detects executable stack - exploitation/ROP indicator (severity: High)"
+    - "Detects executable heap - heap spray/shellcode indicator (severity: High)"
+    - "Skips kernel threads and known safe processes"
+  does_not:
+    - "Does not read actual memory contents (only permission and mapping metadata)"
+    - "Does not run on non-Linux platforms"
+    - "Does not modify any process state"
+
+output:
+  event_kinds:
+    - kind: "memory.rwx_region"
+      fields: [pid, comm, addr_start, addr_end, perms, path, size_kb]
+    - kind: "memory.anon_executable"
+      fields: [pid, comm, addr_start, addr_end, perms, size_kb]
+    - kind: "memory.deleted_file"
+      fields: [pid, comm, addr_start, addr_end, perms, path, size_kb]
+    - kind: "memory.executable_stack"
+      fields: [pid, comm, addr_start, addr_end, perms, size_kb]
+    - kind: "memory.executable_heap"
+      fields: [pid, comm, addr_start, addr_end, perms, size_kb]
+
+config:
+  poll_interval: "60s"
+  requires: "Linux, /proc filesystem"
+
+history:
+  - "2026-04-02: initial spec"

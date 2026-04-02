@@ -1,0 +1,40 @@
+kind: skill
+name: block_ip_iptables
+version: 1
+description: "Blocks attacking IP by appending a DROP rule to the INPUT chain using iptables"
+
+context: |
+  Appends a DROP rule to the INPUT chain:
+  `sudo iptables -A INPUT -s <IP> -j DROP -m comment --comment innerwarden`.
+  Rules are lost on reboot unless persisted with iptables-save.
+  Supports dry-run mode.
+
+behavior:
+  does:
+    - "Blocks IP via: sudo iptables -A INPUT -s <IP> -j DROP -m comment --comment innerwarden"
+    - "Adds comment module tag for traceability"
+    - "Supports dry-run mode"
+  does_not:
+    - "Does not persist rules across reboot (requires iptables-save)"
+    - "Does not check for duplicate rules"
+    - "Does not block internal IPs (handled by caller)"
+
+pre_conditions:
+  - "iptables installed"
+  - "sudo iptables configured in /etc/sudoers.d/innerwarden"
+
+post_conditions:
+  - "IP blocked via DROP rule in INPUT chain"
+
+rollback:
+  - "sudo iptables -D INPUT -s <IP> -j DROP -m comment --comment innerwarden"
+
+applicable_detectors:
+  - "ssh_bruteforce"
+  - "port_scan"
+  - "credential_stuffing"
+
+tier: "Open"
+
+history:
+  - "2026-04-02: initial spec"

@@ -1,0 +1,77 @@
+kind: detector
+name: web_scan
+version: 1
+description: "Detects HTTP error flooding from a single IP indicating automated vulnerability scanning"
+
+context: |
+  Counts http.error events per source IP in a sliding window. Error
+  flooding is the hallmark of automated vulnerability scanners (Nikto,
+  DirBuster, etc.) probing for path traversal, LFI, and admin endpoints.
+
+  Severity scales with error count:
+  - threshold..3x threshold: Medium (light probing)
+  - 3x threshold+: High (active scanner)
+
+  Key decisions:
+  - Only http.error events (from nginx_error collector), not http.request.
+  - Known bots (tag "bot:known") excluded.
+  - Internal IPs excluded.
+
+behavior:
+  does:
+    - "Counts http.error events per source IP"
+    - "Fires Medium severity at threshold"
+    - "Escalates to High severity at 3x threshold"
+    - "Suppresses re-alerts for same IP within window"
+  does_not:
+    - "Alert on http.request events (those go to search_abuse or user_agent_scanner)"
+    - "Alert on known bots (tag bot:known)"
+    - "Alert on internal IPs"
+    - "Alert below threshold"
+
+config:
+  threshold: 20
+  window_secs: 60
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "20 HTTP errors from same IP in 60s"
+      input:
+        kind: "http.error"
+        ip: "1.2.3.4"
+        count: 20
+      expected:
+        alert: true
+        severity: "medium"
+
+    - description: "60 HTTP errors from same IP (3x threshold)"
+      input:
+        kind: "http.error"
+        ip: "5.6.7.8"
+        count: 60
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "Internal IP with many errors"
+      input:
+        kind: "http.error"
+        ip: "192.168.1.1"
+        count: 100
+      expected:
+        alert: false
+        reason: "Internal IPs are excluded"
+
+    - description: "ssh.login_failed event (wrong kind)"
+      input:
+        kind: "ssh.login_failed"
+        ip: "1.2.3.4"
+      expected:
+        alert: false
+        reason: "Only http.error events are processed"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

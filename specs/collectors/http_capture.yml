@@ -1,0 +1,40 @@
+kind: collector
+name: http_capture
+version: 1
+description: "Captures HTTP request headers from network traffic via AF_PACKET raw socket"
+
+context: |
+  Opens an AF_PACKET raw socket to capture HTTP requests on monitored ports.
+  Parses Ethernet/IP/TCP headers and HTTP request line + headers. Extracts
+  method, path, Host, User-Agent, Content-Type, Content-Length. Eliminates
+  dependency on nginx access logs for HTTP visibility. Feeds web_scan,
+  user_agent_scanner, and web_shell detectors. Detects suspicious paths
+  inline (path traversal, .env, wp-login, phpmyadmin, shell, xmlrpc).
+
+behavior:
+  does:
+    - "Captures HTTP requests on ports 80, 8080, 8443, 8787, 3000, 5000, 9090"
+    - "Parses GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH methods"
+    - "Extracts method, path, Host, User-Agent, Content-Type, Content-Length headers"
+    - "Detects suspicious paths (.., /etc/, .env, .git, wp-login, phpmyadmin, shell, cmd, backup, xmlrpc)"
+    - "Elevates severity to Medium for suspicious paths"
+    - "Applies per-(src_ip, method, path) cooldown of 5 seconds"
+    - "Prunes cooldown map at 5000 entries"
+  does_not:
+    - "Does not capture HTTPS (encrypted payload, use tls_fingerprint for that)"
+    - "Does not capture response bodies"
+    - "Does not run on non-Linux platforms (graceful skip)"
+    - "Does not capture outbound HTTP (only inbound to monitored ports)"
+
+output:
+  event_kinds:
+    - kind: "http.request"
+      fields: [method, path, host, user_agent, content_type, content_length, src_ip, src_port, dst_port, http_version]
+
+config:
+  monitored_ports: [80, 8080, 8443, 8787, 3000, 5000, 9090]
+  requires: "Linux, CAP_NET_RAW"
+  cooldown: "5s per (src_ip, method, path)"
+
+history:
+  - "2026-04-02: initial spec"

@@ -1,0 +1,41 @@
+kind: skill
+name: block_ip_pf
+version: 1
+description: "Blocks attacking IP using macOS Packet Filter (pf) via pfctl"
+
+context: |
+  Adds the IP to the 'innerwarden-blocked' pf table:
+  `sudo pfctl -t innerwarden-blocked -T add <IP>`.
+  Requires a persistent anchor in /etc/pf.conf with:
+  `table <innerwarden-blocked> persist` and
+  `block in quick from <innerwarden-blocked> to any`.
+
+behavior:
+  does:
+    - "Blocks IP via: sudo pfctl -t innerwarden-blocked -T add <IP>"
+    - "Supports dry-run mode"
+  does_not:
+    - "Does not create the pf table or anchor (must be pre-configured)"
+    - "Does not enable pf if disabled"
+    - "Does not block internal IPs (handled by caller)"
+
+pre_conditions:
+  - "macOS with pf enabled"
+  - "'innerwarden-blocked' table configured in /etc/pf.conf"
+  - "sudo pfctl configured in /etc/sudoers.d/innerwarden"
+
+post_conditions:
+  - "IP added to innerwarden-blocked pf table"
+
+rollback:
+  - "sudo pfctl -t innerwarden-blocked -T delete <IP>"
+
+applicable_detectors:
+  - "ssh_bruteforce"
+  - "port_scan"
+  - "credential_stuffing"
+
+tier: "Open"
+
+history:
+  - "2026-04-02: initial spec"

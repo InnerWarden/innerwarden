@@ -1,0 +1,52 @@
+kind: collector
+name: fanotify_watch
+version: 1
+description: "Real-time filesystem monitoring with hash change detection, entropy analysis, and ransomware burst detection"
+
+context: |
+  Monitors sensitive files for modifications using polling with metadata change
+  detection (falls back to periodic hash checking on macOS). Detects ransomware
+  via high-rate sequential writes (50+ writes in 10 seconds) combined with
+  Shannon entropy analysis (threshold 7.5/8.0 indicates encryption). Default
+  watch paths include /etc/passwd, /etc/shadow, /etc/sudoers, /etc/ssh/sshd_config,
+  /etc/crontab, /etc/hosts, /etc/resolv.conf, /etc/ld.so.preload, /boot/grub/grub.cfg.
+
+behavior:
+  does:
+    - "Monitors specified file paths for modifications (SHA-256 hash comparison)"
+    - "Detects ransomware burst: 50+ file writes within 10 seconds"
+    - "Computes Shannon entropy on modified files (min 64 bytes)"
+    - "Flags encrypted content when entropy exceeds 7.5 (out of 8.0)"
+    - "Emits immediate file.realtime_modified events on hash change"
+    - "Emits file.ransomware_burst events on write burst detection"
+    - "Emits file.encrypted_write events on high entropy change"
+  does_not:
+    - "Does not use fanotify syscall directly (uses polling with metadata)"
+    - "Does not monitor directories recursively (only explicit file paths)"
+    - "Does not block file modifications"
+
+output:
+  event_kinds:
+    - kind: "file.realtime_modified"
+      fields: [path, old_hash, new_hash, old_size, new_size]
+    - kind: "file.ransomware_burst"
+      fields: [write_count, window_secs]
+    - kind: "file.encrypted_write"
+      fields: [path, entropy, old_entropy]
+
+config:
+  default_watch_paths:
+    - "/etc/passwd"
+    - "/etc/shadow"
+    - "/etc/sudoers"
+    - "/etc/ssh/sshd_config"
+    - "/etc/crontab"
+    - "/etc/hosts"
+    - "/etc/resolv.conf"
+    - "/etc/ld.so.preload"
+    - "/boot/grub/grub.cfg"
+  ransomware_threshold: 50 writes in 10s
+  encryption_entropy_threshold: 7.5
+
+history:
+  - "2026-04-02: initial spec"

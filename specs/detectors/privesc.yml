@@ -1,0 +1,109 @@
+kind: detector
+name: privesc
+version: 1
+description: "Detects privilege escalation via eBPF commit_creds kprobe and setuid tracepoint"
+
+context: |
+  When a non-root process becomes root through an unexpected path, this
+  detector fires a Critical incident immediately. Watches both
+  privilege.escalation (commit_creds kprobe) and privilege.setuid
+  (setuid tracepoint) events.
+
+  Always Critical severity — privilege escalation is one of the most
+  dangerous attack steps.
+
+  Key decisions:
+  - PRIVESC_ALLOWED allowlist covers standard login/auth binaries (sudo,
+    su, sshd, login, cron, polkitd, pkexec, passwd, etc.), package managers
+    (dpkg, apt, snap), and SUID system tools (find, mount, ping, etc.).
+  - InnerWarden's own processes excluded via is_innerwarden_process.
+  - Handles kernel task parenthesized comm format: (install) -> install.
+  - Suppresses re-alerts per PID within window.
+  - Container-aware: includes container_id and container tag if present.
+
+behavior:
+  does:
+    - "Fires Critical severity on privilege.escalation and privilege.setuid events"
+    - "Shows old_uid -> new_uid transition in evidence"
+    - "Container-aware: tags and entities include container context"
+    - "Suppresses re-alerts per PID within window"
+  does_not:
+    - "Alert on processes in PRIVESC_ALLOWED (sudo, login, sshd, mount, etc.)"
+    - "Alert on InnerWarden's own processes"
+    - "Alert on non-privesc events"
+    - "Re-alert for same PID within window"
+
+config:
+  window_secs: 300
+
+dependencies:
+  - "allowlists.rs: PRIVESC_ALLOWED, is_innerwarden_process, comm_in_allowlist"
+
+test_cases:
+  true_positives:
+    - description: "Unknown exploit gains root"
+      input:
+        kind: "privilege.escalation"
+        comm: "exploit"
+        pid: 1234
+        old_uid: 1000
+        new_uid: 0
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "Container privilege escalation"
+      input:
+        kind: "privilege.escalation"
+        comm: "exploit"
+        pid: 1234
+        old_uid: 33
+        new_uid: 0
+        container_id: "abc123"
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "sudo executing (in PRIVESC_ALLOWED)"
+      input:
+        kind: "privilege.escalation"
+        comm: "sudo"
+        pid: 5000
+        old_uid: 1000
+        new_uid: 0
+      expected:
+        alert: false
+        reason: "sudo is in PRIVESC_ALLOWED"
+
+    - description: "install command with parenthesized comm"
+      input:
+        kind: "privilege.escalation"
+        comm: "(install)"
+        pid: 5001
+        old_uid: 6
+        new_uid: 0
+      expected:
+        alert: false
+        reason: "install is in PRIVESC_ALLOWED, parentheses are stripped"
+
+  false_positive_fixes:
+    - date: "2026-04-02"
+      description: "Kernel tasks with parenthesized comm format triggering privesc"
+      context: |
+        Kernel reports some task names wrapped in parentheses: (install),
+        (find), (mandb). Without stripping parentheses, these legitimate
+        SUID binaries would trigger Critical privesc alerts. Fixed by
+        applying comm_in_allowlist which uses trim_matches to strip
+        parentheses before matching.
+      input:
+        kind: "privilege.escalation"
+        comm: "(install)"
+        pid: 1238
+        old_uid: 6
+        new_uid: 0
+      expected:
+        alert: false
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

@@ -1,0 +1,88 @@
+kind: detector
+name: lateral_movement
+version: 1
+description: "Detects lateral movement patterns within internal networks: SSH scanning, port scanning, service probing"
+
+context: |
+  Three detection patterns, all requiring eBPF source:
+  1. Internal SSH scanning — process connects to port 22 on N+ internal IPs
+  2. Internal port scanning — process connects to same port on N+ internal IPs
+  3. Sensitive service probe — single connection to MySQL/PostgreSQL/Redis/
+     MongoDB/etcd/Consul/Docker registry ports on internal IPs
+
+  Only processes connections to private IPs (RFC 1918: 10.x, 172.16-31.x, 192.168.x).
+  Loopback (127.x) is NOT included. External IPs are ignored entirely.
+
+  Key decisions:
+  - Source must be ebpf_syscall or ebpf (rejects auth_log network events).
+  - Per-process tracking via comm:pid key.
+  - 600s cooldown per alert key.
+  - Sensitive ports: 3306, 5432, 6379, 27017, 2379, 8500, 5000.
+
+behavior:
+  does:
+    - "Fires High on SSH scanning (N+ unique internal IPs on port 22)"
+    - "Fires High on internal port scanning (N+ unique IPs on same port)"
+    - "Fires Medium on sensitive service probe (single connection to DB/service port)"
+    - "Only tracks eBPF-sourced network events"
+  does_not:
+    - "Alert on external IPs (only internal/private)"
+    - "Alert on non-eBPF sourced events (auth_log, nginx)"
+    - "Alert on non-sensitive ports with single connection"
+    - "Re-alert within 600s cooldown"
+
+config:
+  ssh_threshold: 3
+  scan_threshold: 5
+  window_secs: 300
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "SSH to 3 internal IPs"
+      input:
+        kind: "network.outbound_connect"
+        source: "ebpf_syscall"
+        comm: "nmap"
+        pid: 1000
+        connections: [["10.0.0.1", 22], ["10.0.0.2", 22], ["10.0.0.3", 22]]
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "Connection to MySQL on internal IP"
+      input:
+        kind: "network.outbound_connect"
+        source: "ebpf_syscall"
+        comm: "python3"
+        dst_ip: "10.0.0.50"
+        dst_port: 3306
+      expected:
+        alert: true
+        severity: "medium"
+
+  true_negatives:
+    - description: "SSH to external IPs"
+      input:
+        kind: "network.outbound_connect"
+        source: "ebpf_syscall"
+        comm: "ssh"
+        connections: [["8.8.8.8", 22], ["1.1.1.1", 22], ["203.0.113.5", 22]]
+      expected:
+        alert: false
+        reason: "External IPs are filtered out"
+
+    - description: "Event from auth_log (non-eBPF)"
+      input:
+        kind: "network.outbound_connect"
+        source: "auth_log"
+        comm: "ssh"
+        dst_ip: "10.0.0.1"
+        dst_port: 22
+      expected:
+        alert: false
+        reason: "Source must be ebpf_syscall or ebpf"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

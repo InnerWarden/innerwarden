@@ -1,0 +1,54 @@
+kind: collector
+name: docker
+version: 1
+description: "Streams Docker container lifecycle events and audits privilege escalation risks"
+
+context: |
+  Streams events via `docker events --format '{{json .}}'`. On container start,
+  runs `docker inspect` to check for privilege escalation risks: --privileged flag,
+  docker.sock mount, dangerous capabilities (SYS_ADMIN, NET_ADMIN, SYS_PTRACE,
+  SYS_MODULE). Performs a startup audit of all running containers. Uses unix
+  timestamp as resume cursor. Auto-restarts if docker events exits.
+
+behavior:
+  does:
+    - "Emits events for container start, stop, die, kill, oom, create, destroy"
+    - "Inspects newly started containers for privilege escalation risks"
+    - "Audits all running containers at startup (fire-and-forget)"
+    - "Detects --privileged flag (container.privileged, severity: High)"
+    - "Detects /var/run/docker.sock mounts via Binds and Mounts arrays (container.sock_mount, severity: High)"
+    - "Detects dangerous capabilities: SYS_ADMIN, NET_ADMIN, SYS_PTRACE, SYS_MODULE (container.dangerous_cap, severity: Medium)"
+    - "Auto-restarts docker events after unexpected exit (5s delay)"
+  does_not:
+    - "Does not handle non-container Docker events (network, volume, image)"
+    - "Does not handle exec_start, pause, unpause, or other minor actions"
+    - "Does not block containers (only detects and reports)"
+
+output:
+  event_kinds:
+    - kind: "container.start"
+      fields: [container_id, name, image, action]
+    - kind: "container.stop"
+      fields: [container_id, name, image, action]
+    - kind: "container.die"
+      fields: [container_id, name, image, action]
+    - kind: "container.kill"
+      fields: [container_id, name, image, action]
+    - kind: "container.oom"
+      fields: [container_id, name, image, action]
+    - kind: "container.create"
+      fields: [container_id, name, image, action]
+    - kind: "container.destroy"
+      fields: [container_id, name, image, action]
+    - kind: "container.privileged"
+      fields: [container_id, name, image, risk]
+    - kind: "container.sock_mount"
+      fields: [container_id, name, image, risk, path]
+    - kind: "container.dangerous_cap"
+      fields: [container_id, name, image, risk, capabilities]
+
+config:
+  cursor: "unix timestamp string (persisted via shared Mutex)"
+
+history:
+  - "2026-04-02: initial spec"

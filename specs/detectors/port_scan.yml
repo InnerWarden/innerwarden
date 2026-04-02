@@ -1,0 +1,63 @@
+kind: detector
+name: port_scan
+version: 1
+description: "Detects port scanning by counting distinct destination ports from a single source IP"
+
+context: |
+  Counts unique destination ports hit by a single source IP within a window.
+  Accepts network.connection_blocked (firewall), network.inbound_connect,
+  and network.accept events. Classic reconnaissance detection.
+
+  Always fires at High severity — port scanning is a clear precursor to
+  exploitation and rarely has legitimate explanations from external IPs.
+
+behavior:
+  does:
+    - "Counts unique destination ports per source IP in a sliding window"
+    - "Fires High severity when unique port count reaches threshold"
+    - "Accepts network.connection_blocked, network.inbound_connect, network.accept events"
+    - "Suppresses re-alerts for same IP within window"
+  does_not:
+    - "Alert on internal source IPs"
+    - "Alert when same port is hit repeatedly (unique count unchanged)"
+    - "Alert below unique port threshold"
+    - "Alert on outbound connections (those go to c2_callback or outbound_anomaly)"
+
+config:
+  threshold: 10
+  window_secs: 60
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "10 distinct ports from same external IP"
+      input:
+        kind: "network.connection_blocked"
+        src_ip: "1.2.3.4"
+        ports: [22, 80, 443, 3306, 5432, 8080, 8443, 9090, 27017, 6379]
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "Same port hit multiple times (not a scan)"
+      input:
+        kind: "network.connection_blocked"
+        src_ip: "1.2.3.4"
+        ports: [22, 22, 22, 22, 22]
+      expected:
+        alert: false
+        reason: "Only 1 unique port"
+
+    - description: "Internal source IP"
+      input:
+        kind: "network.connection_blocked"
+        src_ip: "192.168.1.100"
+        ports: [22, 80, 443, 3306, 5432, 8080, 8443, 9090, 27017, 6379]
+      expected:
+        alert: false
+        reason: "Internal IPs are excluded"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

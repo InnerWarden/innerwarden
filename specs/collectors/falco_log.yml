@@ -1,0 +1,31 @@
+kind: collector
+name: falco_log
+version: 1
+description: "Tails Falco alert output and maps to InnerWarden events"
+
+context: |
+  Tails Falco's JSON alert output file. Parses Falco rule name, priority,
+  output fields, and container info. Optional integration for environments
+  running Falco. Note: source file was not found in codebase -- collector
+  may be declared in mod.rs but implementation pending or renamed.
+
+behavior:
+  does:
+    - "Parses Falco JSON alert lines"
+    - "Maps Falco priority to InnerWarden severity"
+    - "Extracts rule name, output, container info"
+  does_not:
+    - "Does not start or manage the Falco agent"
+    - "Does not modify Falco rules"
+
+output:
+  event_kinds:
+    - kind: "falco.alert"
+      fields: [rule, priority, output, container_id]
+
+config:
+  path: "/var/log/falco/falco_alerts.json"
+  poll_interval: "1s"
+
+history:
+  - "2026-04-02: initial spec (source file not found, spec based on mod.rs declaration)"

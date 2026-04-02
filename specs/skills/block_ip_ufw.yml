@@ -1,0 +1,41 @@
+kind: skill
+name: block_ip_ufw
+version: 1
+description: "Blocks attacking IP using UFW (Uncomplicated Firewall) with traceability comment"
+
+context: |
+  Permanently blocks an IP by running `sudo ufw deny from <IP> comment 'innerwarden'`.
+  The comment tag enables easy identification and cleanup of InnerWarden-managed rules.
+  Supports dry-run mode for testing without actual blocking.
+
+behavior:
+  does:
+    - "Blocks IP via: sudo ufw deny from <IP> comment 'innerwarden'"
+    - "Adds 'innerwarden' comment to rule for traceability"
+    - "Supports dry-run mode (logs command without executing)"
+    - "Returns success/failure with descriptive message"
+  does_not:
+    - "Does not block internal IPs (handled by caller)"
+    - "Does not set TTL (permanent block)"
+    - "Does not verify ufw is installed (fails with error message)"
+
+pre_conditions:
+  - "ufw installed and enabled"
+  - "sudo ufw deny configured in /etc/sudoers.d/innerwarden"
+
+post_conditions:
+  - "IP permanently blocked in ufw rules"
+  - "Rule tagged with 'innerwarden' comment"
+
+rollback:
+  - "sudo ufw delete deny from <IP>"
+
+applicable_detectors:
+  - "ssh_bruteforce"
+  - "port_scan"
+  - "credential_stuffing"
+
+tier: "Open"
+
+history:
+  - "2026-04-02: initial spec"

@@ -1,0 +1,40 @@
+kind: skill
+name: kill_process
+version: 1
+description: "Kills all running processes owned by a user via SIGKILL"
+
+context: |
+  Kills all processes owned by a target user using `pkill -9 -u <user>`.
+  TTL is informational only -- there is no automatic process restart prevention.
+  Username is validated to prevent injection. TTL range: 60s to 86400s (default 300s).
+
+behavior:
+  does:
+    - "Kills all user processes via: sudo pkill -9 -u <user>"
+    - "Validates username (same rules as suspend_user_sudo)"
+    - "Writes kill metadata for audit trail"
+    - "Supports dry-run mode"
+  does_not:
+    - "Does not prevent process restart"
+    - "Does not kill processes by PID (kills by username)"
+    - "Does not kill root user processes"
+
+pre_conditions:
+  - "pkill available"
+  - "sudo pkill configured"
+
+post_conditions:
+  - "All processes owned by user terminated with SIGKILL"
+
+rollback:
+  - "No automatic rollback (processes are gone)"
+
+applicable_detectors:
+  - "suspicious_execution"
+  - "sudo_abuse"
+  - "execution_guard"
+
+tier: "Open"
+
+history:
+  - "2026-04-02: initial spec"

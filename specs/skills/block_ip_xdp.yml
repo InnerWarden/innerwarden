@@ -1,0 +1,48 @@
+kind: skill
+name: block_ip_xdp
+version: 1
+description: "Drops packets from attacking IP at wire-speed via XDP eBPF program (10-25M pps)"
+
+context: |
+  Inserts the IP into a pinned BPF hash map that the XDP program checks on
+  every incoming packet. Packets are dropped at the network driver level before
+  reaching the kernel network stack. Supports both IPv4 and IPv6 via separate
+  pinned maps. Uses bpftool for map manipulation. Drop rate: 10-25 million
+  packets per second with zero CPU overhead. The fastest possible firewall.
+
+behavior:
+  does:
+    - "Inserts IP into XDP blocklist via: sudo bpftool map update pinned /sys/fs/bpf/innerwarden/blocklist key <bytes> value 1 0 0 0 any"
+    - "Supports IPv4 (4-byte key) and IPv6 (16-byte key, separate map)"
+    - "Validates IP address format before insertion"
+    - "Checks if XDP map exists before attempting insertion"
+    - "Supports dry-run mode"
+  does_not:
+    - "Does not load the XDP program (must be running via sensor)"
+    - "Does not create the pinned maps (sensor creates them at startup)"
+    - "Does not set TTL (permanent until removed)"
+
+pre_conditions:
+  - "innerwarden-sensor running with XDP attached"
+  - "Pinned BPF maps at /sys/fs/bpf/innerwarden/blocklist (IPv4) and /sys/fs/bpf/innerwarden/blocklist_v6 (IPv6)"
+  - "bpftool installed"
+  - "sudo bpftool configured"
+
+post_conditions:
+  - "IP dropped at wire-speed by XDP program"
+  - "Zero CPU overhead per dropped packet"
+
+rollback:
+  - "sudo bpftool map delete pinned /sys/fs/bpf/innerwarden/blocklist key <bytes>"
+
+applicable_detectors:
+  - "ssh_bruteforce"
+  - "port_scan"
+  - "credential_stuffing"
+  - "c2_callback"
+  - "distributed_ssh"
+
+tier: "Open"
+
+history:
+  - "2026-04-02: initial spec"

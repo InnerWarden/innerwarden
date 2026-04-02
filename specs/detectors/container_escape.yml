@@ -1,0 +1,68 @@
+kind: detector
+name: container_escape
+version: 1
+description: "Detects container escape attempts: Docker socket access, host-sensitive file reads, privileged operations from containers"
+
+context: |
+  Four detection patterns for processes inside containers:
+  1. Docker socket access (/var/run/docker.sock, /run/docker.sock) — Critical
+  2. Host-sensitive file reads (/proc/sysrq-trigger, /proc/kcore, /dev/sda, etc.)
+  3. Privileged commands from container (nsenter, chroot, modprobe, insmod,
+     iptables, nft)
+  4. Container processes making suspicious outbound connections
+
+  Key decisions:
+  - Only fires for events with container context (container_id or cgroup_id).
+  - ESCAPE_COMMANDS: 10 commands with individual severity levels.
+  - SENSITIVE_PATHS: 10+ paths with individual severity levels.
+  - Per container+pattern cooldown.
+
+behavior:
+  does:
+    - "Fires Critical on Docker socket access from container"
+    - "Fires Critical on nsenter, chroot, modprobe, insmod, iptables from container"
+    - "Fires High/Critical on host-sensitive file access from container"
+    - "Per container+pattern suppression"
+  does_not:
+    - "Alert on non-containerized processes"
+    - "Alert on normal container operations"
+    - "Re-alert for same container+pattern within window"
+
+config:
+  window_secs: 300
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "Docker socket access from container"
+      input:
+        kind: "file.read_access"
+        filename: "/var/run/docker.sock"
+        container_id: "abc123"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "nsenter from container"
+      input:
+        kind: "shell.command_exec"
+        command: "nsenter -t 1 -m -u -i -n -p"
+        comm: "nsenter"
+        container_id: "def456"
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "Docker socket access from host (no container context)"
+      input:
+        kind: "file.read_access"
+        filename: "/var/run/docker.sock"
+        container_id: null
+      expected:
+        alert: false
+        reason: "No container context"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

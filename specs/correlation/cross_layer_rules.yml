@@ -1,0 +1,293 @@
+kind: correlation
+name: cross_layer_rules
+version: 1
+description: "30 cross-layer attack chain detection rules"
+
+context: |
+  Multi-stage attack chain detection via entity-pivoted pattern matching across
+  5 layers: Firmware, Kernel, Userspace, Network, Honeypot. Rules define ordered
+  stages with event kind patterns (glob and OR syntax). Entity matching ensures
+  stages share at least one entity (IP, User, Container, PID). Configurable time
+  windows per rule. 10-minute cooldown prevents duplicate chain alerts per
+  (rule + primary entity). Confidence scored by layer diversity (3+ layers = 0.95,
+  2 layers = 0.85, 1 layer = 0.70). Two special rules (CL-009, CL-010) handled
+  by custom logic rather than stage matching.
+
+layers:
+  - firmware: "smm, firmware.*, msr, acpi, uefi, tpm, spi"
+  - kernel: "ebpf, privilege.*, lsm.*, kernel_module_load, dup.*, mprotect"
+  - userspace: "all other sources/kinds"
+  - network: "network.*, dns.*, outbound, bind_listen"
+  - honeypot: "honeypot*"
+
+matching:
+  glob: "firmware.* matches firmware.msr_write, firmware.esp_new_binary, etc."
+  or: "ssh_bruteforce|credential_stuffing matches either"
+  entity_pivot: "Stages with entity_must_match share at least one entity (type:value)"
+
+rules:
+  # ---- Original rules (CL-001 to CL-023) ----
+
+  - id: CL-001
+    name: "Firmware to Rootkit Chain"
+    chain: ["firmware.*", "privilege.escalation", "kernel_module_load"]
+    layers: [Firmware, Kernel, Any]
+    window: 3600s
+    entity_match: [false, false, false]
+    severity: critical
+
+  - id: CL-002
+    name: "Recon to Exfiltration Chain"
+    chain: ["port_scan", "ssh_bruteforce|credential_stuffing", "data_exfiltration|outbound_anomaly"]
+    layers: [Any, Any, Any]
+    window: 1800s
+    entity_match: [false, true, true]
+    severity: critical
+
+  - id: CL-003
+    name: "Honeypot to Real Attack"
+    chain: ["honeypot*", "ssh.*|network.*|ssh_bruteforce|credential_stuffing"]
+    layers: [Honeypot, Any]
+    window: 3600s
+    entity_match: [false, true]
+    severity: high
+
+  - id: CL-004
+    name: "MSR Write to Log Tampering"
+    chain: ["firmware.msr*", "privilege.escalation|process_injection", "log_tampering"]
+    layers: [Firmware, Kernel, Any]
+    window: 600s
+    entity_match: [false, false, false]
+    severity: critical
+
+  - id: CL-005
+    name: "Container Escape to Host"
+    chain: ["container_drift|container_escape", "shell.command_exec", "privilege.escalation"]
+    layers: [Any, Any, Kernel]
+    window: 600s
+    entity_match: [false, false, false]
+    severity: critical
+
+  - id: CL-006
+    name: "Fileless Malware Chain"
+    chain: ["fileless|memfd_create", "mprotect", "network.outbound_connect"]
+    layers: [Kernel, Kernel, Network]
+    window: 300s
+    entity_match: [false, true, true]
+    severity: critical
+
+  - id: CL-007
+    name: "Reverse Shell (eBPF Sequence)"
+    chain: ["network.outbound_connect", "dup.redirect"]
+    layers: [Network, Kernel]
+    window: 10s
+    entity_match: [false, true]
+    severity: critical
+
+  - id: CL-008
+    name: "Data Exfiltration (eBPF Sequence)"
+    chain: ["file.read_access", "network.outbound_connect"]
+    layers: [Any, Network]
+    window: 60s
+    entity_match: [false, true]
+    severity: high
+
+  - id: CL-009
+    name: "Silence After Compromise"
+    chain: ["__silence_placeholder__"]
+    note: "Special rule handled by silence detector in baseline.rs, not stage matching"
+    window: 300s
+    severity: high
+
+  - id: CL-010
+    name: "Multi-Low Severity Elevation"
+    chain: ["__multi_low_placeholder__"]
+    note: "Special rule: 3+ different Low-severity detectors from same IP within 600s elevates to High. Handled by check_multi_low_elevation() custom logic."
+    window: 600s
+    entity: ip
+    threshold: "3+ unique detector kinds"
+    severity: high
+    confidence: 0.75
+
+  - id: CL-011
+    name: "Credential Theft to Lateral Movement"
+    chain: ["credential_harvest|file.read_access", "lateral_movement|ssh_key_injection"]
+    layers: [Any, Any]
+    window: 1800s
+    entity_match: [false, true]
+    severity: critical
+
+  - id: CL-012
+    name: "Multi-Persistence Installation"
+    chain: ["crontab_persistence|systemd_persistence", "ssh_key_injection|user_creation"]
+    layers: [Any, Any]
+    window: 3600s
+    entity_match: [false, false]
+    severity: critical
+
+  - id: CL-013
+    name: "Web Shell Deployment"
+    chain: ["web_scan", "file.write_access", "web_shell"]
+    layers: [Any, Any, Any]
+    window: 1800s
+    entity_match: [false, true, true]
+    severity: critical
+
+  - id: CL-014
+    name: "Cryptominer Deployment Chain"
+    chain: ["shell.command_exec|network.outbound_connect", "crypto_miner|cgroup.cpu_abuse"]
+    layers: [Any, Any]
+    window: 600s
+    entity_match: [false, false]
+    severity: high
+
+  - id: CL-015
+    name: "Post-Compromise Log Tampering"
+    chain: ["privilege.escalation|reverse_shell|ssh_bruteforce", "log_tampering"]
+    layers: [Any, Any]
+    window: 600s
+    entity_match: [false, false]
+    severity: critical
+
+  - id: CL-016
+    name: "TPM Integrity Failure Followed by Attack"
+    chain: ["firmware.efivar*|firmware.acpi*", "ransomware|rootkit|reverse_shell"]
+    layers: [Firmware, Any]
+    window: 172800s
+    entity_match: [false, false]
+    severity: critical
+
+  - id: CL-017
+    name: "io_uring Evasion Detection"
+    chain: ["io_uring*", "network.outbound_connect"]
+    layers: [Kernel, Any]
+    window: 60s
+    entity_match: [false, true]
+    severity: high
+
+  - id: CL-018
+    name: "eBPF Program Weaponization"
+    chain: ["kernel.bpf_program_loaded|lsm.bpf*", "privilege.escalation|process_injection"]
+    layers: [Kernel, Any]
+    window: 300s
+    entity_match: [false, false]
+    severity: critical
+
+  - id: CL-019
+    name: "Memory Injection to C2"
+    chain: ["memory.rwx*|memory.anon*", "network.outbound_connect"]
+    layers: [Any, Network]
+    window: 120s
+    entity_match: [false, true]
+    severity: critical
+
+  - id: CL-020
+    name: "Container as Lateral Movement Vector"
+    chain: ["docker*", "shell.command_exec", "network.outbound_connect"]
+    layers: [Any, Any, Network]
+    window: 300s
+    entity_match: [false, false, false]
+    severity: high
+
+  - id: CL-021
+    name: "Ransomware Encryption Chain"
+    chain: ["file.encrypted_write|file.ransomware_burst", "file.realtime_modified"]
+    layers: [Any, Any]
+    window: 60s
+    entity_match: [false, false]
+    severity: critical
+
+  - id: CL-022
+    name: "Malware Execution with C2 Callback"
+    chain: ["yara_scan", "network.outbound_connect|c2_callback"]
+    layers: [Any, Network]
+    window: 300s
+    entity_match: [false, true]
+    severity: critical
+
+  - id: CL-023
+    name: "Sigma Alert Escalated by Privilege Change"
+    chain: ["sigma", "privilege.escalation"]
+    layers: [Any, Kernel]
+    window: 600s
+    entity_match: [false, true]
+    severity: critical
+
+  # ---- Gym-discovered rules (CL-024 to CL-027) ----
+  # Discovered via adversarial RL training insights
+
+  - id: CL-024
+    name: "Gym: Fast Web Exploit to Exfiltration"
+    chain: ["port_scan|web_scan|user_agent_scanner", "web_shell|web_scan", "data_exfiltration|outbound_anomaly|dns_tunneling"]
+    layers: [Network, Userspace, Network]
+    window: 300s
+    entity_match: [false, true, true]
+    severity: critical
+    confidence: 0.95
+    origin: "gym (attacker learned: web exploit faster than SSH brute force, short chains succeed most)"
+
+  - id: CL-025
+    name: "Gym: Service Enumeration to Exploitation"
+    chain: ["port_scan|user_agent_scanner", "web_shell|reverse_shell|ssh_bruteforce|credential_stuffing"]
+    layers: [Network, Userspace]
+    window: 600s
+    entity_match: [false, true]
+    severity: high
+    confidence: 0.85
+    origin: "gym (ServiceEnum passes undetected 72%)"
+
+  - id: CL-026
+    name: "Gym: DNS Recon to Data Exfiltration"
+    chain: ["dns_tunneling|port_scan", "data_exfiltration|data_exfil_ebpf"]
+    layers: [Network, Userspace]
+    window: 900s
+    entity_match: [false, true]
+    severity: high
+    confidence: 0.80
+    origin: "gym (DnsRecon 73% undetected)"
+
+  - id: CL-027
+    name: "Gym: Multi-Vector Initial Access Attempt"
+    chain: ["ssh_bruteforce|credential_stuffing", "web_scan|web_shell|user_agent_scanner"]
+    layers: [Network, Userspace]
+    window: 600s
+    entity_match: [false, true]
+    severity: high
+    confidence: 0.85
+    origin: "gym (attacker tries web + SSH simultaneously)"
+
+  # ---- Red team gap rules (CL-028 to CL-030) ----
+  # From Phase 3 atomic testing insights
+
+  - id: CL-028
+    name: "Red Team: Discovery Burst to Credential Access"
+    chain: ["process_discovery|network_discovery|file_discovery", "credential_harvest|data_exfiltration|sensitive_write"]
+    layers: [Userspace, Userspace]
+    window: 300s
+    entity_match: [false, false]
+    severity: high
+    confidence: 0.80
+    origin: "red team gap #1 (6 discovery techniques pass undetected, combined with credential access = attack)"
+
+  - id: CL-029
+    name: "Red Team: Multi-Persistence Attempt"
+    chain: ["crontab_persistence|systemd_persistence|sensitive_write", "ssh_key_injection|sensitive_write|crontab_persistence"]
+    layers: [Userspace, Userspace]
+    window: 600s
+    entity_match: [false, false]
+    severity: critical
+    confidence: 0.85
+    origin: "red team gap #2 (ShellRc + crontab + systemd persistence attempts)"
+
+  - id: CL-030
+    name: "Red Team: Evasion to Exfiltration"
+    chain: ["log_tampering|sensitive_write", "data_exfiltration|outbound_anomaly|dns_tunneling"]
+    layers: [Userspace, Network]
+    window: 600s
+    entity_match: [false, false]
+    severity: critical
+    confidence: 0.85
+    origin: "red team gap #3 (defense evasion + exfiltration)"
+
+history:
+  - "2026-04-02: initial spec from correlation_engine.rs (30 rules: 23 original + 4 gym-discovered + 3 red team)"

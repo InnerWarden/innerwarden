@@ -1,0 +1,57 @@
+kind: api
+name: live_feed
+version: 1
+description: "Public live feed for website with sanitized incident data"
+
+context: |
+  Sanitized incident feed exposed as public endpoints with CORS enabled.
+  No authentication required. Designed for the marketing website to show
+  real-time security activity without exposing sensitive data. Uses
+  live_feed_title() for personality messages per detector and live_feed_reason()
+  for sanitized action descriptions.
+
+endpoints:
+  - path: "GET /api/live-feed"
+    description: "Last 30 incidents with daily totals"
+    response_fields: [ts, severity, title, ip, action, confidence, reason, reputation, mitre]
+
+  - path: "GET /api/live-feed/stream"
+    description: "SSE (Server-Sent Events) stream of real-time alerts"
+
+  - path: "GET /api/live-feed/geoip"
+    description: "Geographic distribution data for live map"
+
+  - path: "GET /api/live-feed/honeypot"
+    description: "Honeypot session statistics"
+
+  - path: "GET /api/live-feed/mitre"
+    description: "MITRE ATT&CK coverage summary"
+
+behavior:
+  does:
+    - "Returns last 30 incidents with sanitized titles per detector"
+    - "Uses live_feed_title() for personality messages (e.g. 'Brute force in progress. Tracking attempt count and origin.')"
+    - "Uses live_feed_reason() for sanitized action descriptions"
+    - "Includes IP, severity, action taken, confidence, reputation score"
+    - "Includes MITRE ATT&CK technique info when available"
+    - "Provides SSE stream for real-time updates"
+    - "Enables CORS for cross-origin website access"
+  does_not:
+    - "Expose file paths"
+    - "Expose PIDs or UIDs"
+    - "Expose usernames"
+    - "Expose full incident evidence or raw details"
+    - "Require authentication"
+
+sanitized_titles:
+  ssh_bruteforce: "Brute force in progress. Tracking attempt count and origin."
+  credential_stuffing: "Credential stuffing detected. Monitoring for successful auth."
+  port_scan: "Port scan activity detected."
+  web_scan: "Web vulnerability scanner detected."
+  reverse_shell: "Reverse shell connection detected."
+  dns_tunneling: "DNS tunneling detected."
+  crypto_miner: "Cryptominer activity detected."
+  ransomware: "Ransomware behavior detected."
+
+history:
+  - "2026-04-02: initial spec"

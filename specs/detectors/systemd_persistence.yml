@@ -1,0 +1,84 @@
+kind: detector
+name: systemd_persistence
+version: 1
+description: "Detects backdoor persistence via systemd service/timer/socket creation and systemctl enable/daemon-reload"
+
+context: |
+  Two detection patterns:
+  1. File writes to systemd unit directories with unit extensions (.service,
+     .timer, .socket) in /etc/systemd/system/, /usr/lib/systemd/system/,
+     /lib/systemd/system/, or ~/.config/systemd/user/.
+  2. systemctl enable or systemctl daemon-reload commands.
+
+  Severity:
+  - Critical for hidden unit files (filename starts with .) or commands
+    referencing suspicious paths (/tmp/, /dev/shm/, /var/tmp/).
+  - High for standard unit file creation or systemctl enable.
+
+  Key decisions:
+  - Allowlisted processes: apt, dpkg, pip, snap, systemd-sysv-install,
+    systemctl, systemd, puppet, chef-client, ansible, salt-minion.
+  - For commands: parent process (ppid_comm) is checked against allowlist.
+  - Non-unit extensions ignored (.conf in /etc/systemd/system/).
+  - Container-aware.
+
+behavior:
+  does:
+    - "Fires High on systemd unit file creation by non-allowlisted processes"
+    - "Fires High on systemctl enable/daemon-reload commands"
+    - "Escalates to Critical for hidden unit files (dot-prefixed)"
+    - "Escalates to Critical for commands referencing /tmp, /dev/shm, /var/tmp"
+    - "Checks parent process (ppid_comm) for command events"
+  does_not:
+    - "Alert on allowlisted processes (dpkg, apt, puppet, ansible, etc.)"
+    - "Alert on non-systemd directory paths"
+    - "Alert on non-unit file extensions (.conf)"
+    - "Alert on systemctl status/restart/start commands"
+    - "Alert when parent process is allowlisted"
+
+config:
+  cooldown_secs: 600
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "Python creating a service file"
+      input:
+        kind: "file.write_access"
+        filename: "/etc/systemd/system/backdoor.service"
+        comm: "python3"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "Hidden service file (Critical)"
+      input:
+        kind: "file.write_access"
+        filename: "/etc/systemd/system/.hidden-backdoor.service"
+        comm: "wget"
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "dpkg creating nginx service (allowlisted)"
+      input:
+        kind: "file.write_access"
+        filename: "/etc/systemd/system/nginx.service"
+        comm: "dpkg"
+      expected:
+        alert: false
+        reason: "dpkg is in ALLOWLISTED_PROCESSES"
+
+    - description: "systemctl status (not enable/daemon-reload)"
+      input:
+        kind: "shell.command_exec"
+        command: "systemctl status nginx"
+        comm: "systemctl"
+      expected:
+        alert: false
+        reason: "Only enable and daemon-reload are flagged"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

@@ -1,0 +1,45 @@
+kind: collector
+name: suricata_eve
+version: 1
+description: "Tails Suricata EVE JSON log for alert, DNS, HTTP, TLS, and anomaly events"
+
+context: |
+  Tails Suricata's EVE JSON log file using byte-offset cursor with 1-second
+  polling. Filters by event type (default: alert, dns, http, tls, anomaly).
+  Stats and flow events are excluded by default due to high volume. Uses
+  spawn_blocking for file I/O. Optional integration -- native DNS/HTTP/TLS
+  capture collectors can replace Suricata for most use cases, but Suricata
+  remains valuable for deep packet inspection and CVE signatures in
+  compliance-driven environments.
+
+behavior:
+  does:
+    - "Parses EVE JSON lines and filters by configured event types"
+    - "Maps Suricata alerts to InnerWarden events with severity from alert.severity"
+    - "Extracts src_ip, dest_ip, src_port, dest_port from each event"
+    - "Maps DNS, HTTP, TLS metadata to appropriate event fields"
+    - "Detects log rotation and handles accordingly"
+  does_not:
+    - "Does not ingest stats or flow events by default (configurable)"
+    - "Does not start or manage the Suricata process"
+    - "Does not modify Suricata rules or configuration"
+
+output:
+  event_kinds:
+    - kind: "suricata.alert"
+      fields: [signature_id, signature, category, severity, src_ip, dest_ip, src_port, dest_port, proto]
+    - kind: "suricata.dns"
+      fields: [type, rrname, rrtype, src_ip, dest_ip]
+    - kind: "suricata.http"
+      fields: [hostname, url, http_method, status, src_ip, dest_ip]
+    - kind: "suricata.tls"
+      fields: [subject, issuerdn, sni, version, src_ip, dest_ip]
+
+config:
+  path: "/var/log/suricata/eve.json"
+  event_types: ["alert", "dns", "http", "tls", "anomaly"]
+  poll_interval: "1s"
+  cursor: "byte offset (persisted via shared AtomicU64)"
+
+history:
+  - "2026-04-02: initial spec"

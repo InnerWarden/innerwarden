@@ -1,0 +1,56 @@
+kind: collector
+name: ebpf_syscall
+version: 1
+description: "Kernel-level process execution and network monitoring via eBPF tracepoints"
+
+context: |
+  Loads eBPF bytecode (compiled for bpfel-unknown-none) via Aya and attaches
+  to 40 kernel hooks: 23 tracepoints, 3 kprobes, 3 LSM hooks, 1 XDP program,
+  1 raw_tracepoint dispatcher. Requires Linux kernel 5.8+, CAP_BPF + CAP_PERFMON
+  (or root), and BTF (/sys/kernel/btf/vmlinux). Gracefully disables when
+  unavailable. Resolves PPID from /proc/PID/status, container ID from
+  /proc/PID/cgroup (Docker, Podman, k8s), and full argv from /proc/PID/cmdline.
+  Bytecode can be embedded via ebpf-embedded feature or loaded from disk.
+
+behavior:
+  does:
+    - "Captures execve events with full argv, PID, UID, PPID, cgroup_id, container_id"
+    - "Captures connect events with destination IP, port, protocol"
+    - "Captures file open events on sensitive paths"
+    - "Captures privilege escalation (commit_creds kprobe)"
+    - "Captures dup/dup2 redirects (reverse shell detection)"
+    - "Captures mprotect, memfd_create, ptrace, mount, bind, listen, clone, kill, prctl"
+    - "Captures init_module/finit_module for kernel module loading"
+    - "Captures io_uring operations for evasion detection"
+    - "Captures MSR writes (LSTAR/SMRR/FEATURE_CONTROL) via native_write_msr kprobe"
+    - "Captures ACPI method execution via acpi_evaluate_object kprobe"
+    - "Captures eBPF program loading via LSM bpf hook"
+    - "Resolves container ID from Docker/Podman/k8s cgroup paths"
+    - "Container drift detection via overlayfs upper-layer check"
+    - "XDP program provides wire-speed IP blocking via pinned BPF hash map"
+  does_not:
+    - "Does not run on non-Linux platforms"
+    - "Does not run on kernels < 5.8 without BTF"
+    - "Does not call any external APIs"
+
+output:
+  event_kinds:
+    - kind: "shell.command_exec"
+      fields: [pid, uid, ppid, cgroup_id, container_id, comm, filename, argv, argc]
+    - kind: "network.outbound_connect"
+      fields: [pid, uid, comm, dst_ip, dst_port, protocol]
+    - kind: "privilege.escalation"
+      fields: [pid, uid, comm, old_uid, new_uid]
+    - kind: "dup.redirect"
+      fields: [pid, uid, comm, old_fd, new_fd]
+    - kind: "lsm.exec_blocked"
+      fields: [pid, uid, comm, filename]
+    - kind: "kernel_module_load"
+      fields: [pid, uid, comm, module_name]
+
+config:
+  bytecode_path: "/usr/local/lib/innerwarden/innerwarden-ebpf"
+  requires: "Linux 5.8+, CAP_BPF + CAP_PERFMON, BTF"
+
+history:
+  - "2026-04-02: initial spec"

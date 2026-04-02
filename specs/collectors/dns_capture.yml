@@ -1,0 +1,40 @@
+kind: collector
+name: dns_capture
+version: 1
+description: "Captures DNS queries from network traffic via AF_PACKET raw socket"
+
+context: |
+  Opens an AF_PACKET raw socket to capture DNS queries (UDP port 53) from
+  all interfaces. Parses Ethernet/IP/UDP headers and DNS query section to
+  extract domain name and query type. Eliminates dependency on Suricata for
+  DNS visibility. Feeds the dns_tunneling detector. Per-(src_ip, domain)
+  cooldown of 10 seconds prevents event flooding. Skips .local, .internal,
+  .localhost domains.
+
+behavior:
+  does:
+    - "Captures all DNS queries (dst_port 53) from all network interfaces"
+    - "Parses DNS name labels (length-prefixed encoding)"
+    - "Extracts domain, query type (A, AAAA, TXT, MX, CNAME, SRV, ANY, etc.)"
+    - "Applies per-(src_ip, domain) cooldown of 10 seconds"
+    - "Prunes cooldown map at 5000 entries"
+    - "Skips .local, .internal, .localhost domains"
+    - "Skips empty and root domain queries"
+  does_not:
+    - "Does not capture DNS responses (QR bit must be 0)"
+    - "Does not follow DNS compression pointers"
+    - "Does not run on non-Linux platforms (graceful skip)"
+    - "Does not parse IPv6 packets (only IPv4 and VLAN tagged)"
+
+output:
+  event_kinds:
+    - kind: "dns.query"
+      fields: [domain, qtype, qtype_name, src_ip, src_port, dns_server, tx_id]
+
+config:
+  requires: "Linux, CAP_NET_RAW"
+  cooldown: "10s per (src_ip, domain)"
+  max_tracked: 5000
+
+history:
+  - "2026-04-02: initial spec"

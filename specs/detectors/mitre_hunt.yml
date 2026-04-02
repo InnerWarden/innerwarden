@@ -1,0 +1,118 @@
+kind: detector
+name: mitre_hunt
+version: 1
+description: "Command-pattern detection for 10 MITRE ATT&CK techniques not covered by dedicated detectors"
+
+context: |
+  Mega-detector that watches shell.command_exec and sudo.command events for
+  command patterns mapping to specific MITRE ATT&CK techniques:
+
+  - T1053.002 (At Jobs) — at, atq, atrm, batch
+  - T1222.002 (File Perms Mod) — chmod +s, chattr, chown root
+  - T1564.001 (Hidden Files) — mv/cp/mkdir to hidden path
+  - T1219 (Remote Access) — ngrok, anydesk, teamviewer, rustdesk, bore, etc.
+  - T1489 (Service Stop) — systemctl stop/disable/mask on 24 security services
+  - T1529 (Shutdown/Reboot) — shutdown, reboot, poweroff, halt
+  - T1040 (Network Sniffing) — tcpdump, tshark, wireshark, ettercap, etc.
+  - T1036.005 (Masquerading) — system binary name from attacker-writable path
+  - T1560 (Archive Data) — tar/zip of sensitive directories
+  - T1090 (Proxy/Tunneling) — ssh -D/-L/-R, socat, chisel, etc.
+
+  Key decisions:
+  - All technique checks share the same emit() helper and cooldown logic.
+  - T1489 (Service Stop): root (uid=0) stopping innerwarden services is
+    allowed (normal deploy/upgrade). Other security services still alert.
+  - T1036.005 (Masquerading): checks if system binary names are executed
+    from attacker-writable paths (/tmp, /dev/shm, etc.).
+  - Each technique gets its own incident_id prefix for MITRE mapping.
+
+behavior:
+  does:
+    - "Detects at/atq/atrm/batch commands (T1053.002)"
+    - "Detects chmod +s, chattr, chown root (T1222.002)"
+    - "Detects mv/cp/mkdir to hidden paths (T1564.001)"
+    - "Detects remote access tools (ngrok, anydesk, etc.) (T1219)"
+    - "Detects security service stop/disable/mask (T1489)"
+    - "Detects shutdown/reboot/poweroff/halt (T1529)"
+    - "Detects network sniffing tools (T1040)"
+    - "Detects masquerading binaries from writable paths (T1036.005)"
+    - "Detects archive of sensitive directories (T1560)"
+    - "Detects proxy/tunneling tools (T1090)"
+  does_not:
+    - "Alert on root stopping innerwarden services (T1489 exception)"
+    - "Alert on non-security services for T1489"
+    - "Alert on normal systemctl start/restart/status"
+    - "Re-alert within cooldown for same technique"
+
+config:
+  cooldown_secs: 300
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "ngrok execution (T1219 Remote Access)"
+      input:
+        kind: "shell.command_exec"
+        command: "ngrok http 8080"
+        comm: "ngrok"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "systemctl stop fail2ban (T1489 Service Stop)"
+      input:
+        kind: "shell.command_exec"
+        command: "systemctl stop fail2ban"
+        comm: "systemctl"
+        uid: 1000
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "tcpdump sniffing (T1040)"
+      input:
+        kind: "shell.command_exec"
+        command: "tcpdump -i eth0 -w capture.pcap"
+        comm: "tcpdump"
+      expected:
+        alert: true
+        severity: "medium"
+
+  true_negatives:
+    - description: "Root stopping innerwarden (T1489 exception)"
+      input:
+        kind: "shell.command_exec"
+        command: "systemctl stop innerwarden-sensor"
+        comm: "systemctl"
+        uid: 0
+      expected:
+        alert: false
+        reason: "Root stopping innerwarden is allowed (deploy/upgrade)"
+
+    - description: "systemctl stop nginx (not a security service)"
+      input:
+        kind: "shell.command_exec"
+        command: "systemctl stop nginx"
+        comm: "systemctl"
+      expected:
+        alert: false
+        reason: "nginx is not in SECURITY_SERVICES list"
+
+  false_positive_fixes:
+    - date: "2026-04-02"
+      description: "Root admin deploying InnerWarden update triggers T1489"
+      context: |
+        During deploy, the standard procedure includes systemctl stop
+        innerwarden-sensor/agent. This is always done as root. Without the
+        exception, every deploy generates a High severity alert.
+      input:
+        kind: "shell.command_exec"
+        command: "systemctl stop innerwarden-sensor"
+        comm: "systemctl"
+        uid: 0
+      expected:
+        alert: false
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

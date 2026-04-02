@@ -1,0 +1,36 @@
+kind: collector
+name: syslog_firewall
+version: 1
+description: "Parses iptables/nftables/UFW DROP entries from syslog or kern.log"
+
+context: |
+  Tails /var/log/syslog or /var/log/kern.log for firewall drop entries.
+  Understands UFW BLOCK, raw iptables LOG, and nftables log formats (all
+  share the same netfilter key-value notation). Feeds the port_scan detector.
+  Only processes kernel: lines with SRC= field.
+
+behavior:
+  does:
+    - "Parses UFW BLOCK lines ([UFW BLOCK] IN=... SRC=... DPT=...)"
+    - "Parses raw iptables LOG lines (DROP IN=... SRC=... DPT=...)"
+    - "Parses nftables log lines (nft DROP: IN=... SRC=... DPT=...)"
+    - "Extracts src_ip, dst_ip, dst_port, proto, in_iface from netfilter KV pairs"
+    - "Validates SRC looks like an IP (contains dots or colons)"
+  does_not:
+    - "Does not parse non-kernel syslog lines"
+    - "Does not parse ICMP lines (no DPT= field, skipped)"
+    - "Does not parse kernel lines without SRC= field"
+    - "Does not distinguish between UFW/iptables/nftables (all emit same event kind)"
+
+output:
+  event_kinds:
+    - kind: "network.connection_blocked"
+      fields: [src_ip, dst_ip, dst_port, proto, in_iface]
+
+config:
+  path: "/var/log/syslog"
+  poll_interval: "500ms"
+  cursor: "byte offset (persisted via shared AtomicU64)"
+
+history:
+  - "2026-04-02: initial spec"

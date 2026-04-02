@@ -1,0 +1,44 @@
+kind: skill
+name: suspend_user_sudo
+version: 1
+description: "Temporarily denies all sudo commands for a user via sudoers drop-in rule with TTL"
+
+context: |
+  Writes a sudoers drop-in file at /etc/sudoers.d/zz-innerwarden-deny-<user>
+  containing `<user> ALL=(ALL:ALL) !ALL`. The zz- prefix ensures it loads after
+  other rules and takes precedence. TTL metadata is written to data_dir for
+  automatic cleanup. File is validated with `visudo -cf` after creation; if
+  invalid, the file is removed and an error is returned. Username is validated
+  to prevent path traversal. TTL range: 60s to 86400s (default 1800s).
+
+behavior:
+  does:
+    - "Creates /etc/sudoers.d/zz-innerwarden-deny-<user> with deny-all rule"
+    - "Validates username (alphanumeric, underscore, hyphen, dot, dollar; max 64 chars)"
+    - "Validates generated rule with visudo -cf (rolls back on failure)"
+    - "Writes TTL metadata JSON for automatic cleanup"
+    - "Clamps TTL between 60s and 86400s (default 1800s)"
+    - "Supports dry-run mode"
+  does_not:
+    - "Does not kill running processes (separate kill_process skill)"
+    - "Does not revoke existing sudo sessions"
+    - "Does not suspend root user"
+
+pre_conditions:
+  - "sudo install and visudo configured in /etc/sudoers.d/innerwarden"
+  - "Target user exists on system"
+
+post_conditions:
+  - "User cannot execute sudo commands"
+  - "Suspension auto-expires after TTL via cleanup_expired_sudo_suspensions()"
+
+rollback:
+  - "sudo rm -f /etc/sudoers.d/zz-innerwarden-deny-<user>"
+
+applicable_detectors:
+  - "sudo_abuse"
+
+tier: "Open"
+
+history:
+  - "2026-04-02: initial spec"

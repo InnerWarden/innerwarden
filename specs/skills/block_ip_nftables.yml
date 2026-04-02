@@ -1,0 +1,40 @@
+kind: skill
+name: block_ip_nftables
+version: 1
+description: "Adds attacking IP to a named blacklist set in nftables"
+
+context: |
+  Adds the IP to an 'inet filter blacklist' set in nftables:
+  `sudo nft add element inet filter blacklist { <IP> }`.
+  Requires a pre-configured named set in nftables.conf.
+  Supports dry-run mode.
+
+behavior:
+  does:
+    - "Blocks IP via: sudo nft add element inet filter blacklist { <IP> }"
+    - "Supports dry-run mode"
+  does_not:
+    - "Does not create the blacklist set (must be pre-configured)"
+    - "Does not check for duplicate entries"
+    - "Does not block internal IPs (handled by caller)"
+
+pre_conditions:
+  - "nftables installed"
+  - "'inet filter blacklist' set pre-configured in nftables.conf"
+  - "sudo nft configured in /etc/sudoers.d/innerwarden"
+
+post_conditions:
+  - "IP added to nftables blacklist set"
+
+rollback:
+  - "sudo nft delete element inet filter blacklist { <IP> }"
+
+applicable_detectors:
+  - "ssh_bruteforce"
+  - "port_scan"
+  - "credential_stuffing"
+
+tier: "Open"
+
+history:
+  - "2026-04-02: initial spec"

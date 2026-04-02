@@ -1,0 +1,90 @@
+kind: detector
+name: crypto_miner
+version: 1
+description: "Detects cryptocurrency mining via known miner processes, mining pool ports/domains, and stratum protocol patterns"
+
+context: |
+  Four detection patterns:
+  1. Known miner process names (xmrig, minerd, cpuminer, etc.) — Critical
+  2. Connection to mining pool ports (3333, 4444, 5555, etc.) — High
+  3. Mining pool domain in hostname/domain field — High
+  4. Stratum protocol (3+ connections to same mining port) — High
+
+  Key decisions:
+  - Process name matching extracts basename (handles /tmp/.hidden/xmrig).
+  - Mining pool ports: 3333, 4444, 5555, 7777, 8888, 9999, 14444, 14433.
+  - 18 mining pool domain substrings checked (minexmr, nanopool, etc.).
+  - Internal IPs excluded from network checks.
+  - Per-pattern cooldown keys prevent flooding.
+
+behavior:
+  does:
+    - "Fires Critical on known miner process execution (xmrig, minerd, cpuminer, etc.)"
+    - "Fires High on connections to mining pool ports from any process"
+    - "Fires High on connections to known mining pool domains"
+    - "Fires High on stratum protocol pattern (3+ connections to same mining port)"
+    - "Extracts basename from process paths for matching"
+  does_not:
+    - "Alert on normal ports (80, 443, 8080, etc.)"
+    - "Alert on normal processes (nginx, postgres, sshd, etc.)"
+    - "Alert on connections to internal/private IPs"
+    - "Re-alert for same process+IP within cooldown"
+
+config:
+  cooldown_secs: 300
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "xmrig process execution"
+      input:
+        kind: "process.exec"
+        comm: "xmrig"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "Connection to mining pool port 3333"
+      input:
+        kind: "network.outbound_connect"
+        comm: "suspicious"
+        dst_ip: "45.33.32.1"
+        dst_port: 3333
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "Connection to pool.minexmr.com"
+      input:
+        kind: "network.outbound_connect"
+        comm: "curl"
+        dst_ip: "5.6.7.8"
+        hostname: "pool.minexmr.com"
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "Normal process on normal port"
+      input:
+        kind: "network.outbound_connect"
+        comm: "curl"
+        dst_ip: "1.2.3.4"
+        dst_port: 443
+      expected:
+        alert: false
+        reason: "Port 443 is not a mining pool port"
+
+    - description: "Connection to private IP on mining port"
+      input:
+        kind: "network.outbound_connect"
+        comm: "suspicious"
+        dst_ip: "192.168.1.1"
+        dst_port: 3333
+      expected:
+        alert: false
+        reason: "Private IPs are excluded"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

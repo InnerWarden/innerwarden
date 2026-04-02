@@ -1,0 +1,72 @@
+kind: detector
+name: container_drift
+version: 1
+description: "Detects execution of binaries not present in the original container image (overlayfs upper layer drift)"
+
+context: |
+  When a container runs, its image layers are read-only overlayfs lower layers.
+  Files created at runtime go to the writable upper layer. A binary in the
+  upper layer that wasn't in the original image is drift — likely a dropped
+  payload, web shell, or post-exploitation tool.
+
+  Detection mechanism: the eBPF execve hook checks overlayfs layer membership
+  via inode->i_sb->s_magic == OVERLAYFS_SUPER_MAGIC and reads
+  ovl_inode.__upperdentry. The overlay_upper flag is set in ExecveEvent.
+
+  Key decisions:
+  - Only fires for events with overlay_upper=true AND container context
+    (container_id or cgroup_id != 0).
+  - Allowlisted processes: package managers (apt, dpkg, pip, npm, cargo),
+    build tools (gcc, make, rustc, javac).
+  - Per container+comm cooldown.
+
+behavior:
+  does:
+    - "Fires on execution of binaries from overlayfs upper layer in containers"
+    - "Includes container_id, image, comm in evidence"
+    - "Per container+comm cooldown"
+  does_not:
+    - "Alert on non-container processes (host-level)"
+    - "Alert when overlay_upper is false (binary from image layer)"
+    - "Alert on allowlisted processes (apt, dpkg, pip, npm, cargo, gcc, etc.)"
+
+config:
+  cooldown_secs: 600
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "Unknown binary executed from upper layer in container"
+      input:
+        kind: "shell.command_exec"
+        comm: "backdoor"
+        overlay_upper: true
+        container_id: "abc123"
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "Binary from image layer (overlay_upper=false)"
+      input:
+        kind: "shell.command_exec"
+        comm: "nginx"
+        overlay_upper: false
+        container_id: "abc123"
+      expected:
+        alert: false
+        reason: "Binary is from the original image layer"
+
+    - description: "apt installing packages in container (allowlisted)"
+      input:
+        kind: "shell.command_exec"
+        comm: "apt"
+        overlay_upper: true
+        container_id: "abc123"
+      expected:
+        alert: false
+        reason: "apt is in ALLOWED_PROCESSES"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

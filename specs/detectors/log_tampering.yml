@@ -1,0 +1,83 @@
+kind: detector
+name: log_tampering
+version: 1
+description: "Detects non-standard processes accessing sensitive log files via eBPF openat tracepoint"
+
+context: |
+  When a process that is NOT a known log writer opens a sensitive log file,
+  an incident is raised. Sensitive logs: /var/log/auth.log, /var/log/secure,
+  /var/log/syslog, /var/log/kern.log, /var/log/wtmp, /var/log/btmp, /var/log/lastlog.
+
+  Severity:
+  - Write access (file.write_access or file.truncate): Critical
+  - Read access: High
+
+  Key decisions:
+  - Only eBPF source events (source == "ebpf").
+  - 20 known log writers allowlisted (rsyslogd, logrotate, systemd-journal,
+    sshd, cron, etc.).
+  - Per-(comm, path) cooldown prevents flooding.
+  - file.truncate treated same as write.
+
+behavior:
+  does:
+    - "Fires Critical on writes/truncates to sensitive log files"
+    - "Fires High on reads of sensitive log files by non-standard processes"
+    - "Per-(comm, path) cooldown"
+    - "Includes write/read access type in title"
+  does_not:
+    - "Alert on known log writers (rsyslogd, logrotate, systemd-journal, sshd, etc.)"
+    - "Alert on non-sensitive log paths (/var/log/myapp.log)"
+    - "Alert on non-eBPF events"
+    - "Re-alert for same (comm, path) within cooldown"
+
+config:
+  cooldown_secs: 3600
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "vim writing to /var/log/auth.log"
+      input:
+        source: "ebpf"
+        kind: "file.write_access"
+        comm: "vim"
+        filename: "/var/log/auth.log"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "cat reading /var/log/wtmp"
+      input:
+        source: "ebpf"
+        kind: "file.read_access"
+        comm: "cat"
+        filename: "/var/log/wtmp"
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "rsyslogd writing to auth.log (known log writer)"
+      input:
+        source: "ebpf"
+        kind: "file.write_access"
+        comm: "rsyslogd"
+        filename: "/var/log/auth.log"
+      expected:
+        alert: false
+        reason: "rsyslogd is in KNOWN_LOG_WRITERS"
+
+    - description: "Non-eBPF source event"
+      input:
+        source: "integrity"
+        kind: "file.changed"
+        comm: "vim"
+        filename: "/var/log/auth.log"
+      expected:
+        alert: false
+        reason: "Source must be ebpf"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"

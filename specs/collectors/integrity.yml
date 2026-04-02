@@ -1,0 +1,43 @@
+kind: collector
+name: integrity
+version: 1
+description: "SHA-256 hash-based file integrity monitoring with SSH key and cron tampering detection"
+
+context: |
+  Periodically hashes a list of critical files and compares against a baseline.
+  First run establishes baseline (no events emitted). Subsequent changes emit
+  file.changed events. Special handling for authorized_keys files (extracts
+  username, tags with MITRE T1098.004) and cron files (tags with T1053.003).
+  Uses spawn_blocking for file I/O.
+
+behavior:
+  does:
+    - "Establishes SHA-256 baseline on first run (no event emitted)"
+    - "Emits file.changed events when hash differs from baseline (severity: High)"
+    - "Detects authorized_keys changes with username extraction (ssh.authorized_keys_changed)"
+    - "Detects /etc/crontab, /etc/cron.d/*, /etc/cron.{hourly,daily,weekly,monthly}/*, /var/spool/cron/ changes (cron.tampering)"
+    - "Extracts username from authorized_keys path (/home/<user>/.ssh/ or /root/.ssh/)"
+    - "Extracts username from user crontab path (/var/spool/cron/crontabs/<user>)"
+    - "Tags SSH key events with T1098.004 (Account Manipulation: SSH Authorized Keys)"
+    - "Tags cron events with T1053.003 (Scheduled Task/Job: Cron)"
+  does_not:
+    - "Does not scan directories recursively (only explicit file paths)"
+    - "Does not detect file deletion (warns on missing files, no event)"
+    - "Does not read file content beyond hashing"
+
+output:
+  event_kinds:
+    - kind: "file.changed"
+      fields: [path, old_hash, new_hash]
+    - kind: "ssh.authorized_keys_changed"
+      fields: [path, username, old_hash, new_hash, mitre]
+    - kind: "cron.tampering"
+      fields: [path, username, old_hash, new_hash, mitre]
+
+config:
+  paths: ["/etc/passwd", "/etc/shadow", "/etc/sudoers", "/etc/ssh/sshd_config"]
+  poll_interval: "configurable (seconds)"
+  cursor: "HashMap<path, SHA-256 hash> (persisted via shared Mutex)"
+
+history:
+  - "2026-04-02: initial spec"

