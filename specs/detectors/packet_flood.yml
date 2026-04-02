@@ -1,0 +1,186 @@
+kind: detector
+name: packet_flood
+version: 1
+description: "Detects volumetric and multi-vector DDoS attacks at the sensor level"
+
+context: |
+  Inspired by the iKern paper (MDPI 2024), this detector identifies DDoS attacks
+  by analyzing event patterns at the sensor level. It returns Vec<Incident>
+  (not Option<Incident>) because multiple patterns may fire simultaneously.
+
+  Six detection patterns:
+  1. SYN flood: rapid failed SSH logins / blocked connections from 3+ unique IPs.
+     Requires both volume (syn_threshold) and diversity (3+ source IPs).
+  2. UDP amplification: high UDP event volume to a single destination IP from
+     2+ source IPs within a 10-second window (separate from main window).
+  3. HTTP flood (L7): massive HTTP request volume from 3+ unique IPs. Covers
+     nginx, web_scan, search_abuse, and http.* event kinds.
+  4. Slowloris: many stale connections (open > window seconds) from the same IP.
+     Detects slow-rate attacks that keep connections open to exhaust server resources.
+  5. Multi-vector: 2+ patterns fire within 2x window. Attackers often combine
+     SYN + HTTP or UDP + slowloris. Multi-vector always fires at Critical.
+  6. Connection rate anomaly: current minute connections exceed baseline * multiplier.
+     Baseline is computed via Welford's online algorithm (mean + variance of
+     per-minute connection counts). Needs 5+ minutes of baseline data.
+
+  Key decisions:
+  - Localhost traffic (127.0.0.0/8, ::1) is excluded entirely because the agent
+    dashboard and health checks generate internal traffic that is not DDoS.
+  - Source IP extraction tries "src_ip", "ip", "remote_ip" fields in order.
+  - The rate anomaly check uses the top contributing IP from the current minute
+    bucket for the incident entity, not the triggering event's IP.
+  - PacketFloodParams struct provides all thresholds at construction time.
+    No runtime reconfiguration.
+
+behavior:
+  does:
+    - "Detects SYN flood at Critical severity when syn_threshold connections from 3+ IPs in window"
+    - "Detects UDP amplification at Critical severity when udp_threshold packets in 10s from 2+ sources"
+    - "Detects HTTP flood at High severity when http_threshold requests from 3+ IPs in window"
+    - "Detects Slowloris at High severity when slowloris_threshold stale connections from one IP"
+    - "Detects multi-vector at Critical severity when 2+ patterns active in 2x window"
+    - "Detects rate anomaly at High severity when current rate > baseline * rate_multiplier"
+    - "Returns Vec<Incident> - may return multiple incidents per event"
+  does_not:
+    - "Alert on localhost traffic (127.0.0.0/8, ::1)"
+    - "Alert when unique source IPs are below minimum (3 for SYN/HTTP, 2 for UDP)"
+    - "Alert when volume is below configured thresholds"
+    - "Alert during the first 5 minutes (rate anomaly needs baseline data)"
+    - "Alert twice for same pattern within cooldown"
+
+config:
+  syn_threshold: 100
+  http_threshold: 200
+  slowloris_threshold: 50
+  udp_threshold: 50
+  rate_multiplier: 10.0
+  window_secs: 30
+  cooldown_secs: 60
+
+dependencies:
+  - "Inline SYN_FLOOD_KINDS, HTTP_FLOOD_KINDS, UDP_KINDS event kind lists"
+  - "mod.rs: source IP extraction helpers"
+
+test_cases:
+  true_positives:
+    - description: "SYN flood from many IPs"
+      syn_threshold: 10
+      sequence_ips: 12
+      input:
+        kind: "ssh.login_failed"
+        source: "auth_log"
+        src_ip: "1.2.3.1"
+        user: "root"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "HTTP flood from many IPs"
+      http_threshold: 10
+      sequence_ips: 12
+      input:
+        kind: "web_scan"
+        source: "nginx"
+        src_ip: "2.2.2.1"
+        path: "/api/search"
+        status: 200
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "Slowloris from single IP with many stale connections"
+      skip_runner: true  # Slowloris needs connections that age past the window boundary
+      input:
+        kind: "network.connection"
+        source: "ebpf"
+        src_ip: "3.3.3.3"
+        dst_port: 80
+        proto: "tcp"
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "Below SYN threshold (20 events < 100 threshold)"
+      syn_threshold: 100
+      sequence_ips: 20
+      input:
+        kind: "ssh.login_failed"
+        source: "auth_log"
+        src_ip: "2.2.2.1"
+        user: "root"
+      expected:
+        alert: false
+        reason: "20 events is below syn_threshold of 100"
+
+    - description: "SYN events from only 2 IPs (needs 3+)"
+      input:
+        kind: "ssh.login_failed"
+        source: "auth_log"
+        src_ip: "4.4.4.1"
+      sequence_ips: 2
+      expected:
+        alert: false
+        reason: "Only 2 unique IPs - needs 3+ for SYN flood"
+
+    - description: "Localhost traffic excluded"
+      input:
+        kind: "network.connection"
+        source: "ebpf"
+        src_ip: "127.0.0.1"
+      expected:
+        alert: false
+        reason: "Localhost traffic is excluded from all DDoS checks"
+
+    - description: "Normal traffic rate within baseline"
+      input:
+        kind: "network.connection"
+        source: "ebpf"
+        src_ip: "5.5.5.5"
+      expected:
+        alert: false
+        reason: "Connection rate is within baseline * multiplier"
+
+    - description: "Rate anomaly check skipped in first 5 minutes"
+      input:
+        kind: "network.connection"
+        source: "ebpf"
+        src_ip: "6.6.6.6"
+      expected:
+        alert: false
+        reason: "Rate anomaly needs 5+ minutes of baseline data"
+
+  false_positive_fixes:
+    - date: "2026-04-02"
+      description: "Dashboard agent health checks counting as DDoS"
+      context: |
+        The InnerWarden dashboard serves on localhost:3333. Browser polling
+        and agent health checks generate many network.connection events
+        from 127.0.0.1 and ::1. Without the localhost exclusion, a busy
+        dashboard session would trigger rate anomaly and HTTP flood detection.
+        Fixed by filtering 127.0.0.0/8 and ::1 at the very top of process().
+      input:
+        kind: "network.connection"
+        source: "ebpf"
+        src_ip: "127.0.0.1"
+      expected:
+        alert: false
+
+    - date: "2026-04-02"
+      description: "Rate anomaly false positive during baseline warmup"
+      context: |
+        During the first few minutes after sensor start, the rate baseline
+        (Welford's mean/variance) was unstable. A normal burst of connections
+        during service discovery could trigger rate anomaly because the mean
+        was very low. Fixed by requiring rate_count >= 5 (at least 5 minute
+        buckets) before enabling rate anomaly detection. Also requires
+        baseline > 1.0 to avoid division-by-zero edge cases.
+      input:
+        kind: "network.connection"
+        source: "ebpf"
+        src_ip: "7.7.7.7"
+      expected:
+        alert: false
+
+history:
+  - "2026-04-02: initial spec from production FP analysis"

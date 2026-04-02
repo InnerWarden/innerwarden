@@ -1,0 +1,225 @@
+kind: detector
+name: process_tree
+version: 1
+description: "Detects suspicious parent-child process relationships (web server -> shell, database -> shell, etc.)"
+
+context: |
+  This detector identifies process lineage patterns that almost always indicate
+  exploitation: a web server spawning a shell, a database spawning commands,
+  container runtimes spawning shells.
+
+  Key architectural decisions:
+  - Detection is based on a static table of (parent_pattern, child_pattern)
+    pairs with associated severity. Web server -> shell is Critical because it
+    almost always means RCE (remote code execution). Database -> shell is High
+    because it could also be legitimate admin scripting.
+  - The process tree is built from shell.command_exec events by tracking
+    pid -> (ppid, comm). When a new exec arrives, the parent's comm is looked
+    up in the in-memory tree, falling back to /proc/{ppid}/comm on Linux.
+  - Node.js -> sh/bash has a special exception: Node.js legitimately spawns
+    shells for every child_process.exec() call (npm scripts, build tools, etc.).
+    The detector checks the command string for known build/dev patterns (npm,
+    npx, yarn, tsc, eslint, webpack, vite, remotion, git, which) and skips
+    those. Without an explicit command, node -> sh is also skipped (too noisy).
+  - Container-aware: if container_id is present in event details, tags include
+    "container" and the incident includes the container entity reference.
+  - Re-alert suppression is per parent_comm:child_comm:ppid within the window.
+    Same nginx process spawning multiple bash shells only alerts once.
+
+behavior:
+  does:
+    - "Detects web server (nginx, apache, httpd, caddy) spawning shells (sh, bash) at Critical severity"
+    - "Detects database (mysqld, postgres, mongod, redis-server) spawning shells at High severity"
+    - "Detects web server spawning network tools (curl, wget) at High severity"
+    - "Detects Java/Node.js spawning shells (RCE indicator) at Critical/High severity"
+    - "Detects container runtime (containerd, dockerd, runc) spawning shells at Critical severity"
+    - "Includes container_id in evidence when present"
+  does_not:
+    - "Alert on normal parent-child (bash -> ls, sshd -> bash, etc.) since only SUSPICIOUS_LINEAGE patterns are checked"
+    - "Alert on Node.js spawning sh for npm/npx/yarn/tsc/eslint/webpack/vite/remotion/git/which commands"
+    - "Alert on Node.js spawning sh with empty command string"
+    - "Alert when ppid is 0 (unknown parent)"
+    - "Alert twice for the same parent:child:ppid within the window"
+
+config:
+  window_secs: 300
+
+dependencies:
+  - "Inline SUSPICIOUS_LINEAGE table (parent_pattern, child_pattern, severity, description)"
+  - "/proc/{ppid}/comm fallback for parent process resolution"
+
+test_cases:
+  true_positives:
+    - description: "nginx spawns bash (web shell / RCE)"
+      input:
+        kind: "shell.command_exec"
+        comm: "bash"
+        pid: 200
+        ppid: 100
+        uid: 0
+        command: "/usr/bin/bash"
+      parent:
+        comm: "nginx"
+        pid: 100
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "mysqld spawns sh (SQL injection to shell)"
+      input:
+        kind: "shell.command_exec"
+        comm: "sh"
+        pid: 600
+        ppid: 500
+        uid: 0
+        command: "/bin/sh"
+      parent:
+        comm: "mysqld"
+        pid: 500
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "Java spawns bash (Log4Shell style RCE)"
+      input:
+        kind: "shell.command_exec"
+        comm: "bash"
+        pid: 1001
+        ppid: 1000
+        uid: 0
+        command: "/bin/bash -c whoami"
+      parent:
+        comm: "java"
+        pid: 1000
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "nginx spawns bash inside container"
+      input:
+        kind: "shell.command_exec"
+        comm: "sh"
+        pid: 200
+        ppid: 100
+        uid: 0
+        command: "/bin/sh"
+        container_id: "abc123def456"
+      parent:
+        comm: "nginx"
+        pid: 100
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "containerd spawns shell (container escape attempt)"
+      input:
+        kind: "shell.command_exec"
+        comm: "sh"
+        pid: 300
+        ppid: 200
+        uid: 0
+        command: "/bin/sh"
+      parent:
+        comm: "containerd"
+        pid: 200
+      expected:
+        alert: true
+        severity: "critical"
+
+  true_negatives:
+    - description: "bash spawns ls (normal command execution)"
+      input:
+        kind: "shell.command_exec"
+        comm: "ls"
+        pid: 200
+        ppid: 100
+        uid: 1000
+        command: "/usr/bin/ls -la"
+      parent:
+        comm: "bash"
+        pid: 100
+      expected:
+        alert: false
+        reason: "bash -> ls is not in SUSPICIOUS_LINEAGE table"
+
+    - description: "Node.js spawns sh for npm install"
+      input:
+        kind: "shell.command_exec"
+        comm: "sh"
+        pid: 200
+        ppid: 100
+        uid: 1000
+        command: "npm install express"
+      parent:
+        comm: "node"
+        pid: 100
+      expected:
+        alert: false
+        reason: "node -> sh with npm in command is excluded as legitimate build activity"
+
+    - description: "Node.js spawns sh for remotion render"
+      input:
+        kind: "shell.command_exec"
+        comm: "sh"
+        pid: 200
+        ppid: 100
+        uid: 1000
+        command: "remotion render MyComp out/video.mp4"
+      parent:
+        comm: "node"
+        pid: 100
+      expected:
+        alert: false
+        reason: "node -> sh with remotion in command is excluded"
+
+    - description: "Unknown ppid (ppid=0)"
+      input:
+        kind: "shell.command_exec"
+        comm: "bash"
+        pid: 200
+        ppid: 0
+        uid: 0
+        command: "/bin/bash"
+      expected:
+        alert: false
+        reason: "ppid=0 means unknown parent - skipped"
+
+    - description: "Second alert from same nginx suppressed"
+      test_suppression: true
+      input:
+        kind: "shell.command_exec"
+        comm: "bash"
+        pid: 201
+        ppid: 100
+        uid: 0
+        command: "/bin/bash"
+      parent:
+        comm: "nginx"
+        pid: 100
+      expected:
+        alert: false
+        reason: "Re-alert suppressed for same parent:child:ppid within window"
+
+  false_positive_fixes:
+    - date: "2026-04-02"
+      description: "Node.js build tools triggering nginx->sh pattern"
+      context: |
+        Node.js legitimately spawns sh/bash for every child_process.exec() call.
+        This is standard behavior for npm scripts, build tools (webpack, vite,
+        remotion), linters (eslint, prettier), compilers (tsc), and VCS (git).
+        Without filtering, node -> sh fires hundreds of times during a build.
+        Fixed by checking the command string for known dev tool patterns and
+        skipping those. Also skip empty command strings since node -> sh with
+        no args is typically an internal process manager.
+      input:
+        kind: "shell.command_exec"
+        comm: "sh"
+        pid: 200
+        ppid: 100
+        uid: 1000
+        command: "npx remotion render MyComp out/video.mp4"
+      expected:
+        alert: false
+
+history:
+  - "2026-04-02: initial spec from production FP analysis"

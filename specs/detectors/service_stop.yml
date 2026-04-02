@@ -1,0 +1,184 @@
+kind: detector
+name: service_stop
+version: 1
+description: "Detects stopping/disabling of security services via systemctl or service command (T1489)"
+
+context: |
+  This is part of the mitre_hunt mega-detector (check_service_stop function).
+  It monitors for attackers disabling security tooling before lateral movement
+  or data exfiltration. Part of MITRE ATT&CK T1489: Service Stop.
+
+  Key architectural decisions:
+  - Only triggers for systemctl or service commands (argv0_base check).
+  - Only triggers for stop/disable/mask actions (not start/restart/status).
+  - Only triggers when the target service is in SECURITY_SERVICES list (24 services
+    covering auth, firewall, monitoring, and logging: sshd, auditd, fail2ban,
+    innerwarden, apparmor, ufw, firewalld, iptables, nftables, crowdsec, ossec,
+    wazuh, clamd, clamav, aide, tripwire, snort, suricata, falco, osqueryd,
+    syslog, rsyslog, syslog-ng, journald).
+  - Root (uid=0) stopping innerwarden services is allowed because this is normal
+    admin operations during deploy/upgrade. An attacker would need root anyway,
+    but the deploy case is so common that alerting on it is pure noise.
+  - Lives inside mitre_hunt.rs rather than its own file because all MITRE
+    technique detections share the same emit() helper and cooldown logic.
+
+  Severity: High - stopping security services is a strong indicator of attack
+  preparation but could also be legitimate maintenance (hence not Critical).
+
+behavior:
+  does:
+    - "Detects systemctl stop/disable/mask of security services"
+    - "Detects service stop of security services"
+    - "Fires at High severity"
+    - "Covers 24 security services in SECURITY_SERVICES list"
+  does_not:
+    - "Alert on non-security services (e.g., systemctl stop nginx)"
+    - "Alert on start/restart/status/enable actions"
+    - "Alert on non-systemctl/service commands (e.g., kill -9)"
+    - "Alert on root (uid=0) stopping innerwarden services (deploy/upgrade)"
+    - "Alert on commands that do not contain a security service name"
+
+config:
+  cooldown_secs: 300
+
+dependencies:
+  - "mitre_hunt.rs: SECURITY_SERVICES list, emit() helper, cooldown logic"
+
+test_cases:
+  true_positives:
+    - description: "Non-root user stops fail2ban"
+      input:
+        kind: "shell.command_exec"
+        comm: "systemctl"
+        pid: 1234
+        uid: 1000
+        command: "systemctl stop fail2ban"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "Attacker disables auditd"
+      input:
+        kind: "shell.command_exec"
+        comm: "systemctl"
+        pid: 2000
+        uid: 1000
+        command: "systemctl disable auditd"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "Attacker masks ufw firewall"
+      input:
+        kind: "shell.command_exec"
+        comm: "systemctl"
+        pid: 3000
+        uid: 1000
+        command: "systemctl mask ufw"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "Root user stops crowdsec (not innerwarden)"
+      input:
+        kind: "shell.command_exec"
+        comm: "systemctl"
+        pid: 4000
+        uid: 0
+        command: "systemctl stop crowdsec"
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "systemctl start fail2ban (start action, not stop)"
+      input:
+        kind: "shell.command_exec"
+        comm: "systemctl"
+        pid: 1234
+        uid: 1000
+        command: "systemctl start fail2ban"
+      expected:
+        alert: false
+        reason: "start is not a stop/disable/mask action"
+
+    - description: "systemctl status auditd (status check)"
+      input:
+        kind: "shell.command_exec"
+        comm: "systemctl"
+        pid: 2000
+        uid: 1000
+        command: "systemctl status auditd"
+      expected:
+        alert: false
+        reason: "status is not a stop/disable/mask action"
+
+    - description: "systemctl stop nginx (not a security service)"
+      input:
+        kind: "shell.command_exec"
+        comm: "systemctl"
+        pid: 3000
+        uid: 1000
+        command: "systemctl stop nginx"
+      expected:
+        alert: false
+        reason: "nginx is not in SECURITY_SERVICES list"
+
+    - description: "Root stopping innerwarden (deploy/upgrade)"
+      input:
+        kind: "shell.command_exec"
+        comm: "systemctl"
+        pid: 4000
+        uid: 0
+        command: "systemctl stop innerwarden"
+      expected:
+        alert: false
+        reason: "Root stopping innerwarden is normal admin operations (deploy/upgrade)"
+
+    - description: "kill -9 of fail2ban PID (not systemctl/service)"
+      input:
+        kind: "shell.command_exec"
+        comm: "kill"
+        pid: 5000
+        uid: 1000
+        command: "kill -9 12345"
+      expected:
+        alert: false
+        reason: "Only systemctl and service commands are checked"
+
+    - description: "apt-get stop (not systemctl/service)"
+      input:
+        kind: "shell.command_exec"
+        comm: "apt-get"
+        pid: 6000
+        uid: 0
+        command: "apt-get stop sshd"
+      expected:
+        alert: false
+        reason: "apt-get is not systemctl or service"
+
+  false_positive_fixes:
+    - date: "2026-04-02"
+      description: "Root admin deploying InnerWarden update triggers service_stop"
+      context: |
+        During deploy, the standard procedure is:
+        1. rsync new binary to server
+        2. sudo systemctl stop innerwarden-sensor
+        3. sudo cp binary
+        4. sudo systemctl start innerwarden-sensor
+        This is always done as root (uid=0). Without the exception, every deploy
+        would generate a High severity alert. Fixed by allowing uid=0 +
+        target_service == "innerwarden" as a special case. Other security
+        services stopped by root still alert, because root stopping fail2ban
+        or auditd during an active session is more suspicious.
+      input:
+        kind: "shell.command_exec"
+        comm: "systemctl"
+        pid: 7000
+        uid: 0
+        command: "systemctl stop innerwarden-sensor"
+      expected:
+        alert: false
+
+history:
+  - "2026-04-02: initial spec from production FP analysis"

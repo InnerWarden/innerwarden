@@ -1,0 +1,259 @@
+kind: detector
+name: sigma_rule
+version: 1
+description: "Sigma-compatible rule engine for log-based detection with 8 built-in rules and custom rule loading"
+
+context: |
+  Sigma is the open standard for log-based detection rules. This detector loads
+  rules from rules/sigma/*.yml (community/custom) and includes 8 built-in rules
+  covering the most critical Linux detection patterns.
+
+  Key architectural decisions:
+  - Built-in rules (SIGMA-001 to SIGMA-008) cover cron modification, systemd
+    service creation, SSH authorized_keys modification, shadow file access,
+    /tmp execution, kernel module loading, sudoers modification, and Docker
+    socket access. These fire without any custom rules on disk.
+  - Custom rules are loaded from rules/sigma/ recursively (supports subdirs).
+    The SigmaHQ community provides thousands of rules that can be dropped in.
+  - Field matching supports: Equals, Contains, StartsWith, EndsWith, Regex.
+    All matching is case-insensitive. Sigma field aliases are supported
+    (Image -> details.filename, CommandLine -> details.command, etc.)
+  - Condition support is simplified: single "selection" (AND of all fields),
+    multiple selections merged as OR, filter sections ignored (conservative -
+    may produce more alerts but never misses true positives).
+  - SUPPRESSED_RULES list: 3 community Sigma rule IDs that are too noisy for
+    production Linux ("Inline Python Execution" fires on any /bin/sh -c,
+    "Linux Shell Pipe to Shell" fires on normal pipelines). These are
+    hardcoded suppressions, not configurable.
+  - Dynamic suppressions via allowlist.toml [suppress] sigma_rules = "id1", "id2"
+  - InnerWarden's own processes (uid=998) are excluded because the sensor's
+    integrity checks trigger SIGMA-004 (shadow file read).
+  - SENSITIVE_FILE_READERS from allowlists.rs are also excluded to prevent
+    system daemons from triggering Sigma rules on legitimate operations.
+  - File reads from /etc/profile.d/, /etc/skel/, /etc/bash_completion.d/,
+    and .git/ directories are excluded (bash sourcing on login, git operations).
+
+behavior:
+  does:
+    - "Loads Sigma rules from rules/sigma/*.yml recursively"
+    - "Applies 8 built-in Sigma rules for critical Linux patterns"
+    - "Matches events against all loaded rules using AND condition within selections"
+    - "Supports field modifiers: contains, startswith, endswith, re"
+    - "Supports Sigma field aliases (Image, CommandLine, etc.) for SigmaHQ compatibility"
+    - "Fires with the severity specified in the rule's level field"
+  does_not:
+    - "Alert on InnerWarden processes (uid=998 or innerwarden comm prefix)"
+    - "Alert on SENSITIVE_FILE_READERS (sshd, login, su, sudo, cron, passwd, etc.)"
+    - "Alert on file.read_access from /etc/profile.d/, /etc/skel/, /etc/bash_completion.d/, .git/"
+    - "Alert on suppressed community rule IDs (inline Python execution, shell pipe to shell)"
+    - "Alert on dynamically suppressed rule IDs from allowlist.toml"
+    - "Alert twice for the same rule ID within cooldown"
+    - "Support complex Sigma conditions (NOT, OR between selections) - uses conservative merge"
+
+config:
+  cooldown_secs: 300
+
+dependencies:
+  - "allowlists.rs: is_innerwarden_process, SENSITIVE_FILE_READERS, comm_in_allowlist"
+  - "rules/sigma/*.yml: custom Sigma rules on disk"
+  - "Dynamic allowlist: suppress_sigma_rules from allowlist.toml"
+
+test_cases:
+  true_positives:
+    - description: "SIGMA-001: Cron modification detected"
+      input:
+        kind: "crontab.modified"
+        source: "audit"
+        summary: "crontab modified by user admin"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "SIGMA-004: /etc/shadow read by non-system process"
+      input:
+        kind: "file.read_access"
+        source: "ebpf"
+        summary: ""
+        details:
+          filename: "/etc/shadow"
+          pid: 1234
+          comm: "cat"
+      expected:
+        alert: true
+        severity: "high"
+
+    - description: "SIGMA-005: Process executed from /tmp"
+      input:
+        kind: "shell.command_exec"
+        source: "ebpf"
+        summary: ""
+        details:
+          filename: "/tmp/payload"
+          pid: 1234
+          comm: "bash"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "SIGMA-005: Process executed from /dev/shm"
+      input:
+        kind: "shell.command_exec"
+        source: "ebpf"
+        summary: ""
+        details:
+          filename: "/dev/shm/exploit"
+          pid: 2000
+          comm: "sh"
+      expected:
+        alert: true
+        severity: "critical"
+
+    - description: "SIGMA-008: Docker socket accessed"
+      input:
+        kind: "file.read_access"
+        source: "ebpf"
+        summary: ""
+        details:
+          filename: "/var/run/docker.sock"
+          pid: 3000
+          comm: "curl"
+      expected:
+        alert: true
+        severity: "high"
+
+  true_negatives:
+    - description: "Normal SSH login event (no Sigma rule matches)"
+      input:
+        kind: "ssh.login_failed"
+        source: "auth_log"
+        summary: "Failed password for root"
+      expected:
+        alert: false
+        reason: "No Sigma rule matches ssh.login_failed kind"
+
+    - description: "InnerWarden sensor reading /etc/shadow (uid=998)"
+      input:
+        kind: "file.read_access"
+        source: "ebpf"
+        summary: ""
+        details:
+          filename: "/etc/shadow"
+          pid: 5000
+          comm: "innerwarden-sensor"
+          uid: 998
+      expected:
+        alert: false
+        reason: "InnerWarden process excluded (is_innerwarden_process)"
+
+    - description: "sshd reading /etc/shadow (in SENSITIVE_FILE_READERS)"
+      input:
+        kind: "file.read_access"
+        source: "ebpf"
+        summary: ""
+        details:
+          filename: "/etc/shadow"
+          pid: 6000
+          comm: "sshd"
+      expected:
+        alert: false
+        reason: "sshd is in SENSITIVE_FILE_READERS allowlist"
+
+    - description: "bash sourcing /etc/profile.d on SSH login"
+      input:
+        kind: "file.read_access"
+        source: "ebpf"
+        summary: ""
+        details:
+          filename: "/etc/profile.d/bash_completion.sh"
+          pid: 7000
+          comm: "bash"
+      expected:
+        alert: false
+        reason: "file.read_access from /etc/profile.d/ is excluded"
+
+    - description: "git operations reading .git/ directory"
+      input:
+        kind: "file.read_access"
+        source: "ebpf"
+        summary: ""
+        details:
+          filename: "/home/user/project/.git/HEAD"
+          pid: 8000
+          comm: "git"
+      expected:
+        alert: false
+        reason: "Paths containing /.git/ are excluded"
+
+    - description: "Duplicate alert suppressed by cooldown"
+      test_cooldown: true
+      input:
+        kind: "crontab.modified"
+        source: "audit"
+        summary: "crontab modified"
+      expected:
+        alert: false
+        reason: "Second event for same rule ID within cooldown is suppressed"
+
+  false_positive_fixes:
+    - date: "2026-04-02"
+      description: "InnerWarden sensor triggering SIGMA-004 on shadow reads"
+      context: |
+        The InnerWarden sensor performs integrity hash verification of
+        /etc/shadow and other sensitive files. Without excluding innerwarden
+        processes, every integrity check cycle triggers SIGMA-004 (Passwd or
+        Shadow File Access). Fixed by adding is_innerwarden_process check at
+        the top of process_inner(), checking uid==998 and comm prefix.
+      input:
+        kind: "file.read_access"
+        source: "ebpf"
+        summary: ""
+        details:
+          filename: "/etc/shadow"
+          pid: 9000
+          comm: "tokio-rt-worker"
+          uid: 998
+      expected:
+        alert: false
+
+    - date: "2026-04-02"
+      description: "Bash login sourcing /etc/profile.d triggering rules"
+      context: |
+        Every SSH login sources /etc/profile.d/*.sh files, which generates
+        file.read_access events for paths under /etc/profile.d/. Some Sigma
+        rules match on "file.read" kind containing "/etc/" in the path,
+        causing false positives on every login. Fixed by adding explicit
+        path prefix exclusions for /etc/profile.d/, /etc/skel/, and
+        /etc/bash_completion.d/.
+      input:
+        kind: "file.read_access"
+        source: "ebpf"
+        summary: ""
+        details:
+          filename: "/etc/profile.d/bash_completion.sh"
+          pid: 100
+          comm: "bash"
+      expected:
+        alert: false
+
+    - date: "2026-04-02"
+      description: "Community Sigma rules too noisy for production Linux"
+      context: |
+        Three community Sigma rules were found to be too noisy for production
+        Linux servers: "Inline Python Execution" (id: 2d2f44ff-...) fires on
+        ANY /bin/sh -c command including ip neigh, cron jobs, etc. Two variants
+        of "Linux Shell Pipe to Shell" (ids: ab75c0b8-... and 880973f3-...) fire
+        on normal shell pipelines. These were added to the SUPPRESSED_RULES
+        const list. For site-specific suppressions, the dynamic allowlist
+        [suppress] sigma_rules feature was added.
+      input:
+        kind: "shell.command_exec"
+        source: "ebpf"
+        summary: ""
+        details:
+          comm: "sh"
+          command: "/bin/sh -c ip neigh"
+      expected:
+        alert: false
+
+history:
+  - "2026-04-02: initial spec from production FP analysis"
