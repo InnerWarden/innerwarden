@@ -24,3 +24,7 @@ __pycache__/
 node_modules/
 CLAUDE.md
 .specify/
+
+# Codex agent metadata
+AGENTS.md
+.agents/

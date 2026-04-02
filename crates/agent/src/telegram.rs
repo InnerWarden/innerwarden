@@ -20,6 +20,8 @@ use tracing::{info, warn};
 /// Telegram enforces a 4096-character limit on messages.
 /// Truncate with a warning marker if exceeded.
 const TELEGRAM_MAX_LEN: usize = 4000; // Leave margin for safety
+/// Telegram callback_data payloads must be <= 64 bytes.
+const TELEGRAM_MAX_CALLBACK_BYTES: usize = 64;
 
 fn enforce_length(text: &str) -> String {
     if text.len() <= TELEGRAM_MAX_LEN {
@@ -32,6 +34,38 @@ fn enforce_length(text: &str) -> String {
     let mut truncated: String = text.chars().take(TELEGRAM_MAX_LEN - 30).collect();
     truncated.push_str("\n\n<i>… message truncated</i>");
     truncated
+}
+
+/// Truncate a UTF-8 string to at most `max_bytes` while preserving char boundaries.
+fn truncate_utf8_bytes(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let mut cut = 0usize;
+    for (idx, ch) in text.char_indices() {
+        let next = idx + ch.len_utf8();
+        if next > max_bytes {
+            break;
+        }
+        cut = next;
+    }
+    text[..cut].to_string()
+}
+
+/// Build callback_data with a fixed prefix, ensuring total payload stays <= 64 bytes.
+fn callback_data(prefix: &str, payload: &str) -> String {
+    let prefix_len = prefix.len();
+    if prefix_len >= TELEGRAM_MAX_CALLBACK_BYTES {
+        warn!(
+            prefix_len,
+            max = TELEGRAM_MAX_CALLBACK_BYTES,
+            "callback prefix exceeded Telegram limit; truncating prefix"
+        );
+        return truncate_utf8_bytes(prefix, TELEGRAM_MAX_CALLBACK_BYTES);
+    }
+    let payload_budget = TELEGRAM_MAX_CALLBACK_BYTES - prefix_len;
+    let payload = truncate_utf8_bytes(payload, payload_budget);
+    format!("{prefix}{payload}")
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +285,7 @@ impl TelegramClient {
             let incident_id = &incident.incident_id;
             let fp_btn = serde_json::json!({
                 "text": "\u{1f52c} Check FP",
-                "callback_data": format!("fp:check:{}", &incident_id[..incident_id.len().min(60)])
+                "callback_data": callback_data("fp:check:", incident_id)
             });
             if let Some(markup) = body.get_mut("reply_markup") {
                 if let Some(kb) = markup.get_mut("inline_keyboard") {
@@ -264,12 +298,82 @@ impl TelegramClient {
             }
         }
 
-        // Simple profile: add "What does this mean?" explain button
-        if is_simple {
+        // Triage row: allowlist + report FP buttons (both profiles)
+        {
+            let comm = if let Some(arr) = incident.evidence.as_array() {
+                arr.first()
+                    .and_then(|e| e.get("comm"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                incident
+                    .evidence
+                    .get("comm")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            };
+            let ip = first_ip_entity(incident);
+
+            let mut triage_row = vec![];
+            if !comm.is_empty() {
+                let label = if is_simple {
+                    "Allow this"
+                } else {
+                    "Add to allowlist"
+                };
+                triage_row.push(serde_json::json!({
+                    "text": format!("\u{2705} {label}"),
+                    "callback_data": callback_data("allow:proc:", &comm)
+                }));
+            }
+            if let Some(ref ip_val) = ip {
+                let label = if is_simple {
+                    "Allow this"
+                } else {
+                    "Allowlist IP"
+                };
+                triage_row.push(serde_json::json!({
+                    "text": format!("\u{2705} {label}"),
+                    "callback_data": callback_data("allow:ip:", ip_val)
+                }));
+            }
+
+            let fp_label = if is_simple {
+                "Not a threat"
+            } else {
+                "Report FP"
+            };
+            triage_row.push(serde_json::json!({
+                "text": format!("\u{1f4dd} {fp_label}"),
+                "callback_data": callback_data("fp:", &incident.incident_id)
+            }));
+
+            if !triage_row.is_empty() {
+                if let Some(markup) = body.get_mut("reply_markup") {
+                    if let Some(kb) = markup.get_mut("inline_keyboard") {
+                        if let Some(arr) = kb.as_array_mut() {
+                            arr.push(serde_json::json!(triage_row));
+                        }
+                    }
+                } else {
+                    body["reply_markup"] = serde_json::json!({ "inline_keyboard": [triage_row] });
+                }
+            }
+        }
+
+        // Explain button: both profiles get "What does this mean?"
+        {
             let detector = extract_detector(&incident.incident_id).to_string();
+            let explain_label = if is_simple {
+                "What does this mean?"
+            } else {
+                "Explain this alert"
+            };
             let explain_btn = serde_json::json!({
-                "text": "\u{2753} What does this mean?",
-                "callback_data": format!("explain:{}", &detector[..detector.len().min(60)])
+                "text": format!("\u{2753} {explain_label}"),
+                "callback_data": callback_data("explain:", &detector)
             });
             if let Some(markup) = body.get_mut("reply_markup") {
                 if let Some(kb) = markup.get_mut("inline_keyboard") {
@@ -1128,6 +1232,60 @@ impl TelegramClient {
                                             return;
                                         }
                                     }
+                                } else if let Some(rest) = data.strip_prefix("allow:proc:") {
+                                    let _ = self
+                                        .answer_callback_toast(
+                                            &callback.id,
+                                            &format!("\u{2705} Adding {} to allowlist...", rest),
+                                        )
+                                        .await;
+                                    let result = ApprovalResult {
+                                        incident_id: format!("__allow_proc__:{rest}"),
+                                        approved: true,
+                                        always: false,
+                                        operator_name: operator.clone(),
+                                        chosen_action: String::new(),
+                                    };
+                                    if approval_tx.send(result).await.is_err() {
+                                        return;
+                                    }
+                                } else if let Some(rest) = data.strip_prefix("allow:ip:") {
+                                    let _ = self
+                                        .answer_callback_toast(
+                                            &callback.id,
+                                            &format!("\u{2705} Adding {} to allowlist...", rest),
+                                        )
+                                        .await;
+                                    let result = ApprovalResult {
+                                        incident_id: format!("__allow_ip__:{rest}"),
+                                        approved: true,
+                                        always: false,
+                                        operator_name: operator.clone(),
+                                        chosen_action: String::new(),
+                                    };
+                                    if approval_tx.send(result).await.is_err() {
+                                        return;
+                                    }
+                                } else if !data.starts_with("fp:check:") && data.starts_with("fp:")
+                                {
+                                    // Triage FP report (not the dev-mode fp:check: handler)
+                                    let rest = &data[3..];
+                                    let _ = self
+                                        .answer_callback_toast(
+                                            &callback.id,
+                                            "\u{1f4dd} Reported as false positive. Thanks!",
+                                        )
+                                        .await;
+                                    let result = ApprovalResult {
+                                        incident_id: format!("__fp__:{rest}"),
+                                        approved: true,
+                                        always: false,
+                                        operator_name: operator.clone(),
+                                        chosen_action: String::new(),
+                                    };
+                                    if approval_tx.send(result).await.is_err() {
+                                        return;
+                                    }
                                 } else {
                                     // Answer the callback immediately to remove the spinner
                                     let _ = self.answer_callback(&callback.id).await;
@@ -1734,6 +1892,7 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use innerwarden_core::{entities::EntityRef, event::Severity, incident::Incident};
+    use tempfile::tempdir;
 
     fn make_incident(severity: Severity, tags: Vec<String>, entities: Vec<EntityRef>) -> Incident {
         Incident {
@@ -2060,6 +2219,74 @@ mod tests {
         let result = enforce_length(&over);
         assert!(result.len() <= TELEGRAM_MAX_LEN);
         assert!(result.contains("… message truncated"));
+    }
+
+    #[test]
+    fn callback_data_keeps_short_payload() {
+        let cb = callback_data("allow:proc:", "sshd");
+        assert_eq!(cb, "allow:proc:sshd");
+        assert!(cb.len() <= TELEGRAM_MAX_CALLBACK_BYTES);
+    }
+
+    #[test]
+    fn callback_data_truncates_to_telegram_limit() {
+        let cb = callback_data("fp:check:", &"x".repeat(500));
+        assert!(cb.starts_with("fp:check:"));
+        assert_eq!(cb.len(), TELEGRAM_MAX_CALLBACK_BYTES);
+    }
+
+    #[test]
+    fn callback_data_preserves_utf8_boundaries() {
+        let cb = callback_data("fp:", &"á".repeat(100));
+        assert!(cb.len() <= TELEGRAM_MAX_CALLBACK_BYTES);
+        assert!(std::str::from_utf8(cb.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn append_to_allowlist_creates_and_appends_entries() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("allowlist.toml");
+
+        append_to_allowlist(&path, "processes", "cargo-build", "from telegram").unwrap();
+        append_to_allowlist(&path, "ips", "1.2.3.4", "known safe").unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[processes]"));
+        assert!(content.contains("\"cargo-build\" = \"from telegram\""));
+        assert!(content.contains("[ips]"));
+        assert!(content.contains("\"1.2.3.4\" = \"known safe\""));
+    }
+
+    #[test]
+    fn append_to_allowlist_escapes_toml_sensitive_chars() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("allowlist.toml");
+        append_to_allowlist(&path, "processes", "my\"proc", "line1\nline2").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("\"my\\\"proc\""));
+        assert!(content.contains("line1 line2"));
+    }
+
+    #[test]
+    fn log_false_positive_writes_expected_jsonl_fields() {
+        let dir = tempdir().unwrap();
+        log_false_positive(
+            dir.path(),
+            "ssh_bruteforce:1.2.3.4:test",
+            "ssh_bruteforce",
+            "operator-a",
+        );
+
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let path = dir.path().join(format!("fp-reports-{today}.jsonl"));
+        let content = std::fs::read_to_string(path).unwrap();
+        let line = content.lines().next().unwrap();
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(value["incident_id"], "ssh_bruteforce:1.2.3.4:test");
+        assert_eq!(value["detector"], "ssh_bruteforce");
+        assert_eq!(value["reporter"], "operator-a");
+        assert_eq!(value["action"], "reported_fp");
+        assert!(value["ts"].is_string());
     }
 
     #[test]
@@ -2441,6 +2668,70 @@ fn extract_detector(incident_id: &str) -> &str {
 /// Public wrapper for extract_detector, used by daily digest in main.rs.
 pub fn extract_detector_pub(incident_id: &str) -> &str {
     extract_detector(incident_id)
+}
+
+/// Append an entry to the allowlist TOML file.
+///
+/// Creates the file if it does not exist. Each call appends a new
+/// `[section]` header followed by the key-value pair so the sensor
+/// picks it up on its next reload (every 60 s).
+pub fn append_to_allowlist(
+    allowlist_path: &std::path::Path,
+    section: &str,
+    key: &str,
+    reason: &str,
+) -> anyhow::Result<()> {
+    use fs2::FileExt;
+    use std::io::Write;
+
+    fn toml_escape(value: &str) -> String {
+        value
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', " ")
+    }
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(allowlist_path)?;
+    file.lock_exclusive()?;
+    let escaped_key = toml_escape(key);
+    let escaped_reason = toml_escape(reason);
+    writeln!(file, "\n[{section}]")?;
+    writeln!(file, "\"{}\" = \"{}\"", escaped_key, escaped_reason)?;
+    file.flush()?;
+    file.unlock()?;
+    Ok(())
+}
+
+/// Log an incident as a false positive to a daily JSONL file.
+///
+/// Used for training data collection and FP-rate tracking.  The file
+/// is created if missing and each entry is one JSON line.
+pub fn log_false_positive(
+    data_dir: &std::path::Path,
+    incident_id: &str,
+    detector: &str,
+    reporter: &str,
+) {
+    let today = chrono::Utc::now().format("%Y-%m-%d");
+    let path = data_dir.join(format!("fp-reports-{today}.jsonl"));
+    let entry = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "incident_id": incident_id,
+        "detector": detector,
+        "reporter": reporter,
+        "action": "reported_fp"
+    });
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "{}", entry);
+    }
 }
 
 // ---------------------------------------------------------------------------

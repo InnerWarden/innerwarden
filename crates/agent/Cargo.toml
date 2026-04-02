@@ -38,6 +38,7 @@ rand_core = { version = "0.6", features = ["std"] }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+fs2 = "0.4"
 hmac = "0.12"
 sha2 = "0.10"
 russh = "0.58"
