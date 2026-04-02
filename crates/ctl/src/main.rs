@@ -3542,10 +3542,14 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
         println!("  [2/3] Telegram alerts      ✅ configured");
     } else {
         println!("  [2/3] Telegram alerts\n");
-        println!("  Get threat alerts on your phone.");
-        println!("  Create a bot via @BotFather on Telegram.\n");
+        println!("  Get threat alerts on your phone.\n");
+        println!("  How to get a bot token:");
+        println!("    1. Open Telegram and search for @BotFather");
+        println!("    2. Send /newbot and follow the instructions");
+        println!("    3. Copy the token (looks like 123456:ABC-DEF...)\n");
         match prompt("  Bot token (Enter to skip)") {
             Ok(t) if !t.is_empty() => {
+                println!("  ✓ Token accepted. One more step: detecting your chat ID...");
                 if let Err(e) = cmd_configure_telegram(cli, Some(&t), None, false) {
                     println!("  Error: {e:#}");
                 }
@@ -3621,23 +3625,55 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
     let tg_done = has_env2("TELEGRAM_BOT_TOKEN") && has_env2("TELEGRAM_CHAT_ID");
     let resp_done = is_enabled2("responder");
 
-    println!("\n  ────────────────────────────────────────");
-    println!(
-        "  AI          {}",
-        if ai_done { "ready" } else { "not set" }
-    );
-    println!(
-        "  Telegram    {}",
-        if tg_done { "ready" } else { "not set" }
-    );
-    println!(
-        "  Responder   {}",
-        if resp_done { "ready" } else { "not set" }
-    );
+    // ── Mesh network (auto-join) ──────────────────────────────────────
+    println!();
+    let mesh_ok = is_enabled2("mesh");
+    if !mesh_ok {
+        print!("  Join the defense network? When one node detects a threat, all nodes block it. [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut ans = String::new();
+        std::io::stdin().read_line(&mut ans)?;
+        if ans.trim().to_lowercase() != "n" {
+            let _ = cmd_mesh_enable(cli);
+            println!("  ✅ Mesh network enabled");
+        }
+    }
+
+    // ── Summary ───────────────────────────────────────────────────────
+    println!();
+    println!("  ✅ Setup complete!\n");
+    println!("  ────────────────────────────────────────");
+    if ai_done {
+        println!("  AI          ready");
+    } else {
+        println!("  AI          not set (innerwarden configure ai)");
+    }
+    if tg_done {
+        println!("  Telegram    ready");
+    } else {
+        println!("  Telegram    not set (innerwarden configure telegram)");
+    }
+    if resp_done {
+        let dry = agent_doc2
+            .as_ref()
+            .and_then(|v| v.get("responder"))
+            .and_then(|r| r.get("dry_run"))
+            .and_then(|d| d.as_bool())
+            .unwrap_or(true);
+        if dry {
+            println!("  Protection  watch & learn");
+        } else {
+            println!("  Protection  auto-protect (active)");
+        }
+    } else {
+        println!("  Protection  not set");
+    }
     println!("  ────────────────────────────────────────");
     println!();
-    println!("  innerwarden status      check protection");
-    println!("  innerwarden configure   change any setting");
+    println!("  Recommended next steps:");
+    println!("  innerwarden doctor      validate everything works");
+    println!("  innerwarden harden      security audit + auto-fix");
+    println!("  innerwarden help        all available commands");
 
     Ok(())
 }
