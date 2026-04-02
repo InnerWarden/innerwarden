@@ -4710,6 +4710,77 @@ async fn append_honeypot_marker_event(
 // Telegram T.2 approval handler
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TelegramTriageAction<'a> {
+    AllowProc(&'a str),
+    AllowIp(&'a str),
+    ReportFp(&'a str),
+}
+
+fn parse_telegram_triage_action(incident_id: &str) -> Option<TelegramTriageAction<'_>> {
+    if let Some(rest) = incident_id.strip_prefix("__allow_proc__:") {
+        Some(TelegramTriageAction::AllowProc(rest))
+    } else if let Some(rest) = incident_id.strip_prefix("__allow_ip__:") {
+        Some(TelegramTriageAction::AllowIp(rest))
+    } else {
+        incident_id
+            .strip_prefix("__fp__:")
+            .map(TelegramTriageAction::ReportFp)
+    }
+}
+
+fn sanitize_allowlist_process_name(raw: &str) -> Option<String> {
+    let cleaned = raw.replace('"', "").replace('\n', " ").trim().to_string();
+    (!cleaned.is_empty()).then_some(cleaned)
+}
+
+fn local_hostname_for_audit() -> String {
+    std::env::var("HOSTNAME")
+        .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_telegram_triage_audit(
+    state: &mut AgentState,
+    incident_id: &str,
+    operator: &str,
+    action_type: &str,
+    target_ip: Option<String>,
+    target_user: Option<String>,
+    reason: String,
+    execution_result: String,
+) {
+    if let Some(writer) = &mut state.decision_writer {
+        let entry = decisions::DecisionEntry {
+            ts: chrono::Utc::now(),
+            incident_id: incident_id.to_string(),
+            host: local_hostname_for_audit(),
+            ai_provider: format!("operator:telegram:{operator}"),
+            action_type: action_type.to_string(),
+            target_ip,
+            target_user,
+            skill_id: None,
+            confidence: 1.0,
+            auto_executed: true,
+            dry_run: false,
+            reason,
+            estimated_threat: "manual".to_string(),
+            execution_result,
+            prev_hash: None,
+        };
+        if let Err(e) = writer.write(&entry) {
+            warn!(
+                error = %e,
+                action_type,
+                incident_id,
+                operator,
+                "failed to write Telegram triage audit entry"
+            );
+        }
+    }
+}
+
 /// Process a single operator approval result received from the Telegram polling task.
 /// Resolves and executes (or discards) the pending confirmation, writes an audit entry,
 /// and informs the operator via Telegram of the outcome.
@@ -5289,6 +5360,220 @@ async fn process_telegram_approval(
                     let _ = tg.send_text_message(&text).await;
                 }
             });
+        }
+        return;
+    }
+
+    // Telegram triage sentinels: "__allow_proc__", "__allow_ip__", "__fp__"
+    if let Some(action) = parse_telegram_triage_action(&result.incident_id) {
+        match action {
+            TelegramTriageAction::AllowProc(comm_raw) => {
+                let Some(comm) = sanitize_allowlist_process_name(comm_raw) else {
+                    write_telegram_triage_audit(
+                        state,
+                        &result.incident_id,
+                        &result.operator_name,
+                        "allowlist_add",
+                        None,
+                        Some("process:(empty)".to_string()),
+                        format!(
+                            "Operator {} attempted to add empty process allowlist via Telegram",
+                            result.operator_name
+                        ),
+                        "skipped:empty_process_name".to_string(),
+                    );
+                    tg_reply!("⚠️ Could not add empty process name to allowlist.");
+                    return;
+                };
+                let allowlist_path = Path::new("/etc/innerwarden/allowlist.toml");
+                let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+                let operator = result.operator_name.replace('"', "'");
+                let reason = format!("Allowed via Telegram by {operator} ({ts})");
+                match telegram::append_to_allowlist(allowlist_path, "processes", &comm, &reason) {
+                    Ok(()) => {
+                        write_telegram_triage_audit(
+                            state,
+                            &result.incident_id,
+                            &result.operator_name,
+                            "allowlist_add",
+                            None,
+                            Some(format!("process:{comm}")),
+                            format!(
+                                "Operator {} added process '{}' to allowlist via Telegram",
+                                result.operator_name, comm
+                            ),
+                            format!("allowlist_process_added:{comm}"),
+                        );
+                        info!(
+                            operator = %result.operator_name,
+                            comm = %comm,
+                            path = %allowlist_path.display(),
+                            "Telegram triage allowlist (process) applied"
+                        );
+                        tg_reply!(format!(
+                            "✅ Allowed <code>{comm}</code>. Sensor will pick this up in up to 60s."
+                        ));
+                    }
+                    Err(e) => {
+                        write_telegram_triage_audit(
+                            state,
+                            &result.incident_id,
+                            &result.operator_name,
+                            "allowlist_add",
+                            None,
+                            Some(format!("process:{comm}")),
+                            format!(
+                                "Operator {} failed to add process '{}' to allowlist via Telegram",
+                                result.operator_name, comm
+                            ),
+                            format!(
+                                "failed:{}",
+                                e.to_string().chars().take(180).collect::<String>()
+                            ),
+                        );
+                        warn!(
+                            operator = %result.operator_name,
+                            comm = %comm,
+                            error = %e,
+                            "failed to append process allowlist entry from Telegram"
+                        );
+                        tg_reply!(format!(
+                            "❌ Failed to allowlist <code>{comm}</code>: {}",
+                            e.to_string().chars().take(180).collect::<String>()
+                        ));
+                    }
+                }
+            }
+            TelegramTriageAction::AllowIp(ip_raw) => {
+                let ip = ip_raw.trim().to_string();
+                if ip.parse::<std::net::IpAddr>().is_err() {
+                    write_telegram_triage_audit(
+                        state,
+                        &result.incident_id,
+                        &result.operator_name,
+                        "allowlist_add",
+                        Some(ip.clone()),
+                        None,
+                        format!(
+                            "Operator {} attempted to add invalid IP '{}' to allowlist via Telegram",
+                            result.operator_name, ip
+                        ),
+                        "skipped:invalid_ip".to_string(),
+                    );
+                    warn!(
+                        operator = %result.operator_name,
+                        ip = %ip,
+                        "invalid ip in Telegram allowlist callback"
+                    );
+                    tg_reply!(format!("⚠️ Invalid IP for allowlist: <code>{ip}</code>"));
+                    return;
+                }
+                let allowlist_path = Path::new("/etc/innerwarden/allowlist.toml");
+                let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+                let operator = result.operator_name.replace('"', "'");
+                let reason = format!("Allowed via Telegram by {operator} ({ts})");
+                match telegram::append_to_allowlist(allowlist_path, "ips", &ip, &reason) {
+                    Ok(()) => {
+                        write_telegram_triage_audit(
+                            state,
+                            &result.incident_id,
+                            &result.operator_name,
+                            "allowlist_add",
+                            Some(ip.clone()),
+                            None,
+                            format!(
+                                "Operator {} added IP '{}' to allowlist via Telegram",
+                                result.operator_name, ip
+                            ),
+                            format!("allowlist_ip_added:{ip}"),
+                        );
+                        info!(
+                            operator = %result.operator_name,
+                            ip = %ip,
+                            path = %allowlist_path.display(),
+                            "Telegram triage allowlist (ip) applied"
+                        );
+                        tg_reply!(format!(
+                            "✅ Allowed <code>{ip}</code>. Sensor will pick this up in up to 60s."
+                        ));
+                    }
+                    Err(e) => {
+                        write_telegram_triage_audit(
+                            state,
+                            &result.incident_id,
+                            &result.operator_name,
+                            "allowlist_add",
+                            Some(ip.clone()),
+                            None,
+                            format!(
+                                "Operator {} failed to add IP '{}' to allowlist via Telegram",
+                                result.operator_name, ip
+                            ),
+                            format!(
+                                "failed:{}",
+                                e.to_string().chars().take(180).collect::<String>()
+                            ),
+                        );
+                        warn!(
+                            operator = %result.operator_name,
+                            ip = %ip,
+                            error = %e,
+                            "failed to append ip allowlist entry from Telegram"
+                        );
+                        tg_reply!(format!(
+                            "❌ Failed to allowlist <code>{ip}</code>: {}",
+                            e.to_string().chars().take(180).collect::<String>()
+                        ));
+                    }
+                }
+            }
+            TelegramTriageAction::ReportFp(raw_incident_id) => {
+                let incident_id = raw_incident_id.trim();
+                if incident_id.is_empty() {
+                    write_telegram_triage_audit(
+                        state,
+                        &result.incident_id,
+                        &result.operator_name,
+                        "fp_report",
+                        None,
+                        None,
+                        format!(
+                            "Operator {} attempted to report FP with empty incident id",
+                            result.operator_name
+                        ),
+                        "skipped:empty_incident_id".to_string(),
+                    );
+                    tg_reply!("⚠️ Could not report false positive: missing incident id.");
+                    return;
+                }
+                let detector = incident_id.split(':').next().unwrap_or("unknown");
+                telegram::log_false_positive(
+                    data_dir,
+                    incident_id,
+                    detector,
+                    &result.operator_name,
+                );
+                write_telegram_triage_audit(
+                    state,
+                    incident_id,
+                    &result.operator_name,
+                    "fp_report",
+                    None,
+                    None,
+                    format!(
+                        "Operator {} reported incident '{}' as false positive via Telegram",
+                        result.operator_name, incident_id
+                    ),
+                    format!("reported_fp:{detector}"),
+                );
+                info!(
+                    operator = %result.operator_name,
+                    incident_id = %incident_id,
+                    detector = %detector,
+                    "Telegram triage false-positive reported"
+                );
+                tg_reply!("📝 Reported. Thanks for the feedback.");
+            }
         }
         return;
     }
@@ -7473,7 +7758,9 @@ async fn process_firmware_tick(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::io::Write;
+    use std::path::Path;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -7573,6 +7860,220 @@ mod tests {
             entities: vec![innerwarden_core::entities::EntityRef::ip(ip)],
         })
         .unwrap()
+    }
+
+    fn sha256_hex_for_test(data: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(data.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+
+    fn triage_approval(incident_id: &str, operator: &str) -> telegram::ApprovalResult {
+        telegram::ApprovalResult {
+            incident_id: incident_id.to_string(),
+            approved: true,
+            operator_name: operator.to_string(),
+            always: false,
+            chosen_action: String::new(),
+        }
+    }
+
+    fn triage_test_state(data_dir: &Path) -> AgentState {
+        AgentState {
+            skill_registry: skills::SkillRegistry::default_builtin(),
+            blocklist: skills::Blocklist::default(),
+            correlator: correlation::TemporalCorrelator::new(300, 4096),
+            telemetry: telemetry::TelemetryState::default(),
+            telemetry_writer: None,
+            ai_provider: None,
+            decision_writer: Some(decisions::DecisionWriter::new(data_dir).unwrap()),
+            last_narrative_at: None,
+            last_daily_summary_telegram: None,
+            telegram_client: None,
+            pending_confirmations: HashMap::new(),
+            approval_rx: None,
+            telegram_batcher: telegram::TelegramBatcher::new(60),
+            anomaly_engine: neural_lifecycle::AnomalyEngine::new(Default::default()),
+            trust_rules: std::collections::HashSet::new(),
+            crowdsec: None,
+            abuseipdb: None,
+            fail2ban: None,
+            geoip_client: None,
+            slack_client: None,
+            cloudflare_client: None,
+            circuit_breaker_until: None,
+            pending_honeypot_choices: HashMap::new(),
+            ip_reputations: HashMap::new(),
+            lsm_enabled: false,
+            mesh: None,
+            recent_blocks: std::collections::VecDeque::new(),
+            xdp_block_times: HashMap::new(),
+            abuseipdb_report_queue: Vec::new(),
+            narrative_acc: NarrativeAccumulator::default(),
+            narrative_incidents_offset: 0,
+            forensics: forensics::ForensicsCapture::new(data_dir),
+            store: state_store::StateStore::open(data_dir).unwrap(),
+            attacker_profiles: HashMap::new(),
+            last_intel_consolidation_at: None,
+            correlation_engine: correlation_engine::CorrelationEngine::new(),
+            baseline: baseline::BaselineStore::new(),
+            playbook_engine: playbook::PlaybookEngine::new(std::path::Path::new("/nonexistent")),
+            pcap_capture: pcap_capture::PcapCapture::new(data_dir),
+            scoring_engine: scoring::ScoringEngine::new(0.95),
+            last_firmware_incident_at: None,
+            suppressed_incident_ids: std::collections::HashSet::new(),
+            threat_feed: None,
+            last_baseline_anomaly_ts: None,
+            last_autoencoder_anomaly_ts: None,
+            #[cfg(feature = "redis-reader")]
+            redis_reader: None,
+        }
+    }
+
+    #[test]
+    fn parse_telegram_triage_action_routes_allow_proc() {
+        assert_eq!(
+            parse_telegram_triage_action("__allow_proc__:cargo-build"),
+            Some(TelegramTriageAction::AllowProc("cargo-build"))
+        );
+    }
+
+    #[test]
+    fn parse_telegram_triage_action_routes_allow_ip() {
+        assert_eq!(
+            parse_telegram_triage_action("__allow_ip__:1.2.3.4"),
+            Some(TelegramTriageAction::AllowIp("1.2.3.4"))
+        );
+    }
+
+    #[test]
+    fn parse_telegram_triage_action_routes_fp_report() {
+        assert_eq!(
+            parse_telegram_triage_action("__fp__:ssh_bruteforce:1.2.3.4:test"),
+            Some(TelegramTriageAction::ReportFp(
+                "ssh_bruteforce:1.2.3.4:test"
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_telegram_triage_action_ignores_non_triage_ids() {
+        assert_eq!(parse_telegram_triage_action("__status__"), None);
+        assert_eq!(
+            parse_telegram_triage_action("approve:ssh_bruteforce:id"),
+            None
+        );
+    }
+
+    #[test]
+    fn sanitize_allowlist_process_name_removes_dangerous_chars() {
+        assert_eq!(
+            sanitize_allowlist_process_name("  bad\"proc\nname  "),
+            Some("badproc name".to_string())
+        );
+        assert_eq!(sanitize_allowlist_process_name("   "), None);
+    }
+
+    #[tokio::test]
+    async fn telegram_triage_allowlist_skip_paths_are_audited_with_hash_chain() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config::AgentConfig::default();
+        let mut state = triage_test_state(dir.path());
+
+        process_telegram_approval(
+            triage_approval("__allow_proc__:   ", "alice"),
+            dir.path(),
+            &cfg,
+            &mut state,
+        )
+        .await;
+        process_telegram_approval(
+            triage_approval("__allow_ip__:not-an-ip", "alice"),
+            dir.path(),
+            &cfg,
+            &mut state,
+        )
+        .await;
+
+        if let Some(w) = &mut state.decision_writer {
+            w.flush();
+        }
+
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+        let decisions_path = dir.path().join(format!("decisions-{today}.jsonl"));
+        let lines: Vec<String> = std::fs::read_to_string(&decisions_path)
+            .unwrap()
+            .lines()
+            .map(|line| line.to_string())
+            .collect();
+
+        assert_eq!(lines.len(), 2, "expected two triage audit entries");
+
+        let first: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        let second: serde_json::Value = serde_json::from_str(&lines[1]).unwrap();
+
+        assert_eq!(first["action_type"], "allowlist_add");
+        assert_eq!(first["execution_result"], "skipped:empty_process_name");
+        assert_eq!(second["action_type"], "allowlist_add");
+        assert_eq!(second["execution_result"], "skipped:invalid_ip");
+
+        assert!(
+            first.get("prev_hash").is_none(),
+            "first entry should not have prev_hash"
+        );
+        let expected_prev_hash = sha256_hex_for_test(&lines[0]);
+        assert_eq!(
+            second["prev_hash"].as_str(),
+            Some(expected_prev_hash.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn telegram_triage_fp_reports_write_audit_and_fp_log() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config::AgentConfig::default();
+        let mut state = triage_test_state(dir.path());
+        let fp_incident_id = "ssh_bruteforce:1.2.3.4:test";
+
+        process_telegram_approval(
+            triage_approval(&format!("__fp__:{fp_incident_id}"), "alice"),
+            dir.path(),
+            &cfg,
+            &mut state,
+        )
+        .await;
+
+        if let Some(w) = &mut state.decision_writer {
+            w.flush();
+        }
+
+        let today_local = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+        let decisions_path = dir.path().join(format!("decisions-{today_local}.jsonl"));
+        let decision_line = std::fs::read_to_string(&decisions_path)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        let decision: serde_json::Value = serde_json::from_str(&decision_line).unwrap();
+
+        assert_eq!(decision["incident_id"], fp_incident_id);
+        assert_eq!(decision["action_type"], "fp_report");
+        assert_eq!(decision["execution_result"], "reported_fp:ssh_bruteforce");
+        assert_eq!(decision["ai_provider"], "operator:telegram:alice");
+
+        let today_utc = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let fp_path = dir.path().join(format!("fp-reports-{today_utc}.jsonl"));
+        let fp_content = std::fs::read_to_string(&fp_path).unwrap();
+        assert!(fp_content.contains("\"incident_id\":\"ssh_bruteforce:1.2.3.4:test\""));
+        assert!(fp_content.contains("\"detector\":\"ssh_bruteforce\""));
+        assert!(fp_content.contains("\"reporter\":\"alice\""));
     }
 
     // ------------------------------------------------------------------
