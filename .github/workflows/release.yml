@@ -227,7 +227,7 @@ jobs:
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push agent image
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198a989eb079f6 # v7
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           context: docker
           file: docker/Dockerfile.agent
@@ -240,7 +240,7 @@ jobs:
             maiconburn/innerwarden-agent:${{ steps.version.outputs.version }}
 
       - name: Build and push agent-openclaw image
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198a989eb079f6 # v7
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           context: docker
           file: docker/Dockerfile.agent-openclaw
