@@ -358,6 +358,10 @@ struct AgentState {
     suppressed_incident_ids: std::collections::HashSet<String>,
     /// Threat feed client for external intelligence (None when disabled).
     threat_feed: Option<threat_feeds::ThreatFeedClient>,
+    /// Timestamp of last baseline anomaly detection (for score fusion with autoencoder).
+    last_baseline_anomaly_ts: Option<chrono::DateTime<chrono::Utc>>,
+    /// Timestamp of last autoencoder anomaly detection (for score fusion with baseline).
+    last_autoencoder_anomaly_ts: Option<chrono::DateTime<chrono::Utc>>,
     /// Redis stream reader for events (None when redis_url is not configured).
     #[cfg(feature = "redis-reader")]
     redis_reader: Option<redis_reader::RedisStreamReader>,
@@ -436,6 +440,25 @@ fn adaptive_block_ttl_secs(total_blocks: u32) -> i64 {
 
 /// Write the in-memory reputation map to `ip-reputation.json` so the dashboard
 /// (which runs in a separate task) can read it without shared state.
+/// Append a blocked IP to blocked-ips.txt so the sensor can skip events from it.
+/// Uses append mode. Best-effort: errors are logged but not propagated.
+fn append_blocked_ip(data_dir: &Path, ip: &str) {
+    let path = data_dir.join("blocked-ips.txt");
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(mut f) => {
+            use std::io::Write;
+            if let Err(e) = writeln!(f, "{ip}") {
+                warn!("failed to append to blocked-ips.txt: {e}");
+            }
+        }
+        Err(e) => warn!("failed to open blocked-ips.txt for append: {e}"),
+    }
+}
+
 fn persist_ip_reputations(data_dir: &Path, reputations: &HashMap<String, LocalIpReputation>) {
     let path = data_dir.join("ip-reputation.json");
     match serde_json::to_string(reputations) {
@@ -1719,6 +1742,8 @@ async fn main() -> Result<()> {
         last_firmware_incident_at: None,
         suppressed_incident_ids: load_suppressed_ids(&cli.data_dir),
         threat_feed: None, // initialized below if configured
+        last_baseline_anomaly_ts: None,
+        last_autoencoder_anomaly_ts: None,
         #[cfg(feature = "redis-reader")]
         redis_reader: None,
     };
@@ -2988,6 +3013,128 @@ async fn process_incidents(
             continue;
         }
 
+        // Obvious incident gate: skip AI for high-confidence detectors + known attacker IP.
+        // This saves API calls and speeds up response for clear-cut attacks.
+        {
+            let detector = incident_detector(&incident.incident_id);
+            let is_obvious_detector = matches!(
+                detector,
+                "ssh_bruteforce" | "credential_stuffing" | "packet_flood" | "port_scan"
+            );
+            let is_high_or_critical = matches!(
+                incident.severity,
+                innerwarden_core::event::Severity::High
+                    | innerwarden_core::event::Severity::Critical
+            );
+            let primary_ip = incident
+                .entities
+                .iter()
+                .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
+                .map(|e| e.value.as_str());
+            let ip_seen_before = primary_ip.is_some_and(|ip| {
+                // Check if this IP was already blocked or has prior incidents
+                // (total_incidents > 1 because the current incident already incremented it)
+                state.blocklist.contains(ip)
+                    || state
+                        .ip_reputations
+                        .get(ip)
+                        .is_some_and(|r| r.total_incidents > 1)
+            });
+
+            if is_obvious_detector && is_high_or_critical && ip_seen_before && cfg.responder.enabled
+            {
+                if let Some(ip) = primary_ip {
+                    info!(
+                        incident_id = %incident.incident_id,
+                        "skipping AI for obvious incident: {detector} from {ip}"
+                    );
+                    let skill_id = format!("block-ip-{}", cfg.responder.block_backend);
+                    let auto_decision = ai::AiDecision {
+                        action: ai::AiAction::BlockIp {
+                            ip: ip.to_string(),
+                            skill_id,
+                        },
+                        confidence: 0.95,
+                        auto_execute: true,
+                        reason: format!(
+                            "Auto-blocked: obvious {detector} from repeat offender {ip}"
+                        ),
+                        alternatives: vec![],
+                        estimated_threat: "high".to_string(),
+                    };
+                    let (execution_result, cloudflare_pushed) =
+                        execute_decision(&auto_decision, incident, data_dir, cfg, state).await;
+                    // Write decision entry
+                    let entry = decisions::DecisionEntry {
+                        ts: chrono::Utc::now(),
+                        incident_id: incident.incident_id.clone(),
+                        host: incident.host.clone(),
+                        ai_provider: "obvious-gate".to_string(),
+                        action_type: "block_ip".to_string(),
+                        target_ip: Some(ip.to_string()),
+                        target_user: None,
+                        skill_id: None,
+                        confidence: 0.95,
+                        auto_executed: true,
+                        dry_run: cfg.responder.dry_run,
+                        reason: auto_decision.reason.clone(),
+                        estimated_threat: "high".to_string(),
+                        execution_result: execution_result.clone(),
+                        prev_hash: None,
+                    };
+                    if let Some(writer) = &mut state.decision_writer {
+                        if let Err(e) = writer.write(&entry) {
+                            warn!("failed to write obvious-gate decision: {e:#}");
+                        }
+                    }
+                    // Update IP reputation
+                    let rep = state
+                        .ip_reputations
+                        .entry(ip.to_string())
+                        .or_insert_with(LocalIpReputation::new);
+                    rep.record_incident();
+                    if !execution_result.starts_with("skipped") {
+                        rep.record_block();
+                    }
+                    // Set decision cooldown
+                    if let Some(key) = decision_cooldown_key_for_decision(incident, &auto_decision)
+                    {
+                        state.store.set_cooldown(
+                            state_store::CooldownTable::Decision,
+                            &key,
+                            chrono::Utc::now(),
+                        );
+                    }
+                    // Telegram action report
+                    if !execution_result.starts_with("skipped") && cfg.telegram.bot.enabled {
+                        if let Some(ref tg) = state.telegram_client {
+                            let tg = tg.clone();
+                            let title = incident.title.clone();
+                            let host = incident.host.clone();
+                            let ip_owned = ip.to_string();
+                            tokio::spawn(async move {
+                                let _ = tg
+                                    .send_action_report(
+                                        "Blocked (obvious)",
+                                        &ip_owned,
+                                        &title,
+                                        0.95,
+                                        &host,
+                                        false,
+                                        None,
+                                        None,
+                                        cloudflare_pushed,
+                                    )
+                                    .await;
+                            });
+                        }
+                    }
+                    handled += 1;
+                    continue;
+                }
+            }
+        }
+
         // max_ai_calls_per_tick: enforce per-tick AI call budget to protect against
         // API bill spikes during botnet attacks with many unique IPs.
         let max_calls = cfg.ai.max_ai_calls_per_tick;
@@ -3990,7 +4137,11 @@ async fn execute_decision(
             if any_success {
                 state.blocklist.insert(ip.clone());
 
-                // Layer 2.5: Mesh broadcast — share with peer nodes
+                // Feedback loop: write blocked IP to file so the sensor can
+                // skip events from this IP, reducing noise.
+                append_blocked_ip(data_dir, ip);
+
+                // Layer 2.5: Mesh broadcast -- share with peer nodes
                 if let Some(ref mesh) = state.mesh {
                     let detector = incident.incident_id.split(':').next().unwrap_or("unknown");
                     let evidence = decision.reason.as_bytes();
@@ -5812,6 +5963,9 @@ async fn process_narrative_tick(
         let corr_event = correlation_engine::CorrelationEngine::classify_event(ev);
         state.correlation_engine.observe(corr_event);
         let anomalies = state.baseline.observe_event(ev);
+        if !anomalies.is_empty() {
+            state.last_baseline_anomaly_ts = Some(chrono::Utc::now());
+        }
         for anomaly in anomalies {
             info!(
                 anomaly_type = ?anomaly.anomaly_type,
@@ -5824,9 +5978,10 @@ async fn process_narrative_tick(
     // ── Autoencoder anomaly detection ────────────────────────────────────
     // Feed every event to the autoencoder. It builds a sliding window and
     // scores each window against the trained model. Until the model is
-    // trained (maturity > 0), observe() returns None — safe no-op.
+    // trained (maturity > 0), observe() returns None -- safe no-op.
     for ev in &events_entries {
         if let Some((score, weighted)) = state.anomaly_engine.observe(ev) {
+            state.last_autoencoder_anomaly_ts = Some(chrono::Utc::now());
             info!(
                 score = format!("{:.3}", score),
                 weighted = format!("{:.3}", weighted),
@@ -5886,6 +6041,75 @@ async fn process_narrative_tick(
                     let _ = writeln!(f, "{json}");
                 }
             }
+        }
+    }
+
+    // ── Baseline + Autoencoder score fusion ─────────────────────────────
+    // When both baseline and autoencoder flag anomalies within 60 seconds
+    // of each other, emit a combined high-confidence incident.
+    if let (Some(baseline_ts), Some(autoencoder_ts)) = (
+        state.last_baseline_anomaly_ts,
+        state.last_autoencoder_anomaly_ts,
+    ) {
+        let gap = (baseline_ts - autoencoder_ts).num_seconds().unsigned_abs();
+        if gap <= 60 {
+            info!(
+                baseline_ts = %baseline_ts,
+                autoencoder_ts = %autoencoder_ts,
+                gap_secs = gap,
+                "correlated anomaly: baseline + autoencoder convergence"
+            );
+            let host = events_entries
+                .first()
+                .map(|e| e.host.clone())
+                .unwrap_or_default();
+            let now = chrono::Utc::now();
+            let fused_incident = innerwarden_core::incident::Incident {
+                ts: now,
+                host,
+                incident_id: format!(
+                    "correlated_anomaly:baseline_neural:{}",
+                    now.format("%Y-%m-%dT%H:%MZ")
+                ),
+                severity: innerwarden_core::event::Severity::High,
+                title: "Correlated anomaly: baseline + neural model convergence".to_string(),
+                summary: format!(
+                    "Both baseline statistical model and neural autoencoder flagged \
+                     unusual activity within {gap}s of each other. \
+                     High confidence that this is genuine anomalous behavior."
+                ),
+                evidence: serde_json::json!({
+                    "baseline_anomaly_ts": baseline_ts.to_rfc3339(),
+                    "autoencoder_anomaly_ts": autoencoder_ts.to_rfc3339(),
+                    "gap_seconds": gap,
+                    "autoencoder_maturity": state.anomaly_engine.maturity,
+                }),
+                recommended_checks: vec![
+                    "Investigate events in the flagged timeframe".to_string(),
+                    "Cross-reference with rule-based detector incidents".to_string(),
+                    "Check for lateral movement or exfiltration patterns".to_string(),
+                ],
+                tags: vec![
+                    "correlated_anomaly".to_string(),
+                    "baseline".to_string(),
+                    "neural_model".to_string(),
+                ],
+                entities: vec![],
+            };
+            let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&incidents_path)
+            {
+                use std::io::Write;
+                if let Ok(json) = serde_json::to_string(&fused_incident) {
+                    let _ = writeln!(f, "{json}");
+                }
+            }
+            // Reset timestamps to avoid emitting duplicate fused incidents
+            state.last_baseline_anomaly_ts = None;
+            state.last_autoencoder_anomaly_ts = None;
         }
     }
 
@@ -7448,6 +7672,8 @@ mod tests {
             last_firmware_incident_at: None,
             suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,
+            last_baseline_anomaly_ts: None,
+            last_autoencoder_anomaly_ts: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -7591,6 +7817,8 @@ mod tests {
             last_firmware_incident_at: None,
             suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,
+            last_baseline_anomaly_ts: None,
+            last_autoencoder_anomaly_ts: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -7709,6 +7937,8 @@ mod tests {
             last_firmware_incident_at: None,
             suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,
+            last_baseline_anomaly_ts: None,
+            last_autoencoder_anomaly_ts: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -7839,6 +8069,8 @@ mod tests {
             last_firmware_incident_at: None,
             suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,
+            last_baseline_anomaly_ts: None,
+            last_autoencoder_anomaly_ts: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -7946,6 +8178,8 @@ mod tests {
             last_firmware_incident_at: None,
             suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,
+            last_baseline_anomaly_ts: None,
+            last_autoencoder_anomaly_ts: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
@@ -8065,6 +8299,8 @@ mod tests {
             last_firmware_incident_at: None,
             suppressed_incident_ids: std::collections::HashSet::new(),
             threat_feed: None,
+            last_baseline_anomaly_ts: None,
+            last_autoencoder_anomaly_ts: None,
             #[cfg(feature = "redis-reader")]
             redis_reader: None,
         };
