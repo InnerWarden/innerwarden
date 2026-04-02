@@ -122,9 +122,15 @@ impl PacketFloodDetector {
         let now = event.ts;
         let mut incidents = Vec::new();
 
-        // Update connection rate baseline for any network-related event
+        // Update connection rate baseline for any network-related event.
+        // Skip localhost (127.0.0.0/8, ::1) — local dashboard/agent traffic is not DDoS.
         if is_network_event(event) {
             let src_ip = extract_source_ip(event);
+            if let Some(ref ip) = src_ip {
+                if ip.starts_with("127.") || ip == "::1" {
+                    return incidents;
+                }
+            }
             self.update_rate(now, src_ip.as_deref());
         }
 
