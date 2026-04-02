@@ -3536,25 +3536,46 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
         }
     }
 
-    // ── Step 2: Telegram ──────────────────────────────────────────────────
+    // ── Step 2: Notifications ───────────────────────────────────────────
     println!();
     if telegram_ok {
-        println!("  [2/3] Telegram alerts      ✅ configured");
+        println!("  [2/3] Notifications        ✅ Telegram configured");
     } else {
-        println!("  [2/3] Telegram alerts\n");
-        println!("  Get threat alerts on your phone.\n");
-        println!("  How to get a bot token:");
-        println!("    1. Open Telegram and search for @BotFather");
-        println!("    2. Send /newbot and follow the instructions");
-        println!("    3. Copy the token (looks like 123456:ABC-DEF...)\n");
-        match prompt("  Bot token (Enter to skip)") {
-            Ok(t) if !t.is_empty() => {
-                println!("  ✓ Token accepted. One more step: detecting your chat ID...");
-                if let Err(e) = cmd_configure_telegram(cli, Some(&t), None, false) {
-                    println!("  Error: {e:#}");
+        println!("  [2/3] Notifications\n");
+        println!("  How do you want to receive alerts?\n");
+        println!("  1. Telegram    alerts on your phone");
+        println!("  2. Dashboard   web interface only");
+        println!("  3. Both\n");
+        let notif_choice = prompt("  Choose [1/2/3]")?;
+        match notif_choice.trim() {
+            "1" | "3" => {
+                println!();
+                println!("  How to get a Telegram bot token:");
+                println!("    1. Open Telegram and search for @BotFather");
+                println!("    2. Send /newbot and follow the instructions");
+                println!("    3. Copy the token (looks like 123456:ABC-DEF...)\n");
+                match prompt("  Bot token") {
+                    Ok(t) if !t.is_empty() => {
+                        println!(
+                            "  ✓ Token accepted. One more step: detecting your chat ID..."
+                        );
+                        if let Err(e) = cmd_configure_telegram(cli, Some(&t), None, false) {
+                            println!("  Error: {e:#}");
+                        }
+                    }
+                    _ => println!("  Skipped Telegram. You can set it up later: innerwarden configure telegram"),
+                }
+                if notif_choice.trim() == "3" {
+                    println!("  Dashboard is always available at http://localhost:8787");
                 }
             }
-            _ => println!("  Skipped"),
+            "2" => {
+                println!("  ✅ Dashboard only (http://localhost:8787)");
+                println!("  You can add Telegram later: innerwarden configure telegram");
+            }
+            _ => {
+                println!("  ✅ Dashboard only (http://localhost:8787)");
+            }
         }
     }
 
