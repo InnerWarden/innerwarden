@@ -662,8 +662,7 @@ mod tests {
         use base64::Engine;
         use ed25519_dalek::{Signer, SigningKey};
 
-        // Generate a throwaway key pair for testing
-        let signing_key = SigningKey::generate(&mut rand_core::OsRng);
+        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
         let verifying_key = signing_key.verifying_key();
 
         // Temporarily override the public key constant - we can't, so instead
@@ -703,7 +702,7 @@ mod tests {
         use base64::Engine;
         use ed25519_dalek::{Signer, SigningKey};
 
-        let signing_key = SigningKey::generate(&mut rand_core::OsRng);
+        let signing_key = SigningKey::from_bytes(&[9u8; 32]);
         let message = b"original content";
         let signature = signing_key.sign(message);
         let sig_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
