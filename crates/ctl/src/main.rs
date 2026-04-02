@@ -3694,6 +3694,13 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
     println!("  Recommended next steps:");
     println!("  innerwarden doctor      validate everything works");
     println!("  innerwarden harden      security audit + auto-fix");
+    println!();
+    println!("  Using AI coding agents? (Claude Code, Cursor, Aider, etc.)");
+    println!("  innerwarden protect-agent   guard against prompt injection + tool poisoning");
+    println!();
+    println!("  Want to change something?");
+    println!("  innerwarden setup       re-run this wizard");
+    println!("  innerwarden configure   all settings menu");
     println!("  innerwarden help        all available commands");
 
     Ok(())
