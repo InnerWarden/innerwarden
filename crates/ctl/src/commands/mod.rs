@@ -7,3 +7,4 @@ pub(crate) mod notify;
 pub(crate) mod responder;
 pub(crate) mod setup;
 pub(crate) mod status;
+pub(crate) mod watchdog;
