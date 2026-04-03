@@ -35,6 +35,7 @@ mod incident_decision_eval;
 mod incident_enrichment;
 mod incident_flow;
 mod incident_honeypot_router;
+mod incident_honeypot_suggestion;
 mod incident_notifications;
 mod incident_obvious;
 mod incident_post_decision;
@@ -2595,74 +2596,17 @@ async fn process_incidents(
             &mut decision,
         );
 
-        // Honeypot: when AI recommends honeypot with high confidence and auto_execute,
-        // activate it directly and notify the operator after. Only ask for confirmation
-        // when confidence is below threshold or auto_execute is false.
-        if let ai::AiAction::Honeypot { ip } = &decision.action {
-            let should_auto =
-                decision.auto_execute && decision.confidence >= cfg.ai.confidence_threshold;
-            if should_auto {
-                // Auto-execute honeypot - same as operator clicking "Honeypot"
-                info!(
-                    ip = %ip,
-                    confidence = decision.confidence,
-                    "AI auto-activating honeypot (high confidence)"
-                );
-                // Fall through to normal execution below (don't defer to Telegram)
-            } else if let Some(ref tg) = state.telegram_client {
-                let ttl = cfg.telegram.approval_ttl_secs;
-                let tg_clone = tg.clone();
-                let reason = decision.reason.clone();
-                let confidence = decision.confidence;
-                let incident_clone = incident.clone();
-                let ip_clone = ip.clone();
-                match tg_clone
-                    .send_honeypot_suggestion(
-                        &incident_clone,
-                        &ip_clone,
-                        &reason,
-                        confidence,
-                        "honeypot",
-                    )
-                    .await
-                {
-                    Ok(_msg_id) => {
-                        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl as i64);
-                        state.pending_honeypot_choices.insert(
-                            ip_clone.clone(),
-                            PendingHoneypotChoice {
-                                ip: ip_clone.clone(),
-                                incident_id: incident.incident_id.clone(),
-                                incident: incident_clone,
-                                expires_at,
-                            },
-                        );
-                        // Write an audit entry noting the operator was asked
-                        if let Some(writer) = &mut state.decision_writer {
-                            let entry = decisions::build_entry(
-                                &incident.incident_id,
-                                &incident.host,
-                                provider_name,
-                                &decision,
-                                cfg.responder.dry_run,
-                                "pending: operator honeypot choice requested via Telegram",
-                            );
-                            if let Err(e) = writer.write(&entry) {
-                                state.telemetry.observe_error("decision_writer");
-                                warn!("failed to write honeypot-pending decision: {e:#}");
-                            }
-                        }
-                        handled += 1;
-                        continue;
-                    }
-                    Err(e) => {
-                        warn!(
-                            incident_id = %incident.incident_id,
-                            "Telegram honeypot suggestion failed: {e:#} - falling through to auto-execute"
-                        );
-                    }
-                }
-            }
+        if incident_honeypot_suggestion::maybe_defer_honeypot_to_operator(
+            incident,
+            provider_name,
+            &decision,
+            cfg,
+            state,
+        )
+        .await
+        {
+            handled += 1;
+            continue;
         }
 
         // Execute if:
