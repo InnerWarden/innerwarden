@@ -1376,49 +1376,12 @@ fn main() -> Result<()> {
             Some(ConfigureCommand::Responder {
                 enable,
                 ref dry_run,
-            }) => {
-                if !cli.dry_run {
-                    require_sudo(&cli);
-                }
-                if *enable {
-                    config_editor::write_bool(&cli.agent_config, "responder", "enabled", true)?;
-                    println!("  [ok] responder enabled");
-                }
-                if let Some(val) = dry_run {
-                    let dr = val != "false";
-                    config_editor::write_bool(&cli.agent_config, "responder", "dry_run", dr)?;
-                    println!(
-                        "  [ok] dry_run = {dr}{}",
-                        if dr { "" } else { " - LIVE MODE" }
-                    );
-                }
-                systemd::restart_service("innerwarden-agent", false)?;
-                println!("  [ok] innerwarden-agent restarted");
-
-                // Audit log
-                let mut audit = AdminActionEntry {
-                    ts: chrono::Utc::now(),
-                    operator: current_operator(),
-                    source: "cli".to_string(),
-                    action: "configure".to_string(),
-                    target: "responder".to_string(),
-                    parameters: serde_json::json!({
-                        "enable": *enable,
-                        "dry_run": dry_run,
-                    }),
-                    result: if cli.dry_run {
-                        "dry_run".to_string()
-                    } else {
-                        "success".to_string()
-                    },
-                    prev_hash: None,
-                };
-                if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
-                    eprintln!("  [warn] failed to write admin audit: {e:#}");
-                }
-
-                Ok(())
-            }
+            }) => commands::responder::cmd_configure_responder(
+                &cli,
+                *enable,
+                false,
+                dry_run.as_deref().map(|val| val != "false"),
+            ),
             Some(ConfigureCommand::Sensitivity { ref level }) => {
                 if !cli.dry_run {
                     require_sudo(&cli);
@@ -1524,17 +1487,25 @@ fn main() -> Result<()> {
         },
         Command::Integrate { ref command } => match command {
             None => cmd_configure_menu(&cli),
-            Some(IntegrateCommand::Geoip) => cmd_configure_geoip(&cli),
+            Some(IntegrateCommand::Geoip) => commands::integrations::cmd_configure_geoip(&cli),
             Some(IntegrateCommand::Abuseipdb {
                 ref api_key,
                 auto_block_threshold,
-            }) => cmd_configure_abuseipdb(&cli, api_key.as_deref(), *auto_block_threshold),
+            }) => commands::integrations::cmd_configure_abuseipdb(
+                &cli,
+                api_key.as_deref(),
+                *auto_block_threshold,
+            ),
             Some(IntegrateCommand::Cloudflare {
                 ref zone_id,
                 ref api_token,
-            }) => cmd_configure_cloudflare(&cli, zone_id.as_deref(), api_token.as_deref()),
+            }) => commands::integrations::cmd_configure_cloudflare(
+                &cli,
+                zone_id.as_deref(),
+                api_token.as_deref(),
+            ),
             Some(IntegrateCommand::Watchdog { interval }) => {
-                cmd_configure_watchdog(&cli, *interval)
+                commands::integrations::cmd_configure_watchdog(&cli, *interval)
             }
         },
         Command::Mesh { ref command } => match command {
@@ -3673,12 +3644,12 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
         "3" => commands::notify::cmd_configure_slack(cli, None, "high", false),
         "4" => commands::notify::cmd_configure_webhook(cli, None, "high", false),
         "5" => commands::notify::cmd_configure_dashboard(cli, "admin", None),
-        "6" => cmd_configure_abuseipdb(cli, None, None),
-        "7" => cmd_configure_geoip(cli),
+        "6" => commands::integrations::cmd_configure_abuseipdb(cli, None, None),
+        "7" => commands::integrations::cmd_configure_geoip(cli),
         "8" => cmd_configure_fail2ban(cli),
-        "9" => cmd_configure_cloudflare(cli, None, None),
-        "10" => cmd_configure_responder(cli, false, false, None),
-        "11" => cmd_configure_watchdog(cli, 10),
+        "9" => commands::integrations::cmd_configure_cloudflare(cli, None, None),
+        "10" => commands::responder::cmd_configure_responder(cli, false, false, None),
+        "11" => commands::integrations::cmd_configure_watchdog(cli, 10),
         "q" | "Q" | "" => {
             println!(
                 "Tip: run 'innerwarden configure <name>' to jump directly to any integration."
@@ -3690,144 +3661,6 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
             Ok(())
         }
     }
-}
-
-fn cmd_configure_responder(
-    cli: &Cli,
-    enable: bool,
-    disable: bool,
-    dry_run_flag: Option<bool>,
-) -> Result<()> {
-    if !cli.dry_run {
-        require_sudo(cli);
-    }
-    if !enable && !disable && dry_run_flag.is_none() {
-        return cmd_configure_responder_interactive(cli);
-    }
-
-    if enable || disable {
-        let value = enable;
-
-        if enable && dry_run_flag == Some(false) && !cli.dry_run {
-            println!("  WARNING: This will enable LIVE execution of security responses.");
-            println!("  InnerWarden will run commands like 'ufw deny from <IP>' automatically.");
-            println!();
-            print!("  Type 'yes' to confirm: ");
-            std::io::stdout().flush()?;
-            let mut ans = String::new();
-            std::io::stdin().read_line(&mut ans)?;
-            if ans.trim() != "yes" {
-                println!("Aborted.");
-                return Ok(());
-            }
-        }
-
-        if cli.dry_run {
-            println!(
-                "  [dry-run] would set [responder] enabled={value} in {}",
-                cli.agent_config.display()
-            );
-        } else {
-            config_editor::write_bool(&cli.agent_config, "responder", "enabled", value)?;
-            println!("  [ok] responder.enabled = {value}");
-        }
-    }
-
-    if let Some(dr) = dry_run_flag {
-        if cli.dry_run {
-            println!(
-                "  [dry-run] would set [responder] dry_run={dr} in {}",
-                cli.agent_config.display()
-            );
-        } else {
-            config_editor::write_bool(&cli.agent_config, "responder", "dry_run", dr)?;
-            println!("  [ok] responder.dry_run = {dr}");
-        }
-    }
-
-    restart_agent(cli);
-    println!();
-    if enable && dry_run_flag == Some(false) {
-        println!("Responder is LIVE. Decisions will execute automatically.");
-    } else if disable {
-        println!("Responder disabled. System observes only.");
-    } else {
-        println!("Responder updated. Run 'innerwarden status' to confirm.");
-    }
-    Ok(())
-}
-
-fn cmd_configure_responder_interactive(cli: &Cli) -> Result<()> {
-    println!("InnerWarden - Responder setup\n");
-    println!("The responder controls what InnerWarden does when it detects an attack.\n");
-    println!("  1. Observe only (safe)   - logs everything, takes no action");
-    println!("  2. Dry-run mode          - shows what it WOULD do, but doesn't execute");
-    println!("  3. Live (auto-block)     - automatically blocks IPs and suspends users\n");
-
-    let choice = prompt("Choose [1/2/3]")?;
-
-    match choice.trim() {
-        "1" => {
-            if !cli.dry_run {
-                config_editor::write_bool(&cli.agent_config, "responder", "enabled", false)?;
-                println!("  [ok] responder disabled - observe only");
-            } else {
-                println!("  [dry-run] would disable responder");
-            }
-            restart_agent(cli);
-            println!("\nSystem is in observe mode. No automatic actions will be taken.");
-        }
-        "2" => {
-            if !cli.dry_run {
-                config_editor::write_bool(&cli.agent_config, "responder", "enabled", true)?;
-                config_editor::write_bool(&cli.agent_config, "responder", "dry_run", true)?;
-                println!("  [ok] responder.enabled = true, dry_run = true");
-            } else {
-                println!("  [dry-run] would set responder.enabled=true, dry_run=true");
-            }
-            restart_agent(cli);
-            println!(
-                "\nDry-run mode enabled. InnerWarden will log what it would do but take no action."
-            );
-            println!("Check decisions-*.jsonl to review. When ready, run:");
-            println!("  innerwarden configure responder --enable --dry-run false");
-        }
-        "3" => {
-            println!();
-            println!("  WARNING: In live mode, InnerWarden will automatically:");
-            println!("    - Block IPs with: sudo ufw deny from <IP>  (or iptables/nftables)");
-            println!("    - Suspend users:  drop-in in /etc/sudoers.d/");
-            println!();
-            println!("  Make sure block-ip is enabled: innerwarden enable block-ip");
-            println!();
-            print!("  Type 'yes' to enable live execution: ");
-            std::io::stdout().flush()?;
-            let mut ans = String::new();
-            std::io::stdin().read_line(&mut ans)?;
-            if ans.trim() != "yes" {
-                println!("Aborted.");
-                return Ok(());
-            }
-            if !cli.dry_run {
-                config_editor::write_bool(&cli.agent_config, "responder", "enabled", true)?;
-                config_editor::write_bool(&cli.agent_config, "responder", "dry_run", false)?;
-                println!("  [ok] responder is LIVE");
-            } else {
-                println!("  [dry-run] would set responder.enabled=true, dry_run=false");
-            }
-            restart_agent(cli);
-            println!(
-                "\nResponder is LIVE. InnerWarden will act automatically on high-confidence threats."
-            );
-            println!(
-                "Monitor decisions: tail -f /var/lib/innerwarden/decisions-$(date +%Y-%m-%d).jsonl"
-            );
-        }
-        _ => {
-            anyhow::bail!("invalid choice - enter 1, 2, or 3");
-        }
-    }
-    Ok(())
 }
 
 fn prompt(label: &str) -> Result<String> {
@@ -3844,304 +3677,6 @@ fn prompt_with_hint(label: &str, hint: &str) -> Result<String> {
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
     Ok(input.trim().to_string())
-}
-
-fn which_bin(name: &str) -> Option<PathBuf> {
-    std::env::var("PATH").ok()?.split(':').find_map(|dir| {
-        let p = PathBuf::from(dir).join(name);
-        if p.exists() {
-            Some(p)
-        } else {
-            None
-        }
-    })
-}
-
-// ---------------------------------------------------------------------------
-// innerwarden configure abuseipdb
-// ---------------------------------------------------------------------------
-
-fn cmd_configure_abuseipdb(
-    cli: &Cli,
-    api_key_arg: Option<&str>,
-    auto_block_arg: Option<u8>,
-) -> Result<()> {
-    if !cli.dry_run {
-        require_sudo(cli);
-    }
-    let env_file = cli
-        .agent_config
-        .parent()
-        .map(|p| p.join("agent.env"))
-        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
-
-    let api_key = if let Some(k) = api_key_arg {
-        k.to_string()
-    } else {
-        println!("InnerWarden - AbuseIPDB setup\n");
-        println!("AbuseIPDB checks the reputation of every attacking IP before AI analysis.");
-        println!("The reputation score (0–100) is injected into the AI prompt so decisions");
-        println!("are more confident. IPs with known bad reputation can be blocked instantly");
-        println!("without spending an AI token.\n");
-        println!("Free tier: 1,000 lookups/day - enough for most servers.\n");
-        println!("  1. Go to https://www.abuseipdb.com/register and create a free account");
-        println!("  2. Once logged in, go to https://www.abuseipdb.com/account/api");
-        println!("  3. Create a new API key and paste it below\n");
-        let k = prompt("API key")?;
-        if k.is_empty() {
-            anyhow::bail!("API key cannot be empty");
-        }
-        k
-    };
-
-    if api_key.len() < 10 {
-        anyhow::bail!("API key looks too short - copy the full key from abuseipdb.com");
-    }
-
-    // Determine auto-block threshold - wizard or flag
-    let threshold: u8 = if let Some(t) = auto_block_arg {
-        t
-    } else if api_key_arg.is_none() {
-        // Interactive wizard: ask about auto-block
-        println!("\nAuto-block threshold (0–100, 0 = disabled)");
-        println!("  IPs with AbuseIPDB confidence score >= threshold are blocked immediately,");
-        println!("  without calling AI. Useful during botnets and DDoS.\n");
-        println!("  Recommended: 80  (blocks known botnet IPs, rarely a false positive)");
-        println!("  Conservative: 0  (AbuseIPDB enriches AI context only, no auto-block)\n");
-        let raw = prompt("Auto-block threshold [80]")?;
-        if raw.is_empty() {
-            80
-        } else {
-            raw.parse::<u8>().unwrap_or_else(|_| {
-                println!("  Invalid value - using 80");
-                80
-            })
-        }
-    } else {
-        // --api-key provided without --auto-block-threshold: default 80
-        80
-    };
-
-    if cli.dry_run {
-        println!(
-            "\n  [dry-run] would write ABUSEIPDB_API_KEY=... to {}",
-            env_file.display()
-        );
-        println!(
-            "  [dry-run] would set [abuseipdb] enabled=true, auto_block_threshold={threshold} in {}",
-            cli.agent_config.display()
-        );
-        return Ok(());
-    }
-
-    write_env_key(&env_file, "ABUSEIPDB_API_KEY", &api_key)?;
-    println!("\n  [ok] API key saved to {}", env_file.display());
-
-    config_editor::write_bool(&cli.agent_config, "abuseipdb", "enabled", true)?;
-    config_editor::write_int(
-        &cli.agent_config,
-        "abuseipdb",
-        "auto_block_threshold",
-        threshold as i64,
-    )?;
-    if threshold > 0 {
-        println!("  [ok] agent.toml: abuseipdb.enabled = true, auto_block_threshold = {threshold}");
-    } else {
-        println!("  [ok] agent.toml: abuseipdb.enabled = true (auto-block disabled)");
-    }
-
-    restart_agent(cli);
-    println!();
-    if threshold > 0 {
-        println!("AbuseIPDB enabled.");
-        println!("  → IPs with score >= {threshold} are blocked instantly (no AI call needed).");
-        println!("  → All other IPs get reputation context injected into AI analysis.");
-    } else {
-        println!("AbuseIPDB enabled. IP reputation will appear in AI analysis.");
-        println!("  Tip: set auto_block_threshold = 80 to auto-block known botnet IPs.");
-    }
-    // Audit log
-    let mut audit = AdminActionEntry {
-        ts: chrono::Utc::now(),
-        operator: current_operator(),
-        source: "cli".to_string(),
-        action: "configure".to_string(),
-        target: "abuseipdb".to_string(),
-        parameters: serde_json::json!({ "auto_block_threshold": threshold }),
-        result: "success".to_string(),
-        prev_hash: None,
-    };
-    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
-        eprintln!("  [warn] failed to write admin audit: {e:#}");
-    }
-
-    println!("\nRun 'innerwarden doctor' to validate.");
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// innerwarden configure geoip
-// ---------------------------------------------------------------------------
-
-fn cmd_configure_geoip(cli: &Cli) -> Result<()> {
-    if !cli.dry_run {
-        require_sudo(cli);
-    }
-    if cli.dry_run {
-        println!(
-            "[dry-run] would set [geoip] enabled=true in {}",
-            cli.agent_config.display()
-        );
-        return Ok(());
-    }
-
-    println!("InnerWarden - GeoIP setup\n");
-    println!("GeoIP adds country and ISP context to AI analysis. No API key needed.");
-    println!("Uses ip-api.com (free, 45 lookups/min).\n");
-
-    // Quick reachability check
-    print!("  Checking ip-api.com connectivity... ");
-    std::io::stdout().flush()?;
-    match ureq::get("http://ip-api.com/json/8.8.8.8?fields=status")
-        .config()
-        .timeout_global(Some(std::time::Duration::from_secs(5)))
-        .build()
-        .call()
-    {
-        Ok(_) => println!("ok"),
-        Err(_) => println!("unreachable (will enable anyway - retried at runtime)"),
-    }
-
-    config_editor::write_bool(&cli.agent_config, "geoip", "enabled", true)?;
-    println!("  [ok] agent.toml: geoip.enabled = true");
-
-    restart_agent(cli);
-
-    // Audit log
-    let mut audit = AdminActionEntry {
-        ts: chrono::Utc::now(),
-        operator: current_operator(),
-        source: "cli".to_string(),
-        action: "configure".to_string(),
-        target: "geoip".to_string(),
-        parameters: serde_json::json!({}),
-        result: "success".to_string(),
-        prev_hash: None,
-    };
-    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
-        eprintln!("  [warn] failed to write admin audit: {e:#}");
-    }
-
-    println!();
-    println!("GeoIP enabled. Country and ISP will appear in AI decisions.");
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// innerwarden integrate cloudflare
-// ---------------------------------------------------------------------------
-
-fn cmd_configure_cloudflare(
-    cli: &Cli,
-    zone_id_arg: Option<&str>,
-    api_token_arg: Option<&str>,
-) -> Result<()> {
-    if !cli.dry_run {
-        require_sudo(cli);
-    }
-    let env_file = cli
-        .agent_config
-        .parent()
-        .map(|p| p.join("agent.env"))
-        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
-
-    let (zone_id, api_token) = match (zone_id_arg, api_token_arg) {
-        (Some(z), Some(t)) => (z.to_string(), t.to_string()),
-        (zone_id_arg, api_token_arg) => {
-            println!("InnerWarden - Cloudflare integration setup\n");
-            println!("When InnerWarden blocks an IP, it will also push that block to Cloudflare's");
-            println!(
-                "edge via IP Access Rules - stopping the attacker before they reach your server.\n"
-            );
-            println!("You need:");
-            println!("  1. Zone ID   - right panel of your domain at dash.cloudflare.com");
-            println!("  2. API token - dash.cloudflare.com/profile/api-tokens");
-            println!("     Use template 'Edit zone DNS' or custom with Zone > Firewall Services > Edit\n");
-
-            let zid = if let Some(z) = zone_id_arg {
-                z.to_string()
-            } else {
-                let z = prompt("Zone ID")?;
-                if z.is_empty() {
-                    anyhow::bail!("Zone ID cannot be empty");
-                }
-                z
-            };
-
-            let tok = if let Some(t) = api_token_arg {
-                t.to_string()
-            } else {
-                let t = prompt("API token")?;
-                if t.is_empty() {
-                    anyhow::bail!("API token cannot be empty");
-                }
-                t
-            };
-
-            (zid, tok)
-        }
-    };
-
-    if zone_id.len() < 10 {
-        anyhow::bail!("Zone ID looks too short - copy it from the Cloudflare dashboard");
-    }
-    if api_token.len() < 10 {
-        anyhow::bail!("API token looks too short - copy the full token from Cloudflare");
-    }
-
-    if cli.dry_run {
-        println!(
-            "\n  [dry-run] would write CLOUDFLARE_API_TOKEN=... to {}",
-            env_file.display()
-        );
-        println!(
-            "  [dry-run] would set [cloudflare] enabled=true, zone_id={zone_id} in {}",
-            cli.agent_config.display()
-        );
-        return Ok(());
-    }
-
-    write_env_key(&env_file, "CLOUDFLARE_API_TOKEN", &api_token)?;
-    println!("\n  [ok] API token saved to {}", env_file.display());
-
-    config_editor::write_bool(&cli.agent_config, "cloudflare", "enabled", true)?;
-    config_editor::write_str(&cli.agent_config, "cloudflare", "zone_id", &zone_id)?;
-    config_editor::write_bool(&cli.agent_config, "cloudflare", "auto_push_blocks", true)?;
-    println!("  [ok] agent.toml: cloudflare.enabled = true, zone_id set, auto_push_blocks = true");
-
-    restart_agent(cli);
-
-    // Audit log
-    let mut audit = AdminActionEntry {
-        ts: chrono::Utc::now(),
-        operator: current_operator(),
-        source: "cli".to_string(),
-        action: "configure".to_string(),
-        target: "cloudflare".to_string(),
-        parameters: serde_json::json!({ "zone_id": zone_id }),
-        result: "success".to_string(),
-        prev_hash: None,
-    };
-    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
-        eprintln!("  [warn] failed to write admin audit: {e:#}");
-    }
-
-    println!();
-    println!("Cloudflare integration enabled.");
-    println!("  → Every blocked IP will be pushed to Cloudflare edge IP Access Rules.");
-    println!("  → Attackers are stopped at the CDN before reaching your server.");
-    println!("\nRun 'innerwarden doctor' to validate.");
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -4204,107 +3739,6 @@ fn cmd_configure_fail2ban(cli: &Cli) -> Result<()> {
     println!();
     println!("Fail2ban integration enabled.");
     println!("IPs banned by fail2ban will automatically be enforced via your block skill.");
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// innerwarden configure watchdog
-// ---------------------------------------------------------------------------
-
-fn cmd_configure_watchdog(cli: &Cli, interval_mins: u64) -> Result<()> {
-    if std::env::consts::OS == "macos" {
-        println!("On macOS, use a launchd plist instead of cron.");
-        println!(
-            "Create /Library/LaunchDaemons/com.innerwarden.watchdog.plist with an interval of {}s.",
-            interval_mins * 60
-        );
-        println!("Or run: innerwarden watchdog --notify (manually, or via a scheduled job).");
-        return Ok(());
-    }
-
-    // Build cron line
-    let bin = which_bin("innerwarden")
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "/usr/local/bin/innerwarden".to_string());
-    let cron_line = format!("*/{interval_mins} * * * * {bin} watchdog --notify");
-
-    if cli.dry_run {
-        println!("[dry-run] would add to crontab:");
-        println!("  {cron_line}");
-        return Ok(());
-    }
-
-    // Read current crontab
-    let current = std::process::Command::new("crontab")
-        .arg("-l")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
-
-    // Check if already installed
-    if current.contains("innerwarden watchdog") {
-        println!("Watchdog cron is already installed:");
-        for line in current
-            .lines()
-            .filter(|l| l.contains("innerwarden watchdog"))
-        {
-            println!("  {line}");
-        }
-        println!();
-        println!("To update the interval, remove it first with 'crontab -e' and re-run.");
-        return Ok(());
-    }
-
-    // Append new line and write back
-    let new_crontab = if current.trim().is_empty() {
-        format!("{cron_line}\n")
-    } else {
-        let trimmed = current.trim_end();
-        format!("{trimmed}\n{cron_line}\n")
-    };
-
-    let mut child = std::process::Command::new("crontab")
-        .arg("-")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .context("failed to run crontab - is it installed?")?;
-    if let Some(stdin) = child.stdin.take() {
-        use std::io::Write;
-        let mut stdin = stdin;
-        stdin.write_all(new_crontab.as_bytes())?;
-    }
-    let status = child.wait()?;
-    if !status.success() {
-        anyhow::bail!("crontab returned non-zero exit code");
-    }
-
-    println!("  [ok] cron entry added");
-    println!();
-    println!("Watchdog configured - checks every {interval_mins} minute(s).");
-    println!("If the agent stops responding, you'll get a Telegram alert.");
-    println!();
-    println!("Cron entry:");
-    println!("  {cron_line}");
-    println!();
-    println!("To remove:  crontab -e  (delete the innerwarden watchdog line)");
-
-    // Audit log
-    let mut audit = AdminActionEntry {
-        ts: chrono::Utc::now(),
-        operator: current_operator(),
-        source: "cli".to_string(),
-        action: "configure".to_string(),
-        target: "watchdog".to_string(),
-        parameters: serde_json::json!({ "interval_mins": interval_mins }),
-        result: "success".to_string(),
-        prev_hash: None,
-    };
-    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
-        eprintln!("  [warn] failed to write admin audit: {e:#}");
-    }
-
     Ok(())
 }
 
