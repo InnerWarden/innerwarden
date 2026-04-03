@@ -107,7 +107,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 
 3. Escopo funcional ja removido do `main.rs`
 - setup
-- AI/configuracao de provider
+- AI/configuracao de provider + `ai install` (Ollama cloud)
 - notify, incluindo `web-push`
 - responder
 - integrations
@@ -124,8 +124,8 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 
 ### Estado atual
 
-- `crates/ctl/src/main.rs` esta em `2952` linhas
-- Ultimo corte aplicado: extracao de `navigator` para `commands/status.rs`
+- `crates/ctl/src/main.rs` esta em `2871` linhas
+- Ultimo corte aplicado: extracao de `cmd_ai_install` para `commands/ai.rs`
 - Todos os cortes foram validados com:
   - `cargo fmt --all`
   - `cargo check -p innerwarden-ctl`

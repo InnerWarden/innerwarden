@@ -3,9 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::{
-    cmd_ai_install, config_editor, prompt, require_sudo, restart_agent, write_env_key, Cli,
-};
+use crate::{config_editor, prompt, require_sudo, restart_agent, systemd, write_env_key, Cli};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct WizardProvider {
@@ -334,6 +332,90 @@ pub(crate) fn cmd_configure_ai_interactive(cli: &Cli) -> Result<()> {
         println!("Skipped. Run later:  innerwarden configure ai <provider> --key <key>");
         Ok(())
     }
+}
+
+pub(crate) fn cmd_ai_install(
+    cli: &Cli,
+    model: &str,
+    api_key_arg: Option<&str>,
+    yes: bool,
+) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+    let is_macos = std::env::consts::OS == "macos";
+
+    // Resolve API key: --api-key flag > OLLAMA_API_KEY env var > interactive prompt
+    let api_key = if let Some(k) = api_key_arg {
+        k.to_string()
+    } else if let Ok(k) = std::env::var("OLLAMA_API_KEY") {
+        if !k.is_empty() {
+            k
+        } else {
+            prompt_ollama_api_key()?
+        }
+    } else {
+        prompt_ollama_api_key()?
+    };
+
+    println!("InnerWarden AI - Ollama cloud setup");
+    println!();
+    println!("  Provider: Ollama cloud (https://api.ollama.com)");
+    println!("  Model:    {model}");
+    println!("  API key:  {}...", &api_key[..api_key.len().min(12)]);
+    println!();
+
+    if !yes {
+        print!("Configure innerwarden-agent with these settings? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let trimmed = input.trim().to_lowercase();
+        if !trimmed.is_empty() && trimmed != "y" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    // Configure agent.toml and restart
+    println!("[1/2] Updating innerwarden-agent config...");
+    if cli.dry_run {
+        println!(
+            "  [dry-run] would set [ai] enabled=true provider=ollama model={model} base_url=https://api.ollama.com api_key=<redacted>"
+        );
+    } else {
+        config_editor::write_bool(&cli.agent_config, "ai", "enabled", true)?;
+        config_editor::write_str(&cli.agent_config, "ai", "provider", "ollama")?;
+        config_editor::write_str(&cli.agent_config, "ai", "model", model)?;
+        config_editor::write_str(
+            &cli.agent_config,
+            "ai",
+            "base_url",
+            "https://api.ollama.com",
+        )?;
+        config_editor::write_str(&cli.agent_config, "ai", "api_key", &api_key)?;
+        println!("  [ok] agent.toml updated");
+    }
+
+    println!("[2/2] Restarting innerwarden-agent...");
+    if cli.dry_run {
+        println!("  [dry-run] would restart innerwarden-agent");
+    } else {
+        if is_macos {
+            systemd::restart_launchd("com.innerwarden.agent", false)?;
+        } else {
+            systemd::restart_service("innerwarden-agent", false)?;
+        }
+        println!("  [ok] innerwarden-agent restarted");
+    }
+
+    println!();
+    println!("Done. Ollama cloud AI is active.");
+    println!("Model:   {model}");
+    println!("Tier:    Free (check https://ollama.com/pricing for limits)");
+    println!();
+    println!("Run 'innerwarden doctor' to validate the connection.");
+    Ok(())
 }
 
 pub(crate) fn cmd_configure_ai(
