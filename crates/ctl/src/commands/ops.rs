@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::{
-    append_admin_action, commands, config_editor, current_operator, epoch_secs_to_date,
-    load_env_file, make_opts, require_sudo, resolve_data_dir, restart_agent, systemd,
-    AdminActionEntry, CapabilityRegistry, Cli,
+    append_admin_action, commands, config_editor, count_jsonl_lines, current_operator,
+    epoch_secs_to_date, load_env_file, make_opts, require_sudo, resolve_data_dir, restart_agent,
+    systemd, today_date_string, AdminActionEntry, CapabilityRegistry, Cli,
 };
 
 pub(crate) fn cmd_configure_menu(cli: &Cli) -> Result<()> {
@@ -1981,5 +1981,199 @@ pub(crate) fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()>
         }
         std::process::exit(1);
     }
+    Ok(())
+}
+
+pub(crate) fn cmd_pipeline_test(cli: &Cli, wait_secs: u64, data_dir: &Path) -> Result<()> {
+    let effective_dir = resolve_data_dir(cli, data_dir);
+    let today = today_date_string();
+    let incidents_path = effective_dir.join(format!("incidents-{today}.jsonl"));
+    let decisions_path = effective_dir.join(format!("decisions-{today}.jsonl"));
+
+    // Count existing decisions to detect new ones
+    let baseline = count_jsonl_lines(&decisions_path);
+
+    // Use RFC 5737 documentation IP - safe, never routable
+    let test_ip = "198.51.100.123";
+    let now_iso = {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let s = secs % 60;
+        let m = (secs / 60) % 60;
+        let h = (secs / 3600) % 24;
+        let days_since_epoch = secs / 86400;
+        // Compute date from days
+        let (y, mo, d) = {
+            let mut y = 1970i64;
+            let mut rem = days_since_epoch as i64;
+            loop {
+                let ydays = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+                    366
+                } else {
+                    365
+                };
+                if rem < ydays {
+                    break;
+                }
+                rem -= ydays;
+                y += 1;
+            }
+            let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+            let mdays = [
+                31,
+                if leap { 29 } else { 28 },
+                31,
+                30,
+                31,
+                30,
+                31,
+                31,
+                30,
+                31,
+                30,
+                31,
+            ];
+            let mut mo = 0usize;
+            while mo < 12 && rem >= mdays[mo] {
+                rem -= mdays[mo];
+                mo += 1;
+            }
+            (y, mo + 1, rem + 1)
+        };
+        format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+    };
+    let marker = format!("innerwarden-test-{}", std::process::id());
+
+    let hostname = std::process::Command::new("hostname")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let incident = serde_json::json!({
+        "ts": now_iso,
+        "host": hostname,
+        "incident_id": format!("ssh_bruteforce:{test_ip}:{marker}"),
+        "severity": "high",
+        "title": format!("Possible SSH brute force from {test_ip}"),
+        "summary": format!("12 failed SSH login attempts from {test_ip} in the last 30 seconds (pipeline test)"),
+        "evidence": [{
+            "count": 12,
+            "ip": test_ip,
+            "kind": "ssh.login_failed",
+            "window_seconds": 30
+        }],
+        "recommended_checks": [
+            format!("This is a pipeline test using RFC 5737 documentation IP {test_ip}"),
+            "No real threat - safe to ignore"
+        ],
+        "tags": ["auth", "ssh", "bruteforce", "pipeline-test"],
+        "entities": [{
+            "type": "ip",
+            "value": test_ip
+        }]
+    });
+
+    println!("InnerWarden Pipeline Test");
+    println!("{}\n", "─".repeat(50));
+
+    // Step 1: Write test incident
+    println!("  [1/4] Writing test incident...");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&incidents_path)?;
+    writeln!(file, "{}", incident)?;
+    println!("        Title: Possible SSH brute force from {test_ip}");
+    println!("        Severity: HIGH");
+    println!("        SSH brute-force from {test_ip} (documentation IP, safe)");
+    println!("        Written to {}\n", incidents_path.display());
+
+    // Step 2: Check agent is running
+    println!("  [2/4] Checking agent status...");
+    let agent_running = std::process::Command::new("pgrep")
+        .args(["-f", "innerwarden-agent"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !agent_running {
+        println!("        Agent process not detected.");
+        println!("        The test incident was written but nobody is reading it.");
+        println!("        Start the agent: sudo systemctl start innerwarden-agent\n");
+        println!("  Result: PARTIAL - incident written, agent not running");
+        return Ok(());
+    }
+    println!("        Agent is running.\n");
+
+    // Step 3: Wait for agent to process
+    println!("  [3/4] Waiting up to {wait_secs}s for agent to process...");
+    let start = std::time::Instant::now();
+    let mut found = false;
+    while start.elapsed().as_secs() < wait_secs {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let current = count_jsonl_lines(&decisions_path);
+        if current > baseline {
+            // Check if the new decision references our test
+            if let Ok(content) = std::fs::read_to_string(&decisions_path) {
+                if content.contains(&marker) || content.contains(test_ip) {
+                    found = true;
+                    break;
+                }
+            }
+            // Even if marker not found, new decisions appeared
+            if current > baseline {
+                found = true;
+                break;
+            }
+        }
+        print!(".");
+        std::io::stdout().flush().ok();
+    }
+    println!();
+
+    // Step 4: Report results
+    println!("\n  [4/4] Results:");
+    if found {
+        println!("        Pipeline is working.");
+        println!("        Incident was detected, processed, and a decision was logged.");
+        // Show the latest decision
+        if let Ok(content) = std::fs::read_to_string(&decisions_path) {
+            if let Some(last_line) = content.lines().rev().find(|l| l.contains(test_ip)) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(last_line) {
+                    let action = val
+                        .get("action_type")
+                        .and_then(|a| a.as_str())
+                        .or_else(|| val.get("action").and_then(|a| a.as_str()))
+                        .unwrap_or("?");
+                    let conf = val
+                        .get("confidence")
+                        .and_then(|c| c.as_f64())
+                        .unwrap_or(0.0);
+                    let dry = val.get("dry_run").and_then(|d| d.as_bool()).unwrap_or(true);
+                    let reason = val.get("reason").and_then(|r| r.as_str()).unwrap_or("");
+                    println!("\n        Action: {action}");
+                    println!("        Confidence: {:.0}%", conf * 100.0);
+                    println!("        Dry-run: {dry}");
+                    if !reason.is_empty() {
+                        println!("        Reason: {reason}");
+                    }
+                    if dry {
+                        println!("        (safe - no real firewall changes)");
+                    }
+                }
+            }
+        }
+        println!("\n  Result: PASS");
+    } else {
+        println!("        No decision appeared within {wait_secs} seconds.");
+        println!("        Possible causes:");
+        println!("          - Agent is running but AI provider is not configured");
+        println!("          - Agent hasn't reached this incident in its read cycle");
+        println!("          - Try again with --wait 30");
+        println!("\n  Result: TIMEOUT - check `innerwarden doctor` for diagnostics");
+    }
+
     Ok(())
 }

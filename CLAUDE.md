@@ -118,11 +118,12 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 - response: `block`, `unblock`, `allowlist`, `suppress`
 - history/data: `incidents`, `incidents --live`, `export`, `tail`, `decisions`, `entity`, `gdpr export`, `gdpr erase`
 - ops/config: `configure menu`, `configure fail2ban`, `configure 2fa`, `tune`, `doctor`
+- ops/runtime: `test` (pipeline smoke test)
 
 ### Estado atual
 
-- `crates/ctl/src/main.rs` esta em `3447` linhas
-- Ultimo corte aplicado: extracao de `cmd_tune` e `cmd_doctor` para `commands/ops.rs`
+- `crates/ctl/src/main.rs` esta em `3254` linhas
+- Ultimo corte aplicado: extracao de `cmd_tune`, `cmd_doctor` e `cmd_pipeline_test` para `commands/ops.rs`
 - Todos os cortes foram validados com:
   - `cargo fmt --all`
   - `cargo check -p innerwarden-ctl`
