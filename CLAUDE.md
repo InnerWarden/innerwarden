@@ -117,12 +117,12 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 - watchdog
 - response: `block`, `unblock`, `allowlist`, `suppress`
 - history/data: `incidents`, `incidents --live`, `export`, `tail`, `decisions`, `entity`, `gdpr export`, `gdpr erase`
-- ops/config (parcial): `configure menu`, `configure fail2ban`, `configure 2fa`
+- ops/config: `configure menu`, `configure fail2ban`, `configure 2fa`, `tune`, `doctor`
 
 ### Estado atual
 
-- `crates/ctl/src/main.rs` esta em `4997` linhas
-- O branch esta limpo e a PR esta atualizada
+- `crates/ctl/src/main.rs` esta em `3447` linhas
+- Ultimo corte aplicado: extracao de `cmd_tune` e `cmd_doctor` para `commands/ops.rs`
 - Todos os cortes foram validados com:
   - `cargo fmt --all`
   - `cargo check -p innerwarden-ctl`
@@ -130,13 +130,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 
 ### Ordem recomendada para continuar
 
-1. Extrair `ops/config`
-- avaliar modulo proprio para:
-  - `cmd_tune`
-  - `cmd_doctor`
-- motivo: esse bloco ainda mistura onboarding, operacao e manutencao
-
-2. Consolidar helpers compartilhados
+1. Consolidar helpers compartilhados
 - revisar o que ainda faz sentido ficar no root:
   - `require_sudo`
   - `resolve_data_dir`
@@ -146,7 +140,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - `hostname`
 - mover apenas quando a fronteira estiver clara; nao forcar acoplamento artificial
 
-3. Depois do `ctl`
+2. Depois do `ctl`
 - iniciar a mesma estrategia no crate `agent`
 - candidatos naturais:
   - `dashboard.rs`
