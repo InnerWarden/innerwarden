@@ -66,7 +66,9 @@ use clap::Parser;
 use tracing::{debug, info, warn};
 
 use crate::agent_context::{build_agent_context, guardian_mode, incident_detector};
-use crate::bot_commands::{capabilities_keyboard, format_capabilities, run_innerwarden_cli};
+use crate::bot_commands::{
+    capabilities_keyboard, format_capabilities, probe_and_suggest, run_innerwarden_cli,
+};
 use crate::bot_helpers::{
     format_time_ago, parse_telegram_triage_action, sanitize_allowlist_process_name,
     write_telegram_triage_audit, TelegramTriageAction,
@@ -563,38 +565,6 @@ const MAX_BLOCKS_PER_MINUTE: usize = 20;
 const XDP_BLOCK_TTL_SECS: i64 = 86400;
 /// AbuseIPDB reports are delayed by this many seconds to allow false-positive correction.
 const ABUSEIPDB_REPORT_DELAY_SECS: i64 = 300;
-
-/// Probe the system at startup and send proactive Telegram suggestions
-/// for tools that are installed but not yet integrated with InnerWarden.
-/// Runs once before the main loop. Fail-silent.
-async fn probe_and_suggest(cfg: &config::AgentConfig, tg: Option<&telegram::TelegramClient>) {
-    // Only if Telegram is configured
-    let Some(tg) = tg else {
-        return;
-    };
-
-    // Check for fail2ban: installed + running but not enabled in config
-    if !cfg.fail2ban.enabled {
-        let is_available = tokio::task::spawn_blocking(|| {
-            std::process::Command::new("fail2ban-client")
-                .arg("ping")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        })
-        .await
-        .unwrap_or(false);
-
-        if is_available {
-            let text = "🔍 <b>Fail2ban detected!</b>\n\nFail2ban is running on this server but not integrated with InnerWarden.\n\nIntegrating it means InnerWarden will automatically sync all fail2ban bans - no duplicate work, full audit trail.\n\n<i>Want me to enable the integration?</i>";
-            let keyboard = serde_json::json!([[
-                {"text": "✅ Enable Fail2ban sync", "callback_data": "enable:fail2ban"},
-                {"text": "❌ Not now", "callback_data": "menu:dismiss"}
-            ]]);
-            let _ = tg.send_text_with_keyboard(text, keyboard).await;
-        }
-    }
-}
 
 /// Returns notification cooldown keys for an incident.
 /// One key per entity (IP or user): `detector:entity_kind:entity_value`.

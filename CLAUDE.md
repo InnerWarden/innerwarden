@@ -140,7 +140,8 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - segundo corte no mesmo modulo: `TelegramTriageAction`, `parse_telegram_triage_action`, `sanitize_allowlist_process_name`, `format_time_ago`, `local_hostname_for_audit`, `write_telegram_triage_audit`
   - novo modulo `crates/agent/src/agent_context.rs` com `incident_detector`, `guardian_mode`, `build_agent_context`
   - novo modulo `crates/agent/src/bot_commands.rs` com `run_innerwarden_cli`, `format_capabilities`, `capabilities_keyboard`, `strip_ansi`
-  - `crates/agent/src/main.rs` reduziu para `8748` linhas
+  - `probe_and_suggest` tambem movido para `bot_commands.rs`
+  - `crates/agent/src/main.rs` reduziu para `8718` linhas
 
 ### Ordem recomendada para continuar
 

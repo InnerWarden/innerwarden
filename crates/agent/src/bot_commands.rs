@@ -1,4 +1,4 @@
-use crate::config;
+use crate::{config, telegram};
 
 /// Run an `innerwarden` CLI subcommand and return its stdout+stderr as a String.
 /// Times out after 30 seconds. Used by /enable, /disable, /doctor bot commands.
@@ -179,6 +179,41 @@ pub(crate) fn capabilities_keyboard(cfg: &config::AgentConfig) -> serde_json::Va
     // Group buttons into rows of 2
     let rows: Vec<Vec<serde_json::Value>> = buttons.chunks(2).map(|chunk| chunk.to_vec()).collect();
     serde_json::json!(rows)
+}
+
+/// Probe the system at startup and send proactive Telegram suggestions
+/// for tools that are installed but not yet integrated with InnerWarden.
+/// Runs once before the main loop. Fail-silent.
+pub(crate) async fn probe_and_suggest(
+    cfg: &config::AgentConfig,
+    tg: Option<&telegram::TelegramClient>,
+) {
+    // Only if Telegram is configured
+    let Some(tg) = tg else {
+        return;
+    };
+
+    // Check for fail2ban: installed + running but not enabled in config
+    if !cfg.fail2ban.enabled {
+        let is_available = tokio::task::spawn_blocking(|| {
+            std::process::Command::new("fail2ban-client")
+                .arg("ping")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false);
+
+        if is_available {
+            let text = "🔍 <b>Fail2ban detected!</b>\n\nFail2ban is running on this server but not integrated with InnerWarden.\n\nIntegrating it means InnerWarden will automatically sync all fail2ban bans - no duplicate work, full audit trail.\n\n<i>Want me to enable the integration?</i>";
+            let keyboard = serde_json::json!([[
+                {"text": "✅ Enable Fail2ban sync", "callback_data": "enable:fail2ban"},
+                {"text": "❌ Not now", "callback_data": "menu:dismiss"}
+            ]]);
+            let _ = tg.send_text_with_keyboard(text, keyboard).await;
+        }
+    }
 }
 
 /// Strip ANSI escape codes from a string (for clean Telegram display).
