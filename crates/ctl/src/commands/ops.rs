@@ -2177,3 +2177,96 @@ pub(crate) fn cmd_pipeline_test(cli: &Cli, wait_secs: u64, data_dir: &Path) -> R
 
     Ok(())
 }
+
+pub(crate) fn cmd_backup(cli: &Cli, output: Option<&Path>) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+
+    // When no --output is given, create a secure temp file with an unpredictable name
+    let tmp_file = if output.is_none() {
+        Some(
+            tempfile::Builder::new()
+                .prefix("innerwarden-backup-")
+                .suffix(".tar.gz")
+                .tempfile()
+                .context("failed to create temp file for backup")?,
+        )
+    } else {
+        None
+    };
+    let default_path: PathBuf;
+    let output_path = if let Some(ref tmp) = tmp_file {
+        default_path = tmp.path().to_path_buf();
+        &default_path
+    } else {
+        output.unwrap()
+    };
+
+    let files = [
+        "etc/innerwarden/config.toml",
+        "etc/innerwarden/agent.toml",
+        "etc/innerwarden/agent.env",
+    ];
+
+    println!("InnerWarden - backup\n");
+    println!("Backing up configuration files:");
+    for f in &files {
+        let abs = Path::new("/").join(f);
+        let exists = abs.exists();
+        println!("  {} /{}", if exists { "●" } else { "○ (missing)" }, f);
+    }
+    println!();
+    println!("Output: {}", output_path.display());
+
+    if cli.dry_run {
+        println!("\n  [dry-run] would create archive - skipping.");
+        return Ok(());
+    }
+
+    let status = std::process::Command::new("tar")
+        .arg("czf")
+        .arg(output_path)
+        .arg("-C")
+        .arg("/")
+        .args(files)
+        .status()
+        .context("failed to run tar")?;
+
+    if status.success() {
+        // Keep the temp file so the backup persists on disk
+        if let Some(tmp) = tmp_file {
+            let _ = tmp.keep();
+        }
+        println!("\n  [ok] backup saved to {}", output_path.display());
+    } else {
+        anyhow::bail!(
+            "tar exited with status {} - some files may be missing from /etc/innerwarden/",
+            status
+        );
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden completions
+// ---------------------------------------------------------------------------
+
+pub(crate) fn cmd_completions(shell: &str) -> Result<()> {
+    use clap::CommandFactory;
+    use clap_complete::Shell;
+
+    let mut cmd = Cli::command();
+    let shell_enum = match shell.to_lowercase().as_str() {
+        "bash" => Shell::Bash,
+        "zsh" => Shell::Zsh,
+        "fish" => Shell::Fish,
+        other => {
+            anyhow::bail!("unsupported shell '{}' - supported: bash, zsh, fish", other)
+        }
+    };
+
+    clap_complete::generate(shell_enum, &mut cmd, "innerwarden", &mut std::io::stdout());
+    Ok(())
+}

@@ -122,8 +122,8 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 
 ### Estado atual
 
-- `crates/ctl/src/main.rs` esta em `3254` linhas
-- Ultimo corte aplicado: extracao de `cmd_tune`, `cmd_doctor` e `cmd_pipeline_test` para `commands/ops.rs`
+- `crates/ctl/src/main.rs` esta em `3153` linhas
+- Ultimo corte aplicado: extracao de `cmd_tune`, `cmd_doctor`, `cmd_pipeline_test`, `cmd_backup` e `cmd_completions` para `commands/ops.rs`
 - Todos os cortes foram validados com:
   - `cargo fmt --all`
   - `cargo check -p innerwarden-ctl`
