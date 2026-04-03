@@ -30,10 +30,11 @@ pub(crate) async fn execute_honeypot_decision(
         let result = skill.execute(&ctx, cfg.responder.dry_run).await;
         if result.success {
             // Extract session_id from the skill result message for post-session tasks.
-            let session_id = crate::extract_session_id_from_message(&result.message)
-                .unwrap_or_else(|| {
-                    format!("unknown-{}", chrono::Utc::now().format("%Y%m%dT%H%M%SZ"))
-                });
+            let session_id =
+                crate::honeypot_post_session::extract_session_id_from_message(&result.message)
+                    .unwrap_or_else(|| {
+                        format!("unknown-{}", chrono::Utc::now().format("%Y%m%dT%H%M%SZ"))
+                    });
 
             // Spawn post-session tasks in the background (non-blocking).
             let post_ip = ip.to_string();
@@ -47,7 +48,7 @@ pub(crate) async fn execute_honeypot_decision(
             let post_allowed_skills = cfg.responder.allowed_skills.clone();
             let post_blocklist_has = state.blocklist.contains(ip);
             tokio::spawn(async move {
-                crate::spawn_post_session_tasks(
+                crate::honeypot_post_session::spawn_post_session_tasks(
                     &post_ip,
                     &post_session_id,
                     &post_data_dir,

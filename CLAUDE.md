@@ -168,6 +168,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - novo modulo `crates/agent/src/decision_honeypot.rs` com fluxo de execucao honeypot (runtime, post-session e marker event)
   - novo modulo `crates/agent/src/firmware_tick.rs` com auditoria periodica de firmware (baseline, correlacao e notificacoes)
   - novo modulo `crates/agent/src/honeypot_always_on.rs` com listener SSH always-on, gate AbuseIPDB e auto-block pos-sessao
+  - novo modulo `crates/agent/src/honeypot_post_session.rs` com parser de session_id + tarefas pos-sessao (evidence/IOC/AI/report)
   - novo modulo `crates/agent/src/narrative_anomaly.rs` com deteccao de anomalias neural + fusao baseline/neural
   - novo modulo `crates/agent/src/narrative_incident_ingest.rs` com ingestao incremental de incidentes e atualizacao de correlacao/playbooks
   - novo modulo `crates/agent/src/narrative_daily_summary.rs` com geracao da narrativa diaria e envio do digest Telegram
@@ -206,6 +207,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - `execute_decision` agora delega o branch `AiAction::BlockIp` para `decision_block_ip`
   - `execute_decision` agora delega o branch `AiAction::RequestConfirmation` para `decision_confirmation`
   - `execute_decision` agora delega o branch `AiAction::Honeypot` para `decision_honeypot`
+  - `decision_honeypot` agora delega parser/session tasks para `honeypot_post_session`
   - bootstrap do estado e loop principal agora delegam carregamento/listener de firmware para `firmware_tick`
   - startup do honeypot always-on agora delega loop/listener/gate para `honeypot_always_on`
   - `process_narrative_tick` agora delega anomalias autoencoder + correlacao baseline/neural para `narrative_anomaly`
@@ -216,7 +218,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - `adaptive_block_ttl_secs` promovido para `pub(crate)` para reutilizacao modular
   - `is_trusted` promovido para `pub(crate)` para reutilizacao modular
   - `should_auto_enable_lsm` e `enable_lsm_enforcement` promovidos para `pub(crate)`
-  - `crates/agent/src/main.rs` reduziu para `4667` linhas
+  - `crates/agent/src/main.rs` reduziu para `4396` linhas
 
 ### Ordem recomendada para continuar
 
