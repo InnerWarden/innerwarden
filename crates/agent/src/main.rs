@@ -23,6 +23,7 @@ mod crowdsec;
 mod dashboard;
 mod data_retention;
 mod decision_block_ip;
+mod decision_skill_actions;
 mod decisions;
 mod fail2ban;
 mod forensics;
@@ -52,6 +53,7 @@ mod ioc;
 mod mesh;
 mod mitre;
 mod narrative;
+mod narrative_autofp;
 #[allow(
     dead_code,
     unused_imports,
@@ -2563,33 +2565,24 @@ pub(crate) async fn execute_decision(
 ) -> (String, bool) {
     use ai::AiAction;
 
+    if let Some(result) = decision_skill_actions::execute_simple_action(
+        &decision.action,
+        incident,
+        data_dir,
+        cfg,
+        state,
+    )
+    .await
+    {
+        return result;
+    }
+
     match &decision.action {
         AiAction::BlockIp { ip, skill_id } => {
             decision_block_ip::execute_block_ip_decision(
                 ip, skill_id, decision, incident, data_dir, cfg, state,
             )
             .await
-        }
-        AiAction::Monitor { ip } => {
-            if let Some(skill) = state.skill_registry.get("monitor-ip") {
-                let ctx = skills::SkillContext {
-                    incident: incident.clone(),
-                    target_ip: Some(ip.clone()),
-                    target_user: None,
-                    target_container: None,
-                    duration_secs: None,
-                    host: incident.host.clone(),
-                    data_dir: data_dir.to_path_buf(),
-                    honeypot: honeypot_runtime(cfg),
-                    ai_provider: state.ai_provider.clone(),
-                };
-                (
-                    skill.execute(&ctx, cfg.responder.dry_run).await.message,
-                    false,
-                )
-            } else {
-                ("skipped: monitor-ip skill not available".to_string(), false)
-            }
         }
         AiAction::Honeypot { ip } => {
             if let Some(skill) = state.skill_registry.get("honeypot") {
@@ -2842,32 +2835,7 @@ pub(crate) async fn execute_decision(
                 )
             }
         }
-        AiAction::KillChainResponse { .. } => {
-            let skill_id = "kill-chain-response";
-            if let Some(skill) = state.skill_registry.get(skill_id) {
-                let ctx = skills::SkillContext {
-                    incident: incident.clone(),
-                    target_ip: None,
-                    target_user: None,
-                    target_container: None,
-                    duration_secs: None,
-                    host: incident.host.clone(),
-                    data_dir: data_dir.to_path_buf(),
-                    honeypot: honeypot_runtime(cfg),
-                    ai_provider: state.ai_provider.clone(),
-                };
-                (
-                    skill.execute(&ctx, cfg.responder.dry_run).await.message,
-                    false,
-                )
-            } else {
-                (
-                    "skipped: kill-chain-response skill not available".to_string(),
-                    false,
-                )
-            }
-        }
-        AiAction::Ignore { reason } => (format!("ignored: {reason}"), false),
+        _ => unreachable!("unsupported action path in execute_decision"),
     }
 }
 
@@ -3517,64 +3485,7 @@ async fn process_narrative_tick(
         }
     }
 
-    // ── Auto-suggest allowlist from FP reports ──────────────────────────
-    // If any (detector, entity) pair has 3+ FP reports in last 7 days,
-    // suggest permanent allowlist addition via Telegram.
-    if state.telegram_client.is_some() {
-        let fp_counts = neural_lifecycle::read_fp_report_counts(data_dir, 7);
-        for (detector, entity, count) in &fp_counts {
-            if *count >= 3 && !entity.is_empty() {
-                // Cooldown: only suggest once per day per entity
-                let cooldown_key = format!("autofp_suggest:{entity}");
-                if state
-                    .store
-                    .has_cooldown(state_store::CooldownTable::Notification, &cooldown_key)
-                {
-                    continue;
-                }
-
-                let text = format!(
-                    "\u{1f4ca} <b>Auto-learn suggestion</b>\n\n\
-                     <code>{entity}</code> has been reported as false positive \
-                     {count} times for <code>{detector}</code>.\n\n\
-                     Add to allowlist permanently?",
-                    entity = telegram::escape_html_pub(entity),
-                    detector = telegram::escape_html_pub(detector),
-                );
-                let is_ip = entity.parse::<std::net::IpAddr>().is_ok();
-                let section = if is_ip { "ip" } else { "proc" };
-                let yes_cb = format!("autofp:yes:{section}:{entity}");
-                let no_cb = format!("autofp:no:{entity}");
-                // Truncate callback data to 64 bytes
-                let yes_cb = telegram::truncate_callback_pub(&yes_cb);
-                let no_cb = telegram::truncate_callback_pub(&no_cb);
-                let keyboard = serde_json::json!([
-                    [
-                        { "text": "\u{2705} Yes, allowlist", "callback_data": yes_cb },
-                        { "text": "\u{274c} No, keep monitoring", "callback_data": no_cb }
-                    ]
-                ]);
-
-                if let Some(ref tg) = state.telegram_client {
-                    if let Err(e) = tg.send_text_with_keyboard(&text, keyboard).await {
-                        warn!("failed to send auto-FP suggestion: {e:#}");
-                    } else {
-                        state.store.set_cooldown(
-                            state_store::CooldownTable::Notification,
-                            &cooldown_key,
-                            chrono::Utc::now(),
-                        );
-                        info!(
-                            entity = %entity,
-                            detector = %detector,
-                            count = count,
-                            "auto-FP suggestion sent to Telegram"
-                        );
-                    }
-                }
-            }
-        }
-    }
+    narrative_autofp::maybe_suggest_allowlist_from_fp_reports(data_dir, state).await;
 
     telemetry_tick::write_tick_snapshot(state, "narrative_tick");
 
