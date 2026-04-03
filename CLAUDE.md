@@ -140,12 +140,14 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - segundo corte no mesmo modulo: `TelegramTriageAction`, `parse_telegram_triage_action`, `sanitize_allowlist_process_name`, `format_time_ago`, `local_hostname_for_audit`, `write_telegram_triage_audit`
   - novo modulo `crates/agent/src/agent_context.rs` com `incident_detector`, `guardian_mode`, `build_agent_context`
   - novo modulo `crates/agent/src/bot_commands.rs` com `run_innerwarden_cli`, `format_capabilities`, `capabilities_keyboard`, `strip_ansi`
+  - novo modulo `crates/agent/src/bot_actions.rs` com callbacks de execucao (`quick_block` e `hpot`)
   - `probe_and_suggest` tambem movido para `bot_commands.rs`
   - novo handler `handle_telegram_bot_command` em `bot_commands.rs` para comandos bot-only (`__status__` ate `enable:<id>`)
   - novo handler `handle_telegram_triage_action` em `bot_helpers.rs` para triagem (`__allow_proc__`, `__allow_ip__`, `__fp__`)
   - `process_telegram_approval` agora delega o roteamento bot-only para `bot_commands`
   - `process_telegram_approval` agora delega tambem o roteamento de triagem para `bot_helpers`
-  - `crates/agent/src/main.rs` reduziu para `7690` linhas
+  - `process_telegram_approval` agora delega callbacks de acao (`quick_block`/`hpot`) para `bot_actions`
+  - `crates/agent/src/main.rs` reduziu para `7357` linhas
 
 ### Ordem recomendada para continuar
 
