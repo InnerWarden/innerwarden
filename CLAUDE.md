@@ -145,6 +145,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - novo modulo `crates/agent/src/incident_flow.rs` com pipeline-test + pre-gates de AI (allowlist, min severity, cooldown, budget)
   - novo modulo `crates/agent/src/incident_obvious.rs` com auto-block para detectores obvios (bypass de AI)
   - novo modulo `crates/agent/src/incident_notifications.rs` com cooldown + dispatch webhook/telegram/slack/web-push
+  - novo modulo `crates/agent/src/incident_abuseipdb.rs` com gate de auto-block por reputacao (sem chamada de AI)
   - `probe_and_suggest` tambem movido para `bot_commands.rs`
   - novo handler `handle_telegram_bot_command` em `bot_commands.rs` para comandos bot-only (`__status__` ate `enable:<id>`)
   - novo handler `handle_telegram_triage_action` em `bot_helpers.rs` para triagem (`__allow_proc__`, `__allow_ip__`, `__fp__`)
@@ -157,7 +158,8 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - `process_incidents` agora delega correlacao de advisory ignorado para `incident_advisory`
   - `process_incidents` agora delega pipeline-test + pre-checks de AI para `incident_flow`
   - `process_incidents` agora delega o obvious-gate (block direto de reincidente) para `incident_obvious`
-  - `crates/agent/src/main.rs` reduziu para `6910` linhas
+  - `process_incidents` agora delega o gate AbuseIPDB (auto-block por score) para `incident_abuseipdb`
+  - `crates/agent/src/main.rs` reduziu para `6762` linhas
 
 ### Ordem recomendada para continuar
 
