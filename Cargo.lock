@@ -1002,6 +1002,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fancy-regex"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e24cb5a94bcae1e5408b0effca5cd7172ea3c5755049c5f3af4cd283a165298"
+dependencies = [
+ "bit-set",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1577,7 +1588,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-agent"
-version = "0.8.4"
+version = "0.9.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1620,10 +1631,11 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-agent-guard"
-version = "0.8.4"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "chrono",
+ "fancy-regex",
  "innerwarden_core",
  "regex",
  "serde",
@@ -1637,7 +1649,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-ctl"
-version = "0.8.4"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -1661,7 +1673,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-ebpf-types"
-version = "0.8.4"
+version = "0.9.1"
 dependencies = [
  "serde",
 ]
@@ -1689,7 +1701,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-sensor"
-version = "0.8.4"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "aya",
@@ -1733,7 +1745,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden_core"
-version = "0.8.4"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "chrono",

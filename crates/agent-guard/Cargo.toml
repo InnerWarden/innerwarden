@@ -15,6 +15,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 regex = "1"
+fancy-regex = "0.14"
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 anyhow = "1"
