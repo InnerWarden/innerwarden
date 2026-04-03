@@ -163,6 +163,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - novo modulo `crates/agent/src/incident_prelude.rs` com pre-orquestracao de correlacao temporal + auto-enable LSM
   - novo modulo `crates/agent/src/incident_forensics.rs` com captura best-effort de /proc e pcap seletivo
   - novo modulo `crates/agent/src/incident_attacker_profile.rs` com update inicial de reputacao local e perfil de atacante por IP
+  - novo modulo `crates/agent/src/decision_block_ip.rs` com execucao em camadas do block-ip (XDP/firewall/Cloudflare/AbuseIPDB)
   - `probe_and_suggest` tambem movido para `bot_commands.rs`
   - novo handler `handle_telegram_bot_command` em `bot_commands.rs` para comandos bot-only (`__status__` ate `enable:<id>`)
   - novo handler `handle_telegram_triage_action` em `bot_helpers.rs` para triagem (`__allow_proc__`, `__allow_ip__`, `__fp__`)
@@ -193,10 +194,11 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - `process_incidents` agora delega o preambulo de correlacao/LSM para `incident_prelude`
   - `process_incidents` agora delega forensics/pcap capture para `incident_forensics`
   - `process_incidents` agora delega update inicial de reputacao/perfil por IP para `incident_attacker_profile`
+  - `execute_decision` agora delega o branch `AiAction::BlockIp` para `decision_block_ip`
   - `adaptive_block_ttl_secs` promovido para `pub(crate)` para reutilizacao modular
   - `is_trusted` promovido para `pub(crate)` para reutilizacao modular
   - `should_auto_enable_lsm` e `enable_lsm_enforcement` promovidos para `pub(crate)`
-  - `crates/agent/src/main.rs` reduziu para `6145` linhas
+  - `crates/agent/src/main.rs` reduziu para `5975` linhas
 
 ### Ordem recomendada para continuar
 
@@ -211,7 +213,8 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - integracoes/notifiers
   - partes grandes do `agent/src/main.rs`
  - observacao de baseline atual:
-   - `cargo test -p innerwarden-agent` segue com 1 falha pre-existente (`tests::telegram_triage_fp_reports_write_audit_and_fp_log`)
+   - `cargo test -p innerwarden-agent` com 100% passando (`431 passed`)
+   - falha antiga `tests::telegram_triage_fp_reports_write_audit_and_fp_log` resolvida em `ca13a25`
 
 ### Regra de continuidade
 
