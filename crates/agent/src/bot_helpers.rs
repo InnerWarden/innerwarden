@@ -577,7 +577,7 @@ pub(crate) fn write_telegram_triage_audit(
             ts: chrono::Utc::now(),
             incident_id: incident_id.to_string(),
             host: local_hostname_for_audit(),
-            ai_provider: "operator:telegram".to_string(),
+            ai_provider: format!("operator:telegram:{operator}"),
             action_type: action_type.to_string(),
             target_ip,
             target_user,
