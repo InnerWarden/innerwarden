@@ -6,9 +6,9 @@ use anyhow::{Context, Result};
 use innerwarden_core::audit::{append_admin_action, current_operator, AdminActionEntry};
 
 use crate::capability::CapabilityRegistry;
+use crate::commands::capability::cmd_enable;
 use crate::{
-    cmd_enable, config_editor, module_manifest, module_package, module_validator, sudoers, systemd,
-    Cli,
+    config_editor, module_manifest, module_package, module_validator, sudoers, systemd, Cli,
 };
 
 pub(crate) fn cmd_module_validate(path: &std::path::Path, strict: bool) -> Result<()> {

@@ -6,10 +6,11 @@ use anyhow::Result;
 
 use crate::commands::agent::{cmd_agent, resolve_dashboard_url};
 use crate::commands::ai::{fetch_models, prompt_ollama_api_key, WIZARD_PROVIDERS};
+use crate::commands::capability::cmd_enable;
 use crate::commands::notify::cmd_configure_telegram;
 use crate::{
-    am_root, cmd_enable, config_editor, load_env_file, prompt, reexec_with_sudo, restart_agent,
-    scan, systemd, write_env_key, AgentCommand, CapabilityRegistry, Cli,
+    am_root, config_editor, load_env_file, prompt, reexec_with_sudo, restart_agent, scan, systemd,
+    write_env_key, AgentCommand, CapabilityRegistry, Cli,
 };
 
 #[derive(Debug, Clone)]
