@@ -73,6 +73,113 @@ Quando a mudanca for relevante para produto, arquitetura ou operacao:
 
 ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 
+## Workstream Atual
+
+### CTL Modularization — 2026-04-03
+
+- **Branch**: `codex/phase1-governance`
+- **PR**: `#54` contra `develop`
+- **Objetivo**: transformar o `crates/ctl/src/main.rs` num roteador fino, com dominios bem definidos em `crates/ctl/src/commands/`
+
+### Ja concluido nesta frente
+
+1. Governanca base
+- `.specify/` saiu do `gitignore`
+- `CLAUDE.md` virou fonte unica de governanca
+- ADR inicial de taxonomia criada em `docs/internal/adr/0001-project-taxonomy.md`
+- CI passou a validar `develop`
+
+2. Cortes de modularizacao ja entregues no `ctl`
+- `commands/setup.rs`
+- `commands/ai.rs`
+- `commands/notify.rs`
+- `commands/responder.rs`
+- `commands/integrations.rs`
+- `commands/status.rs`
+- `commands/mesh.rs`
+- `commands/module.rs`
+- `commands/agent.rs`
+- `commands/watchdog.rs`
+- `commands/response.rs`
+
+3. Escopo funcional ja removido do `main.rs`
+- setup
+- AI/configuracao de provider
+- notify, incluindo `web-push`
+- responder
+- integrations
+- status/report/metrics/sensor-status
+- mesh
+- module
+- agent
+- watchdog
+- response: `block`, `unblock`, `allowlist`, `suppress`
+
+### Estado atual
+
+- `crates/ctl/src/main.rs` esta em `6402` linhas
+- O branch esta limpo e a PR esta atualizada
+- Todos os cortes foram validados com:
+  - `cargo fmt --all`
+  - `cargo check -p innerwarden-ctl`
+  - `cargo test -p innerwarden-ctl`
+
+### Ordem recomendada para continuar
+
+1. Extrair `history/data`
+- mover para modulo proprio:
+  - `cmd_incidents`
+  - `cmd_incidents_live`
+  - `cmd_export`
+  - `cmd_tail`
+  - `cmd_decisions`
+  - `cmd_entity`
+  - `cmd_gdpr_export`
+  - `cmd_gdpr_erase`
+- motivo: ainda existe muito fluxo de leitura de JSONL e timeline concentrado no root
+
+2. Extrair `ops/config`
+- avaliar modulo proprio para:
+  - `cmd_configure_menu`
+  - `cmd_configure_fail2ban`
+  - `cmd_configure_2fa`
+  - `cmd_tune`
+  - `cmd_doctor`
+- motivo: esse bloco ainda mistura onboarding, operacao e manutencao
+
+3. Consolidar helpers compartilhados
+- revisar o que ainda faz sentido ficar no root:
+  - `require_sudo`
+  - `resolve_data_dir`
+  - `load_env_file`
+  - `send_telegram_message_md`
+  - `write_env_key`
+  - `hostname`
+- mover apenas quando a fronteira estiver clara; nao forcar acoplamento artificial
+
+4. Depois do `ctl`
+- iniciar a mesma estrategia no crate `agent`
+- candidatos naturais:
+  - `dashboard.rs`
+  - integracoes/notifiers
+  - partes grandes do `agent/src/main.rs`
+
+### Regra de continuidade
+
+- manter cortes pequenos, por dominio
+- cada corte precisa terminar com branch limpa
+- nao misturar reorganizacao com mudanca de comportamento
+- validar sempre antes de commit
+- se uma extracao ficar ambigua, preferir deixar helper no root temporariamente
+
+### Ultimos commits desta frente
+
+- `1e09220` Move ctl web push setup into the notify module
+- `023289d` Extract ctl response commands into a dedicated module
+- `db2690e` Extract ctl watchdog commands into a dedicated module
+- `93ad6c2` Extract ctl agent commands into a dedicated module
+- `f18c27b` Extract ctl module commands into a dedicated module
+
 ## Docs detalhados
 
 O handbook completo esta em `.claude/CLAUDE.md` (859 linhas).
