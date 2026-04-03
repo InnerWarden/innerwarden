@@ -120,15 +120,15 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 - watchdog
 - response: `block`, `unblock`, `allowlist`, `suppress`
 - history/data: `incidents`, `incidents --live`, `export`, `tail`, `decisions`, `entity`, `gdpr export`, `gdpr erase`
-- ops/config: `configure menu`, `configure fail2ban`, `configure 2fa`, `tune`, `doctor`
+- ops/config: `configure menu`, `configure fail2ban`, `configure sensitivity`, `configure 2fa`, `tune`, `doctor`
 - ops/runtime: `test` (pipeline smoke test)
 - core UX: `list` e `daily`
 - capabilities: `enable` / `disable`
 
 ### Estado atual
 
-- `crates/ctl/src/main.rs` esta em `2385` linhas
-- Ultimo corte aplicado: extracao de `cmd_enable`/`cmd_disable` para `commands/capability.rs`
+- `crates/ctl/src/main.rs` esta em `2329` linhas
+- Ultimo corte aplicado: extracao de `configure sensitivity` para `commands/ops.rs`
 - Todos os cortes foram validados com:
   - `cargo fmt --all`
   - `cargo check -p innerwarden-ctl`
@@ -163,6 +163,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 
 ### Ultimos commits desta frente
 
+- `ab02fac` Extract ctl capability enable and disable commands
 - `6d9640c` Extract ctl upgrade command into update module
 - `d11601c` Extract ctl ai install command into ai module
 - `288643d` Extract ctl navigator command into status module

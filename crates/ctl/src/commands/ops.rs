@@ -178,6 +178,53 @@ pub(crate) fn cmd_configure_fail2ban(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn cmd_configure_sensitivity(cli: &Cli, level: &str) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+    let min_severity = match level.to_lowercase().as_str() {
+        "quiet" => "critical",
+        "normal" => "high",
+        "verbose" => "medium",
+        _ => {
+            println!(
+                "Unknown level '{}'. Choose: quiet, normal, or verbose",
+                level
+            );
+            return Ok(());
+        }
+    };
+    config_editor::write_str(&cli.agent_config, "telegram", "min_severity", min_severity)?;
+    config_editor::write_str(&cli.agent_config, "webhook", "min_severity", min_severity)?;
+    println!("✅ Notification sensitivity: {level}");
+    println!("   Telegram + webhook min_severity = \"{min_severity}\"");
+    match level.to_lowercase().as_str() {
+        "quiet" => println!("   You'll only be notified for Critical events."),
+        "normal" => println!("   You'll be notified for High and Critical events."),
+        "verbose" => println!("   You'll be notified for Medium, High, and Critical events."),
+        _ => {}
+    }
+    systemd::restart_service("innerwarden-agent", false)?;
+    println!("   Agent restarted.");
+
+    // Audit log
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "configure".to_string(),
+        target: "sensitivity".to_string(),
+        parameters: serde_json::json!({ "level": level }),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
+    Ok(())
+}
+
 pub(crate) fn cmd_configure_2fa(cli: &Cli) -> Result<()> {
     println!();
     println!("  🔐 Two-Factor Authentication Setup");
