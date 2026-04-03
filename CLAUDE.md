@@ -106,6 +106,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 - `commands/core.rs`
 - `commands/update.rs`
 - `commands/capability.rs`
+- `helpers.rs` (prompt/env/network/shared helpers extraidos)
 
 3. Escopo funcional ja removido do `main.rs`
 - setup
@@ -127,8 +128,8 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 
 ### Estado atual
 
-- `crates/ctl/src/main.rs` esta em `2316` linhas
-- Ultimo corte aplicado: extracao de `welcome` para `commands/core.rs`
+- `crates/ctl/src/main.rs` esta em `2214` linhas
+- Ultimo corte aplicado: extracao de helpers compartilhados para `helpers.rs`
 - Todos os cortes foram validados com:
   - `cargo fmt --all`
   - `cargo check -p innerwarden-ctl`
@@ -140,10 +141,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 - revisar o que ainda faz sentido ficar no root:
   - `require_sudo`
   - `resolve_data_dir`
-  - `load_env_file`
-  - `send_telegram_message_md`
-  - `write_env_key`
-  - `hostname`
+  - `restart_agent`
 - mover apenas quando a fronteira estiver clara; nao forcar acoplamento artificial
 
 2. Depois do `ctl`
@@ -163,6 +161,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 
 ### Ultimos commits desta frente
 
+- `ffcfe84` Extract ctl welcome command into core module
 - `c5bcaef` Extract ctl sensitivity configure command into ops module
 - `ab02fac` Extract ctl capability enable and disable commands
 - `6d9640c` Extract ctl upgrade command into update module
