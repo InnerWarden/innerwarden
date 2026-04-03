@@ -30,6 +30,7 @@ mod incident_abuseipdb;
 mod incident_advisory;
 mod incident_ai_context;
 mod incident_ai_failure;
+mod incident_audit_write;
 mod incident_crowdsec;
 mod incident_decision_eval;
 mod incident_enrichment;
@@ -2616,27 +2617,14 @@ async fn process_incidents(
             )
             .await;
 
-        // Write to audit trail
-        if let Some(writer) = &mut state.decision_writer {
-            let entry = decisions::build_entry(
-                &incident.incident_id,
-                &incident.host,
-                provider_name,
-                &decision,
-                cfg.responder.dry_run,
-                &execution_result,
-            );
-            // Attacker intelligence: observe this decision
-            if let Some(ref ip) = entry.target_ip {
-                if let Some(profile) = state.attacker_profiles.get_mut(ip) {
-                    attacker_intel::observe_decision(profile, &entry);
-                }
-            }
-            if let Err(e) = writer.write(&entry) {
-                state.telemetry.observe_error("decision_writer");
-                warn!("failed to write decision entry: {e:#}");
-            }
-        }
+        incident_audit_write::write_decision_audit_entry(
+            incident,
+            provider_name,
+            &decision,
+            &execution_result,
+            cfg,
+            state,
+        );
 
         // Playbook evaluation: check if this incident triggers a playbook
         if let Some(exec) = state.playbook_engine.evaluate(incident) {
