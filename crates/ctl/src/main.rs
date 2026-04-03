@@ -1331,11 +1331,11 @@ fn main() -> Result<()> {
             ref modules_dir,
             days,
         } => match target {
-            None => cmd_status_global(&cli, &registry, modules_dir),
+            None => commands::status::cmd_status_global(&cli, &registry, modules_dir),
             Some(ref t) => {
                 // Check if it looks like a capability ID first; fall back to entity lookup
                 if registry.get(t).is_some() {
-                    cmd_status(&cli, &registry, t)
+                    commands::status::cmd_status(&cli, &registry, t)
                 } else {
                     cmd_entity(&cli, t, days, &cli.data_dir.clone())
                 }
@@ -1564,7 +1564,9 @@ fn main() -> Result<()> {
         Command::Unblock { ref ip, ref reason } => {
             cmd_unblock(&cli, ip, reason, &cli.data_dir.clone())
         }
-        Command::Report { ref date } => cmd_report(&cli, date, &cli.data_dir.clone()),
+        Command::Report { ref date } => {
+            commands::status::cmd_report(&cli, date, &cli.data_dir.clone())
+        }
         Command::Watchdog {
             threshold,
             notify,
@@ -1577,7 +1579,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Tune { days, yes } => cmd_tune(&cli, days, yes, &cli.data_dir.clone()),
-        Command::SensorStatus => cmd_sensor_status(&cli, &cli.data_dir.clone()),
+        Command::SensorStatus => commands::status::cmd_sensor_status(&cli, &cli.data_dir.clone()),
         Command::Export {
             ref kind,
             ref from,
@@ -1620,7 +1622,7 @@ fn main() -> Result<()> {
         },
         Command::PipelineTest { wait } => cmd_pipeline_test(&cli, wait, &cli.data_dir.clone()),
         Command::Backup { ref output } => cmd_backup(&cli, output.as_deref()),
-        Command::Metrics => cmd_metrics(&cli, &cli.data_dir.clone()),
+        Command::Metrics => commands::status::cmd_metrics(&cli, &cli.data_dir.clone()),
         Command::Gdpr { ref action } => match action {
             GdprCommand::Export {
                 ref entity,
@@ -1670,7 +1672,7 @@ fn cmd_daily(
     match command {
         Some(DailyCommand::Status) => {
             let modules_dir = Path::new("/etc/innerwarden/modules");
-            cmd_status_global(cli, registry, modules_dir)
+            commands::status::cmd_status_global(cli, registry, modules_dir)
         }
         Some(DailyCommand::Threats {
             days,
@@ -1686,7 +1688,9 @@ fn cmd_daily(
         Some(DailyCommand::Actions { days }) => {
             cmd_decisions(cli, *days, None, &cli.data_dir.clone())
         }
-        Some(DailyCommand::Report { date }) => cmd_report(cli, date, &cli.data_dir.clone()),
+        Some(DailyCommand::Report { date }) => {
+            commands::status::cmd_report(cli, date, &cli.data_dir.clone())
+        }
         Some(DailyCommand::Doctor) => cmd_doctor(cli, registry),
         Some(DailyCommand::Test { wait }) => cmd_pipeline_test(cli, *wait, &cli.data_dir.clone()),
         Some(DailyCommand::Agent { command }) => cmd_agent(cli, command.as_ref()),
@@ -1715,162 +1719,7 @@ fn cmd_daily(
     }
 }
 
-fn cmd_status(cli: &Cli, registry: &CapabilityRegistry, id: &str) -> Result<()> {
-    let cap = registry.get(id).ok_or_else(|| unknown_cap_error(id))?;
-    let opts = make_opts(cli, HashMap::new(), false);
-    let status = if cap.is_enabled(&opts) {
-        "enabled"
-    } else {
-        "disabled"
-    };
-    println!("Capability:  {}", cap.name());
-    println!("ID:          {}", cap.id());
-    println!("Status:      {status}");
-    println!("Description: {}", cap.description());
-    Ok(())
-}
-
-fn cmd_status_global(
-    cli: &Cli,
-    registry: &CapabilityRegistry,
-    modules_dir: &std::path::Path,
-) -> Result<()> {
-    use module_manifest::{is_module_enabled, scan_modules_dir};
-
-    println!("InnerWarden Status");
-    println!("{}", "═".repeat(56));
-
-    // ── Services ─────────────────────────────────────────
-    println!("\nServices");
-    for unit in &["innerwarden-sensor", "innerwarden-agent"] {
-        let active = systemd::is_service_active(unit);
-        let indicator = if active { "●" } else { "○" };
-        let label = if active { "running" } else { "stopped" };
-        println!("  {indicator} {unit:<28} {label}");
-    }
-
-    // ── Activity (today) ──────────────────────────────────
-    let data_dir: Option<std::path::PathBuf> = cli
-        .agent_config
-        .exists()
-        .then(|| std::fs::read_to_string(&cli.agent_config).ok())
-        .flatten()
-        .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
-        .and_then(|doc| {
-            doc.get("output")
-                .and_then(|o| o.get("data_dir"))
-                .and_then(|d| d.as_str())
-                .map(std::path::PathBuf::from)
-        })
-        .or_else(|| Some(std::path::PathBuf::from("/var/lib/innerwarden")));
-
-    if let Some(ref dir) = data_dir {
-        let today = today_date_string();
-
-        // Count events today
-        let events_count = count_jsonl_lines(&dir.join(format!("events-{today}.jsonl")));
-        // Count incidents today
-        let incidents_count = count_jsonl_lines(&dir.join(format!("incidents-{today}.jsonl")));
-        // Last incident title and time
-        let last_incident =
-            read_last_incident_summary(&dir.join(format!("incidents-{today}.jsonl")));
-
-        println!("\nToday  ({})", today);
-        println!("  Events logged:    {events_count}");
-        println!("  Threats detected: {incidents_count}");
-        if let Some((title, when)) = last_incident {
-            println!("  Last threat:      {title}  [{when}]");
-        } else if incidents_count == 0 {
-            println!("  Last threat:      none - quiet day so far");
-        }
-    }
-
-    // ── AI & Response ─────────────────────────────────────
-    let agent_doc: Option<toml_edit::DocumentMut> = cli
-        .agent_config
-        .exists()
-        .then(|| std::fs::read_to_string(&cli.agent_config).ok())
-        .flatten()
-        .and_then(|s| s.parse().ok());
-
-    let ai_enabled = agent_doc
-        .as_ref()
-        .and_then(|doc| doc.get("ai"))
-        .and_then(|a| a.get("enabled"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let ai_provider = agent_doc
-        .as_ref()
-        .and_then(|doc| doc.get("ai"))
-        .and_then(|a| a.get("provider"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("openai")
-        .to_string();
-    let responder_enabled = agent_doc
-        .as_ref()
-        .and_then(|doc| doc.get("responder"))
-        .and_then(|r| r.get("enabled"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let dry_run = agent_doc
-        .as_ref()
-        .and_then(|doc| doc.get("responder"))
-        .and_then(|r| r.get("dry_run"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-
-    println!("\nAI & Response");
-    if ai_enabled {
-        println!("  ● AI analysis     active  ({ai_provider})");
-    } else {
-        println!("  ○ AI analysis     disabled");
-    }
-    if responder_enabled {
-        let mode = if dry_run {
-            "dry-run (observe only)"
-        } else {
-            "live (executing actions)"
-        };
-        println!("  ● Responder       active  ({mode})");
-    } else {
-        println!("  ○ Responder       disabled");
-    }
-
-    // ── Capabilities ──────────────────────────────────────
-    println!("\nCapabilities");
-    let opts = make_opts(cli, HashMap::new(), false);
-    for cap in registry.all() {
-        let enabled = cap.is_enabled(&opts);
-        let indicator = if enabled { "●" } else { "○" };
-        let label = if enabled { "enabled " } else { "disabled" };
-        println!(
-            "  {indicator} {:<20} {}  {}",
-            cap.id(),
-            label,
-            cap.description()
-        );
-    }
-
-    // ── Modules ───────────────────────────────────────────
-    println!("\nModules  ({})", modules_dir.display());
-    let modules = scan_modules_dir(modules_dir);
-    if modules.is_empty() {
-        println!("  (none installed)");
-    } else {
-        for m in &modules {
-            let enabled = is_module_enabled(&cli.sensor_config, &cli.agent_config, m);
-            let indicator = if enabled { "●" } else { "○" };
-            let label = if enabled { "enabled " } else { "disabled" };
-            println!("  {indicator} {:<20} {}  {}", m.id, label, m.name);
-        }
-    }
-
-    println!();
-    Ok(())
-}
-
-/// Return today's date as YYYY-MM-DD using the system UTC clock.
-fn today_date_string() -> String {
+pub(crate) fn today_date_string() -> String {
     // Use SystemTime → seconds since epoch → compute date
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1880,7 +1729,7 @@ fn today_date_string() -> String {
 }
 
 /// Return yesterday's date as YYYY-MM-DD.
-fn yesterday_date_string() -> String {
+pub(crate) fn yesterday_date_string() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs().saturating_sub(86400))
@@ -1889,7 +1738,7 @@ fn yesterday_date_string() -> String {
 }
 
 /// Convert Unix timestamp (seconds) to YYYY-MM-DD string (UTC).
-fn epoch_secs_to_date_string(secs: u64) -> String {
+pub(crate) fn epoch_secs_to_date_string(secs: u64) -> String {
     // Days since Unix epoch
     let days = secs / 86400;
     // Gregorian calendar calculation
@@ -1907,14 +1756,14 @@ fn epoch_secs_to_date_string(secs: u64) -> String {
 }
 
 /// Count lines in a JSONL file (returns 0 if file doesn't exist).
-fn count_jsonl_lines(path: &std::path::Path) -> usize {
+pub(crate) fn count_jsonl_lines(path: &std::path::Path) -> usize {
     std::fs::read_to_string(path)
         .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
         .unwrap_or(0)
 }
 
 /// Read the last incident from a JSONL file and return (title, time_str).
-fn read_last_incident_summary(path: &std::path::Path) -> Option<(String, String)> {
+pub(crate) fn read_last_incident_summary(path: &std::path::Path) -> Option<(String, String)> {
     let content = std::fs::read_to_string(path).ok()?;
     let last_line = content.lines().rfind(|l| !l.trim().is_empty())?;
     let v: serde_json::Value = serde_json::from_str(last_line).ok()?;
@@ -4180,95 +4029,6 @@ fn send_telegram_message_md(token: &str, chat_id: &str, text: &str) -> Result<()
 }
 
 // ---------------------------------------------------------------------------
-// innerwarden report
-// ---------------------------------------------------------------------------
-
-fn cmd_report(cli: &Cli, date_arg: &str, data_dir: &std::path::Path) -> Result<()> {
-    // Try to read data_dir from agent.toml if using default
-    let effective_dir = if data_dir == std::path::Path::new("/var/lib/innerwarden") {
-        cli.agent_config
-            .exists()
-            .then(|| std::fs::read_to_string(&cli.agent_config).ok())
-            .flatten()
-            .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
-            .and_then(|doc| {
-                doc.get("output")
-                    .and_then(|o| o.get("data_dir"))
-                    .and_then(|d| d.as_str())
-                    .map(std::path::PathBuf::from)
-            })
-            .unwrap_or_else(|| data_dir.to_path_buf())
-    } else {
-        data_dir.to_path_buf()
-    };
-
-    let date = match date_arg {
-        "today" => today_date_string(),
-        "yesterday" => yesterday_date_string(),
-        other => other.to_string(),
-    };
-
-    let summary_path = effective_dir.join(format!("summary-{date}.md"));
-
-    if !summary_path.exists() {
-        // Try to find available summaries
-        let mut available: Vec<String> = std::fs::read_dir(&effective_dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                name.strip_prefix("summary-")
-                    .and_then(|s| s.strip_suffix(".md"))
-                    .map(|d| d.to_string())
-            })
-            .collect();
-
-        if available.is_empty() {
-            println!("No summary found for {date}.");
-            println!();
-            println!("Summary files are generated by innerwarden-agent every 30 minutes.");
-            println!("Make sure the agent is running:  innerwarden status");
-        } else {
-            available.sort();
-            available.reverse();
-            println!("No summary found for {date}.");
-            println!();
-            println!("Available dates:");
-            for d in available.iter().take(7) {
-                println!("  innerwarden report --date {d}");
-            }
-        }
-        return Ok(());
-    }
-
-    let content = std::fs::read_to_string(&summary_path)
-        .with_context(|| format!("failed to read {}", summary_path.display()))?;
-
-    // Strip markdown formatting for terminal output (basic)
-    for line in content.lines() {
-        // Convert headers to uppercase section titles
-        if let Some(rest) = line.strip_prefix("### ") {
-            println!("\n  {}", rest);
-        } else if let Some(rest) = line.strip_prefix("## ") {
-            println!("\n{}", rest.to_uppercase());
-            println!("{}", "─".repeat(48));
-        } else if let Some(rest) = line.strip_prefix("# ") {
-            println!("{}", rest);
-            println!("{}", "═".repeat(56));
-        } else if line.starts_with("---") {
-            // skip hr
-        } else {
-            println!("{line}");
-        }
-    }
-
-    println!();
-    println!("Full report: {}", summary_path.display());
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // innerwarden watchdog
 // ---------------------------------------------------------------------------
 
@@ -4976,7 +4736,7 @@ fn sev_tag_plain(sev: &str) -> &'static str {
     }
 }
 
-fn epoch_secs_to_date(secs: u64) -> String {
+pub(crate) fn epoch_secs_to_date(secs: u64) -> String {
     let days = (secs / 86400) as i64;
     let z = days + 719468;
     let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
@@ -5227,7 +4987,7 @@ fn require_sudo(cli: &Cli) {
     }
 }
 
-fn resolve_data_dir(cli: &Cli, data_dir: &Path) -> PathBuf {
+pub(crate) fn resolve_data_dir(cli: &Cli, data_dir: &Path) -> PathBuf {
     if data_dir == Path::new("/var/lib/innerwarden") {
         std::fs::read_to_string(&cli.agent_config)
             .ok()
@@ -5276,109 +5036,6 @@ fn write_manual_decision(
         .with_context(|| format!("failed to open {}", path.display()))?;
     use std::io::Write;
     writeln!(file, "{}", entry)?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// innerwarden sensor-status
-// ---------------------------------------------------------------------------
-
-fn cmd_sensor_status(cli: &Cli, data_dir: &Path) -> Result<()> {
-    let effective_dir = resolve_data_dir(cli, data_dir);
-    let today = epoch_secs_to_date(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-    );
-
-    // Find the most recent telemetry snapshot from today
-    let telemetry_path = effective_dir.join(format!("telemetry-{today}.jsonl"));
-    let snapshot: Option<serde_json::Value> = std::fs::read_to_string(&telemetry_path)
-        .ok()
-        .and_then(|content| {
-            content
-                .lines()
-                .rfind(|l| !l.trim().is_empty())
-                .and_then(|line| serde_json::from_str(line).ok())
-        });
-
-    println!("InnerWarden - sensor status  ({})\n", today);
-
-    let Some(snap) = snapshot else {
-        println!("  No telemetry data for today.");
-        println!("  Is the agent running?  innerwarden status");
-        return Ok(());
-    };
-
-    // Events by collector
-    println!("Collectors (events today):");
-    let by_collector = snap["events_by_collector"].as_object();
-    match by_collector {
-        Some(map) if !map.is_empty() => {
-            let mut pairs: Vec<(&String, u64)> = map
-                .iter()
-                .map(|(k, v)| (k, v.as_u64().unwrap_or(0)))
-                .collect();
-            pairs.sort_by(|a, b| b.1.cmp(&a.1));
-            for (source, count) in &pairs {
-                println!("  ● {:<30} {:>6} events", source, count);
-            }
-        }
-        _ => println!("  (no events recorded yet today)"),
-    }
-
-    // Incidents by detector
-    println!();
-    println!("Detectors (incidents today):");
-    let by_detector = snap["incidents_by_detector"].as_object();
-    match by_detector {
-        Some(map) if !map.is_empty() => {
-            let mut pairs: Vec<(&String, u64)> = map
-                .iter()
-                .map(|(k, v)| (k, v.as_u64().unwrap_or(0)))
-                .collect();
-            pairs.sort_by(|a, b| b.1.cmp(&a.1));
-            for (detector, count) in &pairs {
-                println!("  ⚠  {:<30} {:>6} incidents", detector, count);
-            }
-        }
-        _ => println!("  (no incidents today)"),
-    }
-
-    // AI summary
-    let ai_sent = snap["ai_sent_count"].as_u64().unwrap_or(0);
-    let ai_decided = snap["ai_decision_count"].as_u64().unwrap_or(0);
-    let avg_ms = snap["avg_decision_latency_ms"].as_f64().unwrap_or(0.0);
-    let real_exec = snap["real_execution_count"].as_u64().unwrap_or(0);
-    let dry_exec = snap["dry_run_execution_count"].as_u64().unwrap_or(0);
-    let gate_pass = snap["gate_pass_count"].as_u64().unwrap_or(0);
-
-    println!();
-    println!("AI & Response (today):");
-    println!("  Passed algorithm gate:  {gate_pass}");
-    println!("  Sent to AI:             {ai_sent}");
-    println!("  AI decisions:           {ai_decided}  (avg {avg_ms:.0}ms)");
-    if real_exec > 0 {
-        println!("  Actions executed:       {real_exec}  (live)");
-    }
-    if dry_exec > 0 {
-        println!("  Actions simulated:      {dry_exec}  (dry-run)");
-    }
-
-    // Errors
-    let errors = snap["errors_by_component"].as_object();
-    if let Some(map) = errors {
-        if !map.is_empty() {
-            println!();
-            println!("Errors:");
-            for (comp, count) in map {
-                println!("  ✗ {comp}: {}", count.as_u64().unwrap_or(0));
-            }
-        }
-    }
-
-    println!();
     Ok(())
 }
 
@@ -5454,145 +5111,6 @@ fn cmd_backup(cli: &Cli, output: Option<&Path>) -> Result<()> {
         );
     }
 
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// innerwarden metrics
-// ---------------------------------------------------------------------------
-
-fn cmd_metrics(cli: &Cli, data_dir: &Path) -> Result<()> {
-    let effective_dir = resolve_data_dir(cli, data_dir);
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let today = epoch_secs_to_date(now_secs);
-
-    let telemetry_path = effective_dir.join(format!("telemetry-{today}.jsonl"));
-    let content = std::fs::read_to_string(&telemetry_path)
-        .with_context(|| format!("cannot read {}", telemetry_path.display()))?;
-
-    let first_line: Option<serde_json::Value> = content
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .and_then(|line| serde_json::from_str(line).ok());
-
-    let snapshot: Option<serde_json::Value> = content
-        .lines()
-        .rfind(|l| !l.trim().is_empty())
-        .and_then(|line| serde_json::from_str(line).ok());
-
-    let Some(snap) = snapshot else {
-        println!("InnerWarden - metrics  ({})\n", today);
-        println!("  No telemetry data for today.");
-        println!("  Is the agent running?  innerwarden status");
-        return Ok(());
-    };
-
-    println!("InnerWarden - metrics  ({})\n", today);
-
-    // --- Events processed today ---
-    println!("Events processed today:");
-    let by_collector = snap["events_by_collector"].as_object();
-    let mut total_events: u64 = 0;
-    match by_collector {
-        Some(map) if !map.is_empty() => {
-            let mut pairs: Vec<(&String, u64)> = map
-                .iter()
-                .map(|(k, v)| {
-                    let c = v.as_u64().unwrap_or(0);
-                    total_events += c;
-                    (k, c)
-                })
-                .collect();
-            pairs.sort_by(|a, b| b.1.cmp(&a.1));
-            for (source, count) in &pairs {
-                println!("  {:<30} {:>6}", source, count);
-            }
-            println!("  {:<30} {:>6}", "TOTAL", total_events);
-        }
-        _ => println!("  (no events recorded yet today)"),
-    }
-
-    // --- Incidents detected today ---
-    println!();
-    println!("Incidents detected today:");
-    let by_detector = snap["incidents_by_detector"].as_object();
-    let mut total_incidents: u64 = 0;
-    match by_detector {
-        Some(map) if !map.is_empty() => {
-            let mut pairs: Vec<(&String, u64)> = map
-                .iter()
-                .map(|(k, v)| {
-                    let c = v.as_u64().unwrap_or(0);
-                    total_incidents += c;
-                    (k, c)
-                })
-                .collect();
-            pairs.sort_by(|a, b| b.1.cmp(&a.1));
-            for (detector, count) in &pairs {
-                println!("  {:<30} {:>6}", detector, count);
-            }
-            println!("  {:<30} {:>6}", "TOTAL", total_incidents);
-        }
-        _ => println!("  (no incidents today)"),
-    }
-
-    // --- Decisions made today ---
-    println!();
-    println!("Decisions made today:");
-    let by_action = snap["decisions_by_action"].as_object();
-    let mut total_decisions: u64 = 0;
-    match by_action {
-        Some(map) if !map.is_empty() => {
-            let mut pairs: Vec<(&String, u64)> = map
-                .iter()
-                .map(|(k, v)| {
-                    let c = v.as_u64().unwrap_or(0);
-                    total_decisions += c;
-                    (k, c)
-                })
-                .collect();
-            pairs.sort_by(|a, b| b.1.cmp(&a.1));
-            for (action, count) in &pairs {
-                println!("  {:<30} {:>6}", action, count);
-            }
-            println!("  {:<30} {:>6}", "TOTAL", total_decisions);
-        }
-        _ => println!("  (no decisions today)"),
-    }
-
-    // --- AI decision latency ---
-    let avg_ms = snap["avg_decision_latency_ms"].as_f64().unwrap_or(0.0);
-    let ai_sent = snap["ai_sent_count"].as_u64().unwrap_or(0);
-    let ai_decided = snap["ai_decision_count"].as_u64().unwrap_or(0);
-    let gate_pass = snap["gate_pass_count"].as_u64().unwrap_or(0);
-    let real_exec = snap["real_execution_count"].as_u64().unwrap_or(0);
-    let dry_exec = snap["dry_run_execution_count"].as_u64().unwrap_or(0);
-
-    println!();
-    println!("AI pipeline:");
-    println!("  Passed algorithm gate:    {:>6}", gate_pass);
-    println!("  Sent to AI:               {:>6}", ai_sent);
-    println!("  AI decisions:             {:>6}", ai_decided);
-    println!("  Avg decision latency:     {:>5.0} ms", avg_ms);
-    println!("  Actions executed (live):  {:>6}", real_exec);
-    println!("  Actions simulated (dry):  {:>6}", dry_exec);
-
-    // --- Agent uptime estimate ---
-    // The first telemetry line's timestamp vs now gives approximate uptime.
-    if let Some(ref first) = first_line {
-        if let Some(first_ts) = first["ts"].as_u64().or_else(|| first["timestamp"].as_u64()) {
-            let uptime_secs = now_secs.saturating_sub(first_ts);
-            let hours = uptime_secs / 3600;
-            let minutes = (uptime_secs % 3600) / 60;
-            println!();
-            println!("Agent uptime (approx):      {}h {}m", hours, minutes);
-        }
-    }
-
-    println!();
     Ok(())
 }
 
@@ -7523,7 +7041,11 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn make_opts(cli: &Cli, params: HashMap<String, String>, yes: bool) -> ActivationOptions {
+pub(crate) fn make_opts(
+    cli: &Cli,
+    params: HashMap<String, String>,
+    yes: bool,
+) -> ActivationOptions {
     ActivationOptions {
         sensor_config: cli.sensor_config.clone(),
         agent_config: cli.agent_config.clone(),
@@ -7544,7 +7066,7 @@ fn parse_params(raw: &[String]) -> Result<HashMap<String, String>> {
     Ok(map)
 }
 
-fn unknown_cap_error(id: &str) -> anyhow::Error {
+pub(crate) fn unknown_cap_error(id: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "unknown capability '{}' - run 'innerwarden list' to see available capabilities",
         id
