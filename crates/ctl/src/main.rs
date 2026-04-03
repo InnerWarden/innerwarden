@@ -1291,20 +1291,7 @@ fn main() -> Result<()> {
         Command::Harden { verbose } => harden::cmd_harden(verbose),
         Command::Doctor => commands::ops::cmd_doctor(&cli, &registry),
         Command::Setup => commands::setup::cmd_setup(&cli),
-        Command::Welcome => {
-            let ebpf = std::process::Command::new("bpftool")
-                .args(["prog", "list"])
-                .output()
-                .ok()
-                .map(|o| {
-                    String::from_utf8_lossy(&o.stdout)
-                        .matches("innerwarden")
-                        .count() as u32
-                })
-                .unwrap_or(0);
-            welcome::run_welcome(ebpf);
-            Ok(())
-        }
+        Command::Welcome => commands::core::cmd_welcome(),
         Command::Navigator { ref output } => commands::status::cmd_navigator(output.as_deref()),
         Command::Scan { ref modules_dir } => scan::cmd_scan(modules_dir),
         Command::Upgrade {

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::{commands, make_opts, CapabilityRegistry, Cli, DailyCommand};
+use crate::{commands, make_opts, welcome, CapabilityRegistry, Cli, DailyCommand};
 
 pub(crate) fn cmd_list(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
     println!("{:<20} {:<10} Description", "Capability", "Status");
@@ -86,4 +86,19 @@ pub(crate) fn cmd_daily(
             Ok(())
         }
     }
+}
+
+pub(crate) fn cmd_welcome() -> Result<()> {
+    let ebpf = std::process::Command::new("bpftool")
+        .args(["prog", "list"])
+        .output()
+        .ok()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .matches("innerwarden")
+                .count() as u32
+        })
+        .unwrap_or(0);
+    welcome::run_welcome(ebpf);
+    Ok(())
 }
