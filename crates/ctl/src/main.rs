@@ -167,7 +167,12 @@ enum Command {
     ///
     /// Examples:
     ///   innerwarden setup
-    Setup,
+    ///   innerwarden setup --mode advanced
+    Setup {
+        /// Setup mode: basic (default) or advanced
+        #[arg(long, default_value = "basic", value_parser = ["basic", "advanced"])]
+        mode: String,
+    },
 
     /// Show welcome animation (called by installer).
     #[clap(hide = true)]
@@ -1294,7 +1299,7 @@ fn main() -> Result<()> {
         }
         Command::Harden { verbose } => harden::cmd_harden(verbose),
         Command::Doctor => commands::ops::cmd_doctor(&cli, &registry),
-        Command::Setup => commands::setup::cmd_setup(&cli),
+        Command::Setup { ref mode } => commands::setup::cmd_setup(&cli, mode),
         Command::Welcome => commands::core::cmd_welcome(),
         Command::Navigator { ref output } => commands::status::cmd_navigator(output.as_deref()),
         Command::Scan { ref modules_dir } => scan::cmd_scan(modules_dir),
@@ -1777,7 +1782,10 @@ pub(crate) fn unknown_cap_error(id: &str) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::setup::{ai_provider_defaults, count_failed_setup_checks, SetupCheck};
+    use crate::commands::setup::{
+        ai_provider_defaults, count_failed_setup_checks, setup_remediation_command, setup_verdict,
+        SetupCheck,
+    };
     use tempfile::TempDir;
 
     fn make_cli(data_dir: &std::path::Path) -> Cli {
@@ -1858,6 +1866,55 @@ mod tests {
         ];
 
         assert_eq!(count_failed_setup_checks(&checks), 1);
+    }
+
+    #[test]
+    fn setup_verdict_reports_ready_and_gaps() {
+        assert_eq!(setup_verdict(0), "READY");
+        assert_eq!(setup_verdict(1), "READY_WITH_GAPS");
+        assert_eq!(setup_verdict(3), "READY_WITH_GAPS");
+    }
+
+    #[test]
+    fn setup_remediation_command_restarts_agent_for_single_service_gap() {
+        let checks = vec![SetupCheck {
+            label: "Agent service".to_string(),
+            detail: "not running".to_string(),
+            ok: false,
+            critical: true,
+        }];
+
+        assert_eq!(
+            setup_remediation_command(&checks, false).as_deref(),
+            Some("sudo systemctl restart innerwarden-agent")
+        );
+        assert_eq!(
+            setup_remediation_command(&checks, true).as_deref(),
+            Some("sudo launchctl kickstart -k system/com.innerwarden.agent")
+        );
+    }
+
+    #[test]
+    fn setup_remediation_command_falls_back_to_advanced_setup() {
+        let checks = vec![
+            SetupCheck {
+                label: "AI".to_string(),
+                detail: "not configured".to_string(),
+                ok: false,
+                critical: true,
+            },
+            SetupCheck {
+                label: "Alerts".to_string(),
+                detail: "not ready".to_string(),
+                ok: false,
+                critical: true,
+            },
+        ];
+
+        assert_eq!(
+            setup_remediation_command(&checks, false).as_deref(),
+            Some("innerwarden setup --mode advanced")
+        );
     }
 
     #[test]
