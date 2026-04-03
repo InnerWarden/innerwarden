@@ -3708,7 +3708,7 @@ fn collect_setup_preconfig_plan(agent_doc: Option<&toml_edit::DocumentMut>) -> S
     let essential_capabilities = recs
         .iter()
         .filter(|r| matches!(r.tier, scan::Tier::Essential))
-        .filter_map(|r| parse_setup_capability_hint(&r.enable_hint))
+        .filter_map(|r| parse_setup_capability_hint(r.enable_hint))
         .collect();
 
     let set_telegram_min_severity = agent_doc
