@@ -28,6 +28,7 @@ mod forensics;
 mod geoip;
 mod incident_abuseipdb;
 mod incident_advisory;
+mod incident_ai_context;
 mod incident_crowdsec;
 mod incident_enrichment;
 mod incident_flow;
@@ -2463,35 +2464,12 @@ async fn process_incidents(
             "sending incident to AI for analysis"
         );
 
-        // Build context - filter events to those involving the same incident IPs/users
-        let entity_ips: HashSet<&str> = incident
-            .entities
-            .iter()
-            .filter(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
-            .map(|e| e.value.as_str())
-            .collect();
-        let entity_users: HashSet<&str> = incident
-            .entities
-            .iter()
-            .filter(|e| e.r#type == innerwarden_core::entities::EntityType::User)
-            .map(|e| e.value.as_str())
-            .collect();
-
-        let recent: Vec<&innerwarden_core::event::Event> = all_events
-            .iter()
-            .filter(|ev| {
-                ev.entities.iter().any(|e| {
-                    (e.r#type == innerwarden_core::entities::EntityType::Ip
-                        && entity_ips.contains(e.value.as_str()))
-                        || (e.r#type == innerwarden_core::entities::EntityType::User
-                            && entity_users.contains(e.value.as_str()))
-                })
-            })
-            .rev()
-            .take(cfg.ai.context_events)
-            .collect();
-        let related_refs: Vec<&innerwarden_core::incident::Incident> =
-            related_incidents.iter().collect();
+        let ai_context_inputs = incident_ai_context::build_ai_context_inputs(
+            incident,
+            &all_events,
+            &related_incidents,
+            cfg.ai.context_events,
+        );
 
         // Optionally enrich with AbuseIPDB reputation data
         let ip_reputation = if let Some(ref client) = state.abuseipdb {
@@ -2562,8 +2540,8 @@ async fn process_incidents(
 
         let ctx = ai::DecisionContext {
             incident,
-            recent_events: recent,
-            related_incidents: related_refs,
+            recent_events: ai_context_inputs.recent_events,
+            related_incidents: ai_context_inputs.related_incidents,
             already_blocked: already_blocked.clone(),
             available_skills: skill_infos
                 .iter()
