@@ -29,6 +29,7 @@ mod geoip;
 mod incident_advisory;
 mod incident_flow;
 mod incident_notifications;
+mod incident_obvious;
 mod ioc;
 mod mesh;
 mod mitre;
@@ -402,7 +403,7 @@ struct PendingHoneypotChoice {
 /// Per-IP reputation tracking for adaptive block TTL.
 /// Starts neutral (score 0.0); each incident and block increases the score.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct LocalIpReputation {
+pub(crate) struct LocalIpReputation {
     /// Total incidents involving this IP.
     total_incidents: u32,
     /// Total times this IP has been blocked.
@@ -417,7 +418,7 @@ struct LocalIpReputation {
 }
 
 impl LocalIpReputation {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let now = chrono::Utc::now();
         Self {
             total_incidents: 0,
@@ -429,14 +430,14 @@ impl LocalIpReputation {
     }
 
     /// Record an incident for this IP.
-    fn record_incident(&mut self) {
+    pub(crate) fn record_incident(&mut self) {
         self.total_incidents += 1;
         self.last_seen = chrono::Utc::now();
         self.reputation_score += 1.0;
     }
 
     /// Record a block action for this IP.
-    fn record_block(&mut self) {
+    pub(crate) fn record_block(&mut self) {
         self.total_blocks += 1;
         self.last_seen = chrono::Utc::now();
         self.reputation_score += 2.0;
@@ -641,7 +642,7 @@ pub(crate) fn decision_cooldown_candidates(
     keys
 }
 
-fn decision_cooldown_key_for_decision(
+pub(crate) fn decision_cooldown_key_for_decision(
     incident: &innerwarden_core::incident::Incident,
     decision: &ai::AiDecision,
 ) -> Option<String> {
@@ -2441,126 +2442,9 @@ async fn process_incidents(
             }
         }
 
-        // Obvious incident gate: skip AI for high-confidence detectors + known attacker IP.
-        // This saves API calls and speeds up response for clear-cut attacks.
-        {
-            let detector = incident_detector(&incident.incident_id);
-            let is_obvious_detector = matches!(
-                detector,
-                "ssh_bruteforce" | "credential_stuffing" | "packet_flood" | "port_scan"
-            );
-            let is_high_or_critical = matches!(
-                incident.severity,
-                innerwarden_core::event::Severity::High
-                    | innerwarden_core::event::Severity::Critical
-            );
-            let primary_ip = incident
-                .entities
-                .iter()
-                .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
-                .map(|e| e.value.as_str());
-            let ip_seen_before = primary_ip.is_some_and(|ip| {
-                // Check if this IP was already blocked or has prior incidents
-                // (total_incidents > 1 because the current incident already incremented it)
-                state.blocklist.contains(ip)
-                    || state
-                        .ip_reputations
-                        .get(ip)
-                        .is_some_and(|r| r.total_incidents > 1)
-            });
-
-            if is_obvious_detector && is_high_or_critical && ip_seen_before && cfg.responder.enabled
-            {
-                if let Some(ip) = primary_ip {
-                    info!(
-                        incident_id = %incident.incident_id,
-                        "skipping AI for obvious incident: {detector} from {ip}"
-                    );
-                    let skill_id = format!("block-ip-{}", cfg.responder.block_backend);
-                    let auto_decision = ai::AiDecision {
-                        action: ai::AiAction::BlockIp {
-                            ip: ip.to_string(),
-                            skill_id,
-                        },
-                        confidence: 0.95,
-                        auto_execute: true,
-                        reason: format!(
-                            "Auto-blocked: obvious {detector} from repeat offender {ip}"
-                        ),
-                        alternatives: vec![],
-                        estimated_threat: "high".to_string(),
-                    };
-                    let (execution_result, cloudflare_pushed) =
-                        execute_decision(&auto_decision, incident, data_dir, cfg, state).await;
-                    // Write decision entry
-                    let entry = decisions::DecisionEntry {
-                        ts: chrono::Utc::now(),
-                        incident_id: incident.incident_id.clone(),
-                        host: incident.host.clone(),
-                        ai_provider: "obvious-gate".to_string(),
-                        action_type: "block_ip".to_string(),
-                        target_ip: Some(ip.to_string()),
-                        target_user: None,
-                        skill_id: None,
-                        confidence: 0.95,
-                        auto_executed: true,
-                        dry_run: cfg.responder.dry_run,
-                        reason: auto_decision.reason.clone(),
-                        estimated_threat: "high".to_string(),
-                        execution_result: execution_result.clone(),
-                        prev_hash: None,
-                    };
-                    if let Some(writer) = &mut state.decision_writer {
-                        if let Err(e) = writer.write(&entry) {
-                            warn!("failed to write obvious-gate decision: {e:#}");
-                        }
-                    }
-                    // Update IP reputation
-                    let rep = state
-                        .ip_reputations
-                        .entry(ip.to_string())
-                        .or_insert_with(LocalIpReputation::new);
-                    rep.record_incident();
-                    if !execution_result.starts_with("skipped") {
-                        rep.record_block();
-                    }
-                    // Set decision cooldown
-                    if let Some(key) = decision_cooldown_key_for_decision(incident, &auto_decision)
-                    {
-                        state.store.set_cooldown(
-                            state_store::CooldownTable::Decision,
-                            &key,
-                            chrono::Utc::now(),
-                        );
-                    }
-                    // Telegram action report
-                    if !execution_result.starts_with("skipped") && cfg.telegram.bot.enabled {
-                        if let Some(ref tg) = state.telegram_client {
-                            let tg = tg.clone();
-                            let title = incident.title.clone();
-                            let host = incident.host.clone();
-                            let ip_owned = ip.to_string();
-                            tokio::spawn(async move {
-                                let _ = tg
-                                    .send_action_report(
-                                        "Blocked (obvious)",
-                                        &ip_owned,
-                                        &title,
-                                        0.95,
-                                        &host,
-                                        false,
-                                        None,
-                                        None,
-                                        cloudflare_pushed,
-                                    )
-                                    .await;
-                            });
-                        }
-                    }
-                    handled += 1;
-                    continue;
-                }
-            }
+        if incident_obvious::try_handle_obvious_incident(incident, data_dir, cfg, state).await {
+            handled += 1;
+            continue;
         }
 
         state.telemetry.observe_gate_pass();
@@ -3424,7 +3308,7 @@ async fn process_incidents(
 
 /// Execute an AI decision by finding and running the appropriate skill.
 /// Returns (execution_message, cloudflare_pushed).
-async fn execute_decision(
+pub(crate) async fn execute_decision(
     decision: &ai::AiDecision,
     incident: &innerwarden_core::incident::Incident,
     data_dir: &Path,
