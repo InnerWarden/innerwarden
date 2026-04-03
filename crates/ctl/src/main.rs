@@ -22,8 +22,8 @@ mod welcome;
 
 use capability::{ActivationOptions, CapabilityRegistry};
 pub(crate) use helpers::{
-    hostname, load_env_file, looks_like_ip, prompt, prompt_with_hint, send_telegram_message_md,
-    write_env_key,
+    hostname, load_env_file, looks_like_ip, prompt, prompt_with_hint, require_sudo,
+    resolve_data_dir, restart_agent, send_telegram_message_md, write_env_key,
 };
 use innerwarden_core::audit::{append_admin_action, current_operator, AdminActionEntry};
 // ---------------------------------------------------------------------------
@@ -1676,24 +1676,6 @@ pub(crate) fn read_last_incident_summary(path: &std::path::Path) -> Option<(Stri
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Shared restart helper
-// ---------------------------------------------------------------------------
-
-fn restart_agent(cli: &Cli) {
-    if cli.dry_run {
-        return;
-    }
-    let is_macos = std::env::consts::OS == "macos";
-    if is_macos {
-        let _ = systemd::restart_launchd("com.innerwarden.agent", false);
-        println!("  [ok] innerwarden-agent restarted");
-    } else {
-        let _ = systemd::restart_service("innerwarden-agent", false);
-        println!("  [ok] innerwarden-agent restarted");
-    }
-}
-
-// ---------------------------------------------------------------------------
 // innerwarden test-alert
 // ---------------------------------------------------------------------------
 
@@ -1719,59 +1701,6 @@ pub(crate) fn epoch_secs_to_date(secs: u64) -> String {
 // ---------------------------------------------------------------------------
 // innerwarden block / unblock
 // ---------------------------------------------------------------------------
-
-/// Check whether the current process can write to the InnerWarden config directory.
-/// If not, print a clear hint and exit - avoids failing mid-operation.
-fn require_sudo(cli: &Cli) {
-    let config_dir = cli
-        .agent_config
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("/etc/innerwarden"));
-
-    // Try creating a temp file in the directory as the write test
-    let test_path = config_dir.join(".innerwarden-write-test");
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&test_path)
-    {
-        Ok(_) => {
-            let _ = std::fs::remove_file(&test_path);
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            eprintln!(
-                "Permission denied: cannot write to {}",
-                config_dir.display()
-            );
-            eprintln!();
-            // Reconstruct the original command to show the sudo hint
-            let args: Vec<String> = std::env::args().collect();
-            let cmd_args = args[1..].join(" ");
-            eprintln!("Run with sudo:");
-            eprintln!("  sudo innerwarden {cmd_args}");
-            std::process::exit(1);
-        }
-        Err(_) => {} // some other error; let the real operation surface it
-    }
-}
-
-pub(crate) fn resolve_data_dir(cli: &Cli, data_dir: &Path) -> PathBuf {
-    if data_dir == Path::new("/var/lib/innerwarden") {
-        std::fs::read_to_string(&cli.agent_config)
-            .ok()
-            .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
-            .and_then(|v| {
-                v.get("output")
-                    .and_then(|o| o.get("data_dir"))
-                    .and_then(|d| d.as_str())
-                    .map(PathBuf::from)
-            })
-            .unwrap_or_else(|| data_dir.to_path_buf())
-    } else {
-        data_dir.to_path_buf()
-    }
-}
 
 fn write_manual_decision(
     data_dir: &Path,

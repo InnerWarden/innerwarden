@@ -128,8 +128,8 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 
 ### Estado atual
 
-- `crates/ctl/src/main.rs` esta em `2214` linhas
-- Ultimo corte aplicado: extracao de helpers compartilhados para `helpers.rs`
+- `crates/ctl/src/main.rs` esta em `2143` linhas
+- Ultimo corte aplicado: extracao de `restart_agent` / `require_sudo` / `resolve_data_dir` para `helpers.rs`
 - Todos os cortes foram validados com:
   - `cargo fmt --all`
   - `cargo check -p innerwarden-ctl`
@@ -137,12 +137,9 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 
 ### Ordem recomendada para continuar
 
-1. Consolidar helpers compartilhados
-- revisar o que ainda faz sentido ficar no root:
-  - `require_sudo`
-  - `resolve_data_dir`
-  - `restart_agent`
-- mover apenas quando a fronteira estiver clara; nao forcar acoplamento artificial
+1. Encerramento do `ctl`
+- revisar se `main.rs` ainda precisa de novos cortes ou se ja atingiu ponto de manutencao aceitavel
+- manter foco em cortes sem mudanca de comportamento
 
 2. Depois do `ctl`
 - iniciar a mesma estrategia no crate `agent`
@@ -161,6 +158,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 
 ### Ultimos commits desta frente
 
+- `d7a7018` Extract shared ctl helpers into a dedicated module
 - `ffcfe84` Extract ctl welcome command into core module
 - `c5bcaef` Extract ctl sensitivity configure command into ops module
 - `ab02fac` Extract ctl capability enable and disable commands
