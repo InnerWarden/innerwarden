@@ -1,6 +1,6 @@
 # InnerWarden — Main Repo
 
-Sensor (eBPF) + Agent (AI triage) + CTL (CLI). Repo principal, open source (BUSL-1.1).
+Sensor (eBPF) + Agent (AI triage) + CTL (CLI). Repo principal, open source (Apache-2.0).
 
 ## O que vive aqui
 
