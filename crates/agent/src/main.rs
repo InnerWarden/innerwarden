@@ -37,6 +37,7 @@ mod incident_decision_eval;
 mod incident_enrichment;
 mod incident_execution_gate;
 mod incident_flow;
+mod incident_forensics;
 mod incident_honeypot_router;
 mod incident_honeypot_suggestion;
 mod incident_notifications;
@@ -2353,42 +2354,7 @@ async fn process_incidents(
             }
         }
 
-        // Forensics capture: for High/Critical incidents with a PID in evidence,
-        // grab /proc state before the process disappears. Best-effort - the
-        // process may have already exited by the time we read.
-        if matches!(
-            incident.severity,
-            innerwarden_core::event::Severity::High | innerwarden_core::event::Severity::Critical
-        ) {
-            if let Some(pid) = incident.evidence.get("pid").and_then(|v| v.as_u64()) {
-                let pid = pid as u32;
-                if let Some(report) = state.forensics.try_capture(pid, &incident.incident_id) {
-                    info!(
-                        pid = report.pid,
-                        incident_id = %incident.incident_id,
-                        exe = ?report.exe,
-                        "forensics: process state captured"
-                    );
-                }
-            }
-
-            // Selective pcap capture: capture traffic for the attacker IP
-            let primary_ip = incident
-                .entities
-                .iter()
-                .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
-                .map(|e| e.value.as_str());
-            if let Some(ip) = primary_ip {
-                if let Some(result) = state.pcap_capture.try_capture(ip, &incident.incident_id) {
-                    info!(
-                        ip = %result.ip,
-                        pcap = %result.pcap_path.display(),
-                        duration = result.duration_secs,
-                        "pcap: capture initiated for incident"
-                    );
-                }
-            }
-        }
+        incident_forensics::maybe_capture_incident_forensics(incident, state);
 
         let related_incidents =
             incident_prelude::prepare_incident_prelude(incident, cfg, state).await;
