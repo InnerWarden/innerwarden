@@ -1,8 +1,8 @@
 use std::path::Path;
 
-use tracing::warn;
+use tracing::{info, warn};
 
-use crate::{decisions, AgentState};
+use crate::{config, decisions, telegram, AgentState};
 
 /// Count the number of lines in a JSONL file in data_dir (fail-silent -> 0).
 pub(crate) fn count_jsonl_lines(data_dir: &Path, filename: &str) -> usize {
@@ -218,6 +218,317 @@ pub(crate) fn sanitize_allowlist_process_name(raw: &str) -> Option<String> {
     (!cleaned.is_empty()).then_some(cleaned)
 }
 
+/// Handle triage sentinels from Telegram callbacks:
+/// "__allow_proc__", "__allow_ip__", "__fp__".
+/// Returns true when a triage callback was matched and handled.
+pub(crate) fn handle_telegram_triage_action(
+    result: &telegram::ApprovalResult,
+    data_dir: &Path,
+    cfg: &config::AgentConfig,
+    state: &mut AgentState,
+) -> bool {
+    let Some(action) = parse_telegram_triage_action(&result.incident_id) else {
+        return false;
+    };
+
+    match action {
+        TelegramTriageAction::AllowProc(comm_raw) => {
+            let Some(comm) = sanitize_allowlist_process_name(comm_raw) else {
+                write_telegram_triage_audit(
+                    state,
+                    &result.incident_id,
+                    &result.operator_name,
+                    "allowlist_add",
+                    None,
+                    Some("process:(empty)".to_string()),
+                    format!(
+                        "Operator {} attempted to add empty process allowlist via Telegram",
+                        result.operator_name
+                    ),
+                    "skipped:empty_process_name".to_string(),
+                );
+                tg_reply(state, "⚠️ Could not add empty process name to allowlist.");
+                return true;
+            };
+            let allowlist_path = Path::new("/etc/innerwarden/allowlist.toml");
+            let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+            let reason = format!("Allowed via Telegram ({ts})");
+            match telegram::append_to_allowlist(allowlist_path, "processes", &comm, &reason) {
+                Ok(()) => {
+                    // Log to allowlist history for undo support
+                    telegram::log_allowlist_change(
+                        data_dir,
+                        &comm,
+                        "processes",
+                        &result.operator_name,
+                        "add",
+                    );
+                    write_telegram_triage_audit(
+                        state,
+                        &result.incident_id,
+                        &result.operator_name,
+                        "allowlist_add",
+                        None,
+                        Some(format!("process:{comm}")),
+                        format!(
+                            "Operator {} added process '{}' to allowlist via Telegram",
+                            result.operator_name, comm
+                        ),
+                        format!("allowlist_process_added:{comm}"),
+                    );
+                    info!(
+                        operator = %result.operator_name,
+                        comm = %comm,
+                        path = %allowlist_path.display(),
+                        "Telegram triage allowlist (process) applied"
+                    );
+
+                    // 2FA nudge if not enabled
+                    let two_fa_enabled = cfg
+                        .security
+                        .as_ref()
+                        .map(|s| s.two_factor_method != "none")
+                        .unwrap_or(false);
+                    let confirmation_suffix = if two_fa_enabled {
+                        " (verified by TOTP)"
+                    } else {
+                        ""
+                    };
+                    let mut msg = format!(
+                        "\u{2705} Allowed <code>{comm}</code>{confirmation_suffix}. Sensor will pick this up in up to 60s."
+                    );
+                    if !two_fa_enabled {
+                        msg.push_str(
+                            "\n\n\u{26a0}\u{fe0f} Allowlist changes are not protected by 2FA.\n\
+                             Anyone with your bot token can silence alerts.",
+                        );
+                    }
+                    if two_fa_enabled {
+                        tg_reply(state, msg);
+                    } else if let Some(ref tg) = state.telegram_client {
+                        let tg = tg.clone();
+                        tokio::spawn(async move {
+                            let keyboard = serde_json::json!([
+                                [
+                                    { "text": "\u{1f510} Enable 2FA", "callback_data": "enable2fa" },
+                                    { "text": "\u{1f44d} Dismiss", "callback_data": "dismiss2fa" }
+                                ]
+                            ]);
+                            let _ = tg.send_text_with_keyboard(&msg, keyboard).await;
+                        });
+                    }
+                }
+                Err(e) => {
+                    write_telegram_triage_audit(
+                        state,
+                        &result.incident_id,
+                        &result.operator_name,
+                        "allowlist_add",
+                        None,
+                        Some(format!("process:{comm}")),
+                        format!(
+                            "Operator {} failed to add process '{}' to allowlist via Telegram",
+                            result.operator_name, comm
+                        ),
+                        format!(
+                            "failed:{}",
+                            e.to_string().chars().take(180).collect::<String>()
+                        ),
+                    );
+                    warn!(
+                        operator = %result.operator_name,
+                        comm = %comm,
+                        error = %e,
+                        "failed to append process allowlist entry from Telegram"
+                    );
+                    tg_reply(
+                        state,
+                        format!(
+                            "❌ Failed to allowlist <code>{comm}</code>: {}",
+                            e.to_string().chars().take(180).collect::<String>()
+                        ),
+                    );
+                }
+            }
+        }
+        TelegramTriageAction::AllowIp(ip_raw) => {
+            let ip = ip_raw.trim().to_string();
+            if ip.parse::<std::net::IpAddr>().is_err() {
+                write_telegram_triage_audit(
+                    state,
+                    &result.incident_id,
+                    &result.operator_name,
+                    "allowlist_add",
+                    Some(ip.clone()),
+                    None,
+                    format!(
+                        "Operator {} attempted to add invalid IP '{}' to allowlist via Telegram",
+                        result.operator_name, ip
+                    ),
+                    "skipped:invalid_ip".to_string(),
+                );
+                warn!(
+                    operator = %result.operator_name,
+                    ip = %ip,
+                    "invalid ip in Telegram allowlist callback"
+                );
+                tg_reply(
+                    state,
+                    format!("⚠️ Invalid IP for allowlist: <code>{ip}</code>"),
+                );
+                return true;
+            }
+            let allowlist_path = Path::new("/etc/innerwarden/allowlist.toml");
+            let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+            let reason = format!("Allowed via Telegram ({ts})");
+            match telegram::append_to_allowlist(allowlist_path, "ips", &ip, &reason) {
+                Ok(()) => {
+                    // Log to allowlist history for undo support
+                    telegram::log_allowlist_change(
+                        data_dir,
+                        &ip,
+                        "ips",
+                        &result.operator_name,
+                        "add",
+                    );
+                    write_telegram_triage_audit(
+                        state,
+                        &result.incident_id,
+                        &result.operator_name,
+                        "allowlist_add",
+                        Some(ip.clone()),
+                        None,
+                        format!(
+                            "Operator {} added IP '{}' to allowlist via Telegram",
+                            result.operator_name, ip
+                        ),
+                        format!("allowlist_ip_added:{ip}"),
+                    );
+                    info!(
+                        operator = %result.operator_name,
+                        ip = %ip,
+                        path = %allowlist_path.display(),
+                        "Telegram triage allowlist (ip) applied"
+                    );
+
+                    // 2FA nudge if not enabled
+                    let two_fa_enabled = cfg
+                        .security
+                        .as_ref()
+                        .map(|s| s.two_factor_method != "none")
+                        .unwrap_or(false);
+                    let confirmation_suffix = if two_fa_enabled {
+                        " (verified by TOTP)"
+                    } else {
+                        ""
+                    };
+                    let mut msg = format!(
+                        "\u{2705} Allowed <code>{ip}</code>{confirmation_suffix}. Sensor will pick this up in up to 60s."
+                    );
+                    if !two_fa_enabled {
+                        msg.push_str(
+                            "\n\n\u{26a0}\u{fe0f} Allowlist changes are not protected by 2FA.\n\
+                             Anyone with your bot token can silence alerts.",
+                        );
+                    }
+                    if two_fa_enabled {
+                        tg_reply(state, msg);
+                    } else if let Some(ref tg) = state.telegram_client {
+                        let tg = tg.clone();
+                        tokio::spawn(async move {
+                            let keyboard = serde_json::json!([
+                                [
+                                    { "text": "\u{1f510} Enable 2FA", "callback_data": "enable2fa" },
+                                    { "text": "\u{1f44d} Dismiss", "callback_data": "dismiss2fa" }
+                                ]
+                            ]);
+                            let _ = tg.send_text_with_keyboard(&msg, keyboard).await;
+                        });
+                    }
+                }
+                Err(e) => {
+                    write_telegram_triage_audit(
+                        state,
+                        &result.incident_id,
+                        &result.operator_name,
+                        "allowlist_add",
+                        Some(ip.clone()),
+                        None,
+                        format!(
+                            "Operator {} failed to add IP '{}' to allowlist via Telegram",
+                            result.operator_name, ip
+                        ),
+                        format!(
+                            "failed:{}",
+                            e.to_string().chars().take(180).collect::<String>()
+                        ),
+                    );
+                    warn!(
+                        operator = %result.operator_name,
+                        ip = %ip,
+                        error = %e,
+                        "failed to append ip allowlist entry from Telegram"
+                    );
+                    tg_reply(
+                        state,
+                        format!(
+                            "❌ Failed to allowlist <code>{ip}</code>: {}",
+                            e.to_string().chars().take(180).collect::<String>()
+                        ),
+                    );
+                }
+            }
+        }
+        TelegramTriageAction::ReportFp(raw_incident_id) => {
+            let incident_id = raw_incident_id.trim();
+            if incident_id.is_empty() {
+                write_telegram_triage_audit(
+                    state,
+                    &result.incident_id,
+                    &result.operator_name,
+                    "fp_report",
+                    None,
+                    None,
+                    format!(
+                        "Operator {} attempted to report FP with empty incident id",
+                        result.operator_name
+                    ),
+                    "skipped:empty_incident_id".to_string(),
+                );
+                tg_reply(
+                    state,
+                    "⚠️ Could not report false positive: missing incident id.",
+                );
+                return true;
+            }
+            let detector = incident_id.split(':').next().unwrap_or("unknown");
+            telegram::log_false_positive(data_dir, incident_id, detector, &result.operator_name);
+            write_telegram_triage_audit(
+                state,
+                incident_id,
+                &result.operator_name,
+                "fp_report",
+                None,
+                None,
+                format!(
+                    "Operator {} reported incident '{}' as false positive via Telegram",
+                    result.operator_name, incident_id
+                ),
+                format!("reported_fp:{detector}"),
+            );
+            info!(
+                operator = %result.operator_name,
+                incident_id = %incident_id,
+                detector = %detector,
+                "Telegram triage false-positive reported"
+            );
+            tg_reply(state, "📝 Reported. Thanks for the feedback.");
+        }
+    }
+
+    true
+}
+
 /// Format an RFC3339 timestamp as a human-readable "X ago" string.
 pub(crate) fn format_time_ago(ts_str: &str) -> String {
     let ts = match chrono::DateTime::parse_from_rfc3339(ts_str) {
@@ -238,6 +549,16 @@ pub(crate) fn local_hostname_for_audit() -> String {
     std::env::var("HOSTNAME")
         .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
         .unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn tg_reply(state: &AgentState, text: impl Into<String>) {
+    if let Some(ref tg) = state.telegram_client {
+        let tg = tg.clone();
+        let text = text.into();
+        tokio::spawn(async move {
+            let _ = tg.send_text_message(&text).await;
+        });
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

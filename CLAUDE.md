@@ -142,8 +142,10 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - novo modulo `crates/agent/src/bot_commands.rs` com `run_innerwarden_cli`, `format_capabilities`, `capabilities_keyboard`, `strip_ansi`
   - `probe_and_suggest` tambem movido para `bot_commands.rs`
   - novo handler `handle_telegram_bot_command` em `bot_commands.rs` para comandos bot-only (`__status__` ate `enable:<id>`)
+  - novo handler `handle_telegram_triage_action` em `bot_helpers.rs` para triagem (`__allow_proc__`, `__allow_ip__`, `__fp__`)
   - `process_telegram_approval` agora delega o roteamento bot-only para `bot_commands`
-  - `crates/agent/src/main.rs` reduziu para `7978` linhas
+  - `process_telegram_approval` agora delega tambem o roteamento de triagem para `bot_helpers`
+  - `crates/agent/src/main.rs` reduziu para `7690` linhas
 
 ### Ordem recomendada para continuar
 
