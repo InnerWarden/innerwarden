@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use crate::commands::ai::{fetch_models, prompt_ollama_api_key, WIZARD_PROVIDERS};
+use crate::commands::notify::cmd_configure_telegram;
 use crate::{
-    am_root, cmd_agent, cmd_configure_telegram, cmd_enable, config_editor, load_env_file, prompt,
-    reexec_with_sudo, resolve_dashboard_url, restart_agent, scan, systemd, write_env_key,
-    AgentCommand, CapabilityRegistry, Cli,
+    am_root, cmd_agent, cmd_enable, config_editor, load_env_file, prompt, reexec_with_sudo,
+    resolve_dashboard_url, restart_agent, scan, systemd, write_env_key, AgentCommand,
+    CapabilityRegistry, Cli,
 };
 
 #[derive(Debug, Clone)]
