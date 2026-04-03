@@ -66,6 +66,7 @@ mod slack;
 mod state_store;
 mod telegram;
 mod telemetry;
+mod telemetry_tick;
 mod threat_feeds;
 mod threat_report;
 #[allow(dead_code)]
@@ -2644,17 +2645,7 @@ async fn process_incidents(
         handled += 1;
     }
 
-    let snapshot = state.telemetry.snapshot("incident_tick");
-    let mut telemetry_write_failed = false;
-    if let Some(writer) = &mut state.telemetry_writer {
-        if let Err(e) = writer.write(&snapshot) {
-            warn!("failed to write telemetry snapshot: {e:#}");
-            telemetry_write_failed = true;
-        }
-    }
-    if telemetry_write_failed {
-        state.telemetry.observe_error("telemetry_writer");
-    }
+    telemetry_tick::write_tick_snapshot(state, "incident_tick");
 
     handled
 }
@@ -3854,17 +3845,7 @@ async fn process_narrative_tick(
         }
     }
 
-    let snapshot = state.telemetry.snapshot("narrative_tick");
-    let mut telemetry_write_failed = false;
-    if let Some(writer) = &mut state.telemetry_writer {
-        if let Err(e) = writer.write(&snapshot) {
-            warn!("failed to write telemetry snapshot: {e:#}");
-            telemetry_write_failed = true;
-        }
-    }
-    if telemetry_write_failed {
-        state.telemetry.observe_error("telemetry_writer");
-    }
+    telemetry_tick::write_tick_snapshot(state, "narrative_tick");
 
     Ok(events_count)
 }
