@@ -1626,7 +1626,7 @@ pub(crate) fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()>
         // Map capability → expected sudoers drop-in name
         let drop_in = match cap.id() {
             "block-ip" => Some("innerwarden-block-ip"),
-            "sudo-protection" => Some("innerwarden-sudo-protection"),
+            "sudo-protection" => Some("innerwarden-suspend-user"),
             "search-protection" => Some("innerwarden-search-protection"),
             _ => None,
         };
