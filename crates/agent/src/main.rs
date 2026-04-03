@@ -30,6 +30,7 @@ mod incident_abuseipdb;
 mod incident_advisory;
 mod incident_crowdsec;
 mod incident_flow;
+mod incident_honeypot_router;
 mod incident_notifications;
 mod incident_obvious;
 mod ioc;
@@ -2554,86 +2555,17 @@ async fn process_incidents(
             }
         }
 
-        // ── Honeypot smart routing ────────────────────────────────────
-        // Instead of blocking every SSH attacker, route "interesting" ones to
-        // the honeypot to capture credentials, techniques, and payloads.
-        //
-        // Interesting = suspicious_login (brute-force followed by success)
-        //             = first-time attacker (not in blocklist, not repeat offender)
-        //               AND honeypot is in listener mode (actually running)
-        //
-        // Boring = repeat offender, high-volume bot → XDP drop via normal block flow
-        if cfg.honeypot.mode == "listener" && cfg.responder.enabled {
-            let detector = incident.incident_id.split(':').next().unwrap_or("");
-            let primary_ip = incident
-                .entities
-                .iter()
-                .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
-                .map(|e| e.value.clone());
-
-            if let Some(ref ip) = primary_ip {
-                let is_new_attacker = !state.blocklist.contains(ip)
-                    && !blocked_set.contains(ip)
-                    && state.store.get_block_count(ip) == 0;
-
-                // suspicious_login = brute-force followed by success → HIGH VALUE
-                // Route to honeypot to observe what they do with access
-                let should_honeypot = (detector == "suspicious_login" && is_new_attacker)
-                    // First-time SSH brute-force with low attempt count
-                    || (detector == "ssh_bruteforce"
-                        && is_new_attacker
-                        && !allowlist::is_ip_allowlisted(ip, &cfg.ai.protected_ips)
-                        // Only route ~20% of new attackers to honeypot (the rest get blocked)
-                        && ip.as_bytes().last().copied().unwrap_or(0) % 5 == 0);
-
-                if should_honeypot {
-                    info!(
-                        incident_id = %incident.incident_id,
-                        ip, detector,
-                        "honeypot routing: interesting attacker → redirecting to honeypot"
-                    );
-                    let honeypot_decision = ai::AiDecision {
-                        action: ai::AiAction::Honeypot { ip: ip.clone() },
-                        confidence: 0.95,
-                        auto_execute: true,
-                        reason: format!(
-                            "Smart routing: {} - interesting attacker redirected to honeypot for intel gathering",
-                            detector
-                        ),
-                        alternatives: vec![],
-                        estimated_threat: "high".into(),
-                    };
-                    if let Some(key) =
-                        decision_cooldown_key_for_decision(incident, &honeypot_decision)
-                    {
-                        state.store.set_cooldown(
-                            state_store::CooldownTable::Decision,
-                            &key,
-                            chrono::Utc::now(),
-                        );
-                    }
-                    let (execution_result, _) = if cfg.responder.enabled {
-                        execute_decision(&honeypot_decision, incident, data_dir, cfg, state).await
-                    } else {
-                        ("skipped: responder disabled".to_string(), false)
-                    };
-                    if let Some(writer) = &mut state.decision_writer {
-                        let entry = decisions::build_entry(
-                            &incident.incident_id,
-                            &incident.host,
-                            "honeypot-router",
-                            &honeypot_decision,
-                            cfg.responder.dry_run,
-                            &execution_result,
-                        );
-                        if let Err(e) = writer.write(&entry) {
-                            warn!("failed to write honeypot routing decision: {e:#}");
-                        }
-                    }
-                    handled += 1;
-                    continue;
-                }
-            }
+        if incident_honeypot_router::try_handle_honeypot_routing(
+            incident,
+            data_dir,
+            cfg,
+            state,
+            &blocked_set,
+        )
+        .await
+        {
+            handled += 1;
+            continue;
         }
 
         // Optionally enrich with IP geolocation data
