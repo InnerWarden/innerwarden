@@ -1337,7 +1337,7 @@ fn main() -> Result<()> {
                 if registry.get(t).is_some() {
                     commands::status::cmd_status(&cli, &registry, t)
                 } else {
-                    cmd_entity(&cli, t, days, &cli.data_dir.clone())
+                    commands::history::cmd_entity(&cli, t, days, &cli.data_dir.clone())
                 }
             }
         },
@@ -1354,7 +1354,7 @@ fn main() -> Result<()> {
             yes,
         } => cmd_disable(&cli, &registry, capability, yes),
         Command::Configure { ref command } => match command {
-            None => cmd_configure_menu(&cli),
+            None => commands::ops::cmd_configure_menu(&cli),
             Some(ConfigureCommand::Ai {
                 ref provider,
                 ref key,
@@ -1440,10 +1440,10 @@ fn main() -> Result<()> {
 
                 Ok(())
             }
-            Some(ConfigureCommand::TwoFa) => cmd_configure_2fa(&cli),
+            Some(ConfigureCommand::TwoFa) => commands::ops::cmd_configure_2fa(&cli),
         },
         Command::Notify { ref command } => match command {
-            None => cmd_configure_menu(&cli),
+            None => commands::ops::cmd_configure_menu(&cli),
             Some(NotifyCommand::Telegram {
                 ref token,
                 ref chat_id,
@@ -1486,7 +1486,7 @@ fn main() -> Result<()> {
             }
         },
         Command::Integrate { ref command } => match command {
-            None => cmd_configure_menu(&cli),
+            None => commands::ops::cmd_configure_menu(&cli),
             Some(IntegrateCommand::Geoip) => commands::integrations::cmd_configure_geoip(&cli),
             Some(IntegrateCommand::Abuseipdb {
                 ref api_key,
@@ -1572,9 +1572,9 @@ fn main() -> Result<()> {
             live,
         } => {
             if live {
-                cmd_incidents_live(&cli, severity, &cli.data_dir.clone())
+                commands::history::cmd_incidents_live(&cli, severity, &cli.data_dir.clone())
             } else {
-                cmd_incidents(&cli, days, severity, &cli.data_dir.clone())
+                commands::history::cmd_incidents(&cli, days, severity, &cli.data_dir.clone())
             }
         }
         Command::Block { ref ip, ref reason } => {
@@ -1605,7 +1605,7 @@ fn main() -> Result<()> {
             ref to,
             ref format,
             ref output,
-        } => cmd_export(
+        } => commands::history::cmd_export(
             &cli,
             kind,
             from.as_deref(),
@@ -1617,12 +1617,12 @@ fn main() -> Result<()> {
         Command::Tail {
             ref r#type,
             interval,
-        } => cmd_tail(&cli, r#type, interval, &cli.data_dir.clone()),
+        } => commands::history::cmd_tail(&cli, r#type, interval, &cli.data_dir.clone()),
         Command::Decisions { days, ref action } => {
-            cmd_decisions(&cli, days, action.as_deref(), &cli.data_dir.clone())
+            commands::history::cmd_decisions(&cli, days, action.as_deref(), &cli.data_dir.clone())
         }
         Command::Entity { ref target, days } => {
-            cmd_entity(&cli, target, days, &cli.data_dir.clone())
+            commands::history::cmd_entity(&cli, target, days, &cli.data_dir.clone())
         }
         Command::Completions { ref shell } => cmd_completions(shell),
         Command::Allowlist { ref command } => match command {
@@ -1650,8 +1650,10 @@ fn main() -> Result<()> {
             GdprCommand::Export {
                 ref entity,
                 ref output,
-            } => cmd_gdpr_export(&cli.data_dir, entity, output.as_deref()),
-            GdprCommand::Erase { ref entity, yes } => cmd_gdpr_erase(&cli.data_dir, entity, *yes),
+            } => commands::history::cmd_gdpr_export(&cli.data_dir, entity, output.as_deref()),
+            GdprCommand::Erase { ref entity, yes } => {
+                commands::history::cmd_gdpr_erase(&cli.data_dir, entity, *yes)
+            }
         },
         Command::Agent { ref command } => commands::agent::cmd_agent(&cli, command.as_ref()),
     }
@@ -1703,13 +1705,13 @@ fn cmd_daily(
             live,
         }) => {
             if *live {
-                cmd_incidents_live(cli, severity, &cli.data_dir.clone())
+                commands::history::cmd_incidents_live(cli, severity, &cli.data_dir.clone())
             } else {
-                cmd_incidents(cli, *days, severity, &cli.data_dir.clone())
+                commands::history::cmd_incidents(cli, *days, severity, &cli.data_dir.clone())
             }
         }
         Some(DailyCommand::Actions { days }) => {
-            cmd_decisions(cli, *days, None, &cli.data_dir.clone())
+            commands::history::cmd_decisions(cli, *days, None, &cli.data_dir.clone())
         }
         Some(DailyCommand::Report { date }) => {
             commands::status::cmd_report(cli, date, &cli.data_dir.clone())
@@ -2330,119 +2332,6 @@ fn write_env_key(env_path: &Path, key: &str, value: &str) -> Result<()> {
 // innerwarden configure (interactive menu)
 // ---------------------------------------------------------------------------
 
-fn cmd_configure_menu(cli: &Cli) -> Result<()> {
-    let env_file = cli
-        .agent_config
-        .parent()
-        .map(|p| p.join("agent.env"))
-        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
-    let env_vars = load_env_file(&env_file);
-
-    // Read agent.toml for enabled flags
-    let agent_doc: Option<toml_edit::DocumentMut> = cli
-        .agent_config
-        .exists()
-        .then(|| std::fs::read_to_string(&cli.agent_config).ok())
-        .flatten()
-        .and_then(|s| s.parse().ok());
-
-    let is_enabled = |section: &str| -> bool {
-        agent_doc
-            .as_ref()
-            .and_then(|doc| doc.get(section))
-            .and_then(|s| s.get("enabled"))
-            .and_then(|e| e.as_bool())
-            .unwrap_or(false)
-    };
-    let has_env = |key: &str| -> bool {
-        env_vars.get(key).is_some_and(|v| !v.is_empty())
-            || std::env::var(key).is_ok_and(|v| !v.is_empty())
-    };
-
-    // Build status labels
-    let status = |ok: bool| -> &'static str {
-        if ok {
-            "✅ configured"
-        } else {
-            "○  not set up"
-        }
-    };
-
-    let ai_ok = is_enabled("ai");
-    let telegram_ok = has_env("TELEGRAM_BOT_TOKEN") && has_env("TELEGRAM_CHAT_ID");
-    let slack_ok = has_env("SLACK_WEBHOOK_URL") || {
-        agent_doc
-            .as_ref()
-            .and_then(|doc| doc.get("slack"))
-            .and_then(|s| s.get("webhook_url"))
-            .and_then(|u| u.as_str())
-            .is_some_and(|s| !s.is_empty())
-    };
-    let webhook_ok = agent_doc
-        .as_ref()
-        .and_then(|doc| doc.get("webhook"))
-        .and_then(|w| w.get("enabled"))
-        .and_then(|e| e.as_bool())
-        .unwrap_or(false);
-    let dashboard_ok = has_env("INNERWARDEN_DASHBOARD_USER");
-    let abuseipdb_ok = has_env("ABUSEIPDB_API_KEY") || is_enabled("abuseipdb");
-    let geoip_ok = is_enabled("geoip");
-    let fail2ban_ok = is_enabled("fail2ban");
-    let cloudflare_ok = has_env("CLOUDFLARE_API_TOKEN") || is_enabled("cloudflare");
-    let responder_ok = is_enabled("responder");
-    let watchdog_ok = std::process::Command::new("crontab")
-        .arg("-l")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("innerwarden watchdog"))
-        .unwrap_or(false);
-
-    println!("InnerWarden - configure\n");
-    println!("Choose what to set up:\n");
-    println!("   1. AI provider      {}", status(ai_ok));
-    println!("   2. Telegram         {}", status(telegram_ok));
-    println!("   3. Slack            {}", status(slack_ok));
-    println!("   4. Webhook          {}", status(webhook_ok));
-    println!("   5. Dashboard        {}", status(dashboard_ok));
-    println!("   6. AbuseIPDB        {}", status(abuseipdb_ok));
-    println!("   7. GeoIP            {}", status(geoip_ok));
-    println!("   8. Fail2ban         {}", status(fail2ban_ok));
-    println!("   9. Cloudflare       {}", status(cloudflare_ok));
-    println!("  10. Responder        {}", status(responder_ok));
-    println!("  11. Watchdog (cron)  {}", status(watchdog_ok));
-    println!();
-    print!("Enter number (or q to quit): ");
-    std::io::stdout().flush()?;
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    let choice = input.trim();
-
-    println!();
-    match choice {
-        "1" => commands::ai::cmd_configure_ai_interactive(cli),
-        "2" => commands::notify::cmd_configure_telegram(cli, None, None, false),
-        "3" => commands::notify::cmd_configure_slack(cli, None, "high", false),
-        "4" => commands::notify::cmd_configure_webhook(cli, None, "high", false),
-        "5" => commands::notify::cmd_configure_dashboard(cli, "admin", None),
-        "6" => commands::integrations::cmd_configure_abuseipdb(cli, None, None),
-        "7" => commands::integrations::cmd_configure_geoip(cli),
-        "8" => cmd_configure_fail2ban(cli),
-        "9" => commands::integrations::cmd_configure_cloudflare(cli, None, None),
-        "10" => commands::responder::cmd_configure_responder(cli, false, false, None),
-        "11" => commands::integrations::cmd_configure_watchdog(cli, 10),
-        "q" | "Q" | "" => {
-            println!(
-                "Tip: run 'innerwarden configure <name>' to jump directly to any integration."
-            );
-            Ok(())
-        }
-        _ => {
-            println!("Invalid choice. Run 'innerwarden configure' again.");
-            Ok(())
-        }
-    }
-}
-
 fn prompt(label: &str) -> Result<String> {
     print!("{label}: ");
     std::io::stdout().flush()?;
@@ -2462,65 +2351,6 @@ fn prompt_with_hint(label: &str, hint: &str) -> Result<String> {
 // ---------------------------------------------------------------------------
 // innerwarden configure fail2ban
 // ---------------------------------------------------------------------------
-
-fn cmd_configure_fail2ban(cli: &Cli) -> Result<()> {
-    if !cli.dry_run {
-        require_sudo(cli);
-    }
-    // Check fail2ban is installed
-    let installed = std::process::Command::new("fail2ban-client")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if !installed {
-        if std::env::consts::OS == "macos" {
-            anyhow::bail!(
-                "fail2ban is not available on macOS.\n\
-                 This integration only works on Linux."
-            );
-        }
-        anyhow::bail!(
-            "fail2ban-client not found. Install it first:\n\
-             \n\
-             Ubuntu/Debian:  sudo apt install fail2ban\n\
-             RHEL/CentOS:    sudo yum install fail2ban\n\
-             \n\
-             Then run this command again."
-        );
-    }
-
-    // Check it's running
-    let running = std::process::Command::new("fail2ban-client")
-        .arg("ping")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if !running {
-        println!("  Warning: fail2ban is installed but not running.");
-        println!("  Start it with: sudo systemctl start fail2ban");
-        println!("  Enabling the integration anyway - it will activate when fail2ban starts.\n");
-    }
-
-    if cli.dry_run {
-        println!(
-            "[dry-run] would set [fail2ban] enabled=true in {}",
-            cli.agent_config.display()
-        );
-        return Ok(());
-    }
-
-    config_editor::write_bool(&cli.agent_config, "fail2ban", "enabled", true)?;
-    println!("  [ok] agent.toml: fail2ban.enabled = true");
-
-    restart_agent(cli);
-    println!();
-    println!("Fail2ban integration enabled.");
-    println!("IPs banned by fail2ban will automatically be enforced via your block skill.");
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // Shared restart helper
@@ -2634,291 +2464,6 @@ fn cmd_ai_install(cli: &Cli, model: &str, api_key_arg: Option<&str>, yes: bool) 
 // ---------------------------------------------------------------------------
 // innerwarden test-alert
 // ---------------------------------------------------------------------------
-
-fn cmd_configure_2fa(cli: &Cli) -> Result<()> {
-    println!();
-    println!("  \u{1f510} Two-Factor Authentication Setup");
-    println!("  ================================");
-    println!();
-    println!("  Choose your second factor:");
-    println!("  1. TOTP (Google Authenticator, Authy, 1Password)");
-    println!("  2. None (disabled, default)");
-    println!();
-    print!("  Choose [1-2]: ");
-    use std::io::Write;
-    std::io::stdout().flush()?;
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    let choice = input.trim();
-
-    match choice {
-        "1" => {
-            // Generate TOTP secret
-            use rand_core::{OsRng, RngCore};
-            let mut secret_bytes = [0u8; 20];
-            OsRng.fill_bytes(&mut secret_bytes);
-            let secret_b32 = base32_encode_simple(&secret_bytes);
-
-            let uri = format!(
-                "otpauth://totp/InnerWarden:admin?secret={}&issuer=InnerWarden&algorithm=SHA1&digits=6&period=30",
-                secret_b32
-            );
-
-            println!();
-            println!("  Scan this URI with your authenticator app:");
-            println!();
-            println!("  {}", uri);
-            println!();
-            print!("  Enter the 6-digit code to verify: ");
-            std::io::stdout().flush()?;
-
-            let mut code = String::new();
-            std::io::stdin().read_line(&mut code)?;
-            let code = code.trim();
-
-            // Verify the code
-            if verify_totp_code(&secret_bytes, code) {
-                // Save to agent.env
-                let env_file = cli
-                    .agent_config
-                    .parent()
-                    .map(|p| p.join("agent.env"))
-                    .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
-
-                append_or_update_env(&env_file, "INNERWARDEN_TOTP_SECRET", &secret_b32)?;
-
-                // Update agent.toml
-                config_editor::write_str(
-                    &cli.agent_config,
-                    "security",
-                    "two_factor_method",
-                    "totp",
-                )?;
-
-                println!();
-                println!("  \u{2705} 2FA enabled with TOTP");
-                println!("  Secret saved to {}", env_file.display());
-                println!();
-                println!("  All sensitive actions (allowlist, mode changes) now require a code.");
-
-                // Restart agent to pick up the new config
-                if !cli.dry_run {
-                    let _ = systemd::restart_service("innerwarden-agent", false);
-                    println!("  Agent restarted.");
-                }
-
-                Ok(())
-            } else {
-                println!();
-                println!("  \u{274c} Wrong code. Please try again.");
-                println!("  Run: innerwarden configure 2fa");
-                Ok(())
-            }
-        }
-        "2" | "" => {
-            config_editor::write_str(&cli.agent_config, "security", "two_factor_method", "none")?;
-            println!();
-            println!("  \u{2705} 2FA disabled");
-            if !cli.dry_run {
-                let _ = systemd::restart_service("innerwarden-agent", false);
-                println!("  Agent restarted.");
-            }
-            Ok(())
-        }
-        _ => {
-            println!("  Unknown option. Run: innerwarden configure 2fa");
-            Ok(())
-        }
-    }
-}
-
-/// Simple base32 encoding (RFC 4648, no padding).
-fn base32_encode_simple(data: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-    let mut result = String::new();
-    let mut bits: u64 = 0;
-    let mut bit_count = 0;
-    for &byte in data {
-        bits = (bits << 8) | byte as u64;
-        bit_count += 8;
-        while bit_count >= 5 {
-            bit_count -= 5;
-            let idx = ((bits >> bit_count) & 0x1f) as usize;
-            result.push(ALPHABET[idx] as char);
-            bits &= (1 << bit_count) - 1;
-        }
-    }
-    if bit_count > 0 {
-        let idx = ((bits << (5 - bit_count)) & 0x1f) as usize;
-        result.push(ALPHABET[idx] as char);
-    }
-    result
-}
-
-/// Verify a TOTP code against a secret (for setup verification).
-fn verify_totp_code(secret: &[u8], code: &str) -> bool {
-    let code = code.trim();
-    if code.len() != 6 || !code.chars().all(|c| c.is_ascii_digit()) {
-        return false;
-    }
-    let user_code: u32 = match code.parse() {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let time_step = now / 30;
-
-    for offset in [0i64, -1, 1] {
-        let step = (time_step as i64 + offset) as u64;
-        if generate_totp_code(secret, step) == user_code {
-            return true;
-        }
-    }
-    false
-}
-
-/// Generate a TOTP code for a time step (standalone, for CTL).
-fn generate_totp_code(secret: &[u8], time_step: u64) -> u32 {
-    let msg = time_step.to_be_bytes();
-    let hash = hmac_sha1_simple(secret, &msg);
-    let offset = (hash[19] & 0x0f) as usize;
-    let code = ((hash[offset] as u32 & 0x7f) << 24)
-        | ((hash[offset + 1] as u32) << 16)
-        | ((hash[offset + 2] as u32) << 8)
-        | (hash[offset + 3] as u32);
-    code % 1_000_000
-}
-
-/// Minimal HMAC-SHA1 for TOTP (standalone, for CTL).
-fn hmac_sha1_simple(key: &[u8], message: &[u8]) -> [u8; 20] {
-    const BLOCK_SIZE: usize = 64;
-    let mut key_block = [0u8; BLOCK_SIZE];
-    if key.len() > BLOCK_SIZE {
-        key_block[..20].copy_from_slice(&sha1_simple(key));
-    } else {
-        key_block[..key.len()].copy_from_slice(key);
-    }
-
-    let mut ipad = [0x36u8; BLOCK_SIZE];
-    let mut opad = [0x5cu8; BLOCK_SIZE];
-    for i in 0..BLOCK_SIZE {
-        ipad[i] ^= key_block[i];
-        opad[i] ^= key_block[i];
-    }
-
-    let mut inner_data = Vec::with_capacity(BLOCK_SIZE + message.len());
-    inner_data.extend_from_slice(&ipad);
-    inner_data.extend_from_slice(message);
-    let inner_hash = sha1_simple(&inner_data);
-
-    let mut outer_data = Vec::with_capacity(BLOCK_SIZE + 20);
-    outer_data.extend_from_slice(&opad);
-    outer_data.extend_from_slice(&inner_hash);
-    sha1_simple(&outer_data)
-}
-
-/// Minimal SHA-1 for TOTP (standalone, for CTL).
-#[allow(clippy::needless_range_loop)]
-fn sha1_simple(data: &[u8]) -> [u8; 20] {
-    let mut h0: u32 = 0x67452301;
-    let mut h1: u32 = 0xEFCDAB89;
-    let mut h2: u32 = 0x98BADCFE;
-    let mut h3: u32 = 0x10325476;
-    let mut h4: u32 = 0xC3D2E1F0;
-    let bit_len = (data.len() as u64) * 8;
-    let mut padded = data.to_vec();
-    padded.push(0x80);
-    while padded.len() % 64 != 56 {
-        padded.push(0);
-    }
-    padded.extend_from_slice(&bit_len.to_be_bytes());
-    for chunk in padded.chunks(64) {
-        let mut w = [0u32; 80];
-        for i in 0..16 {
-            w[i] = u32::from_be_bytes([
-                chunk[i * 4],
-                chunk[i * 4 + 1],
-                chunk[i * 4 + 2],
-                chunk[i * 4 + 3],
-            ]);
-        }
-        for i in 16..80 {
-            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
-        }
-        let (mut a, mut b, mut c, mut d, mut e) = (h0, h1, h2, h3, h4);
-        for i in 0..80 {
-            let (f, k) = match i {
-                0..=19 => ((b & c) | ((!b) & d), 0x5A827999u32),
-                20..=39 => (b ^ c ^ d, 0x6ED9EBA1u32),
-                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDCu32),
-                _ => (b ^ c ^ d, 0xCA62C1D6u32),
-            };
-            let temp = a
-                .rotate_left(5)
-                .wrapping_add(f)
-                .wrapping_add(e)
-                .wrapping_add(k)
-                .wrapping_add(w[i]);
-            e = d;
-            d = c;
-            c = b.rotate_left(30);
-            b = a;
-            a = temp;
-        }
-        h0 = h0.wrapping_add(a);
-        h1 = h1.wrapping_add(b);
-        h2 = h2.wrapping_add(c);
-        h3 = h3.wrapping_add(d);
-        h4 = h4.wrapping_add(e);
-    }
-    let mut result = [0u8; 20];
-    result[0..4].copy_from_slice(&h0.to_be_bytes());
-    result[4..8].copy_from_slice(&h1.to_be_bytes());
-    result[8..12].copy_from_slice(&h2.to_be_bytes());
-    result[12..16].copy_from_slice(&h3.to_be_bytes());
-    result[16..20].copy_from_slice(&h4.to_be_bytes());
-    result
-}
-
-/// Append or update an environment variable in an env file.
-fn append_or_update_env(env_file: &std::path::Path, key: &str, value: &str) -> Result<()> {
-    let content = std::fs::read_to_string(env_file).unwrap_or_default();
-    let mut found = false;
-    let mut lines: Vec<String> = content
-        .lines()
-        .map(|line| {
-            if line.starts_with(&format!("{key}=")) {
-                found = true;
-                format!("{key}=\"{value}\"")
-            } else {
-                line.to_string()
-            }
-        })
-        .collect();
-
-    if !found {
-        lines.push(format!("{key}=\"{value}\""));
-    }
-
-    if let Some(parent) = env_file.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(env_file, lines.join("\n") + "\n")?;
-
-    // Set restrictive permissions
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(env_file, std::fs::Permissions::from_mode(0o600));
-    }
-
-    Ok(())
-}
 
 /// Load key=value pairs from an env file (silently ignores missing file).
 fn load_env_file(path: &std::path::Path) -> std::collections::HashMap<String, String> {
@@ -3234,132 +2779,6 @@ fn cmd_tune(cli: &Cli, days: u64, yes: bool, data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// innerwarden incidents
-// ---------------------------------------------------------------------------
-
-fn cmd_incidents(cli: &Cli, days: u64, severity_filter: &str, data_dir: &Path) -> Result<()> {
-    // Resolve data_dir from agent.toml if using default
-    let effective_dir = if data_dir == Path::new("/var/lib/innerwarden") {
-        std::fs::read_to_string(&cli.agent_config)
-            .ok()
-            .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
-            .and_then(|v| {
-                v.get("output")
-                    .and_then(|o| o.get("data_dir"))
-                    .and_then(|d| d.as_str())
-                    .map(PathBuf::from)
-            })
-            .unwrap_or_else(|| data_dir.to_path_buf())
-    } else {
-        data_dir.to_path_buf()
-    };
-
-    let min_rank = severity_rank(severity_filter);
-
-    // Collect dates to scan
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let mut dates = Vec::new();
-    for i in 0..days {
-        let secs = now_secs.saturating_sub(i * 86400);
-        dates.push(epoch_secs_to_date(secs));
-    }
-
-    let mut total = 0usize;
-    for date in &dates {
-        let path = effective_dir.join(format!("incidents-{date}.jsonl"));
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
-        if lines.is_empty() {
-            continue;
-        }
-
-        println!("── {date} ─────────────────────────────────────────────");
-
-        // Print in reverse (newest last, most scannable)
-        for line in &lines {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-                continue;
-            };
-            let sev = v["severity"].as_str().unwrap_or("Info");
-            if severity_rank(sev) < min_rank {
-                continue;
-            }
-            let title = v["title"].as_str().unwrap_or("Unknown threat");
-            let ts = v["ts"].as_str().unwrap_or("");
-            let time = if ts.len() >= 16 { &ts[11..16] } else { ts };
-            let ip = v["entities"]
-                .as_array()
-                .and_then(|arr| {
-                    arr.iter()
-                        .find(|e| e["type"].as_str() == Some("Ip"))
-                        .and_then(|e| e["value"].as_str())
-                })
-                .unwrap_or("");
-            let sev_tag = sev_tag_bracket(sev);
-            let ip_part = if ip.is_empty() {
-                String::new()
-            } else {
-                format!("  {ip}")
-            };
-            println!("  {time}  {sev_tag}  {title}{ip_part}");
-            total += 1;
-        }
-        println!();
-    }
-
-    if total == 0 {
-        if severity_filter != "low" {
-            println!(
-                "No {} or higher incidents found in the last {} day(s).",
-                severity_filter, days
-            );
-        } else {
-            println!("No incidents found in the last {} day(s). Quiet!", days);
-        }
-    } else {
-        println!("{total} incident(s) shown.  Run 'innerwarden report' for the full narrative.");
-    }
-    Ok(())
-}
-
-fn severity_rank(sev: &str) -> u8 {
-    match sev.to_lowercase().as_str() {
-        "critical" => 5,
-        "high" => 4,
-        "medium" => 3,
-        "low" => 2,
-        _ => 1,
-    }
-}
-
-fn sev_tag_bracket(sev: &str) -> &'static str {
-    match sev.to_lowercase().as_str() {
-        "critical" => "[CRITICAL]",
-        "high" => "[HIGH]    ",
-        "medium" => "[MEDIUM]  ",
-        "low" => "[LOW]     ",
-        _ => "[INFO]    ",
-    }
-}
-
-fn sev_tag_plain(sev: &str) -> &'static str {
-    match sev.to_lowercase().as_str() {
-        "critical" => " CRITICAL",
-        "high" => " HIGH    ",
-        "medium" => " MEDIUM  ",
-        "low" => " LOW     ",
-        _ => "         ",
-    }
-}
-
 pub(crate) fn epoch_secs_to_date(secs: u64) -> String {
     let days = (secs / 86400) as i64;
     let z = days + 719468;
@@ -3547,623 +2966,6 @@ fn cmd_backup(cli: &Cli, output: Option<&Path>) -> Result<()> {
         );
     }
 
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// innerwarden export
-// ---------------------------------------------------------------------------
-
-fn cmd_export(
-    cli: &Cli,
-    kind: &str,
-    from_arg: Option<&str>,
-    to_arg: Option<&str>,
-    format: &str,
-    output_path: Option<&Path>,
-    data_dir: &Path,
-) -> Result<()> {
-    let effective_dir = resolve_data_dir(cli, data_dir);
-
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let today = epoch_secs_to_date(now_secs);
-
-    let from = from_arg.unwrap_or(&today).to_string();
-    let to = to_arg.unwrap_or(&today).to_string();
-
-    let prefix = match kind {
-        "events" => "events",
-        "decisions" => "decisions",
-        _ => "incidents",
-    };
-
-    // Collect all matching JSONL lines across the date range
-    let mut all_lines: Vec<serde_json::Value> = Vec::new();
-
-    // Enumerate all files matching prefix-*.jsonl in the dir
-    if let Ok(entries) = std::fs::read_dir(&effective_dir) {
-        let mut files: Vec<_> = entries
-            .flatten()
-            .filter(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                if let Some(date) = name
-                    .strip_prefix(&format!("{prefix}-"))
-                    .and_then(|s| s.strip_suffix(".jsonl"))
-                {
-                    date >= from.as_str() && date <= to.as_str()
-                } else {
-                    false
-                }
-            })
-            .collect();
-        files.sort_by_key(|e| e.file_name());
-
-        for entry in files {
-            if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                for line in content.lines().filter(|l| !l.trim().is_empty()) {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                        all_lines.push(v);
-                    }
-                }
-            }
-        }
-    }
-
-    if all_lines.is_empty() {
-        eprintln!("No {kind} found between {from} and {to}.");
-        return Ok(());
-    }
-
-    let content = match format {
-        "csv" => {
-            // Build CSV from the union of all keys across objects
-            let mut keys: Vec<String> = all_lines
-                .iter()
-                .filter_map(|v| v.as_object())
-                .flat_map(|o| o.keys().cloned())
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            keys.retain(|k| k != "evidence" && k != "details" && k != "entities"); // skip nested
-
-            let mut out = keys.join(",") + "\n";
-            for row in &all_lines {
-                let fields: Vec<String> = keys
-                    .iter()
-                    .map(|k| {
-                        let v = &row[k];
-                        let s = match v {
-                            serde_json::Value::String(s) => s.replace('"', "\"\""),
-                            serde_json::Value::Null => String::new(),
-                            other => other.to_string().replace('"', "\"\""),
-                        };
-                        if s.contains(',') || s.contains('"') || s.contains('\n') {
-                            format!("\"{s}\"")
-                        } else {
-                            s
-                        }
-                    })
-                    .collect();
-                out += &(fields.join(",") + "\n");
-            }
-            out
-        }
-        _ => serde_json::to_string_pretty(&all_lines)?,
-    };
-
-    match output_path {
-        Some(path) => {
-            std::fs::write(path, &content)
-                .with_context(|| format!("failed to write to {}", path.display()))?;
-            eprintln!(
-                "Exported {} {kind}(s) ({from} → {to}) to {}",
-                all_lines.len(),
-                path.display()
-            );
-        }
-        None => print!("{content}"),
-    }
-
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// innerwarden tail
-// ---------------------------------------------------------------------------
-
-fn cmd_tail(cli: &Cli, kind: &str, interval_secs: u64, data_dir: &Path) -> Result<()> {
-    let effective_dir = resolve_data_dir(cli, data_dir);
-    let prefix = if kind == "events" {
-        "events"
-    } else {
-        "incidents"
-    };
-
-    println!("Streaming {kind}... (Ctrl-C to stop)\n");
-
-    let mut offset: u64 = 0;
-    let mut current_date = String::new();
-
-    loop {
-        let today = epoch_secs_to_date(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-        );
-
-        // Reset offset when the date changes
-        if today != current_date {
-            current_date = today.clone();
-            offset = 0;
-        }
-
-        let path = effective_dir.join(format!("{prefix}-{today}.jsonl"));
-
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            let bytes = content.as_bytes();
-            if bytes.len() as u64 > offset {
-                let new_bytes = &bytes[offset as usize..];
-                let new_text = std::str::from_utf8(new_bytes).unwrap_or("");
-                for line in new_text.lines().filter(|l| !l.trim().is_empty()) {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                        print_tail_entry(&v, kind);
-                    }
-                }
-                offset = bytes.len() as u64;
-            }
-        }
-
-        std::thread::sleep(std::time::Duration::from_secs(interval_secs));
-    }
-}
-
-fn print_tail_entry(v: &serde_json::Value, kind: &str) {
-    let ts = v["ts"].as_str().unwrap_or("");
-    let time = if ts.len() >= 16 { &ts[11..16] } else { ts };
-
-    if kind == "events" {
-        let source = v["source"].as_str().unwrap_or("?");
-        let ev_kind = v["kind"].as_str().unwrap_or("?");
-        let sev = v["severity"].as_str().unwrap_or("Info");
-        let summary = v["summary"].as_str().unwrap_or("");
-        println!("{time}  [{sev:<8}]  {source:<16}  {ev_kind}  {summary}");
-    } else {
-        // incident
-        let sev = v["severity"].as_str().unwrap_or("Info");
-        let title = v["title"].as_str().unwrap_or("Unknown");
-        let ip = v["entities"]
-            .as_array()
-            .and_then(|arr| {
-                arr.iter()
-                    .find(|e| e["type"].as_str() == Some("Ip"))
-                    .and_then(|e| e["value"].as_str())
-            })
-            .unwrap_or("");
-        let sev_tag = sev_tag_bracket(sev);
-        let ip_part = if ip.is_empty() {
-            String::new()
-        } else {
-            format!("  {ip}")
-        };
-        println!("{time}  {sev_tag}  {title}{ip_part}");
-    }
-}
-
-// ---------------------------------------------------------------------------
-// innerwarden incidents --live
-// ---------------------------------------------------------------------------
-
-fn cmd_incidents_live(cli: &Cli, severity_filter: &str, data_dir: &Path) -> Result<()> {
-    let effective_dir = resolve_data_dir(cli, data_dir);
-    let min_sev = parse_severity_filter(severity_filter);
-
-    println!("● LIVE - streaming incidents (Ctrl-C to stop)\n");
-
-    let mut offset: u64 = 0;
-    let mut current_date = String::new();
-
-    loop {
-        let today = epoch_secs_to_date(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-        );
-
-        if today != current_date {
-            current_date = today.clone();
-            offset = 0;
-        }
-
-        let safe_date: String = today
-            .chars()
-            .filter(|c| c.is_ascii_digit() || *c == '-')
-            .collect();
-        let path = effective_dir.join(format!("incidents-{safe_date}.jsonl"));
-
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            let bytes = content.as_bytes();
-            if bytes.len() as u64 > offset {
-                let new_bytes = &bytes[offset as usize..];
-                let new_text = std::str::from_utf8(new_bytes).unwrap_or("");
-                for line in new_text.lines().filter(|l| !l.trim().is_empty()) {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                        let sev = v["severity"].as_str().unwrap_or("info");
-                        if severity_rank_str(sev) >= min_sev {
-                            print_live_incident(&v);
-                        }
-                    }
-                }
-                offset = bytes.len() as u64;
-            }
-        }
-
-        std::thread::sleep(std::time::Duration::from_secs(2));
-    }
-}
-
-fn print_live_incident(v: &serde_json::Value) {
-    let ts = v["ts"].as_str().unwrap_or("");
-    let time = if ts.len() >= 19 { &ts[11..19] } else { ts };
-    let sev = v["severity"].as_str().unwrap_or("info");
-    let title = v["title"].as_str().unwrap_or("Unknown");
-    let summary = v["summary"].as_str().unwrap_or("");
-
-    let icon = match sev {
-        "critical" => "🔴",
-        "high" => "🟠",
-        "medium" => "🟡",
-        "low" => "🟢",
-        _ => "⚪",
-    };
-
-    let entities: Vec<String> = v["entities"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|e| e["value"].as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-    let entity_str = if entities.is_empty() {
-        String::new()
-    } else {
-        format!("  [{}]", entities.join(", "))
-    };
-
-    println!("{icon} {time}  {title}{entity_str}");
-    if !summary.is_empty() && summary != title {
-        // Truncate long summaries
-        let short: String = summary.chars().take(100).collect();
-        println!("  └ {short}");
-    }
-    println!();
-}
-
-fn parse_severity_filter(s: &str) -> u8 {
-    match s.to_lowercase().as_str() {
-        "critical" => 4,
-        "high" => 3,
-        "medium" => 2,
-        "low" => 1,
-        _ => 0,
-    }
-}
-
-fn severity_rank_str(s: &str) -> u8 {
-    match s.to_lowercase().as_str() {
-        "critical" => 4,
-        "high" => 3,
-        "medium" => 2,
-        "low" => 1,
-        _ => 0,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// innerwarden decisions
-// ---------------------------------------------------------------------------
-
-fn cmd_decisions(cli: &Cli, days: u64, action_filter: Option<&str>, data_dir: &Path) -> Result<()> {
-    let effective_dir = resolve_data_dir(cli, data_dir);
-
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let mut dates = Vec::new();
-    for i in 0..days {
-        dates.push(epoch_secs_to_date(now_secs.saturating_sub(i * 86400)));
-    }
-
-    let mut total = 0usize;
-    for date in &dates {
-        let path = effective_dir.join(format!("decisions-{date}.jsonl"));
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
-        if lines.is_empty() {
-            continue;
-        }
-
-        println!("── {date} ─────────────────────────────────────────────");
-
-        for line in &lines {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-                continue;
-            };
-            let action = v["action_type"].as_str().unwrap_or("unknown");
-            if let Some(f) = action_filter {
-                if !action.eq_ignore_ascii_case(f) {
-                    continue;
-                }
-            }
-            let ts = v["ts"].as_str().unwrap_or("");
-            let time = if ts.len() >= 16 { &ts[11..16] } else { ts };
-            let target_ip = v["target_ip"].as_str().unwrap_or("");
-            let target_user = v["target_user"].as_str().unwrap_or("");
-            let confidence = v["confidence"].as_f64().unwrap_or(0.0);
-            let dry_run = v["dry_run"].as_bool().unwrap_or(false);
-            let provider = v["ai_provider"].as_str().unwrap_or("");
-
-            let target = if !target_ip.is_empty() {
-                target_ip.to_string()
-            } else if !target_user.is_empty() {
-                format!("user:{target_user}")
-            } else {
-                String::new()
-            };
-
-            let dry_tag = if dry_run { " [dry-run]" } else { "" };
-            let conf_tag = if confidence > 0.0 {
-                format!("  conf:{:.2}", confidence)
-            } else {
-                String::new()
-            };
-            let provider_tag = if !provider.is_empty() {
-                format!("  via:{provider}")
-            } else {
-                String::new()
-            };
-            let target_part = if target.is_empty() {
-                String::new()
-            } else {
-                format!("  {target}")
-            };
-
-            let action_tag = match action {
-                "block_ip" => "[BLOCK]      ",
-                "suspend_user_sudo" => "[SUSPEND]    ",
-                "ignore" => "[IGNORE]     ",
-                "monitor" => "[MONITOR]    ",
-                "honeypot" => "[HONEYPOT]   ",
-                "request_confirmation" => "[PENDING]    ",
-                _ => "[UNKNOWN]    ",
-            };
-
-            println!("  {time}  {action_tag}{target_part}{conf_tag}{provider_tag}{dry_tag}");
-            total += 1;
-        }
-        println!();
-    }
-
-    if total == 0 {
-        if let Some(f) = action_filter {
-            println!("No '{f}' decisions found in the last {days} day(s).");
-        } else {
-            println!("No decisions recorded in the last {days} day(s).");
-            println!("The agent may be in observe-only mode or not running.");
-            println!("Run 'innerwarden status' to check.");
-        }
-    } else {
-        println!(
-            "{total} decision(s) shown.  Full audit trail: {}/decisions-*.jsonl",
-            effective_dir.display()
-        );
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// innerwarden entity
-// ---------------------------------------------------------------------------
-
-fn cmd_entity(cli: &Cli, target: &str, days: u64, data_dir: &Path) -> Result<()> {
-    let effective_dir = resolve_data_dir(cli, data_dir);
-
-    // Determine if target looks like an IP or a username
-    let is_ip = looks_like_ip(target);
-
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let mut dates = Vec::new();
-    for i in 0..days {
-        dates.push(epoch_secs_to_date(now_secs.saturating_sub(i * 86400)));
-    }
-
-    // Collect all matching entries across events, incidents, and decisions
-    #[derive(Debug)]
-    struct Entry {
-        ts: String,
-        kind: &'static str, // "event", "incident", "decision"
-        severity: String,
-        summary: String,
-        extra: String,
-    }
-
-    let mut entries: Vec<Entry> = Vec::new();
-
-    for date in &dates {
-        // ── events ──────────────────────────────────────
-        let events_path = effective_dir.join(format!("events-{date}.jsonl"));
-        if let Ok(content) = std::fs::read_to_string(&events_path) {
-            for line in content.lines().filter(|l| !l.trim().is_empty()) {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-                    continue;
-                };
-                let matched = if is_ip {
-                    v["entities"]
-                        .as_array()
-                        .map(|arr| {
-                            arr.iter().any(|e| {
-                                e["type"].as_str() == Some("Ip")
-                                    && e["value"].as_str() == Some(target)
-                            })
-                        })
-                        .unwrap_or(false)
-                } else {
-                    v["entities"]
-                        .as_array()
-                        .map(|arr| {
-                            arr.iter().any(|e| {
-                                e["type"].as_str() == Some("User")
-                                    && e["value"].as_str() == Some(target)
-                            })
-                        })
-                        .unwrap_or(false)
-                };
-                if matched {
-                    entries.push(Entry {
-                        ts: v["ts"].as_str().unwrap_or("").to_string(),
-                        kind: "event",
-                        severity: v["severity"].as_str().unwrap_or("Info").to_string(),
-                        summary: v["summary"].as_str().unwrap_or("").to_string(),
-                        extra: v["kind"].as_str().unwrap_or("").to_string(),
-                    });
-                }
-            }
-        }
-
-        // ── incidents ────────────────────────────────────
-        let incidents_path = effective_dir.join(format!("incidents-{date}.jsonl"));
-        if let Ok(content) = std::fs::read_to_string(&incidents_path) {
-            for line in content.lines().filter(|l| !l.trim().is_empty()) {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-                    continue;
-                };
-                let matched = if is_ip {
-                    v["entities"]
-                        .as_array()
-                        .map(|arr| {
-                            arr.iter().any(|e| {
-                                e["type"]
-                                    .as_str()
-                                    .map(|t| t.eq_ignore_ascii_case("ip"))
-                                    .unwrap_or(false)
-                                    && e["value"].as_str() == Some(target)
-                            })
-                        })
-                        .unwrap_or(false)
-                } else {
-                    v["entities"]
-                        .as_array()
-                        .map(|arr| {
-                            arr.iter().any(|e| {
-                                e["type"]
-                                    .as_str()
-                                    .map(|t| t.eq_ignore_ascii_case("user"))
-                                    .unwrap_or(false)
-                                    && e["value"].as_str() == Some(target)
-                            })
-                        })
-                        .unwrap_or(false)
-                };
-                if matched {
-                    entries.push(Entry {
-                        ts: v["ts"].as_str().unwrap_or("").to_string(),
-                        kind: "incident",
-                        severity: v["severity"].as_str().unwrap_or("Info").to_string(),
-                        summary: v["title"].as_str().unwrap_or("").to_string(),
-                        extra: v["summary"].as_str().unwrap_or("").to_string(),
-                    });
-                }
-            }
-        }
-
-        // ── decisions ────────────────────────────────────
-        let decisions_path = effective_dir.join(format!("decisions-{date}.jsonl"));
-        if let Ok(content) = std::fs::read_to_string(&decisions_path) {
-            for line in content.lines().filter(|l| !l.trim().is_empty()) {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-                    continue;
-                };
-                let ip_match = is_ip && v["target_ip"].as_str() == Some(target);
-                let user_match = !is_ip && v["target_user"].as_str() == Some(target);
-                if ip_match || user_match {
-                    let action = v["action_type"].as_str().unwrap_or("unknown");
-                    let dry_run = v["dry_run"].as_bool().unwrap_or(false);
-                    let dry_tag = if dry_run { " [dry-run]" } else { "" };
-                    entries.push(Entry {
-                        ts: v["ts"].as_str().unwrap_or("").to_string(),
-                        kind: "decision",
-                        severity: String::new(),
-                        summary: format!("Action: {action}{dry_tag}"),
-                        extra: format!(
-                            "conf:{:.2}  via:{}",
-                            v["confidence"].as_f64().unwrap_or(0.0),
-                            v["ai_provider"].as_str().unwrap_or("?")
-                        ),
-                    });
-                }
-            }
-        }
-    }
-
-    if entries.is_empty() {
-        let entity_type = if is_ip { "IP" } else { "user" };
-        println!("No activity found for {entity_type} '{target}' in the last {days} day(s).");
-        println!("Try --days 7 to search further back.");
-        return Ok(());
-    }
-
-    // Sort by timestamp ascending
-    entries.sort_by(|a, b| a.ts.cmp(&b.ts));
-
-    let entity_type = if is_ip { "IP" } else { "User" };
-    let event_count = entries.iter().filter(|e| e.kind == "event").count();
-    let incident_count = entries.iter().filter(|e| e.kind == "incident").count();
-    let decision_count = entries.iter().filter(|e| e.kind == "decision").count();
-
-    println!("Entity: {entity_type} {target}");
-    println!("Period: last {days} day(s)");
-    println!("Found:  {event_count} event(s)  {incident_count} incident(s)  {decision_count} decision(s)");
-    println!("{}", "─".repeat(72));
-
-    for entry in &entries {
-        let time = if entry.ts.len() >= 16 {
-            &entry.ts[..16]
-        } else {
-            &entry.ts
-        };
-        let kind_tag = match entry.kind {
-            "incident" => "[INCIDENT]  ",
-            "decision" => "[DECISION]  ",
-            _ => "[event]     ",
-        };
-        let sev_tag = if entry.kind == "event" || entry.kind == "incident" {
-            sev_tag_plain(&entry.severity)
-        } else {
-            "         "
-        };
-        println!("{time}  {kind_tag}{sev_tag}  {}", entry.summary);
-        if !entry.extra.is_empty() && entry.kind != "event" {
-            println!("                                     {}", entry.extra);
-        }
-    }
-
-    println!("{}", "─".repeat(72));
-    println!("Open dashboard for full details: innerwarden status");
     Ok(())
 }
 
@@ -5716,216 +4518,6 @@ fn cmd_pipeline_test(cli: &Cli, wait_secs: u64, data_dir: &Path) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// GDPR helpers
-// ---------------------------------------------------------------------------
-
-/// Check if a JSONL line references a given entity (IP or username).
-fn matches_entity(line: &str, entity: &str) -> bool {
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
-        // Check entities array (events, incidents)
-        if let Some(entities) = value.get("entities").and_then(|v| v.as_array()) {
-            for e in entities {
-                if let Some(val) = e.get("value").and_then(|v| v.as_str()) {
-                    if val == entity {
-                        return true;
-                    }
-                }
-            }
-        }
-        // Check direct fields (decisions, admin-actions)
-        for field in &["target_ip", "target_user", "operator", "target"] {
-            if let Some(val) = value.get(*field).and_then(|v| v.as_str()) {
-                if val == entity {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Recompute SHA-256 hash chain after records have been removed.
-fn recompute_hash_chain(lines: &mut [String]) {
-    use innerwarden_core::audit::sha256_hex;
-    let mut last_hash: Option<String> = None;
-    for line in lines.iter_mut() {
-        if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(line) {
-            value["prev_hash"] = match &last_hash {
-                Some(h) => serde_json::Value::String(h.clone()),
-                None => serde_json::Value::Null,
-            };
-            let new_line = serde_json::to_string(&value).unwrap();
-            last_hash = Some(sha256_hex(&new_line));
-            *line = new_line;
-        }
-    }
-}
-
-/// Export all JSONL records matching an entity to a file or stdout.
-fn cmd_gdpr_export(data_dir: &Path, entity: &str, output: Option<&Path>) -> Result<()> {
-    let patterns = &[
-        "events-",
-        "incidents-",
-        "decisions-",
-        "admin-actions-",
-        "telemetry-",
-    ];
-    let mut total = 0usize;
-    let mut writer: Box<dyn Write> = match output {
-        Some(p) => Box::new(std::fs::File::create(p)?),
-        None => Box::new(std::io::stdout()),
-    };
-
-    for entry in std::fs::read_dir(data_dir)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.ends_with(".jsonl") {
-            continue;
-        }
-        if !patterns.iter().any(|p| name.starts_with(p)) {
-            continue;
-        }
-
-        let content = std::fs::read_to_string(entry.path())?;
-        for line in content.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            if matches_entity(line, entity) {
-                writeln!(writer, "{line}")?;
-                total += 1;
-            }
-        }
-    }
-
-    eprintln!("  Found {total} records matching '{entity}'");
-    Ok(())
-}
-
-/// Erase all JSONL records matching an entity (GDPR right to erasure).
-fn cmd_gdpr_erase(data_dir: &Path, entity: &str, yes: bool) -> Result<()> {
-    let patterns = &[
-        "events-",
-        "incidents-",
-        "decisions-",
-        "admin-actions-",
-        "telemetry-",
-    ];
-    let hash_chained = &["decisions-", "admin-actions-"];
-
-    // Phase 1: count matches per file
-    let mut file_matches: Vec<(PathBuf, String, usize)> = Vec::new();
-    for entry in std::fs::read_dir(data_dir)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.ends_with(".jsonl") {
-            continue;
-        }
-        let prefix = match patterns.iter().find(|p| name.starts_with(**p)) {
-            Some(p) => p.to_string(),
-            None => continue,
-        };
-
-        let content = std::fs::read_to_string(entry.path())?;
-        let count = content
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .filter(|l| matches_entity(l, entity))
-            .count();
-        if count > 0 {
-            file_matches.push((entry.path(), prefix, count));
-        }
-    }
-
-    let total: usize = file_matches.iter().map(|(_, _, c)| *c).sum();
-    if total == 0 {
-        println!("  No records found matching '{entity}'");
-        return Ok(());
-    }
-
-    // Phase 2: confirm
-    println!(
-        "  Found {total} records matching '{entity}' across {} files",
-        file_matches.len()
-    );
-    if !yes {
-        print!("  Proceed with erasure? [y/N] ");
-        std::io::stdout().flush()?;
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        if !input.trim().eq_ignore_ascii_case("y") {
-            println!("  Aborted.");
-            return Ok(());
-        }
-    }
-
-    // Phase 3: rewrite each file, removing matching records
-    let mut erased = 0usize;
-    for (path, prefix, _) in &file_matches {
-        let content = std::fs::read_to_string(path)?;
-        let mut kept: Vec<String> = Vec::new();
-        let mut removed = 0usize;
-
-        for line in content.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            if matches_entity(line, entity) {
-                removed += 1;
-            } else {
-                kept.push(line.to_string());
-            }
-        }
-
-        // Recompute hash chain for decisions and admin-actions
-        if hash_chained.iter().any(|h| prefix.starts_with(h)) {
-            recompute_hash_chain(&mut kept);
-        }
-
-        // Atomic write: temp file + rename
-        let tmp = tempfile::Builder::new()
-            .prefix("innerwarden-gdpr-")
-            .tempfile_in(data_dir)?;
-        let tmp_path = tmp.path().to_path_buf();
-        {
-            let mut writer = std::io::BufWriter::new(&tmp);
-            for line in &kept {
-                writeln!(writer, "{line}")?;
-            }
-            writer.flush()?;
-        }
-        std::fs::rename(&tmp_path, path)?;
-
-        erased += removed;
-    }
-
-    println!(
-        "  Erased {erased} records across {} files",
-        file_matches.len()
-    );
-
-    // Audit the erase action
-    let mut audit = AdminActionEntry {
-        ts: chrono::Utc::now(),
-        operator: current_operator(),
-        source: "cli".to_string(),
-        action: "gdpr_erase".to_string(),
-        target: entity.to_string(),
-        parameters: serde_json::json!({
-            "records_erased": erased,
-            "files_modified": file_matches.len(),
-        }),
-        result: "success".to_string(),
-        prev_hash: None,
-    };
-    if let Err(e) = append_admin_action(data_dir, &mut audit) {
-        eprintln!("  [warn] failed to write audit: {e:#}");
-    }
-
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // ATT&CK Navigator layer generation
 // ---------------------------------------------------------------------------
 
@@ -6127,7 +4719,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let cli = make_cli(dir.path());
         // Should return Ok even with no JSONL files present
-        let result = cmd_decisions(&cli, 1, None, dir.path());
+        let result = crate::commands::history::cmd_decisions(&cli, 1, None, dir.path());
         assert!(result.is_ok());
     }
 
@@ -6141,7 +4733,7 @@ mod tests {
             "{\"ts\":\"2026-03-16T10:00:00Z\",\"action\":\"block_ip\",\"target_ip\":\"1.2.3.4\",\"confidence\":0.95,\"dry_run\":false,\"ai_provider\":\"openai\"}\n",
         ).unwrap();
         let cli = make_cli(dir.path());
-        let result = cmd_decisions(&cli, 1, None, dir.path());
+        let result = crate::commands::history::cmd_decisions(&cli, 1, None, dir.path());
         assert!(result.is_ok());
     }
 
@@ -6156,7 +4748,7 @@ mod tests {
         ).unwrap();
         let cli = make_cli(dir.path());
         // Filter for block_ip - should return Ok (0 matching)
-        let result = cmd_decisions(&cli, 1, Some("block_ip"), dir.path());
+        let result = crate::commands::history::cmd_decisions(&cli, 1, Some("block_ip"), dir.path());
         assert!(result.is_ok());
     }
 
@@ -6164,7 +4756,7 @@ mod tests {
     fn entity_no_data() {
         let dir = TempDir::new().unwrap();
         let cli = make_cli(dir.path());
-        let result = cmd_entity(&cli, "1.2.3.4", 3, dir.path());
+        let result = crate::commands::history::cmd_entity(&cli, "1.2.3.4", 3, dir.path());
         assert!(result.is_ok());
     }
 
@@ -6178,7 +4770,7 @@ mod tests {
             "{\"ts\":\"2026-03-16T10:00:00Z\",\"title\":\"SSH Brute Force\",\"severity\":\"High\",\"summary\":\"8 failures\",\"entities\":[{\"type\":\"Ip\",\"value\":\"5.6.7.8\"}]}\n",
         ).unwrap();
         let cli = make_cli(dir.path());
-        let result = cmd_entity(&cli, "5.6.7.8", 1, dir.path());
+        let result = crate::commands::history::cmd_entity(&cli, "5.6.7.8", 1, dir.path());
         assert!(result.is_ok());
     }
 
@@ -6192,7 +4784,7 @@ mod tests {
             "{\"ts\":\"2026-03-16T10:00:00Z\",\"action\":\"suspend_user_sudo\",\"target_user\":\"alice\",\"confidence\":0.9,\"dry_run\":true,\"ai_provider\":\"openai\"}\n",
         ).unwrap();
         let cli = make_cli(dir.path());
-        let result = cmd_entity(&cli, "alice", 1, dir.path());
+        let result = crate::commands::history::cmd_entity(&cli, "alice", 1, dir.path());
         assert!(result.is_ok());
     }
 
@@ -6252,44 +4844,46 @@ mod tests {
     #[test]
     fn matches_entity_finds_ip_in_entities_array() {
         let line = r#"{"ts":"2026-03-16T10:00:00Z","entities":[{"type":"Ip","value":"1.2.3.4"}]}"#;
-        assert!(matches_entity(line, "1.2.3.4"));
-        assert!(!matches_entity(line, "5.6.7.8"));
+        assert!(crate::commands::history::matches_entity(line, "1.2.3.4"));
+        assert!(!crate::commands::history::matches_entity(line, "5.6.7.8"));
     }
 
     #[test]
     fn matches_entity_finds_target_ip() {
         let line = r#"{"ts":"2026-03-16T10:00:00Z","action":"block_ip","target_ip":"1.2.3.4"}"#;
-        assert!(matches_entity(line, "1.2.3.4"));
+        assert!(crate::commands::history::matches_entity(line, "1.2.3.4"));
     }
 
     #[test]
     fn matches_entity_finds_target_user() {
         let line = r#"{"ts":"2026-03-16T10:00:00Z","action":"suspend","target_user":"alice"}"#;
-        assert!(matches_entity(line, "alice"));
-        assert!(!matches_entity(line, "bob"));
+        assert!(crate::commands::history::matches_entity(line, "alice"));
+        assert!(!crate::commands::history::matches_entity(line, "bob"));
     }
 
     #[test]
     fn matches_entity_finds_operator() {
         let line = r#"{"ts":"2026-03-16T10:00:00Z","operator":"admin","action":"enable"}"#;
-        assert!(matches_entity(line, "admin"));
+        assert!(crate::commands::history::matches_entity(line, "admin"));
     }
 
     #[test]
     fn matches_entity_finds_target() {
         let line = r#"{"ts":"2026-03-16T10:00:00Z","target":"1.2.3.4","action":"gdpr_erase"}"#;
-        assert!(matches_entity(line, "1.2.3.4"));
+        assert!(crate::commands::history::matches_entity(line, "1.2.3.4"));
     }
 
     #[test]
     fn matches_entity_no_match_on_invalid_json() {
-        assert!(!matches_entity("not json", "anything"));
+        assert!(!crate::commands::history::matches_entity(
+            "not json", "anything"
+        ));
     }
 
     #[test]
     fn gdpr_export_empty_dir() {
         let dir = TempDir::new().unwrap();
-        let result = cmd_gdpr_export(dir.path(), "1.2.3.4", None);
+        let result = crate::commands::history::cmd_gdpr_export(dir.path(), "1.2.3.4", None);
         assert!(result.is_ok());
     }
 
@@ -6305,7 +4899,8 @@ mod tests {
         ).unwrap();
 
         let out_path = dir.path().join("export.jsonl");
-        let result = cmd_gdpr_export(dir.path(), "9.8.7.6", Some(&out_path));
+        let result =
+            crate::commands::history::cmd_gdpr_export(dir.path(), "9.8.7.6", Some(&out_path));
         assert!(result.is_ok());
 
         let exported = std::fs::read_to_string(&out_path).unwrap();
@@ -6323,7 +4918,7 @@ mod tests {
             &path,
             "{\"ts\":\"2026-03-16T10:00:00Z\",\"entities\":[{\"type\":\"Ip\",\"value\":\"5.5.5.5\"}]}\n",
         ).unwrap();
-        let result = cmd_gdpr_erase(dir.path(), "9.9.9.9", true);
+        let result = crate::commands::history::cmd_gdpr_erase(dir.path(), "9.9.9.9", true);
         assert!(result.is_ok());
 
         // File should be unchanged
@@ -6342,7 +4937,7 @@ mod tests {
              {\"ts\":\"2026-03-16T11:00:00Z\",\"entities\":[{\"type\":\"Ip\",\"value\":\"5.5.5.5\"}]}\n",
         ).unwrap();
 
-        let result = cmd_gdpr_erase(dir.path(), "1.2.3.4", true);
+        let result = crate::commands::history::cmd_gdpr_erase(dir.path(), "1.2.3.4", true);
         assert!(result.is_ok());
 
         let content = std::fs::read_to_string(&path).unwrap();
@@ -6363,7 +4958,7 @@ mod tests {
              {\"ts\":\"2026-03-16T12:00:00Z\",\"action\":\"block_ip\",\"target_ip\":\"6.6.6.6\",\"prev_hash\":\"def456\"}\n",
         ).unwrap();
 
-        let result = cmd_gdpr_erase(dir.path(), "1.2.3.4", true);
+        let result = crate::commands::history::cmd_gdpr_erase(dir.path(), "1.2.3.4", true);
         assert!(result.is_ok());
 
         let content = std::fs::read_to_string(&path).unwrap();
@@ -6389,7 +4984,7 @@ mod tests {
             "{\"ts\":\"2026-03-16T10:00:00Z\",\"entities\":[{\"type\":\"Ip\",\"value\":\"1.2.3.4\"}]}\n",
         ).unwrap();
 
-        let result = cmd_gdpr_erase(dir.path(), "1.2.3.4", true);
+        let result = crate::commands::history::cmd_gdpr_erase(dir.path(), "1.2.3.4", true);
         assert!(result.is_ok());
 
         // An admin-actions file should now exist with a gdpr_erase entry

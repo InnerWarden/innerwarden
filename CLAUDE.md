@@ -101,6 +101,8 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 - `commands/agent.rs`
 - `commands/watchdog.rs`
 - `commands/response.rs`
+- `commands/history.rs`
+- `commands/ops.rs`
 
 3. Escopo funcional ja removido do `main.rs`
 - setup
@@ -114,10 +116,12 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 - agent
 - watchdog
 - response: `block`, `unblock`, `allowlist`, `suppress`
+- history/data: `incidents`, `incidents --live`, `export`, `tail`, `decisions`, `entity`, `gdpr export`, `gdpr erase`
+- ops/config (parcial): `configure menu`, `configure fail2ban`, `configure 2fa`
 
 ### Estado atual
 
-- `crates/ctl/src/main.rs` esta em `6402` linhas
+- `crates/ctl/src/main.rs` esta em `4997` linhas
 - O branch esta limpo e a PR esta atualizada
 - Todos os cortes foram validados com:
   - `cargo fmt --all`
@@ -126,28 +130,13 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 
 ### Ordem recomendada para continuar
 
-1. Extrair `history/data`
-- mover para modulo proprio:
-  - `cmd_incidents`
-  - `cmd_incidents_live`
-  - `cmd_export`
-  - `cmd_tail`
-  - `cmd_decisions`
-  - `cmd_entity`
-  - `cmd_gdpr_export`
-  - `cmd_gdpr_erase`
-- motivo: ainda existe muito fluxo de leitura de JSONL e timeline concentrado no root
-
-2. Extrair `ops/config`
+1. Extrair `ops/config`
 - avaliar modulo proprio para:
-  - `cmd_configure_menu`
-  - `cmd_configure_fail2ban`
-  - `cmd_configure_2fa`
   - `cmd_tune`
   - `cmd_doctor`
 - motivo: esse bloco ainda mistura onboarding, operacao e manutencao
 
-3. Consolidar helpers compartilhados
+2. Consolidar helpers compartilhados
 - revisar o que ainda faz sentido ficar no root:
   - `require_sudo`
   - `resolve_data_dir`
@@ -157,7 +146,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - `hostname`
 - mover apenas quando a fronteira estiver clara; nao forcar acoplamento artificial
 
-4. Depois do `ctl`
+3. Depois do `ctl`
 - iniciar a mesma estrategia no crate `agent`
 - candidatos naturais:
   - `dashboard.rs`
@@ -174,6 +163,8 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 
 ### Ultimos commits desta frente
 
+- `WIP` Extract ctl history/data commands into a dedicated module
+- `WIP` Extract ctl ops/config setup commands into a dedicated module
 - `1e09220` Move ctl web push setup into the notify module
 - `023289d` Extract ctl response commands into a dedicated module
 - `db2690e` Extract ctl watchdog commands into a dedicated module
