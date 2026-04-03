@@ -103,6 +103,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 - `commands/response.rs`
 - `commands/history.rs`
 - `commands/ops.rs`
+- `commands/core.rs`
 
 3. Escopo funcional ja removido do `main.rs`
 - setup
@@ -119,11 +120,12 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 - history/data: `incidents`, `incidents --live`, `export`, `tail`, `decisions`, `entity`, `gdpr export`, `gdpr erase`
 - ops/config: `configure menu`, `configure fail2ban`, `configure 2fa`, `tune`, `doctor`
 - ops/runtime: `test` (pipeline smoke test)
+- core UX: `list` e `daily`
 
 ### Estado atual
 
-- `crates/ctl/src/main.rs` esta em `3153` linhas
-- Ultimo corte aplicado: extracao de `cmd_tune`, `cmd_doctor`, `cmd_pipeline_test`, `cmd_backup` e `cmd_completions` para `commands/ops.rs`
+- `crates/ctl/src/main.rs` esta em `3072` linhas
+- Ultimo corte aplicado: extracao de `cmd_list` e `cmd_daily` para `commands/core.rs`
 - Todos os cortes foram validados com:
   - `cargo fmt --all`
   - `cargo check -p innerwarden-ctl`
