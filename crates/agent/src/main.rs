@@ -3444,7 +3444,7 @@ mod tests {
         assert_eq!(decision["incident_id"], fp_incident_id);
         assert_eq!(decision["action_type"], "fp_report");
         assert_eq!(decision["execution_result"], "reported_fp:ssh_bruteforce");
-        assert_eq!(decision["ai_provider"], "operator:telegram");
+        assert_eq!(decision["ai_provider"], "operator:telegram:alice");
 
         let today_utc = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let fp_path = dir.path().join(format!("fp-reports-{today_utc}.jsonl"));
