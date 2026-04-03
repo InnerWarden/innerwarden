@@ -26,6 +26,7 @@ mod decisions;
 mod fail2ban;
 mod forensics;
 mod geoip;
+mod incident_advisory;
 mod incident_notifications;
 mod ioc;
 mod mesh;
@@ -2418,47 +2419,7 @@ async fn process_incidents(
         )
         .await;
 
-        // 1e. Advisory correlation - check if this execution incident matches
-        //     a recent advisory denial from the /api/advisor/check-command endpoint.
-        //     If so, the AI agent ignored Inner Warden's security recommendation.
-        if incident.tags.contains(&"execution".to_string())
-            || incident.tags.contains(&"suspicious".to_string())
-        {
-            if let Some(advisory) = check_advisory_match(advisory_cache, incident) {
-                info!(
-                    advisory_id = %advisory.advisory_id,
-                    command = %advisory.command_preview,
-                    risk_score = advisory.risk_score,
-                    "AI agent ignored security advisory"
-                );
-
-                // Send Telegram notification about the advisory violation
-                if let Some(tg) = &state.telegram_client {
-                    let msg = format!(
-                        "\u{26a0}\u{fe0f} <b>Advisory Ignored</b>\n\n\
-                        Your AI agent executed a command that Inner Warden recommended <b>{}</b>.\n\n\
-                        <b>Command:</b> <code>{}</code>\n\
-                        <b>Risk score:</b> {}/100\n\
-                        <b>Signals:</b> {}\n\
-                        <b>Advisory ID:</b> <code>{}</code>\n\n\
-                        The command was executed despite the warning. Review the audit trail.",
-                        advisory.recommendation,
-                        advisory.command_preview.replace('<', "&lt;").replace('>', "&gt;"),
-                        advisory.risk_score,
-                        advisory.signals.join(", "),
-                        advisory.advisory_id,
-                    );
-                    if let Err(e) = tg.send_raw_html(&msg).await {
-                        warn!("failed to send advisory ignored alert: {e:#}");
-                    }
-                }
-
-                // Remove the matched entry from cache (consumed)
-                if let Ok(mut cache) = advisory_cache.write() {
-                    cache.retain(|e| e.advisory_id != advisory.advisory_id);
-                }
-            }
-        }
+        incident_advisory::handle_advisory_violation(incident, advisory_cache, state).await;
 
         // 2. AI analysis - only when AI is enabled and incident passes the gate
 
@@ -5611,33 +5572,6 @@ async fn enable_lsm_enforcement() -> Result<(), String> {
     } else {
         Err(String::from_utf8_lossy(&output.stderr).to_string())
     }
-}
-
-// ---------------------------------------------------------------------------
-// Advisory correlation - match execution incidents against recent advisory
-// denials from the /api/advisor/check-command endpoint.
-// ---------------------------------------------------------------------------
-
-/// Check if an execution incident matches a recent advisory denial.
-/// Returns the matching AdvisoryEntry if the command hash matches.
-fn check_advisory_match(
-    cache: &Arc<RwLock<VecDeque<AdvisoryEntry>>>,
-    incident: &innerwarden_core::incident::Incident,
-) -> Option<AdvisoryEntry> {
-    // Extract command from incident evidence (array of evidence objects)
-    let command = incident
-        .evidence
-        .as_array()?
-        .iter()
-        .find_map(|e| e.get("command").and_then(|c| c.as_str()))?;
-
-    let command_hash = innerwarden_core::audit::sha256_hex(&command.to_lowercase());
-
-    let cache = cache.read().ok()?;
-    cache
-        .iter()
-        .find(|e| e.command_hash == command_hash)
-        .cloned()
 }
 
 // ---------------------------------------------------------------------------
