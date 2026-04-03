@@ -144,10 +144,12 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - `probe_and_suggest` tambem movido para `bot_commands.rs`
   - novo handler `handle_telegram_bot_command` em `bot_commands.rs` para comandos bot-only (`__status__` ate `enable:<id>`)
   - novo handler `handle_telegram_triage_action` em `bot_helpers.rs` para triagem (`__allow_proc__`, `__allow_ip__`, `__fp__`)
+  - novo handler `handle_pending_confirmation` em `bot_actions.rs` para fluxo approve/reject/always
   - `process_telegram_approval` agora delega o roteamento bot-only para `bot_commands`
   - `process_telegram_approval` agora delega tambem o roteamento de triagem para `bot_helpers`
   - `process_telegram_approval` agora delega callbacks de acao (`quick_block`/`hpot`) para `bot_actions`
-  - `crates/agent/src/main.rs` reduziu para `7357` linhas
+  - `process_telegram_approval` agora delega tambem o fluxo de confirmacao pendente para `bot_actions`
+  - `crates/agent/src/main.rs` reduziu para `7284` linhas
 
 ### Ordem recomendada para continuar
 

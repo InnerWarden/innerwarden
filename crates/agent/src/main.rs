@@ -67,7 +67,7 @@ use clap::Parser;
 use tracing::{debug, info, warn};
 
 use crate::agent_context::{guardian_mode, incident_detector};
-use crate::bot_actions::handle_telegram_action_callback;
+use crate::bot_actions::{handle_pending_confirmation, handle_telegram_action_callback};
 use crate::bot_commands::{handle_telegram_bot_command, probe_and_suggest};
 #[cfg(test)]
 use crate::bot_helpers::{
@@ -4376,80 +4376,7 @@ async fn process_telegram_approval(
         return;
     }
 
-    let Some((pending, decision, incident)) =
-        state.pending_confirmations.remove(&result.incident_id)
-    else {
-        debug!(
-            incident_id = %result.incident_id,
-            "Telegram approval for unknown or expired incident - ignoring"
-        );
-        return;
-    };
-
-    // If "Always" - save trust rule before executing
-    if result.always {
-        info!(
-            detector = %pending.detector,
-            action = %pending.action_name,
-            operator = %result.operator_name,
-            "operator added trust rule via Telegram"
-        );
-        append_trust_rule(
-            data_dir,
-            &mut state.trust_rules,
-            &pending.detector,
-            &pending.action_name,
-        );
-    }
-
-    // Acknowledge in Telegram: remove inline keyboard and add follow-up message
-    let tg = state.telegram_client.clone();
-    if let Some(ref tg) = tg {
-        let _ = tg
-            .resolve_confirmation(
-                pending.telegram_message_id,
-                result.approved,
-                result.always,
-                &result.operator_name,
-            )
-            .await;
-    }
-
-    let (exec_result, _cf_pushed) = if result.approved {
-        info!(
-            incident_id = %result.incident_id,
-            operator = %result.operator_name,
-            always = result.always,
-            "operator approved action via Telegram"
-        );
-        execute_decision(&decision, &incident, data_dir, cfg, state).await
-    } else {
-        info!(
-            incident_id = %result.incident_id,
-            operator = %result.operator_name,
-            "operator rejected action via Telegram"
-        );
-        (
-            format!("rejected by operator {}", result.operator_name),
-            false,
-        )
-    };
-
-    // Audit trail with ai_provider = "telegram:<operator>"
-    if let Some(writer) = &mut state.decision_writer {
-        let provider = format!("telegram:{}", result.operator_name);
-        let entry = decisions::build_entry(
-            &incident.incident_id,
-            &incident.host,
-            &provider,
-            &decision,
-            cfg.responder.dry_run,
-            &exec_result,
-        );
-        if let Err(e) = writer.write(&entry) {
-            warn!("failed to write Telegram decision entry: {e:#}");
-        }
-    }
+    let _ = handle_pending_confirmation(&result, data_dir, cfg, state).await;
 }
 
 // ---------------------------------------------------------------------------
