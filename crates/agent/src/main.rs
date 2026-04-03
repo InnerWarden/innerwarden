@@ -31,6 +31,7 @@ mod incident_advisory;
 mod incident_ai_context;
 mod incident_ai_failure;
 mod incident_crowdsec;
+mod incident_decision_eval;
 mod incident_enrichment;
 mod incident_flow;
 mod incident_honeypot_router;
@@ -2587,45 +2588,11 @@ async fn process_incidents(
             &mut blocked_set,
         );
 
-        // ── Cross-detector correlation boost ──────────────────────────
-        // If the same IP triggered multiple distinct detectors within the
-        // correlation window, boost the confidence. This turns near-misses
-        // into auto-executions: an IP seen by ssh_bruteforce + port_scan +
-        // c2_callback is almost certainly malicious.
-        let (boosted_confidence, correlated_detectors) = if cfg.correlation.enabled {
-            let (b, k) = correlation::cross_detector_boost(
-                &mut state.correlator,
-                incident,
-                decision.confidence as f64,
-            );
-            (b as f32, k)
-        } else {
-            (decision.confidence, vec![])
-        };
-
-        if boosted_confidence > decision.confidence {
-            info!(
-                incident_id = %incident.incident_id,
-                base_confidence = decision.confidence,
-                boosted_confidence,
-                correlated_detectors = ?correlated_detectors,
-                "cross-detector correlation boost applied"
-            );
-            decision.confidence = boosted_confidence;
-            decision.reason = format!(
-                "{} [correlated: {}]",
-                decision.reason,
-                correlated_detectors.join(", ")
-            );
-        }
-
-        info!(
-            incident_id = %incident.incident_id,
-            action = ?decision.action,
-            confidence = decision.confidence,
-            auto_execute = decision.auto_execute,
-            reason = %decision.reason,
-            "AI decision"
+        incident_decision_eval::apply_correlation_boost_and_log_decision(
+            incident,
+            cfg,
+            state,
+            &mut decision,
         );
 
         // Honeypot: when AI recommends honeypot with high confidence and auto_execute,

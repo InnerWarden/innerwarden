@@ -152,6 +152,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - novo modulo `crates/agent/src/incident_ai_context.rs` com montagem de contexto AI (recent_events + related_incidents)
   - novo modulo `crates/agent/src/incident_ai_failure.rs` com fallback de erro do provider AI (telemetria + audit trail)
   - novo modulo `crates/agent/src/incident_post_decision.rs` com salvaguardas pos-decisao (protected IP sandbox, cooldown e estado de blocklist/reputacao)
+  - novo modulo `crates/agent/src/incident_decision_eval.rs` com correlation boost + log canonico da decisao AI
   - `probe_and_suggest` tambem movido para `bot_commands.rs`
   - novo handler `handle_telegram_bot_command` em `bot_commands.rs` para comandos bot-only (`__status__` ate `enable:<id>`)
   - novo handler `handle_telegram_triage_action` em `bot_helpers.rs` para triagem (`__allow_proc__`, `__allow_ip__`, `__fp__`)
@@ -171,8 +172,9 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - `process_incidents` agora delega montagem de contexto AI para `incident_ai_context`
   - `process_incidents` agora delega tratamento de erro do provider AI para `incident_ai_failure`
   - `process_incidents` agora delega salvaguardas pos-decisao para `incident_post_decision`
+  - `process_incidents` agora delega correlation boost + log da decisao AI para `incident_decision_eval`
   - `adaptive_block_ttl_secs` promovido para `pub(crate)` para reutilizacao modular
-  - `crates/agent/src/main.rs` reduziu para `6461` linhas
+  - `crates/agent/src/main.rs` reduziu para `6428` linhas
 
 ### Ordem recomendada para continuar
 
