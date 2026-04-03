@@ -33,6 +33,7 @@ mod incident_ai_failure;
 mod incident_crowdsec;
 mod incident_decision_eval;
 mod incident_enrichment;
+mod incident_execution_gate;
 mod incident_flow;
 mod incident_honeypot_router;
 mod incident_honeypot_suggestion;
@@ -855,7 +856,7 @@ fn append_trust_rule(
 }
 
 /// Returns true if a (detector, action) pair has been trusted by the operator.
-fn is_trusted(
+pub(crate) fn is_trusted(
     trust_rules: &std::collections::HashSet<String>,
     detector: &str,
     action: &str,
@@ -2609,44 +2610,11 @@ async fn process_incidents(
             continue;
         }
 
-        // Execute if:
-        //   (a) AI flagged auto_execute, OR operator has trusted this detector+action pair
-        //   AND confidence >= threshold
-        //   AND responder is enabled
-        let detector = incident_detector(&incident.incident_id);
-        let action_name = decision.action.name();
-        let trusted = is_trusted(&state.trust_rules, detector, action_name);
-        let (execution_result, cloudflare_pushed) = if (decision.auto_execute || trusted)
-            && decision.confidence >= cfg.ai.confidence_threshold
-            && cfg.responder.enabled
-        {
-            if trusted && !decision.auto_execute {
-                info!(
-                    incident_id = %incident.incident_id,
-                    detector, action = action_name,
-                    "trust rule override: executing without AI auto_execute flag"
-                );
-            }
-            state
-                .telemetry
-                .observe_execution_path(cfg.responder.dry_run);
-            execute_decision(&decision, incident, data_dir, cfg, state).await
-        } else if !cfg.responder.enabled {
-            ("skipped: responder disabled".to_string(), false)
-        } else if !decision.auto_execute && !trusted {
-            (
-                "skipped: AI did not recommend auto-execution (no trust rule)".to_string(),
-                false,
+        let (execution_result, cloudflare_pushed) =
+            incident_execution_gate::execute_or_skip_decision(
+                incident, &decision, data_dir, cfg, state,
             )
-        } else {
-            (
-                format!(
-                    "skipped: confidence {:.2} below threshold {:.2}",
-                    decision.confidence, cfg.ai.confidence_threshold
-                ),
-                false,
-            )
-        };
+            .await;
 
         // Write to audit trail
         if let Some(writer) = &mut state.decision_writer {
