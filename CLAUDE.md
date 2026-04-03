@@ -137,7 +137,8 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 - Fase 2 iniciada no `agent`:
   - novo modulo `crates/agent/src/bot_helpers.rs`
   - extraidos do `agent/main.rs`: `count_jsonl_lines`, `read_last_incidents`, `read_last_decisions`, `read_last_incidents_raw`
-  - `crates/agent/src/main.rs` reduziu para `9169` linhas
+  - segundo corte no mesmo modulo: `TelegramTriageAction`, `parse_telegram_triage_action`, `sanitize_allowlist_process_name`, `format_time_ago`, `local_hostname_for_audit`, `write_telegram_triage_audit`
+  - `crates/agent/src/main.rs` reduziu para `9086` linhas
 
 ### Ordem recomendada para continuar
 
@@ -151,6 +152,8 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - fluxo de comandos/status do Telegram bot
   - integracoes/notifiers
   - partes grandes do `agent/src/main.rs`
+ - observacao de baseline atual:
+   - `cargo test -p innerwarden-agent` segue com 1 falha pre-existente (`tests::telegram_triage_fp_reports_write_audit_and_fp_log`)
 
 ### Regra de continuidade
 

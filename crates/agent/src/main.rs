@@ -63,6 +63,10 @@ use chrono::{Datelike as _, Timelike as _};
 use clap::Parser;
 use tracing::{debug, info, warn};
 
+use crate::bot_helpers::{
+    format_time_ago, parse_telegram_triage_action, sanitize_allowlist_process_name,
+    write_telegram_triage_audit, TelegramTriageAction,
+};
 use crate::dashboard::AdvisoryEntry;
 
 #[derive(Parser)]
@@ -4718,93 +4722,6 @@ async fn append_honeypot_marker_event(
 // ---------------------------------------------------------------------------
 // Telegram T.2 approval handler
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TelegramTriageAction<'a> {
-    AllowProc(&'a str),
-    AllowIp(&'a str),
-    ReportFp(&'a str),
-}
-
-fn parse_telegram_triage_action(incident_id: &str) -> Option<TelegramTriageAction<'_>> {
-    if let Some(rest) = incident_id.strip_prefix("__allow_proc__:") {
-        Some(TelegramTriageAction::AllowProc(rest))
-    } else if let Some(rest) = incident_id.strip_prefix("__allow_ip__:") {
-        Some(TelegramTriageAction::AllowIp(rest))
-    } else {
-        incident_id
-            .strip_prefix("__fp__:")
-            .map(TelegramTriageAction::ReportFp)
-    }
-}
-
-fn sanitize_allowlist_process_name(raw: &str) -> Option<String> {
-    let cleaned = raw.replace('"', "").replace('\n', " ").trim().to_string();
-    (!cleaned.is_empty()).then_some(cleaned)
-}
-
-/// Format an RFC3339 timestamp as a human-readable "X ago" string.
-fn format_time_ago(ts_str: &str) -> String {
-    let ts = match chrono::DateTime::parse_from_rfc3339(ts_str) {
-        Ok(t) => t.with_timezone(&chrono::Utc),
-        Err(_) => return "recently".to_string(),
-    };
-    let diff = chrono::Utc::now() - ts;
-    if diff.num_days() > 0 {
-        format!("{}d ago", diff.num_days())
-    } else if diff.num_hours() > 0 {
-        format!("{}h ago", diff.num_hours())
-    } else {
-        format!("{}m ago", diff.num_minutes().max(1))
-    }
-}
-
-fn local_hostname_for_audit() -> String {
-    std::env::var("HOSTNAME")
-        .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
-        .unwrap_or_else(|_| "unknown".to_string())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn write_telegram_triage_audit(
-    state: &mut AgentState,
-    incident_id: &str,
-    operator: &str,
-    action_type: &str,
-    target_ip: Option<String>,
-    target_user: Option<String>,
-    reason: String,
-    execution_result: String,
-) {
-    if let Some(writer) = &mut state.decision_writer {
-        let entry = decisions::DecisionEntry {
-            ts: chrono::Utc::now(),
-            incident_id: incident_id.to_string(),
-            host: local_hostname_for_audit(),
-            ai_provider: "operator:telegram".to_string(),
-            action_type: action_type.to_string(),
-            target_ip,
-            target_user,
-            skill_id: None,
-            confidence: 1.0,
-            auto_executed: true,
-            dry_run: false,
-            reason,
-            estimated_threat: "manual".to_string(),
-            execution_result,
-            prev_hash: None,
-        };
-        if let Err(e) = writer.write(&entry) {
-            warn!(
-                error = %e,
-                action_type,
-                incident_id,
-                operator,
-                "failed to write Telegram triage audit entry"
-            );
-        }
-    }
-}
 
 /// Process a single operator approval result received from the Telegram polling task.
 /// Resolves and executes (or discards) the pending confirmation, writes an audit entry,
