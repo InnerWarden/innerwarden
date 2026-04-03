@@ -5,9 +5,7 @@ pub(crate) async fn lookup_abuseipdb_reputation(
     incident: &innerwarden_core::incident::Incident,
     state: &AgentState,
 ) -> Option<abuseipdb::IpReputation> {
-    let Some(client) = state.abuseipdb.as_ref() else {
-        return None;
-    };
+    let client = state.abuseipdb.as_ref()?;
 
     let primary_ip = incident
         .entities

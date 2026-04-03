@@ -1,6 +1,7 @@
 use crate::{abuseipdb, ai, config, geoip, AgentState};
 
 /// Send a post-execution action report to Telegram when an action was executed.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn maybe_send_post_execution_telegram_report(
     incident: &innerwarden_core::incident::Incident,
     decision: &ai::AiDecision,

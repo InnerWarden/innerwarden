@@ -24,10 +24,9 @@ pub(crate) async fn handle_telegram_action_callback(
         if !cfg.responder.enabled {
             tg_reply(
                 state,
-                format!(
-                    "⚠️ Responder is disabled. Enable it in agent.toml to allow blocking.\n\
-                     Run: <code>innerwarden configure responder</code>"
-                ),
+                "⚠️ Responder is disabled. Enable it in agent.toml to allow blocking.\n\
+                 Run: <code>innerwarden configure responder</code>"
+                    .to_string(),
             );
             return true;
         }

@@ -32,9 +32,7 @@ pub(crate) async fn lookup_incident_geoip(
     incident: &innerwarden_core::incident::Incident,
     state: &AgentState,
 ) -> Option<geoip::GeoInfo> {
-    let Some(client) = state.geoip_client.as_ref() else {
-        return None;
-    };
+    let client = state.geoip_client.as_ref()?;
 
     let primary_ip = incident
         .entities
