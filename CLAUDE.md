@@ -159,6 +159,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - novo modulo `crates/agent/src/incident_action_report.rs` com envio de action report Telegram pos-execucao
   - novo modulo `crates/agent/src/incident_playbook.rs` com avaliacao e persistencia de execucao de playbooks
   - novo modulo `crates/agent/src/telemetry_tick.rs` com flush de snapshot de telemetria por tick
+  - novo modulo `crates/agent/src/incident_reputation.rs` com lookup de reputacao AbuseIPDB para IP primario
   - `probe_and_suggest` tambem movido para `bot_commands.rs`
   - novo handler `handle_telegram_bot_command` em `bot_commands.rs` para comandos bot-only (`__status__` ate `enable:<id>`)
   - novo handler `handle_telegram_triage_action` em `bot_helpers.rs` para triagem (`__allow_proc__`, `__allow_ip__`, `__fp__`)
@@ -185,9 +186,10 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - `process_incidents` agora delega o action report pos-execucao para `incident_action_report`
   - `process_incidents` agora delega avaliacao/persistencia de playbooks para `incident_playbook`
   - loops de `incident_tick` e `narrative_tick` agora delegam flush de snapshot para `telemetry_tick`
+  - `process_incidents` agora delega lookup de reputacao AbuseIPDB para `incident_reputation`
   - `adaptive_block_ttl_secs` promovido para `pub(crate)` para reutilizacao modular
   - `is_trusted` promovido para `pub(crate)` para reutilizacao modular
-  - `crates/agent/src/main.rs` reduziu para `6244` linhas
+  - `crates/agent/src/main.rs` reduziu para `6231` linhas
 
 ### Ordem recomendada para continuar
 

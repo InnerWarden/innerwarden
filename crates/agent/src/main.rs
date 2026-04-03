@@ -43,6 +43,7 @@ mod incident_notifications;
 mod incident_obvious;
 mod incident_playbook;
 mod incident_post_decision;
+mod incident_reputation;
 mod ioc;
 mod mesh;
 mod mitre;
@@ -2480,22 +2481,7 @@ async fn process_incidents(
             cfg.ai.context_events,
         );
 
-        // Optionally enrich with AbuseIPDB reputation data
-        let ip_reputation = if let Some(ref client) = state.abuseipdb {
-            // Extract primary IP from the incident
-            let primary_ip = incident
-                .entities
-                .iter()
-                .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
-                .map(|e| e.value.as_str());
-            if let Some(ip) = primary_ip {
-                client.check(ip).await
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let ip_reputation = incident_reputation::lookup_abuseipdb_reputation(incident, state).await;
 
         if incident_abuseipdb::try_handle_abuseipdb_autoblock(
             incident,
