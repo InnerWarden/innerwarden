@@ -847,6 +847,12 @@ impl TelegramClient {
             lines.push(cmd_block.trim_end().to_string());
         }
 
+        if credentials.is_empty() && commands.is_empty() {
+            lines.push(
+                "\nℹ️ Probe-only session: no auth attempts or shell commands captured.".to_string(),
+            );
+        }
+
         if !iocs.is_empty() {
             let ioc_text = iocs.format_telegram();
             if !ioc_text.is_empty() {
