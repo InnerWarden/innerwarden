@@ -26,6 +26,7 @@ mod decisions;
 mod fail2ban;
 mod forensics;
 mod geoip;
+mod incident_notifications;
 mod ioc;
 mod mesh;
 mod mitre;
@@ -66,7 +67,7 @@ use chrono::{Datelike as _, Timelike as _};
 use clap::Parser;
 use tracing::{debug, info, warn};
 
-use crate::agent_context::{guardian_mode, incident_detector};
+use crate::agent_context::incident_detector;
 use crate::bot_actions::{handle_pending_confirmation, handle_telegram_action_callback};
 use crate::bot_commands::{handle_telegram_bot_command, probe_and_suggest};
 #[cfg(test)]
@@ -2209,26 +2210,8 @@ async fn process_incidents(
     // Advance cursor before any async work - prevents double-processing on crash/restart
     cursor.set_incidents_offset(&today, new_incidents.new_offset);
 
-    // Pre-compute webhook threshold once (None = webhook disabled)
-    let webhook_min_rank: Option<u8> = if cfg.webhook.enabled && !cfg.webhook.url.is_empty() {
-        Some(webhook::severity_rank(&cfg.webhook.parsed_min_severity()))
-    } else {
-        None
-    };
-
-    // Pre-compute Telegram T.1 threshold (None = telegram disabled)
-    let telegram_min_rank: Option<u8> = if cfg.telegram.enabled && state.telegram_client.is_some() {
-        Some(webhook::severity_rank(&cfg.telegram.parsed_min_severity()))
-    } else {
-        None
-    };
-
-    // Pre-compute Slack threshold (None = slack disabled)
-    let slack_min_rank: Option<u8> = if cfg.slack.enabled && state.slack_client.is_some() {
-        Some(webhook::severity_rank(&cfg.slack.parsed_min_severity()))
-    } else {
-        None
-    };
+    let notification_thresholds =
+        incident_notifications::compute_notification_thresholds(cfg, state);
 
     // Circuit breaker: if a previous tick tripped the breaker, check if cooldown expired
     if let Some(until) = state.circuit_breaker_until {
@@ -2426,90 +2409,14 @@ async fn process_incidents(
             }
         }
 
-        // 1. Notification cooldown - suppress duplicate alerts for the same entity
-        //    within a 10-minute window. Prevents alert spam during sustained attacks.
-        let notify_cutoff =
-            chrono::Utc::now() - chrono::Duration::seconds(NOTIFICATION_COOLDOWN_SECS);
-        let notify_keys = notification_cooldown_keys(incident);
-        let notify_suppressed = notify_keys.iter().any(|k| {
-            state
-                .store
-                .get_cooldown(state_store::CooldownTable::Notification, k)
-                .is_some_and(|ts| ts > notify_cutoff)
-        });
-
-        if notify_suppressed {
-            info!(
-                incident_id = %incident.incident_id,
-                "notification cooldown: suppressing duplicate alert"
-            );
-        }
-
-        // 1a. Webhook - fires for ALL incidents above configured threshold, regardless of AI gate
-        if !notify_suppressed {
-            if let Some(min_rank) = webhook_min_rank {
-                if webhook::severity_rank(&incident.severity) >= min_rank {
-                    if let Err(e) = webhook::send_incident(
-                        &cfg.webhook.url,
-                        cfg.webhook.timeout_secs,
-                        incident,
-                        &cfg.webhook.format,
-                    )
-                    .await
-                    {
-                        state.telemetry.observe_error("webhook");
-                        warn!(incident_id = %incident.incident_id, "webhook failed: {e:#}");
-                    }
-                }
-            }
-
-            // 1b. Telegram T.1 - push notification for High/Critical incidents
-            //     Batching: first occurrence of a detector goes immediately.
-            //     Repeated same-detector alerts are grouped into periodic summaries.
-            if let Some(min_rank) = telegram_min_rank {
-                if webhook::severity_rank(&incident.severity) >= min_rank {
-                    let tg = state.telegram_client.clone();
-                    if let Some(tg) = tg {
-                        if state.telegram_batcher.should_send_immediately(incident) {
-                            let mode = guardian_mode(cfg);
-                            let is_simple = cfg.telegram.is_simple_profile();
-                            if let Err(e) = tg.send_incident_alert(incident, mode, is_simple).await
-                            {
-                                warn!(incident_id = %incident.incident_id, "Telegram alert failed: {e:#}");
-                            }
-                        }
-                        state.telegram_batcher.record(incident);
-                    }
-                }
-            }
-
-            // 1c. Slack - push notification via Incoming Webhook
-            if let Some(min_rank) = slack_min_rank {
-                if webhook::severity_rank(&incident.severity) >= min_rank {
-                    if let Some(ref sc) = state.slack_client {
-                        let dashboard_url = if cfg.slack.dashboard_url.is_empty() {
-                            None
-                        } else {
-                            Some(cfg.slack.dashboard_url.as_str())
-                        };
-                        if let Err(e) = sc.send_incident_alert(incident, dashboard_url).await {
-                            warn!(incident_id = %incident.incident_id, "Slack alert failed: {e:#}");
-                        }
-                    }
-                }
-            }
-
-            // 1d. Web Push - browser notification for High/Critical incidents
-            web_push::notify_incident(incident, data_dir, &cfg.web_push).await;
-
-            // Mark notification cooldown for all entities in this incident
-            let now = chrono::Utc::now();
-            for k in &notify_keys {
-                state
-                    .store
-                    .set_cooldown(state_store::CooldownTable::Notification, k, now);
-            }
-        } // end if !notify_suppressed
+        incident_notifications::dispatch_incident_notifications(
+            incident,
+            data_dir,
+            cfg,
+            state,
+            &notification_thresholds,
+        )
+        .await;
 
         // 1e. Advisory correlation - check if this execution incident matches
         //     a recent advisory denial from the /api/advisor/check-command endpoint.
