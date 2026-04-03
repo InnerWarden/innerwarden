@@ -104,6 +104,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 - `commands/history.rs`
 - `commands/ops.rs`
 - `commands/core.rs`
+- `commands/update.rs`
 
 3. Escopo funcional ja removido do `main.rs`
 - setup
@@ -124,8 +125,8 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 
 ### Estado atual
 
-- `crates/ctl/src/main.rs` esta em `2871` linhas
-- Ultimo corte aplicado: extracao de `cmd_ai_install` para `commands/ai.rs`
+- `crates/ctl/src/main.rs` esta em `2560` linhas
+- Ultimo corte aplicado: extracao de `cmd_upgrade` para `commands/update.rs`
 - Todos os cortes foram validados com:
   - `cargo fmt --all`
   - `cargo check -p innerwarden-ctl`
@@ -160,13 +161,13 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 
 ### Ultimos commits desta frente
 
-- `WIP` Extract ctl history/data commands into a dedicated module
-- `WIP` Extract ctl ops/config setup commands into a dedicated module
-- `1e09220` Move ctl web push setup into the notify module
-- `023289d` Extract ctl response commands into a dedicated module
-- `db2690e` Extract ctl watchdog commands into a dedicated module
-- `93ad6c2` Extract ctl agent commands into a dedicated module
-- `f18c27b` Extract ctl module commands into a dedicated module
+- `d11601c` Extract ctl ai install command into ai module
+- `288643d` Extract ctl navigator command into status module
+- `2586b13` Extract ctl list and daily commands into core module
+- `ff75b5d` Extract ctl backup and completions commands into ops module
+- `0ad7d4a` Extract ctl pipeline test command into ops module
+- `579d0d1` Extract ctl doctor and tune commands into ops module
+- `009b480` Extract ctl history and ops setup commands into modules
 
 ## Docs detalhados
 
