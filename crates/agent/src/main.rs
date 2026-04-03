@@ -29,6 +29,7 @@ mod geoip;
 mod incident_abuseipdb;
 mod incident_advisory;
 mod incident_crowdsec;
+mod incident_enrichment;
 mod incident_flow;
 mod incident_honeypot_router;
 mod incident_notifications;
@@ -2536,24 +2537,7 @@ async fn process_incidents(
             continue;
         }
 
-        // Threat feed gate: if the IP is in any threat feed, log it for enrichment.
-        // This is informational — does not auto-block (feeds may have false positives).
-        if let Some(ref tf) = state.threat_feed {
-            let primary_ip = incident
-                .entities
-                .iter()
-                .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
-                .map(|e| e.value.as_str());
-            if let Some(ip) = primary_ip {
-                if tf.is_known_malicious_ip(ip) {
-                    info!(
-                        ip,
-                        incident_id = %incident.incident_id,
-                        "threat feed match: IP found in external IOC feed"
-                    );
-                }
-            }
-        }
+        incident_enrichment::log_threat_feed_match(incident, state);
 
         if incident_honeypot_router::try_handle_honeypot_routing(
             incident,
@@ -2568,46 +2552,13 @@ async fn process_incidents(
             continue;
         }
 
-        // Optionally enrich with IP geolocation data
-        let ip_geo = if let Some(ref client) = state.geoip_client {
-            let primary_ip = incident
-                .entities
-                .iter()
-                .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
-                .map(|e| e.value.as_str());
-            if let Some(ip) = primary_ip {
-                client.lookup(ip).await
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Enrich attacker profile with GeoIP + AbuseIPDB (only on first encounter)
-        if ip_geo.is_some() || ip_reputation.is_some() {
-            let primary_ip = incident
-                .entities
-                .iter()
-                .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
-                .map(|e| e.value.as_str());
-            if let Some(ip) = primary_ip {
-                if let Some(profile) = state.attacker_profiles.get_mut(ip) {
-                    if profile.geo.is_none() || profile.abuseipdb_score.is_none() {
-                        let crowdsec_listed = state
-                            .crowdsec
-                            .as_ref()
-                            .is_some_and(|cs| cs.is_known_threat(ip));
-                        attacker_intel::enrich_identity(
-                            profile,
-                            ip_geo.as_ref(),
-                            ip_reputation.as_ref(),
-                            crowdsec_listed,
-                        );
-                    }
-                }
-            }
-        }
+        let ip_geo = incident_enrichment::lookup_incident_geoip(incident, state).await;
+        incident_enrichment::enrich_attacker_identity(
+            incident,
+            state,
+            ip_geo.as_ref(),
+            ip_reputation.as_ref(),
+        );
 
         let ctx = ai::DecisionContext {
             incident,

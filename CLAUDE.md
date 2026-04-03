@@ -148,6 +148,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - novo modulo `crates/agent/src/incident_abuseipdb.rs` com gate de auto-block por reputacao (sem chamada de AI)
   - novo modulo `crates/agent/src/incident_crowdsec.rs` com gate de auto-block via threat list comunitaria
   - novo modulo `crates/agent/src/incident_honeypot_router.rs` com roteamento inteligente para honeypot listener
+  - novo modulo `crates/agent/src/incident_enrichment.rs` com threat feed log + lookup GeoIP + enrich de perfil atacante
   - `probe_and_suggest` tambem movido para `bot_commands.rs`
   - novo handler `handle_telegram_bot_command` em `bot_commands.rs` para comandos bot-only (`__status__` ate `enable:<id>`)
   - novo handler `handle_telegram_triage_action` em `bot_helpers.rs` para triagem (`__allow_proc__`, `__allow_ip__`, `__fp__`)
@@ -163,7 +164,8 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - `process_incidents` agora delega o gate AbuseIPDB (auto-block por score) para `incident_abuseipdb`
   - `process_incidents` agora delega o gate CrowdSec (auto-block por feed comunitario) para `incident_crowdsec`
   - `process_incidents` agora delega o roteamento de honeypot para `incident_honeypot_router`
-  - `crates/agent/src/main.rs` reduziu para `6640` linhas
+  - `process_incidents` agora delega threat feed + enriquecimento de identidade para `incident_enrichment`
+  - `crates/agent/src/main.rs` reduziu para `6591` linhas
 
 ### Ordem recomendada para continuar
 
