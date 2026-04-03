@@ -958,37 +958,56 @@ pub(crate) fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()>
     let mut cfg = Vec::new();
 
     for (label, path) in &[("Sensor", &cli.sensor_config), ("Agent", &cli.agent_config)] {
-        if path.exists() {
-            cfg.push(Check::ok(format!(
-                "{} config found ({})",
-                label,
-                path.display()
-            )));
-            let valid_toml = std::fs::read_to_string(path)
-                .ok()
-                .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
-                .is_some();
-            cfg.push(if valid_toml {
-                Check::ok(format!("{} config is valid TOML", label))
-            } else {
-                Check::fail(
+        match std::fs::metadata(path) {
+            Ok(_) => {
+                cfg.push(Check::ok(format!(
+                    "{} config found ({})",
+                    label,
+                    path.display()
+                )));
+                let valid_toml = std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
+                    .is_some();
+                cfg.push(if valid_toml {
+                    Check::ok(format!("{} config is valid TOML", label))
+                } else {
+                    Check::fail(
+                        format!(
+                            "{} config has invalid TOML syntax ({})",
+                            label,
+                            path.display()
+                        ),
+                        format!("fix syntax in {}", path.display()),
+                    )
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                cfg.push(Check::warn(
                     format!(
-                        "{} config has invalid TOML syntax ({})",
+                        "{} config exists but is not readable by current user ({})",
                         label,
                         path.display()
                     ),
-                    format!("fix syntax in {}", path.display()),
-                )
-            });
-        } else {
-            cfg.push(Check::warn(
-                format!(
-                    "{} config not found ({}) - defaults are in use",
-                    label,
-                    path.display()
-                ),
-                "Run 'sudo innerwarden setup' to create your configuration",
-            ));
+                    "Run with sudo or add current user to the 'innerwarden' group.",
+                ));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                cfg.push(Check::warn(
+                    format!(
+                        "{} config not found ({}) - defaults are in use",
+                        label,
+                        path.display()
+                    ),
+                    "Run 'sudo innerwarden setup' to create your configuration",
+                ));
+            }
+            Err(e) => {
+                cfg.push(Check::warn(
+                    format!("{} config check failed ({})", label, path.display()),
+                    format!("Could not access file metadata: {e}"),
+                ));
+            }
         }
     }
 

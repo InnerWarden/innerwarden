@@ -3,6 +3,7 @@
 
 use std::path::Path;
 
+use fancy_regex::Regex as FancyRegex;
 use regex::Regex;
 use tracing::warn;
 
@@ -23,8 +24,23 @@ pub enum AtrField {
 #[derive(Debug)]
 struct CompiledCondition {
     field: AtrField,
-    regex: Regex,
+    regex: CompiledRegex,
     description: String,
+}
+
+#[derive(Debug)]
+enum CompiledRegex {
+    Fast(Regex),
+    Fancy(FancyRegex),
+}
+
+impl CompiledRegex {
+    fn is_match(&self, content: &str) -> bool {
+        match self {
+            Self::Fast(re) => re.is_match(content),
+            Self::Fancy(re) => re.is_match(content).unwrap_or(false),
+        }
+    }
 }
 
 /// Condition logic — whether any or all conditions must match.
@@ -254,23 +270,84 @@ struct RawRule {
     detection: RawDetection,
 }
 
-#[derive(serde::Deserialize, Default)]
-struct RawTags {
-    #[serde(default)]
-    category: String,
-    // We don't need subcategory or confidence for matching.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum RawTags {
+    Map {
+        #[serde(default)]
+        category: String,
+    },
+    List(Vec<String>),
+    String(String),
+    Empty,
 }
 
-#[derive(serde::Deserialize, Default)]
-struct RawReferences {
-    #[serde(default)]
-    owasp_llm: Vec<String>,
-    #[serde(default)]
-    owasp_agentic: Vec<String>,
-    #[serde(default)]
-    mitre_atlas: Vec<String>,
-    #[serde(default)]
-    mitre_attack: Vec<String>,
+impl RawTags {
+    fn category(&self) -> String {
+        match self {
+            Self::Map { category } => category.clone(),
+            Self::List(v) => v.first().cloned().unwrap_or_default(),
+            Self::String(s) => s.clone(),
+            Self::Empty => String::new(),
+        }
+    }
+}
+
+impl Default for RawTags {
+    fn default() -> Self {
+        Self::Empty
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum RawReferences {
+    Map {
+        #[serde(default)]
+        owasp_llm: Vec<String>,
+        #[serde(default)]
+        owasp_agentic: Vec<String>,
+        #[serde(default)]
+        mitre_atlas: Vec<String>,
+        #[serde(default)]
+        mitre_attack: Vec<String>,
+    },
+    List(Vec<String>),
+    String(String),
+    Empty,
+}
+
+impl Default for RawReferences {
+    fn default() -> Self {
+        Self::Empty
+    }
+}
+
+impl RawReferences {
+    fn into_atr_references(self) -> AtrReferences {
+        match self {
+            Self::Map {
+                owasp_llm,
+                owasp_agentic,
+                mitre_atlas,
+                mitre_attack,
+            } => AtrReferences {
+                owasp_llm,
+                owasp_agentic,
+                mitre_atlas,
+                mitre_attack,
+            },
+            Self::List(v) => AtrReferences {
+                mitre_attack: v,
+                ..Default::default()
+            },
+            Self::String(s) => AtrReferences {
+                mitre_attack: vec![s],
+                ..Default::default()
+            },
+            Self::Empty => AtrReferences::default(),
+        }
+    }
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -333,21 +410,39 @@ fn load_rule_file(path: &Path) -> anyhow::Result<Option<CompiledRule>> {
             Ok(re) => {
                 conditions.push(CompiledCondition {
                     field: parse_field(&cond.field),
-                    regex: re,
+                    regex: CompiledRegex::Fast(re),
                     description: cond
                         .description
                         .clone()
                         .unwrap_or_else(|| format!("{id} match")),
                 });
             }
-            Err(e) => {
-                warn!(
-                    rule = %id,
-                    pattern = %cond.value,
-                    error = %e,
-                    "failed to compile ATR regex, skipping condition"
-                );
-            }
+            Err(e_fast) => match FancyRegex::new(&cond.value) {
+                Ok(re) => {
+                    warn!(
+                        rule = %id,
+                        pattern = %cond.value,
+                        "compiled ATR regex with fancy-regex fallback"
+                    );
+                    conditions.push(CompiledCondition {
+                        field: parse_field(&cond.field),
+                        regex: CompiledRegex::Fancy(re),
+                        description: cond
+                            .description
+                            .clone()
+                            .unwrap_or_else(|| format!("{id} match")),
+                    });
+                }
+                Err(e_fancy) => {
+                    warn!(
+                        rule = %id,
+                        pattern = %cond.value,
+                        regex_error = %e_fast,
+                        fancy_error = %e_fancy,
+                        "failed to compile ATR regex, skipping condition"
+                    );
+                }
+            },
         }
     }
 
@@ -359,15 +454,10 @@ fn load_rule_file(path: &Path) -> anyhow::Result<Option<CompiledRule>> {
         id,
         title,
         severity: raw.severity,
-        category: raw.tags.category,
+        category: raw.tags.category(),
         conditions,
         logic,
-        references: AtrReferences {
-            owasp_llm: raw.references.owasp_llm,
-            owasp_agentic: raw.references.owasp_agentic,
-            mitre_atlas: raw.references.mitre_atlas,
-            mitre_attack: raw.references.mitre_attack,
-        },
+        references: raw.references.into_atr_references(),
     }))
 }
 
