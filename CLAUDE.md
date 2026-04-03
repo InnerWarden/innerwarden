@@ -165,6 +165,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - novo modulo `crates/agent/src/incident_attacker_profile.rs` com update inicial de reputacao local e perfil de atacante por IP
   - novo modulo `crates/agent/src/decision_block_ip.rs` com execucao em camadas do block-ip (XDP/firewall/Cloudflare/AbuseIPDB)
   - novo modulo `crates/agent/src/decision_confirmation.rs` com fluxo de confirmacao de operador (Telegram + fallback webhook)
+  - novo modulo `crates/agent/src/decision_honeypot.rs` com fluxo de execucao honeypot (runtime, post-session e marker event)
   - novo modulo `crates/agent/src/narrative_autofp.rs` com sugestao Telegram de allowlist por reincidencia de false positive
   - novo modulo `crates/agent/src/decision_skill_actions.rs` com execucao das acoes simples (`monitor`, `suspend-user-sudo`, `kill-process`, `block-container`, `kill-chain-response`, `ignore`)
   - `probe_and_suggest` tambem movido para `bot_commands.rs`
@@ -199,12 +200,13 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - `process_incidents` agora delega update inicial de reputacao/perfil por IP para `incident_attacker_profile`
   - `execute_decision` agora delega o branch `AiAction::BlockIp` para `decision_block_ip`
   - `execute_decision` agora delega o branch `AiAction::RequestConfirmation` para `decision_confirmation`
+  - `execute_decision` agora delega o branch `AiAction::Honeypot` para `decision_honeypot`
   - `process_narrative_tick` agora delega sugestoes auto-FP para `narrative_autofp`
   - `execute_decision` agora delega as acoes simples para `decision_skill_actions`
   - `adaptive_block_ttl_secs` promovido para `pub(crate)` para reutilizacao modular
   - `is_trusted` promovido para `pub(crate)` para reutilizacao modular
   - `should_auto_enable_lsm` e `enable_lsm_enforcement` promovidos para `pub(crate)`
-  - `crates/agent/src/main.rs` reduziu para `5831` linhas
+  - `crates/agent/src/main.rs` reduziu para `5748` linhas
 
 ### Ordem recomendada para continuar
 

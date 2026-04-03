@@ -24,6 +24,7 @@ mod dashboard;
 mod data_retention;
 mod decision_block_ip;
 mod decision_confirmation;
+mod decision_honeypot;
 mod decision_skill_actions;
 mod decisions;
 mod fail2ban;
@@ -2586,91 +2587,7 @@ pub(crate) async fn execute_decision(
             .await
         }
         AiAction::Honeypot { ip } => {
-            if let Some(skill) = state.skill_registry.get("honeypot") {
-                let mut runtime = honeypot_runtime(cfg);
-                // Thread the AI provider into the runtime so llm_shell interaction works.
-                runtime.ai_provider = state.ai_provider.clone();
-                let ctx = skills::SkillContext {
-                    incident: incident.clone(),
-                    target_ip: Some(ip.clone()),
-                    target_user: None,
-                    target_container: None,
-                    duration_secs: None,
-                    host: incident.host.clone(),
-                    data_dir: data_dir.to_path_buf(),
-                    honeypot: runtime.clone(),
-                    ai_provider: state.ai_provider.clone(),
-                };
-                let result = skill.execute(&ctx, cfg.responder.dry_run).await;
-                if result.success {
-                    // Extract session_id from the skill result message for post-session tasks.
-                    let session_id = extract_session_id_from_message(&result.message)
-                        .unwrap_or_else(|| {
-                            format!("unknown-{}", chrono::Utc::now().format("%Y%m%dT%H%M%SZ"))
-                        });
-
-                    // Spawn post-session tasks in the background (non-blocking).
-                    let post_ip = ip.clone();
-                    let post_session_id = session_id.clone();
-                    let post_data_dir = data_dir.to_path_buf();
-                    let post_ai = state.ai_provider.clone();
-                    let post_tg = state.telegram_client.clone();
-                    let post_responder_enabled = cfg.responder.enabled;
-                    let post_dry_run = cfg.responder.dry_run;
-                    let post_block_backend = cfg.responder.block_backend.clone();
-                    let post_allowed_skills = cfg.responder.allowed_skills.clone();
-                    let post_blocklist_has = state.blocklist.contains(ip);
-                    tokio::spawn(async move {
-                        spawn_post_session_tasks(
-                            &post_ip,
-                            &post_session_id,
-                            &post_data_dir,
-                            post_ai,
-                            post_tg,
-                            post_responder_enabled,
-                            post_dry_run,
-                            &post_block_backend,
-                            &post_allowed_skills,
-                            post_blocklist_has,
-                        )
-                        .await;
-                    });
-
-                    match append_honeypot_marker_event(
-                        data_dir,
-                        incident,
-                        ip,
-                        cfg.responder.dry_run,
-                        &runtime,
-                    )
-                    .await
-                    {
-                        Ok(path) => (
-                            format!(
-                                "{} | honeypot marker written to {}",
-                                result.message,
-                                path.display()
-                            ),
-                            false,
-                        ),
-                        Err(e) => {
-                            state.telemetry.observe_error("honeypot_marker_writer");
-                            warn!("failed to write honeypot marker event: {e:#}");
-                            (
-                                format!(
-                                    "{} | warning: failed to write honeypot marker event: {e}",
-                                    result.message
-                                ),
-                                false,
-                            )
-                        }
-                    }
-                } else {
-                    (result.message, false)
-                }
-            } else {
-                ("skipped: honeypot skill not available".to_string(), false)
-            }
+            decision_honeypot::execute_honeypot_decision(ip, incident, data_dir, cfg, state).await
         }
         AiAction::SuspendUserSudo {
             user,
@@ -2784,7 +2701,7 @@ pub(crate) async fn execute_decision(
     }
 }
 
-fn honeypot_runtime(cfg: &config::AgentConfig) -> skills::HoneypotRuntimeConfig {
+pub(crate) fn honeypot_runtime(cfg: &config::AgentConfig) -> skills::HoneypotRuntimeConfig {
     let mode = cfg.honeypot.mode.trim().to_ascii_lowercase();
     let normalized_mode = match mode.as_str() {
         "demo" | "listener" => mode,
@@ -2864,7 +2781,7 @@ fn honeypot_runtime(cfg: &config::AgentConfig) -> skills::HoneypotRuntimeConfig 
     }
 }
 
-async fn append_honeypot_marker_event(
+pub(crate) async fn append_honeypot_marker_event(
     data_dir: &Path,
     incident: &innerwarden_core::incident::Incident,
     ip: &str,
@@ -3443,7 +3360,7 @@ async fn process_narrative_tick(
 
 /// Extract session_id from honeypot skill result message.
 /// The message format is: "Honeypot listeners started (session {session_id}, ...)"
-fn extract_session_id_from_message(msg: &str) -> Option<String> {
+pub(crate) fn extract_session_id_from_message(msg: &str) -> Option<String> {
     // Look for "session " followed by the session_id (ends at next ", " or ")")
     let marker = "session ";
     let start = msg.find(marker)? + marker.len();
@@ -3518,7 +3435,7 @@ async fn read_credentials_from_evidence(path: &std::path::Path) -> Vec<(String, 
 /// Spawned in the background after a honeypot session starts.
 /// Reads evidence, extracts IOCs, gets AI verdict, auto-blocks, sends Telegram report.
 #[allow(clippy::too_many_arguments)]
-async fn spawn_post_session_tasks(
+pub(crate) async fn spawn_post_session_tasks(
     ip: &str,
     session_id: &str,
     data_dir: &std::path::Path,
