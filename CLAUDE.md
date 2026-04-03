@@ -134,6 +134,10 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - `cargo fmt --all`
   - `cargo check -p innerwarden-ctl`
   - `cargo test -p innerwarden-ctl`
+- Fase 2 iniciada no `agent`:
+  - novo modulo `crates/agent/src/bot_helpers.rs`
+  - extraidos do `agent/main.rs`: `count_jsonl_lines`, `read_last_incidents`, `read_last_decisions`, `read_last_incidents_raw`
+  - `crates/agent/src/main.rs` reduziu para `9169` linhas
 
 ### Ordem recomendada para continuar
 
@@ -142,9 +146,9 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 - manter foco em cortes sem mudanca de comportamento
 
 2. Depois do `ctl`
-- iniciar a mesma estrategia no crate `agent`
-- candidatos naturais:
-  - `dashboard.rs`
+- continuar a mesma estrategia no crate `agent`
+- proximos candidatos naturais:
+  - fluxo de comandos/status do Telegram bot
   - integracoes/notifiers
   - partes grandes do `agent/src/main.rs`
 
