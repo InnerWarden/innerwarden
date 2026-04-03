@@ -15,6 +15,9 @@ pub struct ActivationOptions {
     pub params: HashMap<String, String>,
     /// Skip interactive confirmation prompts (e.g. privacy gate for shell-audit)
     pub yes: bool,
+    /// When true, capability code should avoid restarting services.
+    /// Caller is responsible for consolidated restart orchestration.
+    pub defer_restarts: bool,
 }
 
 // ---------------------------------------------------------------------------

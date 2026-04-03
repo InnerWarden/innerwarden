@@ -67,8 +67,16 @@ impl Capability for SearchProtectionCapability {
                 Self::sudoers_name()
             )),
             CapabilityEffect::new("Create /etc/nginx/innerwarden-blocklist.conf placeholder"),
-            CapabilityEffect::new("Restart innerwarden-sensor"),
-            CapabilityEffect::new("Restart innerwarden-agent"),
+            CapabilityEffect::new(if opts.defer_restarts {
+                "Restart innerwarden-sensor (deferred)"
+            } else {
+                "Restart innerwarden-sensor"
+            }),
+            CapabilityEffect::new(if opts.defer_restarts {
+                "Restart innerwarden-agent (deferred)"
+            } else {
+                "Restart innerwarden-agent"
+            }),
         ]
     }
 
@@ -145,13 +153,19 @@ impl Capability for SearchProtectionCapability {
                 .to_string(),
         );
 
-        // 8. Restart sensor (nginx_access collector must pick up new config)
-        systemd::restart_service("innerwarden-sensor", opts.dry_run)?;
-        effects.push(CapabilityEffect::new("Restarted innerwarden-sensor"));
+        // 8 & 9. Restart services (or defer for batched setup apply)
+        if opts.defer_restarts {
+            effects.push(CapabilityEffect::new("Deferred innerwarden-sensor restart"));
+            effects.push(CapabilityEffect::new("Deferred innerwarden-agent restart"));
+        } else {
+            // nginx_access collector must pick up new config
+            systemd::restart_service("innerwarden-sensor", opts.dry_run)?;
+            effects.push(CapabilityEffect::new("Restarted innerwarden-sensor"));
 
-        // 9. Restart agent (rate-limit-nginx skill is now in allowed_skills)
-        systemd::restart_service("innerwarden-agent", opts.dry_run)?;
-        effects.push(CapabilityEffect::new("Restarted innerwarden-agent"));
+            // rate-limit-nginx skill is now in allowed_skills
+            systemd::restart_service("innerwarden-agent", opts.dry_run)?;
+            effects.push(CapabilityEffect::new("Restarted innerwarden-agent"));
+        }
 
         Ok(ActivationReport {
             effects_applied: effects,
@@ -173,8 +187,16 @@ impl Capability for SearchProtectionCapability {
                 "Remove \"rate-limit-nginx\" from [responder] allowed_skills in {agent}"
             )),
             CapabilityEffect::new(format!("Remove /etc/sudoers.d/{}", Self::sudoers_name())),
-            CapabilityEffect::new("Restart innerwarden-sensor"),
-            CapabilityEffect::new("Restart innerwarden-agent"),
+            CapabilityEffect::new(if opts.defer_restarts {
+                "Restart innerwarden-sensor (deferred)"
+            } else {
+                "Restart innerwarden-sensor"
+            }),
+            CapabilityEffect::new(if opts.defer_restarts {
+                "Restart innerwarden-agent (deferred)"
+            } else {
+                "Restart innerwarden-agent"
+            }),
         ]
     }
 
@@ -230,12 +252,17 @@ impl Capability for SearchProtectionCapability {
             Self::sudoers_name()
         )));
 
-        // 5 & 6. Restart both services
-        systemd::restart_service("innerwarden-sensor", opts.dry_run)?;
-        effects.push(CapabilityEffect::new("Restarted innerwarden-sensor"));
+        // 5 & 6. Restart services (or defer for batched setup apply)
+        if opts.defer_restarts {
+            effects.push(CapabilityEffect::new("Deferred innerwarden-sensor restart"));
+            effects.push(CapabilityEffect::new("Deferred innerwarden-agent restart"));
+        } else {
+            systemd::restart_service("innerwarden-sensor", opts.dry_run)?;
+            effects.push(CapabilityEffect::new("Restarted innerwarden-sensor"));
 
-        systemd::restart_service("innerwarden-agent", opts.dry_run)?;
-        effects.push(CapabilityEffect::new("Restarted innerwarden-agent"));
+            systemd::restart_service("innerwarden-agent", opts.dry_run)?;
+            effects.push(CapabilityEffect::new("Restarted innerwarden-agent"));
+        }
 
         Ok(ActivationReport {
             effects_applied: effects,
@@ -306,6 +333,7 @@ mod tests {
             dry_run: true,
             params: HashMap::new(),
             yes: true,
+            defer_restarts: false,
         }
     }
 
@@ -492,5 +520,24 @@ mod tests {
         assert!(rule.contains("nginx -s reload"));
         assert!(rule.contains("innerwarden-blocklist.conf"));
         assert!(rule.contains("NOPASSWD"));
+    }
+
+    #[test]
+    fn activate_can_defer_restarts() {
+        let sensor = NamedTempFile::new().unwrap();
+        let mut agent = NamedTempFile::new().unwrap();
+        writeln!(agent, "[responder]\nenabled = false\n").unwrap();
+        let mut opts = make_opts(&sensor, &agent);
+        opts.defer_restarts = true;
+
+        let report = SearchProtectionCapability.activate(&opts).unwrap();
+        assert!(report
+            .effects_applied
+            .iter()
+            .any(|effect| effect.description == "Deferred innerwarden-sensor restart"));
+        assert!(report
+            .effects_applied
+            .iter()
+            .any(|effect| effect.description == "Deferred innerwarden-agent restart"));
     }
 }

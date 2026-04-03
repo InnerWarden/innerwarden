@@ -96,7 +96,11 @@ impl Capability for ShellAuditCapability {
             )),
             CapabilityEffect::new(format!("Write {AUDITD_RULE_FILE}")),
             CapabilityEffect::new("Load audit rules (augenrules --load)"),
-            CapabilityEffect::new("Restart innerwarden-sensor"),
+            CapabilityEffect::new(if opts.defer_restarts {
+                "Restart innerwarden-sensor (deferred)"
+            } else {
+                "Restart innerwarden-sensor"
+            }),
         ]
     }
 
@@ -133,9 +137,13 @@ impl Capability for ShellAuditCapability {
         }
         effects.push(CapabilityEffect::new("Loaded audit rules"));
 
-        // 4. Restart sensor
-        systemd::restart_service("innerwarden-sensor", opts.dry_run)?;
-        effects.push(CapabilityEffect::new("Restarted innerwarden-sensor"));
+        // 4. Restart sensor (or defer for batched setup apply)
+        if opts.defer_restarts {
+            effects.push(CapabilityEffect::new("Deferred innerwarden-sensor restart"));
+        } else {
+            systemd::restart_service("innerwarden-sensor", opts.dry_run)?;
+            effects.push(CapabilityEffect::new("Restarted innerwarden-sensor"));
+        }
 
         Ok(ActivationReport {
             effects_applied: effects,
@@ -151,7 +159,11 @@ impl Capability for ShellAuditCapability {
             )),
             CapabilityEffect::new(format!("Remove {AUDITD_RULE_FILE}")),
             CapabilityEffect::new("Reload audit rules (augenrules --load)"),
-            CapabilityEffect::new("Restart innerwarden-sensor"),
+            CapabilityEffect::new(if opts.defer_restarts {
+                "Restart innerwarden-sensor (deferred)"
+            } else {
+                "Restart innerwarden-sensor"
+            }),
         ]
     }
 
@@ -185,9 +197,13 @@ impl Capability for ShellAuditCapability {
         }
         effects.push(CapabilityEffect::new("Reloaded audit rules"));
 
-        // 4. Restart sensor
-        systemd::restart_service("innerwarden-sensor", opts.dry_run)?;
-        effects.push(CapabilityEffect::new("Restarted innerwarden-sensor"));
+        // 4. Restart sensor (or defer for batched setup apply)
+        if opts.defer_restarts {
+            effects.push(CapabilityEffect::new("Deferred innerwarden-sensor restart"));
+        } else {
+            systemd::restart_service("innerwarden-sensor", opts.dry_run)?;
+            effects.push(CapabilityEffect::new("Restarted innerwarden-sensor"));
+        }
 
         Ok(ActivationReport {
             effects_applied: effects,
@@ -259,6 +275,7 @@ mod tests {
             dry_run: true,
             params: HashMap::new(),
             yes: true, // skip privacy gate in tests
+            defer_restarts: false,
         }
     }
 
@@ -326,5 +343,19 @@ mod tests {
         let opts = make_opts(&sensor, &agent);
         let effects = ShellAuditCapability.planned_effects(&opts);
         assert!(effects[0].description.contains("Privacy"));
+    }
+
+    #[test]
+    fn activate_can_defer_restart() {
+        let sensor = NamedTempFile::new().unwrap();
+        let agent = NamedTempFile::new().unwrap();
+        let mut opts = make_opts(&sensor, &agent);
+        opts.defer_restarts = true;
+
+        let report = ShellAuditCapability.activate(&opts).unwrap();
+        assert!(report
+            .effects_applied
+            .iter()
+            .any(|effect| effect.description == "Deferred innerwarden-sensor restart"));
     }
 }

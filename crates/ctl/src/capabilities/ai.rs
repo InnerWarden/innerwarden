@@ -149,7 +149,11 @@ impl Capability for AiCapability {
                 "Patch {agent}: [ai] base_url = \"{url}\""
             )));
         }
-        effects.push(CapabilityEffect::new("Restart innerwarden-agent"));
+        effects.push(CapabilityEffect::new(if opts.defer_restarts {
+            "Restart innerwarden-agent (deferred)"
+        } else {
+            "Restart innerwarden-agent"
+        }));
         effects
     }
 
@@ -187,9 +191,13 @@ impl Capability for AiCapability {
             effects.push(CapabilityEffect::new(format!("[ai] base_url = \"{url}\"")));
         }
 
-        // 5. Restart agent
-        systemd::restart_service("innerwarden-agent", opts.dry_run)?;
-        effects.push(CapabilityEffect::new("Restarted innerwarden-agent"));
+        // 5. Restart agent (or defer for batched setup apply)
+        if opts.defer_restarts {
+            effects.push(CapabilityEffect::new("Deferred innerwarden-agent restart"));
+        } else {
+            systemd::restart_service("innerwarden-agent", opts.dry_run)?;
+            effects.push(CapabilityEffect::new("Restarted innerwarden-agent"));
+        }
 
         Ok(ActivationReport {
             effects_applied: effects,
@@ -209,7 +217,11 @@ impl Capability for AiCapability {
             CapabilityEffect::new(format!(
                 "Patch {agent}: [ai] enabled = false{provider_note}"
             )),
-            CapabilityEffect::new("Restart innerwarden-agent"),
+            CapabilityEffect::new(if opts.defer_restarts {
+                "Restart innerwarden-agent (deferred)"
+            } else {
+                "Restart innerwarden-agent"
+            }),
         ]
     }
 
@@ -220,9 +232,13 @@ impl Capability for AiCapability {
         config_editor::write_bool(&opts.agent_config, "ai", "enabled", false)?;
         effects.push(CapabilityEffect::new("[ai] enabled = false"));
 
-        // 2. Restart agent
-        systemd::restart_service("innerwarden-agent", opts.dry_run)?;
-        effects.push(CapabilityEffect::new("Restarted innerwarden-agent"));
+        // 2. Restart agent (or defer for batched setup apply)
+        if opts.defer_restarts {
+            effects.push(CapabilityEffect::new("Deferred innerwarden-agent restart"));
+        } else {
+            systemd::restart_service("innerwarden-agent", opts.dry_run)?;
+            effects.push(CapabilityEffect::new("Restarted innerwarden-agent"));
+        }
 
         Ok(ActivationReport {
             effects_applied: effects,
@@ -257,6 +273,7 @@ mod tests {
             dry_run: true,
             params,
             yes: true,
+            defer_restarts: false,
         }
     }
 
@@ -394,5 +411,23 @@ mod tests {
         );
         let opts = make_opts(&sensor, &agent, params);
         assert!(AiCapability.activate(&opts).is_err());
+    }
+
+    #[test]
+    fn activate_can_defer_restart() {
+        let sensor = NamedTempFile::new().unwrap();
+        let mut agent = NamedTempFile::new().unwrap();
+        writeln!(agent, "[ai]\nenabled = false\n").unwrap();
+
+        let mut params = HashMap::new();
+        params.insert("provider".to_string(), "ollama".to_string());
+        let mut opts = make_opts(&sensor, &agent, params);
+        opts.defer_restarts = true;
+
+        let report = AiCapability.activate(&opts).unwrap();
+        assert!(report
+            .effects_applied
+            .iter()
+            .any(|effect| effect.description == "Deferred innerwarden-agent restart"));
     }
 }

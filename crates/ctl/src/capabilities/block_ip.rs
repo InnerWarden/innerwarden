@@ -82,7 +82,11 @@ impl Capability for BlockIpCapability {
                 "Write /etc/sudoers.d/{} (validated with visudo)",
                 Self::sudoers_name()
             )),
-            CapabilityEffect::new("Restart innerwarden-agent"),
+            CapabilityEffect::new(if opts.defer_restarts {
+                "Restart innerwarden-agent (deferred)"
+            } else {
+                "Restart innerwarden-agent"
+            }),
         ]
     }
 
@@ -132,9 +136,13 @@ impl Capability for BlockIpCapability {
             Self::sudoers_name()
         )));
 
-        // 5. Restart agent
-        systemd::restart_service("innerwarden-agent", opts.dry_run)?;
-        effects.push(CapabilityEffect::new("Restarted innerwarden-agent"));
+        // 5. Restart agent (or defer for batched setup apply)
+        if opts.defer_restarts {
+            effects.push(CapabilityEffect::new("Deferred innerwarden-agent restart"));
+        } else {
+            systemd::restart_service("innerwarden-agent", opts.dry_run)?;
+            effects.push(CapabilityEffect::new("Restarted innerwarden-agent"));
+        }
 
         Ok(ActivationReport {
             effects_applied: effects,
@@ -149,7 +157,11 @@ impl Capability for BlockIpCapability {
                 "Remove block-ip-* skills from [responder] allowed_skills in {agent}"
             )),
             CapabilityEffect::new(format!("Remove /etc/sudoers.d/{}", Self::sudoers_name())),
-            CapabilityEffect::new("Restart innerwarden-agent"),
+            CapabilityEffect::new(if opts.defer_restarts {
+                "Restart innerwarden-agent (deferred)"
+            } else {
+                "Restart innerwarden-agent"
+            }),
         ]
     }
 
@@ -180,9 +192,13 @@ impl Capability for BlockIpCapability {
             Self::sudoers_name()
         )));
 
-        // 3. Restart agent
-        systemd::restart_service("innerwarden-agent", opts.dry_run)?;
-        effects.push(CapabilityEffect::new("Restarted innerwarden-agent"));
+        // 3. Restart agent (or defer for batched setup apply)
+        if opts.defer_restarts {
+            effects.push(CapabilityEffect::new("Deferred innerwarden-agent restart"));
+        } else {
+            systemd::restart_service("innerwarden-agent", opts.dry_run)?;
+            effects.push(CapabilityEffect::new("Restarted innerwarden-agent"));
+        }
 
         Ok(ActivationReport {
             effects_applied: effects,
@@ -221,6 +237,7 @@ mod tests {
             dry_run: true,
             params: HashMap::new(),
             yes: true,
+            defer_restarts: false,
         }
     }
 
@@ -330,5 +347,20 @@ mod tests {
         let opts = make_opts(&sensor, &agent);
         let effects = BlockIpCapability.planned_disable_effects(&opts);
         assert_eq!(effects.len(), 3);
+    }
+
+    #[test]
+    fn activate_can_defer_restart() {
+        let sensor = NamedTempFile::new().unwrap();
+        let mut agent = NamedTempFile::new().unwrap();
+        writeln!(agent, "[responder]\nenabled = false\ndry_run = true\n").unwrap();
+        let mut opts = make_opts(&sensor, &agent);
+        opts.defer_restarts = true;
+
+        let report = BlockIpCapability.activate(&opts).unwrap();
+        assert!(report
+            .effects_applied
+            .iter()
+            .any(|effect| effect.description == "Deferred innerwarden-agent restart"));
     }
 }

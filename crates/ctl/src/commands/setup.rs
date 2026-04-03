@@ -6,7 +6,7 @@ use anyhow::Result;
 
 use crate::commands::agent::{cmd_agent, parse_selection_indices, resolve_dashboard_url};
 use crate::commands::ai::{fetch_models, prompt_ollama_api_key, WIZARD_PROVIDERS};
-use crate::commands::capability::cmd_enable;
+use crate::commands::capability::cmd_enable_with_deferred_restart;
 use crate::commands::notify::cmd_configure_telegram;
 use crate::{
     am_root, config_editor, load_env_file, prompt, reexec_with_sudo, restart_agent, scan, systemd,
@@ -230,6 +230,18 @@ fn parse_setup_capability_hint(hint: &str) -> Option<SetupCapabilityPlan> {
         id: parts[2].to_string(),
         params,
     })
+}
+
+fn setup_capability_restart_needs(capability_id: &str) -> (bool, bool) {
+    match capability_id {
+        // (sensor, agent)
+        "ai" => (false, true),
+        "block-ip" => (false, true),
+        "sudo-protection" => (true, true),
+        "shell-audit" => (true, false),
+        "search-protection" => (true, true),
+        _ => (false, false),
+    }
 }
 
 fn collect_setup_preconfig_plan(agent_doc: Option<&toml_edit::DocumentMut>) -> SetupPreconfigPlan {
@@ -895,16 +907,21 @@ pub(crate) fn cmd_setup(cli: &Cli, mode: &str) -> Result<()> {
     println!();
 
     let registry = CapabilityRegistry::default_all();
+    let mut restart_sensor_needed = false;
     if apply_preconfig {
         for capability in &preconfig_plan.essential_capabilities {
-            if let Err(err) = cmd_enable(
+            if let Err(err) = cmd_enable_with_deferred_restart(
                 cli,
                 &registry,
                 &capability.id,
                 capability.params.clone(),
                 true,
+                true,
             ) {
                 println!("  [warn] Could not enable {}: {err:#}", capability.id);
+            } else {
+                let (sensor_needed, _agent_needed) = setup_capability_restart_needs(&capability.id);
+                restart_sensor_needed |= sensor_needed;
             }
         }
         if preconfig_plan.set_telegram_min_severity {
@@ -930,7 +947,7 @@ pub(crate) fn cmd_setup(cli: &Cli, mode: &str) -> Result<()> {
         "dry_run",
         responder_plan.dry_run,
     )?;
-    let mut restart_needed = true;
+    let restart_agent_needed = true;
 
     if enable_mesh && !mesh_ok {
         config_editor::write_bool(&cli.agent_config, "mesh", "enabled", true)?;
@@ -942,16 +959,29 @@ pub(crate) fn cmd_setup(cli: &Cli, mode: &str) -> Result<()> {
     }
 
     let needs_telegram_setup = !telegram_ok && notification_plan.needs_telegram();
+    let mut telegram_restarted_agent = false;
     if needs_telegram_setup {
         println!("  Telegram\n");
         if let Err(err) = cmd_configure_telegram(cli, None, None, false) {
             println!("  [warn] Telegram setup did not finish: {err:#}");
         } else {
-            restart_needed = false;
+            telegram_restarted_agent = true;
         }
     }
 
-    if restart_needed {
+    if restart_sensor_needed {
+        if std::env::consts::OS == "macos" {
+            println!("  [warn] innerwarden-sensor restart skipped on macOS.");
+        } else if cli.dry_run {
+            println!("  [dry-run] would restart innerwarden-sensor");
+        } else if let Err(err) = systemd::restart_service("innerwarden-sensor", false) {
+            println!("  [warn] Could not restart innerwarden-sensor: {err:#}");
+        } else {
+            println!("  [ok] innerwarden-sensor restarted");
+        }
+    }
+
+    if restart_agent_needed && !telegram_restarted_agent {
         restart_agent(cli);
     }
 
