@@ -914,3 +914,138 @@ pub(crate) fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
     println!("All channels ok.");
     Ok(())
 }
+
+pub(crate) fn cmd_notify_web_push_setup(cli: &Cli, subject: Option<&str>) -> Result<()> {
+    use config_editor::{write_bool, write_str};
+    use std::io::Write as _;
+
+    println!("Setting up Web Push notifications (RFC 8291 / VAPID)...");
+    println!();
+
+    let existing_key = write_str(&cli.agent_config, "web_push", "vapid_public_key", "");
+    let has_existing = cli.agent_config.exists() && {
+        let content = std::fs::read_to_string(&cli.agent_config).unwrap_or_default();
+        content.contains("vapid_public_key") && !content.contains(r#"vapid_public_key = """#)
+    };
+    drop(existing_key);
+
+    if has_existing {
+        println!("⚠  VAPID keys are already configured.");
+        print!("   Generate new keys? This will break existing browser subscriptions. [y/N] ");
+        std::io::stdout().flush().ok();
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).ok();
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Keeping existing keys.");
+            println!();
+            print_web_push_next_steps(&cli.agent_config)?;
+            return Ok(());
+        }
+    }
+
+    let (private_pem, public_b64) = generate_vapid_keys_ctl()?;
+    let subject_val = subject.unwrap_or("mailto:admin@example.com");
+
+    write_str(
+        &cli.agent_config,
+        "web_push",
+        "vapid_public_key",
+        &public_b64,
+    )?;
+    write_str(&cli.agent_config, "web_push", "vapid_subject", subject_val)?;
+    write_bool(&cli.agent_config, "web_push", "enabled", true)?;
+
+    let env_path = cli
+        .agent_config
+        .parent()
+        .unwrap_or(std::path::Path::new("/etc/innerwarden"))
+        .join("agent.env");
+    append_or_replace_env(&env_path, "INNERWARDEN_VAPID_PRIVATE_KEY", &private_pem)?;
+
+    println!("✓  VAPID key pair generated");
+    println!("   Public key  → {}", &cli.agent_config.display());
+    println!(
+        "   Private key → {} (INNERWARDEN_VAPID_PRIVATE_KEY)",
+        env_path.display()
+    );
+    println!();
+
+    let mut audit = AdminActionEntry {
+        ts: chrono::Utc::now(),
+        operator: current_operator(),
+        source: "cli".to_string(),
+        action: "configure".to_string(),
+        target: "web_push".to_string(),
+        parameters: serde_json::json!({ "subject": subject_val }),
+        result: "success".to_string(),
+        prev_hash: None,
+    };
+    if let Err(e) = append_admin_action(&cli.data_dir, &mut audit) {
+        eprintln!("  [warn] failed to write admin audit: {e:#}");
+    }
+
+    print_web_push_next_steps(&cli.agent_config)?;
+    Ok(())
+}
+
+fn generate_vapid_keys_ctl() -> Result<(String, String)> {
+    use p256::pkcs8::{EncodePrivateKey, LineEnding};
+    use p256::{ecdsa::SigningKey, EncodedPoint};
+
+    let signing_key = SigningKey::random(&mut rand_core::OsRng);
+    let verifying_key = signing_key.verifying_key();
+    let pem = signing_key
+        .to_pkcs8_pem(LineEnding::LF)
+        .map_err(|e| anyhow::anyhow!("failed to serialize VAPID private key: {e}"))?
+        .to_string();
+    let public_bytes = EncodedPoint::from(verifying_key).to_bytes().to_vec();
+    use base64::Engine as _;
+    let public_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&public_bytes);
+    Ok((pem, public_b64))
+}
+
+fn append_or_replace_env(path: &std::path::Path, key: &str, value: &str) -> Result<()> {
+    use std::io::Write as _;
+
+    let existing = if path.exists() {
+        std::fs::read_to_string(path)?
+    } else {
+        String::new()
+    };
+
+    let escaped_value = format!("\"{}\"", value.replace('\n', "\\n"));
+
+    let mut lines: Vec<String> = existing
+        .lines()
+        .filter(|l| !l.starts_with(&format!("{key}=")))
+        .map(|l| l.to_string())
+        .collect();
+    lines.push(format!("{key}={escaped_value}"));
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    for line in &lines {
+        writeln!(file, "{line}")?;
+    }
+    Ok(())
+}
+
+fn print_web_push_next_steps(agent_config: &std::path::Path) -> Result<()> {
+    println!("Next steps:");
+    println!("  1. Restart the agent:");
+    println!("       sudo systemctl restart innerwarden-agent");
+    println!("  2. Open the InnerWarden dashboard");
+    println!("  3. Click 'Enable browser notifications' in the top bar");
+    println!("  4. Allow notifications when your browser asks");
+    println!();
+    println!(
+        "The public key is configured in: {}",
+        agent_config.display()
+    );
+    println!("Browsers will receive High and Critical incident alerts in real time,");
+    println!("even when the dashboard tab is not open (requires browser running).");
+    Ok(())
+}
