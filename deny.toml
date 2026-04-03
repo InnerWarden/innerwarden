@@ -21,7 +21,6 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
     "CDLA-Permissive-2.0",
-    "BUSL-1.1",
 ]
 
 [bans]

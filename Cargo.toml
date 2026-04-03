@@ -14,7 +14,7 @@ resolver = "2"
 [workspace.package]
 version = "0.8.5"
 edition = "2021"
-license = "BUSL-1.1"
+license = "Apache-2.0"
 repository = "https://github.com/InnerWarden/innerwarden"
 homepage = "https://www.innerwarden.com"
 readme = "README.md"
