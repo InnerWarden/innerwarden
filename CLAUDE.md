@@ -111,7 +111,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 - notify, incluindo `web-push`
 - responder
 - integrations
-- status/report/metrics/sensor-status
+- status/report/metrics/sensor-status/navigator
 - mesh
 - module
 - agent
@@ -124,8 +124,8 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
 
 ### Estado atual
 
-- `crates/ctl/src/main.rs` esta em `3072` linhas
-- Ultimo corte aplicado: extracao de `cmd_list` e `cmd_daily` para `commands/core.rs`
+- `crates/ctl/src/main.rs` esta em `2952` linhas
+- Ultimo corte aplicado: extracao de `navigator` para `commands/status.rs`
 - Todos os cortes foram validados com:
   - `cargo fmt --all`
   - `cargo check -p innerwarden-ctl`

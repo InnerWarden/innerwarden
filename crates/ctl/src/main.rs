@@ -1306,20 +1306,7 @@ fn main() -> Result<()> {
             welcome::run_welcome(ebpf);
             Ok(())
         }
-        Command::Navigator { ref output } => {
-            let layer = generate_navigator_layer();
-            let json = serde_json::to_string_pretty(&layer)?;
-            if let Some(path) = output {
-                std::fs::write(path, &json)?;
-                eprintln!("  ✓ Navigator layer written to {path}");
-                eprintln!(
-                    "  Open https://mitre-attack.github.io/attack-navigator/ and load the file."
-                );
-            } else {
-                println!("{json}");
-            }
-            Ok(())
-        }
+        Command::Navigator { ref output } => commands::status::cmd_navigator(output.as_deref()),
         Command::Scan { ref modules_dir } => scan::cmd_scan(modules_dir),
         Command::Upgrade {
             check,
@@ -2593,113 +2580,6 @@ pub(crate) fn unknown_cap_error(id: &str) -> anyhow::Error {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// ATT&CK Navigator layer generation
-// ---------------------------------------------------------------------------
-
-fn generate_navigator_layer() -> serde_json::Value {
-    // All detector → technique mappings (mirrors agent/mitre.rs)
-    let techniques: Vec<(&str, &str, &str)> = vec![
-        ("T1110.001", "Credential Access", "ssh_bruteforce"),
-        ("T1110.004", "Credential Access", "credential_stuffing"),
-        ("T1110", "Credential Access", "distributed_ssh"),
-        ("T1003", "Credential Access", "credential_harvest"),
-        ("T1078", "Initial Access", "suspicious_login"),
-        ("T1595", "Reconnaissance", "port_scan"),
-        (
-            "T1595.002",
-            "Reconnaissance",
-            "web_scan, user_agent_scanner",
-        ),
-        ("T1499", "Impact", "search_abuse"),
-        ("T1496", "Impact", "crypto_miner"),
-        ("T1498", "Impact", "outbound_anomaly"),
-        ("T1486", "Impact", "ransomware"),
-        ("T1059", "Execution", "execution_guard, process_tree"),
-        ("T1059.004", "Execution", "reverse_shell"),
-        ("T1610", "Execution", "docker_anomaly"),
-        ("T1620", "Defense Evasion", "fileless"),
-        ("T1098", "Defense Evasion", "integrity_alert"),
-        ("T1070", "Defense Evasion", "log_tampering"),
-        ("T1014", "Defense Evasion", "rootkit"),
-        ("T1055", "Defense Evasion", "process_injection"),
-        ("T1505.003", "Persistence", "web_shell"),
-        ("T1098.004", "Persistence", "ssh_key_injection"),
-        ("T1547.006", "Persistence", "kernel_module_load"),
-        ("T1053.003", "Persistence", "crontab_persistence"),
-        ("T1543.002", "Persistence", "systemd_persistence"),
-        ("T1136", "Persistence", "user_creation"),
-        ("T1611", "Privilege Escalation", "container_escape"),
-        ("T1068", "Privilege Escalation", "privesc"),
-        ("T1548", "Privilege Escalation", "sudo_abuse"),
-        ("T1548.001", "Privilege Escalation", "sudo_abuse"),
-        ("T1071", "Command and Control", "c2_callback"),
-        ("T1571", "Command and Control", "c2_callback"),
-        ("T1048.001", "Exfiltration", "dns_tunneling"),
-        (
-            "T1041",
-            "Exfiltration",
-            "data_exfiltration, data_exfil_ebpf",
-        ),
-        ("T1021", "Lateral Movement", "lateral_movement"),
-        ("T1190", "Multiple", "suricata_alert"),
-        ("T1546.004", "Persistence", "sensitive_write"),
-        ("T1037.004", "Persistence", "sensitive_write"),
-        ("T1574.006", "Persistence", "sensitive_write"),
-        ("T1556", "Credential Access", "sensitive_write"),
-        ("T1053.002", "Persistence", "at_job_persist"),
-        ("T1222.002", "Defense Evasion", "file_permission_mod"),
-        ("T1564.001", "Defense Evasion", "hidden_artifact"),
-        ("T1219", "Command and Control", "remote_access_tool"),
-        ("T1489", "Impact", "service_stop"),
-        ("T1529", "Impact", "system_shutdown"),
-        ("T1040", "Credential Access", "network_sniffing"),
-        ("T1036.005", "Defense Evasion", "masquerading"),
-        ("T1560", "Collection", "data_archive"),
-        ("T1090", "Command and Control", "proxy_tunnel"),
-        ("T1105", "Command and Control", "execution_guard"),
-        ("T1140", "Defense Evasion", "execution_guard"),
-        ("T1552.001", "Credential Access", "data_exfil_ebpf"),
-        ("T1552.004", "Credential Access", "private_key_search"),
-        ("T1562.001", "Defense Evasion", "sudo_abuse"),
-        ("T1562.004", "Defense Evasion", "sudo_abuse"),
-        ("T1485", "Impact", "sudo_abuse"),
-    ];
-
-    let tech_entries: Vec<serde_json::Value> = techniques
-        .iter()
-        .map(|(tid, _tactic, detectors)| {
-            serde_json::json!({
-                "techniqueID": tid,
-                "score": 1,
-                "color": "#00ff00",
-                "comment": format!("Detectors: {detectors}"),
-                "enabled": true,
-                "showSubtechniques": true,
-            })
-        })
-        .collect();
-
-    serde_json::json!({
-        "name": "InnerWarden Detection Coverage",
-        "versions": {
-            "attack": "16",
-            "navigator": "5.1.0",
-            "layer": "4.5"
-        },
-        "domain": "enterprise-attack",
-        "description": format!(
-            "InnerWarden: {} MITRE ATT&CK techniques covered by 49 detectors + 8 YARA + 8 Sigma rules",
-            tech_entries.len()
-        ),
-        "gradient": {
-            "colors": ["#ffe766", "#00ff00"],
-            "minValue": 1,
-            "maxValue": 3
-        },
-        "techniques": tech_entries,
-    })
-}
-
 // Tests
 // ---------------------------------------------------------------------------
 
