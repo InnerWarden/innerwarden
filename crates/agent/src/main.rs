@@ -28,6 +28,7 @@ mod forensics;
 mod geoip;
 mod incident_abuseipdb;
 mod incident_advisory;
+mod incident_crowdsec;
 mod incident_flow;
 mod incident_notifications;
 mod incident_obvious;
@@ -2521,72 +2522,17 @@ async fn process_incidents(
             continue;
         }
 
-        // CrowdSec threat list gate: if the IP is in the community blocklist,
-        // auto-block without calling AI (same pattern as AbuseIPDB gate).
-        if let Some(ref cs) = state.crowdsec {
-            let primary_ip = incident
-                .entities
-                .iter()
-                .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
-                .map(|e| e.value.clone());
-            if let Some(ref ip) = primary_ip {
-                if cs.is_known_threat(ip)
-                    && !blocked_set.contains(ip)
-                    && !state.blocklist.contains(ip)
-                    && !allowlist::is_ip_allowlisted(ip, &cfg.ai.protected_ips)
-                {
-                    info!(
-                        incident_id = %incident.incident_id,
-                        ip,
-                        "CrowdSec threat list match - auto-blocking, skipping AI"
-                    );
-                    let skill_id = format!("block-ip-{}", cfg.responder.block_backend);
-                    let auto_decision = ai::AiDecision {
-                        action: ai::AiAction::BlockIp {
-                            ip: ip.clone(),
-                            skill_id,
-                        },
-                        confidence: 1.0,
-                        auto_execute: true,
-                        reason: "CrowdSec community threat list match".to_string(),
-                        alternatives: vec![],
-                        estimated_threat: "high".into(),
-                    };
-                    blocked_set.insert(ip.clone());
-                    state.blocklist.insert(ip.clone());
-                    if let Some(key) = decision_cooldown_key_for_decision(incident, &auto_decision)
-                    {
-                        state.store.set_cooldown(
-                            state_store::CooldownTable::Decision,
-                            &key,
-                            chrono::Utc::now(),
-                        );
-                    }
-                    let (execution_result, _cf_pushed) = if cfg.responder.enabled {
-                        execute_decision(&auto_decision, incident, data_dir, cfg, state).await
-                    } else {
-                        ("skipped: responder disabled".to_string(), false)
-                    };
-                    if let Some(writer) = &mut state.decision_writer {
-                        let entry = decisions::build_entry(
-                            &incident.incident_id,
-                            &incident.host,
-                            "crowdsec",
-                            &auto_decision,
-                            cfg.responder.dry_run,
-                            &execution_result,
-                        );
-                        if let Some(profile) = state.attacker_profiles.get_mut(ip.as_str()) {
-                            attacker_intel::observe_decision(profile, &entry);
-                        }
-                        if let Err(e) = writer.write(&entry) {
-                            warn!("failed to write CrowdSec decision: {e:#}");
-                        }
-                    }
-                    handled += 1;
-                    continue;
-                }
-            }
+        if incident_crowdsec::try_handle_crowdsec_autoblock(
+            incident,
+            data_dir,
+            cfg,
+            state,
+            &mut blocked_set,
+        )
+        .await
+        {
+            handled += 1;
+            continue;
         }
 
         // Threat feed gate: if the IP is in any threat feed, log it for enrichment.
