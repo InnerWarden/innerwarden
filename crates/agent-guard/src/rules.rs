@@ -270,7 +270,7 @@ struct RawRule {
     detection: RawDetection,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Default)]
 #[serde(untagged)]
 enum RawTags {
     Map {
@@ -279,6 +279,7 @@ enum RawTags {
     },
     List(Vec<String>),
     String(String),
+    #[default]
     Empty,
 }
 
@@ -293,13 +294,7 @@ impl RawTags {
     }
 }
 
-impl Default for RawTags {
-    fn default() -> Self {
-        Self::Empty
-    }
-}
-
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Default)]
 #[serde(untagged)]
 enum RawReferences {
     Map {
@@ -314,13 +309,8 @@ enum RawReferences {
     },
     List(Vec<String>),
     String(String),
+    #[default]
     Empty,
-}
-
-impl Default for RawReferences {
-    fn default() -> Self {
-        Self::Empty
-    }
 }
 
 impl RawReferences {
