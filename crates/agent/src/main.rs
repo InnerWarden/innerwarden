@@ -31,6 +31,7 @@ mod incident_action_report;
 mod incident_advisory;
 mod incident_ai_context;
 mod incident_ai_failure;
+mod incident_attacker_profile;
 mod incident_audit_write;
 mod incident_crowdsec;
 mod incident_decision_eval;
@@ -2336,23 +2337,7 @@ async fn process_incidents(
             }
         }
 
-        // Update local IP reputation and attacker profile for every incident IP.
-        for entity in &incident.entities {
-            if entity.r#type == innerwarden_core::entities::EntityType::Ip {
-                state
-                    .ip_reputations
-                    .entry(entity.value.clone())
-                    .or_insert_with(LocalIpReputation::new)
-                    .record_incident();
-
-                // Attacker intelligence: build unified profile
-                let profile = state
-                    .attacker_profiles
-                    .entry(entity.value.clone())
-                    .or_insert_with(|| attacker_intel::new_profile(&entity.value, incident.ts));
-                attacker_intel::observe_incident(profile, incident);
-            }
-        }
+        incident_attacker_profile::update_incident_ip_profiles(incident, state);
 
         incident_forensics::maybe_capture_incident_forensics(incident, state);
 
