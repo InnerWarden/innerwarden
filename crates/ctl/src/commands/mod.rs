@@ -1,3 +1,4 @@
+pub(crate) mod agent;
 pub(crate) mod ai;
 pub(crate) mod integrations;
 pub(crate) mod mesh;

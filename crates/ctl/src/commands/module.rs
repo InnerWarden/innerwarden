@@ -946,9 +946,9 @@ pub(crate) fn cmd_module_update_all(
     check_only: bool,
     yes: bool,
 ) -> Result<()> {
+    use crate::upgrade::is_newer;
     use module_manifest::{scan_modules_dir, ModuleManifest};
     use module_package::*;
-    use crate::upgrade::is_newer;
 
     let modules = scan_modules_dir(modules_dir);
     if modules.is_empty() {
