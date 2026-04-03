@@ -142,6 +142,7 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - novo modulo `crates/agent/src/bot_commands.rs` com `run_innerwarden_cli`, `format_capabilities`, `capabilities_keyboard`, `strip_ansi`
   - novo modulo `crates/agent/src/bot_actions.rs` com callbacks de execucao (`quick_block` e `hpot`)
   - novo modulo `crates/agent/src/incident_advisory.rs` com correlacao e alerta de advisory ignorado
+  - novo modulo `crates/agent/src/incident_flow.rs` com pipeline-test + pre-gates de AI (allowlist, min severity, cooldown, budget)
   - novo modulo `crates/agent/src/incident_notifications.rs` com cooldown + dispatch webhook/telegram/slack/web-push
   - `probe_and_suggest` tambem movido para `bot_commands.rs`
   - novo handler `handle_telegram_bot_command` em `bot_commands.rs` para comandos bot-only (`__status__` ate `enable:<id>`)
@@ -153,7 +154,8 @@ ADR inicial: `docs/internal/adr/0001-project-taxonomy.md`
   - `process_telegram_approval` agora delega tambem o fluxo de confirmacao pendente para `bot_actions`
   - `process_incidents` agora delega threshold + dispatch de notificacoes para `incident_notifications`
   - `process_incidents` agora delega correlacao de advisory ignorado para `incident_advisory`
-  - `crates/agent/src/main.rs` reduziu para `7125` linhas
+  - `process_incidents` agora delega pipeline-test + pre-checks de AI para `incident_flow`
+  - `crates/agent/src/main.rs` reduziu para `7026` linhas
 
 ### Ordem recomendada para continuar
 

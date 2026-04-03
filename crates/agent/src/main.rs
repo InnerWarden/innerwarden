@@ -27,6 +27,7 @@ mod fail2ban;
 mod forensics;
 mod geoip;
 mod incident_advisory;
+mod incident_flow;
 mod incident_notifications;
 mod ioc;
 mod mesh;
@@ -555,7 +556,7 @@ fn load_ip_reputations(data_dir: &Path) -> HashMap<String, LocalIpReputation> {
     serde_json::from_str(&content).unwrap_or_default()
 }
 
-const DECISION_COOLDOWN_SECS: i64 = 3600;
+pub(crate) const DECISION_COOLDOWN_SECS: i64 = 3600;
 /// Notification cooldown: suppress duplicate Telegram/Slack/webhook alerts for the
 /// same detector+entity within this window. Prevents alert spam when the same attacker
 /// triggers multiple incidents in rapid succession.
@@ -597,7 +598,9 @@ fn decision_cooldown_key(action: &str, detector: &str, entity_kind: &str, entity
     format!("{action}:{detector}:{entity_kind}:{entity}")
 }
 
-fn decision_cooldown_candidates(incident: &innerwarden_core::incident::Incident) -> Vec<String> {
+pub(crate) fn decision_cooldown_candidates(
+    incident: &innerwarden_core::incident::Incident,
+) -> Vec<String> {
     let detector = incident_detector(&incident.incident_id);
     let mut keys = Vec::new();
 
@@ -2421,109 +2424,21 @@ async fn process_incidents(
 
         incident_advisory::handle_advisory_violation(incident, advisory_cache, state).await;
 
-        // 2. AI analysis - only when AI is enabled and incident passes the gate
-
-        // Pipeline test: recognise `innerwarden test` incidents by tag and
-        // write an acknowledgement decision without calling the AI provider.
-        if incident.tags.contains(&"pipeline-test".to_string()) {
-            info!(
-                incident_id = %incident.incident_id,
-                "pipeline test incident detected - writing acknowledgement decision"
-            );
-            let test_ip = incident
-                .entities
-                .iter()
-                .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
-                .map(|e| e.value.clone());
-            let entry = decisions::DecisionEntry {
-                ts: chrono::Utc::now(),
-                incident_id: incident.incident_id.clone(),
-                host: incident.host.clone(),
-                ai_provider: "pipeline-test".to_string(),
-                action_type: "monitor".to_string(),
-                target_ip: test_ip,
-                target_user: None,
-                skill_id: None,
-                confidence: 1.0,
-                auto_executed: false,
-                dry_run: true,
-                reason: "Pipeline test acknowledged - sensor → agent → decision path is working"
-                    .to_string(),
-                estimated_threat: "none".to_string(),
-                execution_result: "test-ok".to_string(),
-                prev_hash: None,
-            };
-            if let Some(writer) = &mut state.decision_writer {
-                if let Err(e) = writer.write(&entry) {
-                    warn!("failed to write pipeline-test decision: {e:#}");
-                }
-            }
-            handled += 1;
-            continue;
-        }
-
-        if !ai_enabled {
-            handled += 1;
-            continue;
-        }
-
-        // 2a. Allowlist gate - skip AI for explicitly trusted IPs and users
-        {
-            use innerwarden_core::entities::EntityType;
-            let ip_allowlisted = incident
-                .entities
-                .iter()
-                .find(|e| e.r#type == EntityType::Ip)
-                .is_some_and(|e| {
-                    allowlist::is_ip_allowlisted(&e.value, &cfg.allowlist.trusted_ips)
-                });
-            let user_allowlisted = incident
-                .entities
-                .iter()
-                .find(|e| e.r#type == EntityType::User)
-                .is_some_and(|e| {
-                    allowlist::is_user_allowlisted(&e.value, &cfg.allowlist.trusted_users)
-                });
-            if ip_allowlisted || user_allowlisted {
-                info!(
-                    incident_id = %incident.incident_id,
-                    "AI gate: skipping (entity is in allowlist)"
-                );
+        // 2. AI analysis - only when AI is enabled and incident passes the gate.
+        match incident_flow::evaluate_pre_ai_flow(
+            incident,
+            cfg,
+            state,
+            ai_enabled,
+            &blocked_set,
+            ai_calls_this_tick,
+        ) {
+            incident_flow::PreAiFlowDecision::Proceed => {}
+            incident_flow::PreAiFlowDecision::SkipHandled
+            | incident_flow::PreAiFlowDecision::PipelineTestHandled => {
                 handled += 1;
                 continue;
             }
-        }
-
-        if !ai::should_invoke_ai(incident, &blocked_set, &cfg.ai.parsed_min_severity()) {
-            info!(
-                incident_id = %incident.incident_id,
-                severity = ?incident.severity,
-                "AI gate: skipping (low severity / private IP / already blocked)"
-            );
-            handled += 1;
-            continue;
-        }
-
-        // Decision cooldown - suppress repeated AI decisions for the same
-        // action:detector:entity scope within a 1-hour window.  This prevents
-        // redundant API calls when the same attacker triggers multiple
-        // incidents in rapid succession.
-        let cooldown_cutoff =
-            chrono::Utc::now() - chrono::Duration::seconds(DECISION_COOLDOWN_SECS);
-        let candidates = decision_cooldown_candidates(incident);
-        let in_cooldown = candidates.iter().any(|k| {
-            state
-                .store
-                .get_cooldown(state_store::CooldownTable::Decision, k)
-                .is_some_and(|ts| ts > cooldown_cutoff)
-        });
-        if in_cooldown {
-            info!(
-                incident_id = %incident.incident_id,
-                "AI gate: skipping (decision cooldown active)"
-            );
-            handled += 1;
-            continue;
         }
 
         // Obvious incident gate: skip AI for high-confidence detectors + known attacker IP.
@@ -2646,20 +2561,6 @@ async fn process_incidents(
                     continue;
                 }
             }
-        }
-
-        // max_ai_calls_per_tick: enforce per-tick AI call budget to protect against
-        // API bill spikes during botnet attacks with many unique IPs.
-        let max_calls = cfg.ai.max_ai_calls_per_tick;
-        if max_calls > 0 && ai_calls_this_tick >= max_calls {
-            info!(
-                incident_id = %incident.incident_id,
-                ai_calls_this_tick,
-                max_calls,
-                "AI gate: skipping (max_ai_calls_per_tick reached - deferred to next tick)"
-            );
-            handled += 1;
-            continue;
         }
 
         state.telemetry.observe_gate_pass();
