@@ -24,11 +24,23 @@ pub(crate) fn cmd_enable(
     params: HashMap<String, String>,
     yes: bool,
 ) -> Result<()> {
+    cmd_enable_with_deferred_restart(cli, registry, id, params, yes, false)
+}
+
+pub(crate) fn cmd_enable_with_deferred_restart(
+    cli: &Cli,
+    registry: &CapabilityRegistry,
+    id: &str,
+    params: HashMap<String, String>,
+    yes: bool,
+    defer_restarts: bool,
+) -> Result<()> {
     if !cli.dry_run {
         require_sudo(cli);
     }
     let cap = registry.get(id).ok_or_else(|| unknown_cap_error(id))?;
-    let opts = make_opts(cli, params, yes);
+    let mut opts = make_opts(cli, params, yes);
+    opts.defer_restarts = defer_restarts;
 
     if cap.is_enabled(&opts) {
         println!(

@@ -1757,6 +1757,7 @@ pub(crate) fn make_opts(
         dry_run: cli.dry_run,
         params,
         yes,
+        defer_restarts: false,
     }
 }
 
