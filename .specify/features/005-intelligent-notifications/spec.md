@@ -1,4 +1,9 @@
-# Feature 005: Intelligent Notifications
+# Feature Specification: Intelligent Notifications
+
+**Feature Branch**: `005-intelligent-notifications`
+**Created**: 2026-04-04
+**Status**: Planned
+**Input**: Production server received 108 Telegram notifications in 9 hours — only ~3 needed human action.
 
 ## Origin
 
@@ -23,7 +28,118 @@ Production server received 108 Telegram notifications in 9 hours (2026-04-04). M
 
 ---
 
-## Architecture: 4 Layers
+## User Scenarios & Testing
+
+### User Story 1 — Incident Grouping (Priority: P1)
+
+Operator receives one notification per attack campaign instead of one per incident. Same attacker IP hitting SSH bruteforce 28 times = 1 alert + counter, not 28 separate messages.
+
+**Why this priority**: Highest impact on noise reduction. No dependencies. Immediately fixes the 108→~15 notification problem.
+
+**Independent Test**: Deploy to production server, count Telegram notifications over 9h. Must drop from ~108 to <20 with zero missed Critical/High incidents.
+
+**Acceptance Scenarios**:
+
+1. **Given** SSH bruteforce from same IP, **When** 10 incidents fire within 1h, **Then** operator receives 1 immediate alert + 1 group summary (not 10 alerts).
+2. **Given** first incident from a new attacker, **When** incident fires, **Then** operator receives immediate notification within 2 seconds.
+3. **Given** group reaches count threshold (10), **When** threshold crossed, **Then** early group summary emitted without waiting for window close.
+
+---
+
+### User Story 2 — Channel Filter (Priority: P2)
+
+Dashboard receives everything (investigation tool). Telegram receives only items that need human decision. Auto-blocked IPs with AbuseIPDB score 100 don't buzz the operator's phone.
+
+**Why this priority**: Combined with grouping, this is the difference between "fewer alerts" and "only actionable alerts". Estimated 90%+ reduction.
+
+**Independent Test**: Configure Telegram to `actionable`, verify auto-resolved incidents appear on dashboard but NOT on Telegram.
+
+**Acceptance Scenarios**:
+
+1. **Given** auto-blocked IP (obvious gate, AbuseIPDB 100), **When** incident fires, **Then** dashboard shows it, Telegram does NOT notify.
+2. **Given** AI decided with confidence < 0.9, **When** incident fires, **Then** Telegram notifies (needs review).
+3. **Given** Critical severity incident, **When** incident fires, **Then** Telegram ALWAYS notifies regardless of auto-resolution.
+
+---
+
+### User Story 3 — Daily Digest (Priority: P3)
+
+Operator receives a daily summary of what the system handled overnight. Provides confidence that the system is working without needing to check the dashboard.
+
+**Why this priority**: Low effort, high perceived value. Depends on grouping data from US1.
+
+**Independent Test**: Trigger digest manually, verify summary includes blocked IPs, review-needed count, suppressed counts, top attacker.
+
+**Acceptance Scenarios**:
+
+1. **Given** configured `digest_hour = 9`, **When** 9:00 local time, **Then** Telegram sends daily digest with aggregated stats.
+2. **Given** no incidents in last 24h, **When** digest fires, **Then** sends "all quiet" summary (not skipped).
+
+---
+
+### User Story 4 — Environment Calibration (Priority: P4)
+
+System auto-detects cloud VPS, known admin UIDs, and running services. Cloud timing anomalies suppressed automatically. Admin discovery bursts demoted. No manual tuning needed.
+
+**Why this priority**: Reduces FP without operator intervention. Depends on US1 grouping + US2 filtering.
+
+**Independent Test**: Deploy on cloud VPS, verify timing anomaly threshold multiplied by 10x automatically. Verify local admin discovery demoted to LOW.
+
+**Acceptance Scenarios**:
+
+1. **Given** cloud VPS detected (via vm-detect), **When** timing anomaly fires, **Then** threshold multiplied by `cloud_timing_multiplier` (default 10x).
+2. **Given** human UID 1001 detected, **When** discovery burst from uid 1001, **Then** severity demoted to LOW.
+3. **Given** first boot with no profile, **When** agent starts, **Then** conservative mode (notify everything) for max 30 minutes until profile ready.
+
+---
+
+### User Story 5 — Periodic Census (Priority: P5)
+
+System re-profiles the environment every 6 hours. Detects new services, UIDs, cron jobs. Alerts on suspicious changes.
+
+**Why this priority**: Continuous calibration. Depends on US4 bootstrap profiling.
+
+**Independent Test**: Add a new cron job, verify census detects it within 6h and logs the change.
+
+**Acceptance Scenarios**:
+
+1. **Given** new UID created (not from package install), **When** census runs, **Then** alert generated.
+2. **Given** new cron job added, **When** census runs, **Then** alert generated.
+3. **Given** service removed, **When** census runs, **Then** logged (no alert).
+
+---
+
+### User Story 6 — Operator Feedback Loop (Priority: P6)
+
+System learns from operator behavior. Ignored notifications get auto-demoted after 3 instances. Explicit "Not a threat" taps immediately demote.
+
+**Why this priority**: Learning over time. Builds on all previous layers.
+
+**Independent Test**: Ignore 3 notifications of same type, verify 4th is auto-demoted.
+
+**Acceptance Scenarios**:
+
+1. **Given** operator ignores group notification 3 times (same detector+entity_type), **When** 4th instance fires, **Then** auto-demoted to INFO.
+2. **Given** operator taps "Not a threat", **When** tapped, **Then** immediate demotion + FP report.
+
+---
+
+### User Story 7 — AI Batch Triage (Priority: P7)
+
+Instead of AI call per incident, batch all groups at end of window into single prompt. Reduces API cost.
+
+**Why this priority**: Optional optimization. Disabled by default. Depends on all other layers.
+
+**Independent Test**: Enable `batch_triage`, verify 1 API call per window instead of N.
+
+**Acceptance Scenarios**:
+
+1. **Given** `batch_triage = true` and 5 groups in window, **When** window closes, **Then** 1 AI call classifies all 5 groups.
+2. **Given** AI API fails, **When** batch triage attempted, **Then** fallback to per-group level classification (no AI needed).
+
+---
+
+## Architecture: 5 Layers
 
 ### Layer 1 — Incident Grouping (local, no AI, no network)
 

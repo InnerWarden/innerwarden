@@ -59,8 +59,10 @@ mod ioc;
 mod ip_reputation;
 mod mesh;
 mod mitre;
+mod environment_profile;
 mod narrative;
 mod narrative_anomaly;
+mod notification_pipeline;
 mod narrative_autofp;
 mod narrative_daily_summary;
 mod narrative_incident_ingest;
@@ -332,8 +334,10 @@ struct AgentState {
     /// Receives approval results from the Telegram polling task.
     /// Drained at the start of every incident tick via try_recv.
     approval_rx: Option<tokio::sync::mpsc::Receiver<telegram::ApprovalResult>>,
-    /// Telegram batcher — groups repeated alerts to avoid spam.
-    telegram_batcher: telegram::TelegramBatcher,
+    /// Notification pipeline — groups incidents by detector+entity to reduce noise.
+    grouping_engine: notification_pipeline::GroupingEngine,
+    /// Environment profile — cloud/VM detection, human UIDs, services.
+    environment_profile: environment_profile::EnvironmentProfile,
     /// Neural autoencoder anomaly engine — learns "normal" and flags novel patterns.
     anomaly_engine: neural_lifecycle::AnomalyEngine,
     /// In-memory trust rules: set of "detector:action" strings.
@@ -886,7 +890,8 @@ async fn main() -> Result<()> {
         telegram_client,
         pending_confirmations: HashMap::new(),
         approval_rx: None, // set below in continuous mode
-        telegram_batcher: telegram::TelegramBatcher::new(60),
+        grouping_engine: notification_pipeline::GroupingEngine::new(&cfg.notifications),
+        environment_profile: environment_profile::load_or_bootstrap(&cli.data_dir, &cfg.environment),
         anomaly_engine: neural_lifecycle::AnomalyEngine::new(neural_lifecycle::AnomalyConfig {
             data_dir: cli.data_dir.clone(),
             ..Default::default()
@@ -1219,14 +1224,23 @@ async fn main() -> Result<()> {
                             warn!("narrative tick error: {e:#}");
                         }
                     }
-                    // Flush Telegram batcher — send grouped summaries
-                    if state.telegram_batcher.should_flush() {
-                        let summaries = state.telegram_batcher.flush();
+                    // Tick notification pipeline — emit group summaries for
+                    // groups that hit count threshold or expired windows.
+                    {
+                        let summaries = state.grouping_engine.tick();
                         if !summaries.is_empty() {
-                            if let Some(ref tg) = state.telegram_client {
-                                let digest = summaries.join("\n");
-                                if let Err(e) = tg.send_raw_html(&digest).await {
-                                    warn!("Telegram batch digest failed: {e:#}");
+                            let tg_level = cfg.telegram.channel_notifications.notification_level;
+                            let tg_summaries: Vec<String> = summaries
+                                .iter()
+                                .filter(|s| notification_pipeline::should_notify_summary(s, tg_level))
+                                .map(|s| s.format_html())
+                                .collect();
+                            if !tg_summaries.is_empty() {
+                                if let Some(ref tg) = state.telegram_client {
+                                    let digest = tg_summaries.join("\n");
+                                    if let Err(e) = tg.send_raw_html(&digest).await {
+                                        warn!("Telegram group summary failed: {e:#}");
+                                    }
                                 }
                             }
                         }
@@ -1556,14 +1570,22 @@ async fn main() -> Result<()> {
                             warn!("narrative tick error: {e:#}");
                         }
                     }
-                    // Flush Telegram batcher — send grouped summaries
-                    if state.telegram_batcher.should_flush() {
-                        let summaries = state.telegram_batcher.flush();
+                    // Tick notification pipeline — emit group summaries.
+                    {
+                        let summaries = state.grouping_engine.tick();
                         if !summaries.is_empty() {
-                            if let Some(ref tg) = state.telegram_client {
-                                let digest = summaries.join("\n");
-                                if let Err(e) = tg.send_raw_html(&digest).await {
-                                    warn!("Telegram batch digest failed: {e:#}");
+                            let tg_level = cfg.telegram.channel_notifications.notification_level;
+                            let tg_summaries: Vec<String> = summaries
+                                .iter()
+                                .filter(|s| notification_pipeline::should_notify_summary(s, tg_level))
+                                .map(|s| s.format_html())
+                                .collect();
+                            if !tg_summaries.is_empty() {
+                                if let Some(ref tg) = state.telegram_client {
+                                    let digest = tg_summaries.join("\n");
+                                    if let Err(e) = tg.send_raw_html(&digest).await {
+                                        warn!("Telegram group summary failed: {e:#}");
+                                    }
                                 }
                             }
                         }
@@ -1950,6 +1972,7 @@ async fn process_incidents(
         }
 
         if incident_obvious::try_handle_obvious_incident(incident, data_dir, cfg, state).await {
+            state.grouping_engine.mark_auto_resolved(incident);
             handled += 1;
             continue;
         }
@@ -1985,6 +2008,7 @@ async fn process_incidents(
         )
         .await
         {
+            state.grouping_engine.mark_auto_resolved(incident);
             handled += 1;
             continue;
         }
@@ -1998,6 +2022,7 @@ async fn process_incidents(
         )
         .await
         {
+            state.grouping_engine.mark_auto_resolved(incident);
             handled += 1;
             continue;
         }
@@ -2767,7 +2792,8 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
-            telegram_batcher: telegram::TelegramBatcher::new(60),
+            grouping_engine: notification_pipeline::GroupingEngine::new(&crate::config::NotificationPipelineConfig::default()),
+            environment_profile: environment_profile::EnvironmentProfile::default(),
             anomaly_engine: neural_lifecycle::AnomalyEngine::new(Default::default()),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
@@ -3018,7 +3044,8 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
-            telegram_batcher: telegram::TelegramBatcher::new(60),
+            grouping_engine: notification_pipeline::GroupingEngine::new(&crate::config::NotificationPipelineConfig::default()),
+            environment_profile: environment_profile::EnvironmentProfile::default(),
             anomaly_engine: neural_lifecycle::AnomalyEngine::new(Default::default()),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
@@ -3164,7 +3191,8 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
-            telegram_batcher: telegram::TelegramBatcher::new(60),
+            grouping_engine: notification_pipeline::GroupingEngine::new(&crate::config::NotificationPipelineConfig::default()),
+            environment_profile: environment_profile::EnvironmentProfile::default(),
             anomaly_engine: neural_lifecycle::AnomalyEngine::new(Default::default()),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
@@ -3285,7 +3313,8 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
-            telegram_batcher: telegram::TelegramBatcher::new(60),
+            grouping_engine: notification_pipeline::GroupingEngine::new(&crate::config::NotificationPipelineConfig::default()),
+            environment_profile: environment_profile::EnvironmentProfile::default(),
             anomaly_engine: neural_lifecycle::AnomalyEngine::new(Default::default()),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
@@ -3418,7 +3447,8 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
-            telegram_batcher: telegram::TelegramBatcher::new(60),
+            grouping_engine: notification_pipeline::GroupingEngine::new(&crate::config::NotificationPipelineConfig::default()),
+            environment_profile: environment_profile::EnvironmentProfile::default(),
             anomaly_engine: neural_lifecycle::AnomalyEngine::new(Default::default()),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
@@ -3528,7 +3558,8 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
-            telegram_batcher: telegram::TelegramBatcher::new(60),
+            grouping_engine: notification_pipeline::GroupingEngine::new(&crate::config::NotificationPipelineConfig::default()),
+            environment_profile: environment_profile::EnvironmentProfile::default(),
             anomaly_engine: neural_lifecycle::AnomalyEngine::new(Default::default()),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
@@ -3650,7 +3681,8 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
-            telegram_batcher: telegram::TelegramBatcher::new(60),
+            grouping_engine: notification_pipeline::GroupingEngine::new(&crate::config::NotificationPipelineConfig::default()),
+            environment_profile: environment_profile::EnvironmentProfile::default(),
             anomaly_engine: neural_lifecycle::AnomalyEngine::new(Default::default()),
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,

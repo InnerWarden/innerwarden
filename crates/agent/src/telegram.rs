@@ -2402,47 +2402,6 @@ mod tests {
         assert!("".parse::<std::net::IpAddr>().is_err());
     }
 
-    #[test]
-    fn telegram_batcher_groups_same_detector() {
-        let mut b = super::TelegramBatcher::new(30);
-        let now = chrono::Utc::now();
-
-        let inc = |det: &str, sev: &str| Incident {
-            ts: now,
-            host: "test".into(),
-            incident_id: format!("{det}:x:{}", now.format("%H:%M")),
-            severity: match sev {
-                "critical" => innerwarden_core::event::Severity::Critical,
-                "high" => innerwarden_core::event::Severity::High,
-                _ => innerwarden_core::event::Severity::Medium,
-            },
-            title: format!("{det} alert"),
-            summary: format!("{det} summary"),
-            evidence: serde_json::json!([]),
-            recommended_checks: vec![],
-            tags: vec![],
-            entities: vec![],
-        };
-
-        // Critical always immediate
-        assert!(b.should_send_immediately(&inc("reverse_shell", "critical")));
-
-        // First ssh_bruteforce goes through
-        assert!(b.should_send_immediately(&inc("ssh_bruteforce", "high")));
-        b.record(&inc("ssh_bruteforce", "high"));
-
-        // Second ssh_bruteforce should batch
-        assert!(!b.should_send_immediately(&inc("ssh_bruteforce", "high")));
-        b.record(&inc("ssh_bruteforce", "high"));
-        b.record(&inc("ssh_bruteforce", "high"));
-
-        // Flush produces summary
-        let summaries = b.flush();
-        assert_eq!(summaries.len(), 1);
-        assert!(summaries[0].contains("ssh_bruteforce"));
-        assert!(summaries[0].contains("2")); // 2 batched
-    }
-
     // -----------------------------------------------------------------------
     // Simple profile tests
     // -----------------------------------------------------------------------
@@ -2545,6 +2504,58 @@ mod tests {
     }
 
     #[test]
+    fn format_daily_digest_enriched_simple_with_pipeline() {
+        let stats = super::PipelineDigestStats {
+            suppressed_count: 85,
+            auto_resolved_groups: 12,
+            needs_review_groups: 0,
+        };
+        let msg = format_daily_digest_enriched(42, 30, 0, 3, "ssh_bruteforce", 15, true, &stats);
+        assert!(msg.contains("85 alerts silenced"));
+        assert!(msg.contains("12 threats auto-resolved"));
+        assert!(msg.contains("Everything is under control."));
+        assert!(!msg.contains("need review"));
+    }
+
+    #[test]
+    fn format_daily_digest_enriched_simple_needs_review() {
+        let stats = super::PipelineDigestStats {
+            suppressed_count: 50,
+            auto_resolved_groups: 8,
+            needs_review_groups: 3,
+        };
+        let msg = format_daily_digest_enriched(42, 30, 2, 5, "ssh_bruteforce", 15, true, &stats);
+        assert!(msg.contains("3 groups need review"));
+        assert!(!msg.contains("Everything is under control."));
+    }
+
+    #[test]
+    fn format_daily_digest_enriched_technical_with_pipeline() {
+        let stats = super::PipelineDigestStats {
+            suppressed_count: 100,
+            auto_resolved_groups: 15,
+            needs_review_groups: 2,
+        };
+        let msg = format_daily_digest_enriched(42, 30, 2, 5, "ssh_bruteforce", 15, false, &stats);
+        assert!(msg.contains("Grouped: 100 alerts suppressed"));
+        assert!(msg.contains("15 auto-resolved"));
+        assert!(msg.contains("2 need review"));
+    }
+
+    #[test]
+    fn format_daily_digest_enriched_no_pipeline_data() {
+        let stats = super::PipelineDigestStats {
+            suppressed_count: 0,
+            auto_resolved_groups: 0,
+            needs_review_groups: 0,
+        };
+        let msg = format_daily_digest_enriched(42, 30, 2, 5, "ssh_bruteforce", 15, true, &stats);
+        // No pipeline line when all zeros
+        assert!(!msg.contains("alerts silenced"));
+        assert!(!msg.contains("auto-resolved"));
+    }
+
+    #[test]
     fn format_simple_status_safe() {
         let msg = format_simple_status(false, false, false, 45, 1200, "3 hours ago");
         assert!(msg.contains("\u{1f7e2}")); // 🟢
@@ -2630,117 +2641,7 @@ mod tests {
 // Telegram Batcher — groups repeated alerts into periodic summaries
 // ---------------------------------------------------------------------------
 
-use std::collections::HashMap;
-
-/// Groups repeated incidents by detector to avoid Telegram spam.
-/// Critical incidents always go immediately. Repeated incidents of the
-/// same detector within `window_secs` are batched into a single summary.
-pub struct TelegramBatcher {
-    /// detector → (count, first_title, unique_ips)
-    pending: HashMap<String, (u32, String, std::collections::HashSet<String>)>,
-    /// When the current batch window started
-    window_start: chrono::DateTime<chrono::Utc>,
-    /// Batch window in seconds
-    window_secs: i64,
-    /// Detectors seen in current window (for "first occurrence" logic)
-    seen_this_window: std::collections::HashSet<String>,
-}
-
-impl TelegramBatcher {
-    pub fn new(window_secs: i64) -> Self {
-        Self {
-            pending: HashMap::new(),
-            window_start: chrono::Utc::now(),
-            window_secs,
-            seen_this_window: std::collections::HashSet::new(),
-        }
-    }
-
-    /// Returns true if this incident should be sent immediately (not batched).
-    /// Critical severity always goes immediately. First occurrence of a detector
-    /// in a window also goes immediately. Subsequent same-detector alerts batch.
-    pub fn should_send_immediately(&self, incident: &Incident) -> bool {
-        // Critical always immediate
-        if matches!(
-            incident.severity,
-            innerwarden_core::event::Severity::Critical
-        ) {
-            return true;
-        }
-
-        let detector = extract_detector(&incident.incident_id);
-
-        // First occurrence in this window — send immediately
-        !self.seen_this_window.contains(detector)
-    }
-
-    /// Record an incident for batching (call after checking should_send_immediately).
-    /// Only counts incidents that were NOT sent immediately (batched ones).
-    pub fn record(&mut self, incident: &Incident) {
-        let detector = extract_detector(&incident.incident_id).to_string();
-        let already_seen = self.seen_this_window.contains(&detector);
-        self.seen_this_window.insert(detector.clone());
-
-        // Only count if this is a repeat (first occurrence was sent immediately)
-        if !already_seen {
-            return;
-        }
-
-        let entry = self
-            .pending
-            .entry(detector)
-            .or_insert_with(|| (0, incident.title.clone(), std::collections::HashSet::new()));
-        entry.0 += 1;
-
-        // Collect unique IPs
-        for entity in &incident.entities {
-            if entity.r#type == innerwarden_core::entities::EntityType::Ip {
-                entry.2.insert(entity.value.clone());
-            }
-        }
-    }
-
-    /// Check if the batch window has elapsed.
-    pub fn should_flush(&self) -> bool {
-        let elapsed = chrono::Utc::now() - self.window_start;
-        elapsed.num_seconds() >= self.window_secs
-    }
-
-    /// Flush all pending batched incidents into summary messages.
-    /// Returns formatted HTML summaries ready to send.
-    pub fn flush(&mut self) -> Vec<String> {
-        let mut summaries = Vec::new();
-
-        // Only emit summaries for detectors with batched (>0) incidents
-        for (detector, (count, _title, ips)) in &self.pending {
-            if *count == 0 {
-                continue;
-            }
-            let ip_list = if ips.is_empty() {
-                String::new()
-            } else {
-                let preview: Vec<&str> = ips.iter().map(|s| s.as_str()).take(5).collect();
-                let more = if ips.len() > 5 {
-                    format!(" +{} more", ips.len() - 5)
-                } else {
-                    String::new()
-                };
-                format!("\nIPs: <code>{}</code>{}", preview.join(", "), more)
-            };
-            summaries.push(format!(
-                "📊 <b>{detector}</b>: {count} alerts batched (last {}s){ip_list}",
-                self.window_secs
-            ));
-        }
-
-        // Reset
-        self.pending.clear();
-        self.seen_this_window.clear();
-        self.window_start = chrono::Utc::now();
-
-        summaries
-    }
-}
+// TelegramBatcher removed — replaced by notification_pipeline::GroupingEngine.
 
 /// Extract detector name from incident_id (format: "detector:rest:...")
 fn extract_detector(incident_id: &str) -> &str {
@@ -3186,6 +3087,91 @@ pub fn format_daily_digest(
              \u{00a0}\u{00a0}Critical: {critical_count} | High: {high_count}",
             top_detector = escape_html(top_detector),
         )
+    }
+}
+
+/// Pipeline digest stats for enriched daily digest.
+pub struct PipelineDigestStats {
+    pub suppressed_count: u32,
+    pub auto_resolved_groups: u32,
+    pub needs_review_groups: u32,
+}
+
+/// Format an enriched daily digest with pipeline grouping stats.
+pub fn format_daily_digest_enriched(
+    incidents_today: u32,
+    blocks_today: u32,
+    critical_count: u32,
+    high_count: u32,
+    top_detector: &str,
+    top_count: u32,
+    is_simple: bool,
+    pipeline: &PipelineDigestStats,
+) -> String {
+    if is_simple {
+        let raw_score = 100i32
+            .saturating_sub(critical_count as i32 * 20)
+            .saturating_sub(high_count as i32 * 5);
+        let score = raw_score.clamp(0, 100) as u32;
+        let health_emoji = if score >= 80 {
+            "\u{1f7e2}" // 🟢
+        } else if score >= 50 {
+            "\u{1f7e1}" // 🟡
+        } else {
+            "\u{1f534}" // 🔴
+        };
+
+        let mut msg = format!(
+            "\u{2600}\u{fe0f} Good morning! Your server in the last 24h:\n\
+             \n\
+             \u{00a0}\u{00a0}{blocks_today} attacks blocked\n\
+             \u{00a0}\u{00a0}{critical_count} critical threats\n\
+             \u{00a0}\u{00a0}Health: {score}/100 {health_emoji}"
+        );
+
+        if pipeline.suppressed_count > 0 || pipeline.auto_resolved_groups > 0 {
+            msg.push_str(&format!(
+                "\n\u{00a0}\u{00a0}{} alerts silenced (grouped)",
+                pipeline.suppressed_count
+            ));
+            if pipeline.auto_resolved_groups > 0 {
+                msg.push_str(&format!(
+                    "\n\u{00a0}\u{00a0}{} threats auto-resolved",
+                    pipeline.auto_resolved_groups
+                ));
+            }
+        }
+
+        if pipeline.needs_review_groups > 0 {
+            msg.push_str(&format!(
+                "\n\n\u{26a0}\u{fe0f} {} groups need review",
+                pipeline.needs_review_groups
+            ));
+        } else {
+            msg.push_str("\n\nEverything is under control.");
+        }
+
+        msg
+    } else {
+        let date = chrono::Local::now().format("%Y-%m-%d");
+        let mut msg = format!(
+            "\u{1f4ca} Daily digest ({date}):\n\
+             \u{00a0}\u{00a0}Total: {incidents_today} incidents, {blocks_today} blocks\n\
+             \u{00a0}\u{00a0}{top_detector}: {top_count}\n\
+             \u{00a0}\u{00a0}Critical: {critical_count} | High: {high_count}",
+            top_detector = escape_html(top_detector),
+        );
+
+        if pipeline.suppressed_count > 0 {
+            msg.push_str(&format!(
+                "\n\u{00a0}\u{00a0}Grouped: {} alerts suppressed, {} auto-resolved, {} need review",
+                pipeline.suppressed_count,
+                pipeline.auto_resolved_groups,
+                pipeline.needs_review_groups,
+            ));
+        }
+
+        msg
     }
 }
 
