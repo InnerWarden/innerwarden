@@ -33,7 +33,7 @@ make replay-qa    # validacao E2E
 ## Estado (2026-04-04)
 
 - 49 detectors, 40 eBPF hooks, 65 MITRE IDs, 30 correlation rules
-- Server producao: ubuntu@130.162.171.105 (porta 49222)
+- Server producao: ver config local (nao expor no repo publico)
 - Branches: main = stable, develop = bleeding edge
 - CI: `make check` + `make test` + `make spec-check`
 - Licenca: Apache-2.0 (migrado de BUSL-1.1 em 2026-04-03)
