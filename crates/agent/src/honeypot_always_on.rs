@@ -6,6 +6,37 @@ use tracing::{debug, info, warn};
 
 use crate::{abuseipdb, ai, decisions, ioc, skills, telegram};
 
+#[derive(Debug, Clone, Copy)]
+struct AlwaysOnSessionOutcome {
+    had_interaction: bool,
+    auto_blocked: bool,
+}
+
+fn should_auto_block_after_session(
+    responder_enabled: bool,
+    blocklist_already_has_ip: bool,
+    had_interaction: bool,
+    block_backend: &str,
+    allowed_skills: &[String],
+) -> bool {
+    if !responder_enabled || blocklist_already_has_ip || !had_interaction {
+        return false;
+    }
+    let skill_id = format!("block-ip-{block_backend}");
+    allowed_skills.iter().any(|s| s == &skill_id)
+}
+
+fn elapsed_secs_for_report(started_at: std::time::Instant) -> u64 {
+    let elapsed = started_at.elapsed();
+    if elapsed.as_secs() > 0 {
+        elapsed.as_secs()
+    } else if elapsed.subsec_nanos() > 0 {
+        1
+    } else {
+        0
+    }
+}
+
 /// Handle a single always-on honeypot connection end-to-end:
 /// SSH key exchange, credential capture, optional LLM shell, evidence write,
 /// IOC extraction, AI verdict, auto-block, Telegram T.5 report.
@@ -23,7 +54,7 @@ async fn handle_always_on_connection(
     dry_run: bool,
     block_backend: String,
     allowed_skills: Vec<String>,
-) {
+) -> AlwaysOnSessionOutcome {
     use skills::builtin::honeypot::ssh_interact::{
         handle_connection, SshConnectionEvidence, SshInteractionMode,
     };
@@ -43,6 +74,7 @@ async fn handle_always_on_connection(
     };
 
     let conn_timeout = std::time::Duration::from_secs(120);
+    let started_at = std::time::Instant::now();
     let evidence: SshConnectionEvidence =
         handle_connection(stream, ssh_cfg, conn_timeout, mode).await;
 
@@ -85,6 +117,7 @@ async fn handle_always_on_connection(
         .iter()
         .map(|s| s.command.clone())
         .collect();
+    let had_interaction = !evidence.auth_attempts.is_empty() || !commands.is_empty();
 
     let iocs = ioc::extract_from_commands(&commands);
 
@@ -120,90 +153,94 @@ async fn handle_always_on_connection(
         "AI not configured - no verdict available.".to_string()
     };
 
-    // Auto-block after session if responder is enabled and IP not already blocked.
-    let auto_blocked = if responder_enabled && !blocklist_already_has_ip {
+    // Auto-block after session only when there was real interaction
+    // (auth attempts and/or shell commands). Pure connect+disconnect probes are
+    // reported but not auto-blocked here.
+    let auto_blocked = if should_auto_block_after_session(
+        responder_enabled,
+        blocklist_already_has_ip,
+        had_interaction,
+        &block_backend,
+        &allowed_skills,
+    ) {
         let skill_id = format!("block-ip-{block_backend}");
-        if allowed_skills.iter().any(|s| s == &skill_id) {
-            let iid = format!("honeypot:always-on:{session_id}");
-            let host = std::env::var("HOSTNAME")
-                .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
-                .unwrap_or_else(|_| "unknown".to_string());
-            let inc = innerwarden_core::incident::Incident {
-                ts: chrono::Utc::now(),
-                host: host.clone(),
-                incident_id: iid.clone(),
-                severity: innerwarden_core::event::Severity::High,
-                title: "Always-on Honeypot Session Ended".to_string(),
-                summary: format!(
-                    "Attacker IP {ip} connected to always-on honeypot session {session_id}"
-                ),
-                evidence: serde_json::json!({}),
-                recommended_checks: vec![],
-                tags: vec!["honeypot".to_string(), "always-on".to_string()],
-                entities: vec![innerwarden_core::entities::EntityRef::ip(&ip)],
-            };
-            let ctx = skills::SkillContext {
-                incident: inc,
-                target_ip: Some(ip.clone()),
-                target_user: None,
-                target_container: None,
-                duration_secs: None,
-                host: host.clone(),
-                data_dir: data_dir.clone(),
-                honeypot: skills::HoneypotRuntimeConfig::default(),
-                ai_provider: None,
-            };
-            let skill_box: Option<Box<dyn skills::ResponseSkill>> = match block_backend.as_str() {
-                "iptables" => Some(Box::new(skills::builtin::BlockIpIptables)),
-                "nftables" => Some(Box::new(skills::builtin::BlockIpNftables)),
-                "pf" => Some(Box::new(skills::builtin::BlockIpPf)),
-                _ => Some(Box::new(skills::builtin::BlockIpUfw)),
-            };
-            if let Some(skill) = skill_box {
-                let result = skill.execute(&ctx, dry_run).await;
-                if result.success {
-                    let today = chrono::Local::now()
-                        .date_naive()
-                        .format("%Y-%m-%d")
-                        .to_string();
-                    let entry = decisions::DecisionEntry {
-                        ts: chrono::Utc::now(),
-                        incident_id: iid,
-                        host,
-                        ai_provider: "honeypot:always-on".to_string(),
-                        action_type: "block_ip".to_string(),
-                        target_ip: Some(ip.clone()),
-                        target_user: None,
-                        skill_id: Some(skill_id),
-                        confidence: 1.0,
-                        auto_executed: true,
-                        dry_run,
-                        reason: format!(
-                            "Attacker IP interacted with always-on honeypot session {session_id}"
-                        ),
-                        estimated_threat: "confirmed-attacker".to_string(),
-                        execution_result: if result.success {
-                            "ok".to_string()
-                        } else {
-                            format!("failed: {}", result.message)
-                        },
-                        prev_hash: None,
-                    };
-                    let path = data_dir.join(format!("decisions-{today}.jsonl"));
-                    if let Ok(mut f) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&path)
-                    {
-                        use std::io::Write;
-                        if let Ok(line) = serde_json::to_string(&entry) {
-                            let _ = writeln!(f, "{line}");
-                        }
+        let iid = format!("honeypot:always-on:{session_id}");
+        let host = std::env::var("HOSTNAME")
+            .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
+            .unwrap_or_else(|_| "unknown".to_string());
+        let inc = innerwarden_core::incident::Incident {
+            ts: chrono::Utc::now(),
+            host: host.clone(),
+            incident_id: iid.clone(),
+            severity: innerwarden_core::event::Severity::High,
+            title: "Always-on Honeypot Session Ended".to_string(),
+            summary: format!(
+                "Attacker IP {ip} connected to always-on honeypot session {session_id}"
+            ),
+            evidence: serde_json::json!({}),
+            recommended_checks: vec![],
+            tags: vec!["honeypot".to_string(), "always-on".to_string()],
+            entities: vec![innerwarden_core::entities::EntityRef::ip(&ip)],
+        };
+        let ctx = skills::SkillContext {
+            incident: inc,
+            target_ip: Some(ip.clone()),
+            target_user: None,
+            target_container: None,
+            duration_secs: None,
+            host: host.clone(),
+            data_dir: data_dir.clone(),
+            honeypot: skills::HoneypotRuntimeConfig::default(),
+            ai_provider: None,
+        };
+        let skill_box: Option<Box<dyn skills::ResponseSkill>> = match block_backend.as_str() {
+            "iptables" => Some(Box::new(skills::builtin::BlockIpIptables)),
+            "nftables" => Some(Box::new(skills::builtin::BlockIpNftables)),
+            "pf" => Some(Box::new(skills::builtin::BlockIpPf)),
+            _ => Some(Box::new(skills::builtin::BlockIpUfw)),
+        };
+        if let Some(skill) = skill_box {
+            let result = skill.execute(&ctx, dry_run).await;
+            if result.success {
+                let today = chrono::Local::now()
+                    .date_naive()
+                    .format("%Y-%m-%d")
+                    .to_string();
+                let entry = decisions::DecisionEntry {
+                    ts: chrono::Utc::now(),
+                    incident_id: iid,
+                    host,
+                    ai_provider: "honeypot:always-on".to_string(),
+                    action_type: "block_ip".to_string(),
+                    target_ip: Some(ip.clone()),
+                    target_user: None,
+                    skill_id: Some(skill_id),
+                    confidence: 1.0,
+                    auto_executed: true,
+                    dry_run,
+                    reason: format!(
+                        "Attacker IP interacted with always-on honeypot session {session_id}"
+                    ),
+                    estimated_threat: "confirmed-attacker".to_string(),
+                    execution_result: if result.success {
+                        "ok".to_string()
+                    } else {
+                        format!("failed: {}", result.message)
+                    },
+                    prev_hash: None,
+                };
+                let path = data_dir.join(format!("decisions-{today}.jsonl"));
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                {
+                    use std::io::Write;
+                    if let Ok(line) = serde_json::to_string(&entry) {
+                        let _ = writeln!(f, "{line}");
                     }
-                    true
-                } else {
-                    false
                 }
+                true
             } else {
                 false
             }
@@ -223,7 +260,7 @@ async fn handle_always_on_connection(
 
     // Send Telegram T.5 post-session report.
     if let Some(ref tg) = telegram_client {
-        let duration = evidence.auth_attempts.len() as u64 * 5; // rough estimate
+        let duration = elapsed_secs_for_report(started_at);
         if let Err(e) = tg
             .send_honeypot_session_report(
                 &ip,
@@ -246,9 +283,15 @@ async fn handle_always_on_connection(
         session_id,
         auth_attempts = evidence.auth_attempts.len(),
         shell_commands = evidence.shell_commands.len(),
+        had_interaction,
         auto_blocked,
         "always-on honeypot session completed"
     );
+
+    AlwaysOnSessionOutcome {
+        had_interaction,
+        auto_blocked,
+    }
 }
 
 /// Permanent SSH listener that runs from agent startup until SIGTERM.
@@ -370,7 +413,7 @@ pub(crate) async fn run_always_on_honeypot(
                 let bl_ref = filter_blocklist.clone();
 
                 tokio::spawn(async move {
-                    handle_always_on_connection(
+                    let outcome = handle_always_on_connection(
                         stream,
                         ip_clone.clone(),
                         ssh_cfg_clone,
@@ -385,11 +428,14 @@ pub(crate) async fn run_always_on_honeypot(
                         sk,
                     )
                     .await;
-                    // After session, mark IP as seen so the filter can drop quick-reconnects.
-                    bl_ref
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .insert(ip_clone);
+                    // After real interaction (or successful auto-block), mark IP as seen
+                    // so the filter can drop quick reconnects.
+                    if outcome.had_interaction || outcome.auto_blocked {
+                        bl_ref
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(ip_clone);
+                    }
                 });
             }
             _ = shutdown_rx.changed() => {
@@ -491,5 +537,32 @@ async fn always_on_abuseipdb_block(
         if let Some(skill) = skill_box {
             let _ = skill.execute(&ctx, dry_run).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_autoblock_without_interaction() {
+        let allowed = vec!["block-ip-ufw".to_string()];
+        assert!(!should_auto_block_after_session(
+            true, false, false, "ufw", &allowed
+        ));
+    }
+
+    #[test]
+    fn autoblock_with_interaction_and_skill_allowed() {
+        let allowed = vec!["block-ip-ufw".to_string()];
+        assert!(should_auto_block_after_session(
+            true, false, true, "ufw", &allowed
+        ));
+    }
+
+    #[test]
+    fn elapsed_report_rounds_subsecond_to_one() {
+        let started = std::time::Instant::now() - std::time::Duration::from_millis(250);
+        assert_eq!(elapsed_secs_for_report(started), 1);
     }
 }
