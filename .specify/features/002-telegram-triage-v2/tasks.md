@@ -53,7 +53,7 @@ Nota: funcoes existem e sao testadas indiretamente, mas nao ha testes unitarios 
 
 ---
 
-## Epic A: Pluggable 2FA — PARCIALMENTE CONCLUIDA
+## Epic A: Pluggable 2FA — TELEGRAM CONCLUIDA, DASHBOARD PENDENTE
 
 ### A1: TwoFactor trait + TOTP implementation
 - [x] Create crates/agent/src/two_factor.rs
@@ -72,11 +72,13 @@ Nota: funcoes existem e sao testadas indiretamente, mas nao ha testes unitarios 
 - [x] TOTP: generate secret, show QR as ASCII, verify first code
 
 ### A4: Telegram integration
-- [ ] Intercept sensitive actions before execution (TwoFactorState existe em AgentState mas nunca e consumido no fluxo)
-- [ ] If 2FA enabled: send challenge message, wait for response
-- [ ] TOTP: "Enter your 6-digit code" → validate
-- [ ] Timeout: 5 minutes, then cancel
-- [ ] Brute force: max 3 failures per hour per operator
+- [x] Intercept sensitive actions before execution via `check_2fa_gate()` in `bot_helpers.rs`
+- [x] If 2FA enabled: send challenge message, wait for response
+- [x] TOTP: "Enter your 6-digit code" → validate via `handle_totp_response()`
+- [x] Timeout: 5 minutes + periodic cleanup in narrative tick
+- [x] Brute force: max 3 failures per hour per operator + lockout
+- [x] /cancel support para cancelar acao pendente
+- [x] Acoes protegidas: allowlist proc/ip, undo, auto-FP. FP report nao e sensivel.
 
 ### A5: Dashboard pending actions
 - [ ] GET /api/2fa/pending — list pending actions
@@ -100,12 +102,11 @@ Nota: funcoes existem e sao testadas indiretamente, mas nao ha testes unitarios 
 |------|--------|----------|
 | C — Auto-Learn | ✅ Concluida | — |
 | B — Undo | ✅ Funcional, faltam testes unitarios dedicados | B4 |
-| A — 2FA | Parcial: trait/config/setup prontos, integracao pendente | A4, A5 |
+| A — 2FA | Telegram concluido. Dashboard endpoints pendente. | A5 |
 
 ## Proximos passos
 
-1. **A4**: Integrar `TwoFactorState` no fluxo de callbacks do Telegram (allowlist, undo, mode change)
-2. **A5**: Endpoints dashboard para aprovacao de 2FA
-3. **B4**: Testes unitarios para undo (baixa prioridade, funcionalidade ja opera)
+1. **A5**: Endpoints dashboard para aprovacao de 2FA (quando dashboard confirmation method for implementado)
+2. **B4**: Testes unitarios para undo (baixa prioridade, funcionalidade ja opera)
 
 Auditado em 2026-04-04.

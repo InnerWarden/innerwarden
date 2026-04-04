@@ -80,13 +80,13 @@ ADR: `docs/internal/adr/0001-project-taxonomy.md`
 | ID | Feature | Status |
 |----|---------|--------|
 | 001 | Telegram Interactive Triage | Concluida |
-| 002 | Telegram Triage v2 (2FA + Undo + Auto-Learn) | Auto-Learn e Undo concluidos. 2FA: trait/config/setup prontos, integracao pendente (A4/A5) |
+| 002 | Telegram Triage v2 (2FA + Undo + Auto-Learn) | Auto-Learn, Undo e 2FA Telegram concluidos. Pendente: dashboard 2FA endpoints (A5) |
 | 003 | Setup Ready To Use | Concluida |
 | 004 | Setup Zero Friction | Concluida |
 
 ## Divida tecnica
 
-- **2FA codigo morto**: `TwoFactorState` inicializado em `AgentState` mas nunca consumido. Precisa integrar no fluxo Telegram (A4) e criar endpoints dashboard (A5).
+- **2FA dashboard endpoints (A5)**: TOTP funciona no Telegram. Falta implementar `GET /api/2fa/pending`, `POST /api/2fa/approve`, `POST /api/2fa/deny` para o metodo "dashboard".
 - **Agent main.rs**: 4396 linhas. Modularizacao avancou muito mas `process_incidents` e `process_telegram_approval` ainda concentram orquestracao. Proximos candidatos: Telegram bot commands/status, integracoes.
 - **CTL main.rs**: 2201 linhas. Aceitavel. Ponto de manutencao atingido.
 
