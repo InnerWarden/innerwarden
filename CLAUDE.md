@@ -83,6 +83,7 @@ ADR: `docs/internal/adr/0001-project-taxonomy.md`
 | 002 | Telegram Triage v2 (2FA + Undo + Auto-Learn) | Auto-Learn, Undo e 2FA Telegram concluidos. Pendente: dashboard 2FA endpoints (A5) |
 | 003 | Setup Ready To Use | Concluida |
 | 004 | Setup Zero Friction | Concluida |
+| 005 | Intelligent Notifications | Spec pronto. Grouping + channel filter + env calibration + AI batch triage |
 
 ## Divida tecnica
 
