@@ -328,13 +328,11 @@ pub(crate) fn should_suppress_for_environment(
         .next()
         .unwrap_or("unknown");
 
-    // Cloud VPS: suppress timing-based detectors
+    // Cloud VPS: suppress timing-based detectors up to High severity.
+    // On cloud/VM, hypervisor jitter makes timing analysis unreliable.
+    // Only Critical timing anomalies go through (indicating persistent pattern).
     if profile.is_cloud() && CLOUD_SUPPRESSED_DETECTORS.iter().any(|d| detector.contains(d)) {
-        // Only suppress LOW/MEDIUM — High/Critical still go through
-        if matches!(
-            incident.severity,
-            Severity::Low | Severity::Medium | Severity::Info | Severity::Debug
-        ) {
+        if !matches!(incident.severity, Severity::Critical) {
             return true;
         }
     }
@@ -769,11 +767,20 @@ mod tests {
     }
 
     #[test]
-    fn cloud_does_not_suppress_high_timing_anomaly() {
+    fn cloud_suppresses_high_timing_anomaly() {
         let mut profile = crate::environment_profile::EnvironmentProfile::default();
         profile.platform = "cloud_vps".into();
 
         let inc = make_incident("firmware_integrity", "1.2.3.4", Severity::High);
+        assert!(should_suppress_for_environment(&inc, &profile));
+    }
+
+    #[test]
+    fn cloud_does_not_suppress_critical_timing_anomaly() {
+        let mut profile = crate::environment_profile::EnvironmentProfile::default();
+        profile.platform = "cloud_vps".into();
+
+        let inc = make_incident("firmware_integrity", "1.2.3.4", Severity::Critical);
         assert!(!should_suppress_for_environment(&inc, &profile));
     }
 
