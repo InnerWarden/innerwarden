@@ -224,165 +224,69 @@ impl TelegramClient {
             "disable_web_page_preview": true,
         });
 
-        match mode {
-            GuardianMode::Guard => {
-                // GUARD: agent will act - show investigate button only, no Block/Ignore
-                if let Some(ip) = first_ip_entity(incident) {
-                    if let Some(ref base_url) = self.dashboard_url {
-                        let link = format!(
-                            "{base_url}/?subject_type=ip&subject={ip}&date={}",
-                            incident.ts.format("%Y-%m-%d")
-                        );
-                        body["reply_markup"] = serde_json::json!({
-                            "inline_keyboard": [[{
+        // Build inline keyboard based on mode.
+        // Guard: compact — just "Not a threat" + "Investigate".
+        // Watch/DryRun: operator decides — Block + Ignore + Investigate + "Not a threat".
+        {
+            let fp_label = if is_simple { "Not a threat" } else { "Report FP" };
+            let fp_btn = serde_json::json!({
+                "text": format!("\u{1f4dd} {fp_label}"),
+                "callback_data": callback_data("fp:", &incident.incident_id)
+            });
+
+            match mode {
+                GuardianMode::Guard => {
+                    let mut row = vec![fp_btn];
+                    if let Some(ip) = first_ip_entity(incident) {
+                        if let Some(ref base_url) = self.dashboard_url {
+                            let link = format!(
+                                "{base_url}/?subject_type=ip&subject={ip}&date={}",
+                                incident.ts.format("%Y-%m-%d")
+                            );
+                            row.push(serde_json::json!({
                                 "text": "🔍 Investigate",
                                 "url": link
-                            }]]
-                        });
+                            }));
+                        }
                     }
+                    body["reply_markup"] = serde_json::json!({ "inline_keyboard": [row] });
                 }
-            }
-            GuardianMode::Watch | GuardianMode::DryRun => {
-                // WATCH/DryRun: operator makes the call - add Block/Ignore buttons
-                if let Some(ip) = first_ip_entity(incident) {
-                    let mut keyboard: Vec<Vec<serde_json::Value>> = vec![vec![
-                        serde_json::json!({
-                            "text": format!("🛡 Block {ip}"),
-                            "callback_data": format!("quick:block:{ip}")
-                        }),
-                        serde_json::json!({
-                            "text": "🙈 Ignore",
-                            "callback_data": "quick:ignore"
-                        }),
-                    ]];
+                GuardianMode::Watch | GuardianMode::DryRun => {
+                    let mut keyboard: Vec<Vec<serde_json::Value>> = Vec::new();
 
-                    if let Some(ref base_url) = self.dashboard_url {
-                        let link = format!(
-                            "{base_url}/?subject_type=ip&subject={ip}&date={}",
-                            incident.ts.format("%Y-%m-%d")
-                        );
+                    if let Some(ip) = first_ip_entity(incident) {
+                        keyboard.push(vec![
+                            serde_json::json!({
+                                "text": format!("🛡 Block {ip}"),
+                                "callback_data": format!("quick:block:{ip}")
+                            }),
+                            serde_json::json!({
+                                "text": "🙈 Ignore",
+                                "callback_data": "quick:ignore"
+                            }),
+                        ]);
+
+                        if let Some(ref base_url) = self.dashboard_url {
+                            let link = format!(
+                                "{base_url}/?subject_type=ip&subject={ip}&date={}",
+                                incident.ts.format("%Y-%m-%d")
+                            );
+                            keyboard.push(vec![serde_json::json!({
+                                "text": "🔍 Investigate in dashboard",
+                                "url": link
+                            })]);
+                        }
+                    } else if let Some(ref base_url) = self.dashboard_url {
+                        let link = format!("{base_url}/?date={}", incident.ts.format("%Y-%m-%d"));
                         keyboard.push(vec![serde_json::json!({
                             "text": "🔍 Investigate in dashboard",
                             "url": link
                         })]);
                     }
 
+                    keyboard.push(vec![fp_btn]);
                     body["reply_markup"] = serde_json::json!({ "inline_keyboard": keyboard });
-                } else if let Some(ref base_url) = self.dashboard_url {
-                    let link = format!("{base_url}/?date={}", incident.ts.format("%Y-%m-%d"));
-                    body["reply_markup"] = serde_json::json!({
-                        "inline_keyboard": [[{
-                            "text": "🔍 Investigate in dashboard",
-                            "url": link
-                        }]]
-                    });
                 }
-            }
-        }
-
-        // Dev mode: append "Check FP" button to every incident notification
-        if self.dev_mode {
-            let incident_id = &incident.incident_id;
-            let fp_btn = serde_json::json!({
-                "text": "\u{1f52c} Check FP",
-                "callback_data": callback_data("fp:check:", incident_id)
-            });
-            if let Some(markup) = body.get_mut("reply_markup") {
-                if let Some(kb) = markup.get_mut("inline_keyboard") {
-                    if let Some(arr) = kb.as_array_mut() {
-                        arr.push(serde_json::json!([fp_btn]));
-                    }
-                }
-            } else {
-                body["reply_markup"] = serde_json::json!({ "inline_keyboard": [[fp_btn]] });
-            }
-        }
-
-        // Triage row: allowlist + report FP buttons (both profiles)
-        {
-            let comm = if let Some(arr) = incident.evidence.as_array() {
-                arr.first()
-                    .and_then(|e| e.get("comm"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string()
-            } else {
-                incident
-                    .evidence
-                    .get("comm")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string()
-            };
-            let ip = first_ip_entity(incident);
-
-            let mut triage_row = vec![];
-            if !comm.is_empty() {
-                let label = if is_simple {
-                    "Allow this"
-                } else {
-                    "Add to allowlist"
-                };
-                triage_row.push(serde_json::json!({
-                    "text": format!("\u{2705} {label}"),
-                    "callback_data": callback_data("allow:proc:", &comm)
-                }));
-            }
-            if let Some(ref ip_val) = ip {
-                let label = if is_simple {
-                    "Allow this"
-                } else {
-                    "Allowlist IP"
-                };
-                triage_row.push(serde_json::json!({
-                    "text": format!("\u{2705} {label}"),
-                    "callback_data": callback_data("allow:ip:", ip_val)
-                }));
-            }
-
-            let fp_label = if is_simple {
-                "Not a threat"
-            } else {
-                "Report FP"
-            };
-            triage_row.push(serde_json::json!({
-                "text": format!("\u{1f4dd} {fp_label}"),
-                "callback_data": callback_data("fp:", &incident.incident_id)
-            }));
-
-            if !triage_row.is_empty() {
-                if let Some(markup) = body.get_mut("reply_markup") {
-                    if let Some(kb) = markup.get_mut("inline_keyboard") {
-                        if let Some(arr) = kb.as_array_mut() {
-                            arr.push(serde_json::json!(triage_row));
-                        }
-                    }
-                } else {
-                    body["reply_markup"] = serde_json::json!({ "inline_keyboard": [triage_row] });
-                }
-            }
-        }
-
-        // Explain button: both profiles get "What does this mean?"
-        {
-            let detector = extract_detector(&incident.incident_id).to_string();
-            let explain_label = if is_simple {
-                "What does this mean?"
-            } else {
-                "Explain this alert"
-            };
-            let explain_btn = serde_json::json!({
-                "text": format!("\u{2753} {explain_label}"),
-                "callback_data": callback_data("explain:", &detector)
-            });
-            if let Some(markup) = body.get_mut("reply_markup") {
-                if let Some(kb) = markup.get_mut("inline_keyboard") {
-                    if let Some(arr) = kb.as_array_mut() {
-                        arr.push(serde_json::json!([explain_btn]));
-                    }
-                }
-            } else {
-                body["reply_markup"] = serde_json::json!({ "inline_keyboard": [[explain_btn]] });
             }
         }
 
@@ -1056,10 +960,15 @@ impl TelegramClient {
 
     /// React to a message with 👀 (processing indicator).
     pub async fn react_eyes(&self, chat_id: i64, message_id: i64) {
+        self.react(chat_id, message_id, "👀").await;
+    }
+
+    /// React to a message with an arbitrary emoji.
+    pub async fn react(&self, chat_id: i64, message_id: i64, emoji: &str) {
         let body = serde_json::json!({
             "chat_id": chat_id,
             "message_id": message_id,
-            "reaction": [{ "type": "emoji", "emoji": "👀" }]
+            "reaction": [{ "type": "emoji", "emoji": emoji }]
         });
         let _ = self.post_json("setMessageReaction", &body).await;
     }
@@ -1131,6 +1040,19 @@ impl TelegramClient {
                                 .clone()
                                 .unwrap_or_else(|| "unknown".to_string());
 
+                            // Extract chat_id + message_id for emoji reactions
+                            let cb_chat_id = callback
+                                .message
+                                .as_ref()
+                                .and_then(|m| m.chat.as_ref())
+                                .map(|c| c.id)
+                                .unwrap_or(0);
+                            let cb_msg_id = callback
+                                .message
+                                .as_ref()
+                                .map(|m| m.message_id)
+                                .unwrap_or(0);
+
                             if let Some(data) = &callback.data {
                                 if let Some(incident_id) = data.strip_prefix("fp:check:") {
                                     // Dev mode: log incident as potential false positive
@@ -1175,11 +1097,17 @@ impl TelegramClient {
                                             ),
                                         )
                                         .await;
+                                    if cb_chat_id != 0 {
+                                        self.react(cb_chat_id, cb_msg_id, "\u{1f4dd}").await;
+                                    }
                                 } else if let Some(detector) = data.strip_prefix("explain:") {
                                     // Simple profile: send a longer explanation of the detector
                                     let explanation = explain_detector(detector);
                                     let _ = self.answer_callback(&callback.id).await;
                                     let _ = self.send_raw_html(&explanation).await;
+                                    if cb_chat_id != 0 {
+                                        self.react(cb_chat_id, cb_msg_id, "\u{1f4a1}").await;
+                                    }
                                 } else if data == "quick:ignore" {
                                     // Just ack with toast - no further action needed
                                     let _ = self
@@ -1188,6 +1116,9 @@ impl TelegramClient {
                                             "👍 Logged as false positive. Keeping eyes on it.",
                                         )
                                         .await;
+                                    if cb_chat_id != 0 {
+                                        self.react(cb_chat_id, cb_msg_id, "\u{1f44d}").await;
+                                    }
                                 } else if let Some(ip_str) = data.strip_prefix("quick:block:") {
                                     // Validate IP format before processing
                                     if ip_str.parse::<std::net::IpAddr>().is_ok() {
@@ -1198,6 +1129,9 @@ impl TelegramClient {
                                                 &format!("🛡 Dropping {ip} at the firewall..."),
                                             )
                                             .await;
+                                        if cb_chat_id != 0 {
+                                            self.react(cb_chat_id, cb_msg_id, "\u{1f6e1}\u{fe0f}").await;
+                                        }
                                         let result = ApprovalResult {
                                             incident_id: format!("__quick_block__:{ip}"),
                                             approved: true,
@@ -1232,6 +1166,15 @@ impl TelegramClient {
                                         };
                                         let _ =
                                             self.answer_callback_toast(&callback.id, &toast).await;
+                                        if cb_chat_id != 0 {
+                                            let emoji = match action {
+                                                "honeypot" => "\u{1f36f}",
+                                                "block" => "\u{1f6ab}",
+                                                "monitor" => "\u{1f441}\u{fe0f}",
+                                                _ => "\u{1f44d}",
+                                            };
+                                            self.react(cb_chat_id, cb_msg_id, emoji).await;
+                                        }
                                         let result = ApprovalResult {
                                             incident_id: format!("__hpot__:{ip}"),
                                             approved: action != "ignore",
@@ -1250,6 +1193,9 @@ impl TelegramClient {
                                             &format!("\u{2705} Adding {} to allowlist...", rest),
                                         )
                                         .await;
+                                    if cb_chat_id != 0 {
+                                        self.react(cb_chat_id, cb_msg_id, "\u{2705}").await;
+                                    }
                                     let result = ApprovalResult {
                                         incident_id: format!("__allow_proc__:{rest}"),
                                         approved: true,
@@ -1267,6 +1213,9 @@ impl TelegramClient {
                                             &format!("\u{2705} Adding {} to allowlist...", rest),
                                         )
                                         .await;
+                                    if cb_chat_id != 0 {
+                                        self.react(cb_chat_id, cb_msg_id, "\u{2705}").await;
+                                    }
                                     let result = ApprovalResult {
                                         incident_id: format!("__allow_ip__:{rest}"),
                                         approved: true,
@@ -1287,6 +1236,9 @@ impl TelegramClient {
                                             "\u{1f4dd} Reported as false positive. Thanks!",
                                         )
                                         .await;
+                                    if cb_chat_id != 0 {
+                                        self.react(cb_chat_id, cb_msg_id, "\u{1f4dd}").await;
+                                    }
                                     let result = ApprovalResult {
                                         incident_id: format!("__fp__:{rest}"),
                                         approved: true,
@@ -1608,6 +1560,16 @@ struct CallbackQuery {
     from: User,
     #[serde(default)]
     data: Option<String>,
+    #[serde(default)]
+    message: Option<CallbackMessage>,
+}
+
+/// Minimal representation of the message attached to a callback query.
+#[derive(Debug, Deserialize)]
+struct CallbackMessage {
+    message_id: i64,
+    #[serde(default)]
+    chat: Option<Chat>,
 }
 
 #[derive(Debug, Deserialize)]
