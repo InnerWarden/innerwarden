@@ -1202,7 +1202,6 @@ pub struct SecurityConfig {
     /// TOTP secret (base32 encoded). Stored in agent.env as INNERWARDEN_TOTP_SECRET.
     /// Leave empty in TOML; set via `innerwarden configure 2fa`.
     #[serde(default)]
-    #[allow(dead_code)]
     pub totp_secret: String,
 }
 

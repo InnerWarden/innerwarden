@@ -409,7 +409,6 @@ struct AgentState {
     /// Timestamp of last autoencoder anomaly detection (for score fusion with baseline).
     last_autoencoder_anomaly_ts: Option<chrono::DateTime<chrono::Utc>>,
     /// Two-factor authentication state (pending actions, brute force protection).
-    #[allow(dead_code)]
     two_factor_state: two_factor::TwoFactorState,
     /// Redis stream reader for events (None when redis_url is not configured).
     #[cfg(feature = "redis-reader")]
@@ -1802,6 +1801,9 @@ async fn main() -> Result<()> {
                         // ── Pcap capture cooldown cleanup ──
                         state.pcap_capture.cleanup();
 
+                        // ── 2FA pending action expiry cleanup ──
+                        state.two_factor_state.cleanup_expired();
+
                         // ── Baseline rate anomaly check + save ──
                         {
                             let rate_anomalies = state.baseline.check_rate_anomalies();
@@ -2930,6 +2932,11 @@ async fn process_telegram_approval(
     cfg: &config::AgentConfig,
     state: &mut AgentState,
 ) {
+    // 2FA: intercept TOTP code responses before any other handler
+    if bot_helpers::handle_totp_response(&result, data_dir, cfg, state) {
+        return;
+    }
+
     if handle_telegram_bot_command(&result, data_dir, cfg, state).await {
         return;
     }

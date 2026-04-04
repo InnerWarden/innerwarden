@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::agent_context::{build_agent_context, guardian_mode};
-use crate::{bot_helpers, config, telegram, AgentState};
+use crate::{bot_helpers, config, telegram, two_factor, AgentState};
 use tracing::info;
 
 /// Run an `innerwarden` CLI subcommand and return its stdout+stderr as a String.
@@ -329,6 +329,19 @@ pub(crate) async fn handle_telegram_bot_command(
             } else {
                 "processes"
             };
+            // 2FA gate: if enabled, store pending and ask for TOTP code
+            if bot_helpers::check_2fa_gate(
+                state,
+                cfg,
+                &result.operator_name,
+                two_factor::PendingActionType::UndoAllowlist {
+                    section: section.to_string(),
+                    key: key.to_string(),
+                },
+            ) {
+                return true;
+            }
+
             let allowlist_path = Path::new("/etc/innerwarden/allowlist.toml");
 
             match telegram::remove_from_allowlist(allowlist_path, section, key) {
@@ -409,6 +422,19 @@ pub(crate) async fn handle_telegram_bot_command(
                 } else {
                     "processes"
                 };
+                // 2FA gate: if enabled, store pending and ask for TOTP code
+                if bot_helpers::check_2fa_gate(
+                    state,
+                    cfg,
+                    &result.operator_name,
+                    two_factor::PendingActionType::AutoFpAllowlist {
+                        section: section.to_string(),
+                        entity: entity.to_string(),
+                    },
+                ) {
+                    return true;
+                }
+
                 let allowlist_path = Path::new("/etc/innerwarden/allowlist.toml");
                 let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
                 let reason = format!("Auto-FP allowlist via Telegram ({ts})");

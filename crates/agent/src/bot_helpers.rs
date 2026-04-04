@@ -2,7 +2,7 @@ use std::path::Path;
 
 use tracing::{info, warn};
 
-use crate::{config, decisions, telegram, AgentState};
+use crate::{config, decisions, telegram, two_factor, AgentState};
 
 /// Count the number of lines in a JSONL file in data_dir (fail-silent -> 0).
 pub(crate) fn count_jsonl_lines(data_dir: &Path, filename: &str) -> usize {
@@ -250,6 +250,16 @@ pub(crate) fn handle_telegram_triage_action(
                 tg_reply(state, "⚠️ Could not add empty process name to allowlist.");
                 return true;
             };
+            // 2FA gate: if enabled, store pending and ask for TOTP code
+            if check_2fa_gate(
+                state,
+                cfg,
+                &result.operator_name,
+                two_factor::PendingActionType::AllowlistProcess(comm.clone()),
+            ) {
+                return true;
+            }
+
             let allowlist_path = Path::new("/etc/innerwarden/allowlist.toml");
             let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
             let reason = format!("Allowed via Telegram ({ts})");
@@ -378,6 +388,16 @@ pub(crate) fn handle_telegram_triage_action(
                 );
                 return true;
             }
+            // 2FA gate: if enabled, store pending and ask for TOTP code
+            if check_2fa_gate(
+                state,
+                cfg,
+                &result.operator_name,
+                two_factor::PendingActionType::AllowlistIp(ip.clone()),
+            ) {
+                return true;
+            }
+
             let allowlist_path = Path::new("/etc/innerwarden/allowlist.toml");
             let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
             let reason = format!("Allowed via Telegram ({ts})");
@@ -528,6 +548,288 @@ pub(crate) fn handle_telegram_triage_action(
 
     true
 }
+
+// ---------------------------------------------------------------------------
+// 2FA gate — intercepts sensitive actions when TOTP is enabled
+// ---------------------------------------------------------------------------
+
+/// Check if 2FA is enabled in config.
+pub(crate) fn is_2fa_enabled(cfg: &config::AgentConfig) -> bool {
+    cfg.security
+        .as_ref()
+        .map(|s| s.two_factor_method == "totp")
+        .unwrap_or(false)
+}
+
+/// Get the TOTP secret from config (resolved from env var or toml).
+fn totp_secret(cfg: &config::AgentConfig) -> Option<String> {
+    // Check env var first (preferred), then config field
+    std::env::var("INNERWARDEN_TOTP_SECRET")
+        .ok()
+        .or_else(|| cfg.security.as_ref().map(|s| s.totp_secret.clone()))
+        .filter(|s| !s.is_empty())
+}
+
+/// If 2FA is enabled, intercept the action: store as pending and ask for TOTP code.
+/// Returns `true` if the action was intercepted (caller should return without executing).
+/// Returns `false` if 2FA is disabled (caller should proceed normally).
+pub(crate) fn check_2fa_gate(
+    state: &mut AgentState,
+    cfg: &config::AgentConfig,
+    operator: &str,
+    action: two_factor::PendingActionType,
+) -> bool {
+    if !is_2fa_enabled(cfg) {
+        return false;
+    }
+
+    // Check lockout before accepting a new action
+    if state.two_factor_state.is_locked_out(operator) {
+        tg_reply(
+            state,
+            "\u{1f6ab} Too many failed 2FA attempts. Try again later.",
+        );
+        return true;
+    }
+
+    let now = chrono::Utc::now();
+    let pending = two_factor::PendingAction {
+        action_type: action,
+        operator: operator.to_string(),
+        created_at: now,
+        expires_at: now + chrono::Duration::minutes(5),
+        method: two_factor::TwoFactorMethod::Totp,
+    };
+    state.two_factor_state.set_pending(operator, pending);
+
+    tg_reply(
+        state,
+        "\u{1f510} Enter your 6-digit TOTP code (expires in 5 min):",
+    );
+    info!(operator = %operator, "2FA: pending action stored, waiting for TOTP code");
+    true
+}
+
+/// Try to handle a Telegram message as a TOTP code response.
+/// Returns `true` if it was recognized as a TOTP attempt (code or cancel).
+pub(crate) fn handle_totp_response(
+    result: &telegram::ApprovalResult,
+    data_dir: &Path,
+    cfg: &config::AgentConfig,
+    state: &mut AgentState,
+) -> bool {
+    let text = result.incident_id.trim();
+
+    // Cancel pending 2FA
+    if text == "/cancel" {
+        if state
+            .two_factor_state
+            .take_pending(&result.operator_name)
+            .is_some()
+        {
+            tg_reply(state, "\u{274c} 2FA verification cancelled.");
+            return true;
+        }
+        return false;
+    }
+
+    // Only intercept 6-digit numeric strings when there's a pending action
+    let is_6_digits = text.len() == 6 && text.chars().all(|c| c.is_ascii_digit());
+    if !is_6_digits {
+        return false;
+    }
+
+    let pending = match state.two_factor_state.take_pending(&result.operator_name) {
+        Some(p) => p,
+        None => return false, // No pending action — not a TOTP attempt
+    };
+
+    // Check if expired
+    if pending.expires_at < chrono::Utc::now() {
+        tg_reply(state, "\u{23f0} 2FA code expired. Please retry the action.");
+        return true;
+    }
+
+    // Verify TOTP code
+    let secret = match totp_secret(cfg) {
+        Some(s) => s,
+        None => {
+            warn!("2FA enabled but no TOTP secret configured");
+            tg_reply(
+                state,
+                "\u{26a0}\u{fe0f} 2FA is enabled but no TOTP secret is configured. Run: innerwarden configure 2fa",
+            );
+            return true;
+        }
+    };
+
+    let provider = match two_factor::TotpProvider::new(&secret) {
+        Some(p) => p,
+        None => {
+            warn!("2FA: invalid TOTP secret in config");
+            tg_reply(
+                state,
+                "\u{26a0}\u{fe0f} Invalid TOTP secret. Re-run: innerwarden configure 2fa",
+            );
+            return true;
+        }
+    };
+
+    if !provider.verify(text) {
+        state.two_factor_state.record_failure(&result.operator_name);
+        if state.two_factor_state.is_locked_out(&result.operator_name) {
+            tg_reply(
+                state,
+                "\u{274c} Wrong code. You are now locked out for 1 hour.",
+            );
+        } else {
+            // Re-store the pending action so operator can retry
+            state
+                .two_factor_state
+                .set_pending(&result.operator_name, pending);
+            tg_reply(state, "\u{274c} Wrong code. Try again or /cancel.");
+        }
+        return true;
+    }
+
+    // Code verified — execute the pending action
+    info!(
+        operator = %result.operator_name,
+        action = ?pending.action_type,
+        "2FA: TOTP verified, executing pending action"
+    );
+    execute_verified_action(pending.action_type, &result.operator_name, data_dir, state);
+    true
+}
+
+/// Execute a 2FA-verified action.
+fn execute_verified_action(
+    action: two_factor::PendingActionType,
+    operator: &str,
+    data_dir: &Path,
+    state: &mut AgentState,
+) {
+    let allowlist_path = Path::new("/etc/innerwarden/allowlist.toml");
+    let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+
+    match action {
+        two_factor::PendingActionType::AllowlistProcess(ref comm) => {
+            let reason = format!("Allowed via Telegram + 2FA ({ts})");
+            match telegram::append_to_allowlist(allowlist_path, "processes", comm, &reason) {
+                Ok(()) => {
+                    telegram::log_allowlist_change(data_dir, comm, "processes", operator, "add");
+                    write_telegram_triage_audit(
+                        state, "__2fa_verified__", operator, "allowlist_add",
+                        None, Some(format!("process:{comm}")),
+                        format!("Operator {operator} added process '{comm}' to allowlist (2FA verified)"),
+                        format!("allowlist_process_added:{comm}"),
+                    );
+                    tg_reply(state, format!(
+                        "\u{2705} Allowed <code>{comm}</code> (verified by TOTP). Sensor will pick this up in up to 60s."
+                    ));
+                }
+                Err(e) => {
+                    tg_reply(
+                        state,
+                        format!(
+                            "\u{274c} Failed to allowlist <code>{comm}</code>: {}",
+                            e.to_string().chars().take(180).collect::<String>()
+                        ),
+                    );
+                }
+            }
+        }
+        two_factor::PendingActionType::AllowlistIp(ref ip) => {
+            let reason = format!("Allowed via Telegram + 2FA ({ts})");
+            match telegram::append_to_allowlist(allowlist_path, "ips", ip, &reason) {
+                Ok(()) => {
+                    telegram::log_allowlist_change(data_dir, ip, "ips", operator, "add");
+                    write_telegram_triage_audit(
+                        state,
+                        "__2fa_verified__",
+                        operator,
+                        "allowlist_add",
+                        Some(ip.clone()),
+                        None,
+                        format!("Operator {operator} added IP '{ip}' to allowlist (2FA verified)"),
+                        format!("allowlist_ip_added:{ip}"),
+                    );
+                    tg_reply(state, format!(
+                        "\u{2705} Allowed <code>{ip}</code> (verified by TOTP). Sensor will pick this up in up to 60s."
+                    ));
+                }
+                Err(e) => {
+                    tg_reply(
+                        state,
+                        format!(
+                            "\u{274c} Failed to allowlist <code>{ip}</code>: {}",
+                            e.to_string().chars().take(180).collect::<String>()
+                        ),
+                    );
+                }
+            }
+        }
+        two_factor::PendingActionType::UndoAllowlist {
+            ref section,
+            ref key,
+        } => match telegram::remove_from_allowlist(allowlist_path, section, key) {
+            Ok(()) => {
+                telegram::log_allowlist_change(data_dir, key, section, operator, "remove");
+                write_telegram_triage_audit(
+                        state, "__2fa_verified__", operator, "allowlist_remove",
+                        None, None,
+                        format!("Operator {operator} removed '{key}' from {section} allowlist (2FA verified)"),
+                        format!("allowlist_removed:{key}"),
+                    );
+                tg_reply(
+                    state,
+                    format!(
+                        "\u{2705} Removed <code>{}</code> from allowlist (verified by TOTP).",
+                        telegram::escape_html_pub(key)
+                    ),
+                );
+            }
+            Err(e) => {
+                tg_reply(
+                    state,
+                    format!(
+                        "\u{274c} Failed to remove <code>{}</code>: {}",
+                        telegram::escape_html_pub(key),
+                        e.to_string().chars().take(180).collect::<String>()
+                    ),
+                );
+            }
+        },
+        two_factor::PendingActionType::AutoFpAllowlist {
+            ref section,
+            ref entity,
+        } => {
+            let reason = format!("Auto-FP allowlist via Telegram + 2FA ({ts})");
+            match telegram::append_to_allowlist(allowlist_path, section, entity, &reason) {
+                Ok(()) => {
+                    telegram::log_allowlist_change(data_dir, entity, section, operator, "add");
+                    tg_reply(state, format!(
+                        "\u{2705} Added <code>{}</code> to {} allowlist permanently (verified by TOTP).",
+                        telegram::escape_html_pub(entity), section
+                    ));
+                }
+                Err(e) => {
+                    tg_reply(
+                        state,
+                        format!(
+                            "\u{274c} Failed to add to allowlist: {}",
+                            e.to_string().chars().take(180).collect::<String>()
+                        ),
+                    );
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 /// Format an RFC3339 timestamp as a human-readable "X ago" string.
 pub(crate) fn format_time_ago(ts_str: &str) -> String {

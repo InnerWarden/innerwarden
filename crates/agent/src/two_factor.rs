@@ -150,6 +150,8 @@ pub struct PendingAction {
 pub enum PendingActionType {
     AllowlistProcess(String),
     AllowlistIp(String),
+    UndoAllowlist { section: String, key: String },
+    AutoFpAllowlist { section: String, entity: String },
 }
 
 /// Tracks pending 2FA actions and brute force protection state.
