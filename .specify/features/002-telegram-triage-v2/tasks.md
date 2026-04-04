@@ -80,11 +80,16 @@ Nota: funcoes existem e sao testadas indiretamente, mas nao ha testes unitarios 
 - [x] /cancel support para cancelar acao pendente
 - [x] Acoes protegidas: allowlist proc/ip, undo, auto-FP. FP report nao e sensivel.
 
-### A5: Dashboard pending actions
-- [ ] GET /api/2fa/pending — list pending actions
-- [ ] POST /api/2fa/approve/{id} — approve pending action
+### A5: Dashboard pending actions (opcional, para method = "dashboard")
+- [ ] GET /api/2fa/pending — list pending actions (read-only, disponivel sempre)
+- [ ] POST /api/2fa/approve/{id} — approve pending action (so quando method = dashboard)
 - [ ] POST /api/2fa/deny/{id} — deny pending action
 - [ ] Actions expire after 5 minutes
+- [ ] Aviso no setup: dashboard como 2FA e menos seguro contra root (segredo no mesmo host)
+
+Decisao de produto (2026-04-04): TOTP e o metodo padrao e recomendado (segredo fora da maquina).
+Dashboard e opcional — operador avancado pode escolher, com aviso de trade-off.
+InnerWarden nao bloqueia opcoes, informa riscos.
 
 ### A6: Tests for 2FA
 - [x] Test TOTP generation and validation
@@ -102,11 +107,11 @@ Nota: funcoes existem e sao testadas indiretamente, mas nao ha testes unitarios 
 |------|--------|----------|
 | C — Auto-Learn | ✅ Concluida | — |
 | B — Undo | ✅ Funcional, faltam testes unitarios dedicados | B4 |
-| A — 2FA | Telegram concluido. Dashboard endpoints pendente. | A5 |
+| A — 2FA | TOTP Telegram concluido. Dashboard endpoints opcional, baixa prioridade. | A5 |
 
 ## Proximos passos
 
-1. **A5**: Endpoints dashboard para aprovacao de 2FA (quando dashboard confirmation method for implementado)
-2. **B4**: Testes unitarios para undo (baixa prioridade, funcionalidade ja opera)
+1. **A5**: Dashboard endpoints (baixa prioridade — TOTP ja protege tudo)
+2. **B4**: Testes unitarios para undo (baixa prioridade)
 
 Auditado em 2026-04-04.
