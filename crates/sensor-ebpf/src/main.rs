@@ -525,7 +525,7 @@ fn try_connect(ctx: &TracePointContext) -> Result<(), i64> {
     }
 
     let port = u16::from_be_bytes([sa_buf[2], sa_buf[3]]);
-    let addr = u32::from_ne_bytes([sa_buf[4], sa_buf[5], sa_buf[6], sa_buf[7]]);
+    let addr = u32::from_be_bytes([sa_buf[4], sa_buf[5], sa_buf[6], sa_buf[7]]);
 
     // Kill chain: ALWAYS set the SOCKET flag, regardless of allowlists,
     // loopback, or rate limiting. The chain flag tracks attack patterns —
@@ -1468,7 +1468,7 @@ fn try_bind(ctx: &TracePointContext) -> Result<(), i64> {
     }
 
     let port = u16::from_be_bytes([sa_buf[2], sa_buf[3]]);
-    let addr = u32::from_ne_bytes([sa_buf[4], sa_buf[5], sa_buf[6], sa_buf[7]]);
+    let addr = u32::from_be_bytes([sa_buf[4], sa_buf[5], sa_buf[6], sa_buf[7]]);
 
     if port == 0 {
         return Ok(());
@@ -2277,7 +2277,7 @@ fn try_dispatch_connect(ctx: &RawTracePointContext) -> Result<(), i64> {
         return Ok(());
     }
     let port = u16::from_be_bytes([sa_buf[2], sa_buf[3]]);
-    let addr = u32::from_ne_bytes([sa_buf[4], sa_buf[5], sa_buf[6], sa_buf[7]]);
+    let addr = u32::from_be_bytes([sa_buf[4], sa_buf[5], sa_buf[6], sa_buf[7]]);
     if sa_buf[4] == 127 || addr == 0 {
         return Ok(());
     }
