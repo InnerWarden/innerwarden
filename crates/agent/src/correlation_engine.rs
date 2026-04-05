@@ -1160,6 +1160,137 @@ fn builtin_rules() -> Vec<CorrelationRule> {
             min_confidence: 0.85,
             severity: Severity::Critical,
         },
+        // -----------------------------------------------------------------
+        // Self-play v2/v3 discoveries (2026-04-05)
+        // -----------------------------------------------------------------
+        // CL-031: Web shell upload + outbound connection (v1 chain #1, #5, #12)
+        // Attacker learned: upload web shell to non-standard path, then exfil.
+        // WebShellUpload passed undetected in 38% of chains.
+        CorrelationRule {
+            id: "CL-031".into(),
+            name: "Selfplay: Web Shell Upload to Outbound Connection".into(),
+            stages: vec![
+                RuleStage {
+                    layer: Some(Layer::Userspace),
+                    kind_patterns: vec![
+                        "file.write_access".into(),
+                        "web_shell".into(),
+                        "sensitive_write".into(),
+                    ],
+                    entity_must_match: false,
+                },
+                RuleStage {
+                    layer: Some(Layer::Network),
+                    kind_patterns: vec![
+                        "network.outbound_connect".into(),
+                        "data_exfiltration".into(),
+                        "data_exfil_ebpf".into(),
+                        "outbound_anomaly".into(),
+                    ],
+                    entity_must_match: false,
+                },
+            ],
+            window_secs: 60,
+            min_confidence: 0.90,
+            severity: Severity::Critical,
+        },
+        // CL-032: Sensitive file read + high-entropy DNS (v1 chains #1, #5, #6)
+        // Attacker prefers DNS exfil over HTTP — dns_tunneling detector misses
+        // correlation with prior file read.
+        CorrelationRule {
+            id: "CL-032".into(),
+            name: "Selfplay: File Read to DNS Exfiltration".into(),
+            stages: vec![
+                RuleStage {
+                    layer: Some(Layer::Userspace),
+                    kind_patterns: vec![
+                        "file.read_access".into(),
+                        "credential_harvest".into(),
+                        "data_exfil_ebpf".into(),
+                    ],
+                    entity_must_match: false,
+                },
+                RuleStage {
+                    layer: Some(Layer::Network),
+                    kind_patterns: vec![
+                        "dns_tunneling".into(),
+                        "dns.query".into(),
+                    ],
+                    entity_must_match: false,
+                },
+            ],
+            window_secs: 30,
+            min_confidence: 0.85,
+            severity: Severity::Critical,
+        },
+        // CL-033: Repeated web exploit + encrypted exfil (v2 convergence pattern)
+        // Attacker learned to spam WebExploit (even detected) because ExfilEncrypted
+        // is invisible. 3+ web attacks from same entity + any TLS outbound = critical.
+        CorrelationRule {
+            id: "CL-033".into(),
+            name: "Selfplay: Persistent Web Exploit to Encrypted Exfil".into(),
+            stages: vec![
+                RuleStage {
+                    layer: Some(Layer::Network),
+                    kind_patterns: vec![
+                        "web_scan".into(),
+                        "web_shell".into(),
+                        "user_agent_scanner".into(),
+                    ],
+                    entity_must_match: false,
+                },
+                RuleStage {
+                    layer: Some(Layer::Network),
+                    kind_patterns: vec![
+                        "web_scan".into(),
+                        "web_shell".into(),
+                    ],
+                    entity_must_match: true,
+                },
+                RuleStage {
+                    layer: Some(Layer::Network),
+                    kind_patterns: vec![
+                        "outbound_anomaly".into(),
+                        "data_exfiltration".into(),
+                        "data_exfil_ebpf".into(),
+                    ],
+                    entity_must_match: true,
+                },
+            ],
+            window_secs: 600,
+            min_confidence: 0.90,
+            severity: Severity::Critical,
+        },
+        // CL-034: Trust exploit / lateral movement (v1 chain #2)
+        // TrustExploit never detected — new internal SSH from IP that brute-forced
+        // another host + rapid command execution = lateral movement.
+        CorrelationRule {
+            id: "CL-034".into(),
+            name: "Selfplay: Lateral Movement via Trust Exploitation".into(),
+            stages: vec![
+                RuleStage {
+                    layer: Some(Layer::Network),
+                    kind_patterns: vec![
+                        "ssh_bruteforce".into(),
+                        "credential_stuffing".into(),
+                        "ssh.login_success".into(),
+                    ],
+                    entity_must_match: false,
+                },
+                RuleStage {
+                    layer: Some(Layer::Userspace),
+                    kind_patterns: vec![
+                        "lateral_movement".into(),
+                        "ssh_key_injection".into(),
+                        "suspicious_execution".into(),
+                    ],
+                    entity_must_match: true,
+                },
+            ],
+            window_secs: 300,
+            min_confidence: 0.85,
+            severity: Severity::High,
+        },
     ]
 }
 
@@ -1276,7 +1407,7 @@ mod tests {
     #[test]
     fn engine_starts_empty() {
         let engine = CorrelationEngine::new();
-        assert_eq!(engine.rule_count(), 30);
+        assert_eq!(engine.rule_count(), 34);
         assert_eq!(engine.pending_count(), 0);
     }
 
