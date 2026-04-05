@@ -405,12 +405,8 @@ impl GroupingEngine {
 /// Extract (detector, primary_entity_type, primary_entity_value) from an incident.
 /// Primary entity: first IP, or first User, or first entity of any type.
 fn extract_group_key(incident: &Incident) -> (String, EntityType, String) {
-    let detector = incident
-        .incident_id
-        .split(':')
-        .next()
-        .unwrap_or("unknown")
-        .to_string();
+    let parts: Vec<&str> = incident.incident_id.splitn(3, ':').collect();
+    let detector = parts.first().unwrap_or(&"unknown").to_string();
 
     // Pick best entity: prefer IP, then User, then first available
     let entity = incident
@@ -422,7 +418,24 @@ fn extract_group_key(incident: &Incident) -> (String, EntityType, String) {
 
     match entity {
         Some(e) => (detector, e.r#type.clone(), e.value.clone()),
-        None => (detector, EntityType::Ip, "unknown".to_string()),
+        None => {
+            // Fallback: extract entity from incident_id (e.g., "ssh_bruteforce:1.2.3.4:ts")
+            if let Some(middle) = parts.get(1) {
+                let middle = *middle;
+                if middle.parse::<std::net::IpAddr>().is_ok() {
+                    (detector, EntityType::Ip, middle.to_string())
+                } else if middle.starts_with("uid") || middle.starts_with("user") {
+                    (detector, EntityType::User, middle.to_string())
+                } else if middle == "unknown" || middle == "timing" {
+                    // Group by detector only — all "rootkit:timing:*" go together
+                    (detector, EntityType::Ip, middle.to_string())
+                } else {
+                    (detector, EntityType::Ip, middle.to_string())
+                }
+            } else {
+                (detector, EntityType::Ip, "unknown".to_string())
+            }
+        }
     }
 }
 

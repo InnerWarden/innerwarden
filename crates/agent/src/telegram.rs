@@ -1476,6 +1476,23 @@ impl TelegramClient {
         method: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value> {
+        // Audit log: record every outgoing Telegram message for debugging notification noise.
+        if method == "sendMessage" {
+            let text_preview = body["text"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .take(120)
+                .collect::<String>()
+                .replace('\n', " ");
+            info!(
+                target: "telegram_audit",
+                method = method,
+                text_preview = %text_preview,
+                "Telegram outgoing message"
+            );
+        }
+
         // Enforce message length limit on outgoing text
         let body = if let Some(text) = body["text"].as_str() {
             let safe_text = enforce_length(text);
